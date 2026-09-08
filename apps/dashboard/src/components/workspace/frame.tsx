@@ -1,6 +1,10 @@
+import { OrganizationPicker } from "./organization-picker";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Activity,
+  BookOpen,
+  Download,
+  CreditCard,
   House,
   ArrowUpRight,
   ClipboardList,
@@ -15,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useBillingConfig } from "../../lib/billing-config";
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { copy } from "../../copy";
@@ -29,8 +34,14 @@ const primaryNavigation = [
     label: copy.workspace.navigation.sessions,
     icon: Search,
   },
+  {
+    href: "/installation",
+    label: copy.workspace.navigation.installation,
+    icon: Download,
+  },
   { href: "/sql", label: copy.workspace.navigation.sql, icon: Database },
   { href: "/keys", label: copy.workspace.navigation.keys, icon: KeyRound },
+  { href: "/api/docs", label: copy.workspace.navigation.docs, icon: BookOpen },
 ];
 const adminNavigation = [
   { href: "/admin/users", label: copy.workspace.navigation.users, icon: Users },
@@ -61,6 +72,7 @@ const adminNavigation = [
   },
 ];
 function Navigation({ pathname, admin }: { pathname: string; admin: boolean }) {
+  const billing = useBillingConfig();
   const render = (items: { href: string; label: string; icon: LucideIcon }[]) =>
     items.map(({ href, label, icon: Icon }) => (
       <a
@@ -82,6 +94,10 @@ function Navigation({ pathname, admin }: { pathname: string; admin: boolean }) {
       <Brand />
       <nav aria-label={copy.workspace.navigation.label}>
         {render(primaryNavigation)}
+        {billing.enabled &&
+          render([
+            { href: "/usage", label: copy.billing.title, icon: CreditCard },
+          ])}
         {admin && (
           <>
             <span className="workspace-nav-label">
@@ -120,6 +136,7 @@ export function WorkspaceFrame({
   children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const billing = useBillingConfig();
   return (
     <div className="workspace">
       <a href="#main" className="skip-link">
@@ -165,30 +182,13 @@ export function WorkspaceFrame({
                 </Dialog.Content>
               </Dialog.Portal>
             </Dialog.Root>
-            <div>
-              <label htmlFor="organization-picker">
-                {copy.workspace.navigation.organization}
-              </label>
-              <select
-                id="organization-picker"
-                value={me.organization?.id ?? ""}
-                onChange={(event) => {
-                  onSwitch(event.target.value);
-                }}
-                disabled={switching || organizations.length < 2}
-              >
-                {!me.organization && (
-                  <option value="">
-                    {copy.workspace.navigation.selectOrganization}
-                  </option>
-                )}
-                {organizations.map((organization) => (
-                  <option value={organization.id} key={organization.id}>
-                    {organization.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <OrganizationPicker
+              organizations={organizations}
+              value={me.organization?.id ?? ""}
+              disabled={switching}
+              canCreate={billing.enabled}
+              onChange={onSwitch}
+            />
           </div>
           <div className="workspace-topbar-actions">
             <span className="account-label">{me.user.email}</span>

@@ -72,6 +72,7 @@ export const ingestEnvelopeSchema = z
     },
   );
 export const ingestOutputSchema = z.strictObject({
+  publication: z.enum(["queued", "published"]),
   sessionId: sessionIdSchema,
   accepted: nonnegativeIntegerSchema,
   duplicates: nonnegativeIntegerSchema,

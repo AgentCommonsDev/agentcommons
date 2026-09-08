@@ -1,3 +1,4 @@
+import { DomainAccess } from "./users-domain-access";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -47,6 +48,7 @@ export function UsersPage() {
   const client = useQueryClient();
   const pagination = usePagination("created_at", memberSortKeys);
   const [addOpen, setAddOpen] = useState(false);
+  const [domainsOpen, setDomainsOpen] = useState(false);
   const [emails, setEmails] = useState("");
   const [role, setRole] = useState<Role>("member");
   const [action, setAction] = useState<Action | null>(null);
@@ -216,19 +218,43 @@ export function UsersPage() {
         title={copy.workspace.users.title}
         description={copy.workspace.users.description}
         actions={
-          <Button
-            onClick={() => {
-              setAddOpen(!addOpen);
-              add.reset();
-            }}
-          >
-            <Plus size={15} aria-hidden />
-            {copy.workspace.users.add}
-          </Button>
+          <div className="form-actions">
+            <Button
+              type="button"
+              variant="secondary"
+              aria-expanded={domainsOpen}
+              aria-controls="domain-access-panel"
+              onClick={() => {
+                setDomainsOpen(!domainsOpen);
+                setAddOpen(false);
+              }}
+            >
+              {copy.workspace.domains.title}
+            </Button>
+            <Button
+              type="button"
+              aria-expanded={addOpen}
+              aria-controls="add-people-form"
+              onClick={() => {
+                setAddOpen(!addOpen);
+                setDomainsOpen(false);
+                add.reset();
+              }}
+            >
+              <Plus size={15} aria-hidden />
+              {copy.workspace.users.add}
+            </Button>
+          </div>
         }
       />
+      {domainsOpen && (
+        <div id="domain-access-panel">
+          <DomainAccess key={organization.id} />
+        </div>
+      )}
       {addOpen && (
         <form
+          id="add-people-form"
           className="workspace-panel"
           onSubmit={(event) => {
             event.preventDefault();
@@ -245,6 +271,7 @@ export function UsersPage() {
                 <textarea
                   {...props}
                   required
+                  rows={4}
                   value={emails}
                   onChange={(event) => {
                     setEmails(event.target.value);

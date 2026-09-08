@@ -7,6 +7,7 @@ RUN corepack enable && corepack install
 
 FROM base AS build
 COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 COPY apps ./apps
 COPY packages ./packages
 COPY scripts ./scripts

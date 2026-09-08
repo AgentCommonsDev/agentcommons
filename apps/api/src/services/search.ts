@@ -9,7 +9,15 @@ import {
 } from "@agentcommons/core";
 import { hasAdminAuthority } from "@agentcommons/db";
 import { z } from "zod";
-import { filterSql, Parameters } from "../repositories/read-model.js";
+import {
+  filterSql,
+  Parameters,
+  traceJson,
+} from "../repositories/read-model.js";
+import {
+  messagePayloadBatches,
+  readMessagePayloads,
+} from "../repositories/message-payload.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import { bytes, compactMetadata, wireRow, wireValue } from "./read-budget.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
@@ -108,53 +116,41 @@ export class SearchService {
           const conditions = await filterSql(client, request.filters, params);
           const query = params.add(request.query);
           const lexical = request.query.trim().length > 0;
-          const score = lexical
-            ? "ts_rank_cd(m.search_tsv, search.query, 33)"
-            : "0::real";
           const order = lexical
             ? "rank DESC, session_id, seq"
             : "time DESC, session_id, seq DESC";
-          const sessionOrder = lexical
-            ? `${score} DESC,m.seq`
-            : "coalesce(m.timestamp,m.received_at) DESC,m.seq DESC";
-          const rankType = vector ? "double precision" : "real";
           const continuation = after
             ? lexical
-              ? `(rank < ${params.add(after.rank)}::${rankType} OR (rank = ${params.add(after.rank)}::${rankType} AND (session_id,seq) > (${params.add(after.session_id)}::uuid,${params.add(after.seq)}::int)))`
-              : `(time < ${params.add(after.time)}::timestamptz OR (time = ${params.add(after.time)}::timestamptz AND session_id > ${params.add(after.session_id)}::uuid))`
+              ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
+              : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
             : "true";
-          const hybrid = vector
-            ? `WITH eligible AS (
-            SELECT m.message_id AS id,m.session_id,m.seq,m.timestamp,m.received_at,m.search_tsv FROM api_ro.messages m JOIN api_ro.sessions s USING(session_id) WHERE ${conditions} AND m.searchable
-          ), lexical AS (
-            SELECT id, row_number() OVER(ORDER BY ts_rank_cd(search_tsv,search.query,33) DESC,session_id,seq) position
-            FROM eligible CROSS JOIN LATERAL (SELECT websearch_to_tsquery('english',${query}) || websearch_to_tsquery('simple',${query}) query) search
-            WHERE search_tsv @@ search.query
-          ), vector_candidates AS (
-            SELECT c.message_id,e.session_id,min(api_vector.cosine(c.embedding,api_vector.input(${params.add(`[${vector.join(",")}]`)}))) distance
-            FROM api_vector.message_chunks c JOIN eligible e ON e.id=c.message_id GROUP BY c.message_id,e.session_id
-          ), vector_sessions AS (
-            SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY distance,message_id) per_session FROM vector_candidates
-          ), semantic AS (
-            SELECT message_id id,row_number() OVER(ORDER BY distance,message_id) position FROM vector_sessions WHERE per_session<=3 ORDER BY position LIMIT 500
-          ), fused AS (
-            SELECT coalesce(l.id,v.id) id,coalesce(1.0/(60+l.position),0)+coalesce(1.0/(60+v.position),0) score FROM lexical l FULL JOIN semantic v USING(id)
-          ), ranked AS (
-            SELECT e.session_id,e.seq,f.score::double precision rank,coalesce(e.timestamp,e.received_at) time,
-              row_number() OVER(PARTITION BY e.session_id ORDER BY f.score DESC,e.seq) per_session
-            FROM fused f JOIN eligible e ON e.id=f.id
-          ) SELECT session_id,seq,rank,to_char(time AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') time
-            FROM ranked WHERE per_session<=3 AND ${continuation} ORDER BY ${order} LIMIT ${params.add(request.limit + 1)}`
-            : null;
-          const result = await client.query<Record<string, unknown>>(
-            hybrid ??
-              `WITH ranked AS (
-          SELECT m.session_id,m.seq,${score} rank,coalesce(m.timestamp,m.received_at) time,
-          row_number() OVER (PARTITION BY m.session_id ORDER BY ${sessionOrder}) per_session
-          FROM api_ro.messages m JOIN api_ro.sessions s USING(session_id)
-          CROSS JOIN LATERAL (SELECT websearch_to_tsquery('english',${query}) || websearch_to_tsquery('simple',${query}) query) search
-          WHERE ${conditions} AND ${lexical ? "m.searchable AND m.search_tsv @@ search.query" : "m.kind <> 'THINKING'"}
-        ) SELECT session_id,seq,rank,to_char(time AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') time FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation} ORDER BY ${order} LIMIT ${params.add(request.limit + 1)}`,
+          const eligible = `SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq,coalesce(m.timestamp,m.received_at) AS time
+            FROM api_ro.messages m LEFT ANY JOIN api_ro.session_details s USING(session_id)
+            WHERE ${conditions} AND ${lexical ? "m.searchable" : "m.kind!='THINKING'"}`;
+          const lexicalMatches = `SELECT e.*,l.rank FROM eligible e
+            JOIN api_ro.search_messages(q=${query}) l USING(session_id,seq)`;
+          const candidates = vector
+            ? `WITH eligible AS (${eligible}), lexical_matches AS (${lexicalMatches}), lexical AS (
+                SELECT message_id,row_number() OVER(ORDER BY rank DESC,session_id,seq) AS position FROM lexical_matches
+              ), vector_candidates AS (
+                SELECT c.message_id AS message_id,e.session_id AS session_id,min(cosineDistance(c.embedding,${params.add(vector, "Array(Float32)")})) AS distance
+                FROM api_ro.message_chunks c JOIN eligible e ON e.message_id=c.message_id GROUP BY c.message_id,e.session_id
+              ), vector_sessions AS (
+                SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY distance,message_id) AS per_session FROM vector_candidates
+              ), semantic AS (
+                SELECT message_id,row_number() OVER(ORDER BY distance,message_id) AS position FROM vector_sessions WHERE per_session<=3 ORDER BY position LIMIT 500
+              ), fused AS (
+                SELECT message_id,sum(score) AS rank FROM (
+                  SELECT message_id,1.0/(60+position) AS score FROM lexical
+                  UNION ALL SELECT message_id,1.0/(60+position) AS score FROM semantic
+                ) GROUP BY message_id
+              ) SELECT e.message_id AS message_id,e.session_id AS session_id,e.seq AS seq,e.time AS time,f.rank AS rank FROM fused f JOIN eligible e USING(message_id)`
+            : `WITH eligible AS (${eligible}) ${lexical ? lexicalMatches : "SELECT *,toFloat64(0) AS rank FROM eligible"}`;
+          const result = await client.query(
+            `WITH candidates AS (${candidates}), ranked AS (
+              SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session FROM candidates
+            ) SELECT session_id,seq,rank,time FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
+              ORDER BY ${order} LIMIT ${params.add(request.limit + 1, "UInt32")}`,
             params.values,
           );
           const hits = result.rows.map((row) =>
@@ -170,46 +166,103 @@ export class SearchService {
           };
           const windows: Window[] = [];
           const headers = new Map<string, Omit<SearchBlock, "messages">>();
+          const pageHits = hits.slice(0, request.limit);
+          const ids = [...new Set(pageHits.map((hit) => hit.session_id))];
+          // Fetch all context and headers in two queries for the whole page.
+          const [neighbours, values] = await Promise.all([
+            ids.length
+              ? client.query(
+                  `WITH ordered AS (
+              SELECT message_id,session_id,seq,role,kind,tool_name,tool_use_id,payload_bytes,
+                row_number() OVER(PARTITION BY session_id ORDER BY seq) AS ordinal
+              FROM api_ro.message_metadata WHERE session_id IN {ids:Array(UUID)} AND kind!='THINKING'
+            ), anchors AS (SELECT session_id,seq,ordinal FROM ordered WHERE has(arrayZip({anchor_ids:Array(UUID)},{anchor_seqs:Array(UInt32)}),(session_id,seq)))
+            SELECT o.message_id AS message_id,o.session_id AS session_id,o.seq AS seq,o.role AS role,o.kind AS kind,o.tool_name AS tool_name,
+              o.tool_use_id AS tool_use_id,o.payload_bytes AS payload_bytes,o.ordinal AS ordinal,
+              a.seq AS anchor_seq,a.ordinal AS anchor_ordinal
+            FROM ordered o JOIN anchors a ON o.session_id=a.session_id
+            WHERE o.ordinal+{context:UInt32}>=a.ordinal AND o.ordinal<=a.ordinal+{context:UInt32}
+            ORDER BY o.session_id,a.seq,o.ordinal`,
+                  {
+                    ids,
+                    anchor_ids: pageHits.map((hit) => hit.session_id),
+                    anchor_seqs: pageHits.map((hit) => hit.seq),
+                    context: request.context,
+                  },
+                )
+              : Promise.resolve({ rows: [] }),
+            ids.length
+              ? client.query(
+                  "SELECT session_id,title,harness,model,repo_name,branch,user_email,started_at FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}",
+                  { ids },
+                )
+              : Promise.resolve({ rows: [] }),
+          ]);
+          for (const row of values.rows)
+            headers.set(
+              String(row.session_id),
+              searchBlockSchema
+                .omit({ messages: true })
+                .parse(
+                  compactMetadata(wireRow(row), [
+                    "title",
+                    "model",
+                    "repo_name",
+                    "branch",
+                  ]),
+                ),
+            );
+          const payloadBatches = messagePayloadBatches(
+            neighbours.rows,
+            2 * 1024 * 1024,
+          );
+          const excerpts = new Map<unknown, ReturnType<typeof excerpt>>();
+          async function ensureExcerpts(
+            rows: readonly Record<string, unknown>[],
+          ) {
+            while (rows.some((row) => !excerpts.has(row.message_id))) {
+              const batch = payloadBatches.next();
+              if (batch.done)
+                throw new Error("The published search context is unavailable.");
+              const metadata = new Map(
+                batch.value.map((row) => [row.message_id, row]),
+              );
+              for (const payload of await readMessagePayloads(
+                client,
+                batch.value,
+              )) {
+                const row = metadata.get(payload.message_id);
+                excerpts.set(
+                  payload.message_id,
+                  excerpt(
+                    messageContent(
+                      String(payload.content),
+                      String(row?.kind),
+                      traceJson(payload.tool_input),
+                    ),
+                    request.query,
+                    "",
+                  ),
+                );
+              }
+            }
+          }
           let consumed: Position | null = null;
-          for (const hit of hits.slice(0, request.limit)) {
-            const neighbours = await client.query<Record<string, unknown>>(
-              `WITH ordered AS (
-            SELECT seq,role,kind,tool_name,tool_use_id,content,tool_input,search_text,row_number() OVER (ORDER BY seq)::int ordinal
-            FROM api_ro.messages WHERE session_id=$1::uuid AND kind <> 'THINKING'
-          ), anchor AS (SELECT ordinal FROM ordered WHERE seq=$2)
-          SELECT o.*,ts_headline('english',o.search_text,websearch_to_tsquery('english',$4) || websearch_to_tsquery('simple',$4),'MaxFragments=1,MinWords=1,MaxWords=5,StartSel=ACSTARTMARK,StopSel=ACENDMARK') headline FROM ordered o,anchor a WHERE o.ordinal BETWEEN a.ordinal-$3 AND a.ordinal+$3 ORDER BY o.ordinal`,
-              [hit.session_id, hit.seq, request.context, request.query],
+          for (const hit of pageHits) {
+            const rows = neighbours.rows.filter(
+              (row) =>
+                row.session_id === hit.session_id &&
+                Number(row.anchor_seq) === hit.seq,
             );
-            const ordinal = Number(
-              neighbours.rows.find((row) => row.seq === hit.seq)?.ordinal,
-            );
+            const ordinal = Number(rows[0]?.anchor_ordinal);
+            if (!rows.length || !headers.has(hit.session_id)) continue;
+            await ensureExcerpts(rows);
             const window: Window = {
               hit: { ...hit, ordinal },
               first: Math.max(1, ordinal - request.context),
               last: ordinal + request.context,
-              rows: neighbours.rows,
+              rows,
             };
-            if (!headers.has(hit.session_id)) {
-              const header = await client.query<Record<string, unknown>>(
-                "SELECT session_id,title,harness,model,repo_name,branch,user_email,started_at FROM api_ro.sessions WHERE session_id=$1::uuid",
-                [hit.session_id],
-              );
-              const row = header.rows[0];
-              if (!row) continue;
-              headers.set(
-                hit.session_id,
-                searchBlockSchema
-                  .omit({ messages: true })
-                  .parse(
-                    compactMetadata(wireRow(row), [
-                      "title",
-                      "model",
-                      "repo_name",
-                      "branch",
-                    ]),
-                  ),
-              );
-            }
             windows.push(window);
             const blocks: SearchBlock[] = [];
             const groups: Window[][] = [];
@@ -251,17 +304,7 @@ export class SearchService {
                     kind: row.kind,
                     tool_name: row.tool_name,
                     tool_use_id: row.tool_use_id,
-                    ...excerpt(
-                      messageContent(
-                        String(row.content),
-                        String(row.kind),
-                        row.tool_input === undefined
-                          ? undefined
-                          : wireValue(row.tool_input),
-                      ),
-                      request.query,
-                      String(row.headline),
-                    ),
+                    ...excerpts.get(row.message_id),
                     hit: matched.has(seq),
                   }))
                   .map((message) =>

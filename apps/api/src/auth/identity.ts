@@ -34,6 +34,7 @@ export async function identityFromHeaders(
   auth: NativeAuth,
   headers: Headers,
   allowedDomains: readonly string[] = [],
+  requireVerifiedEmail = false,
 ): Promise<AuthIdentity> {
   const authorization = headers.get("authorization");
   const alternate = headers.get("x-api-key");
@@ -74,7 +75,11 @@ export async function identityFromHeaders(
       );
     const user = await db.user.findUnique({ where: { id: owner.userId } });
     const member = await db.member.findFirst({
-      where: { organizationId: owner.organizationId, userId: owner.userId },
+      where: {
+        organizationId: owner.organizationId,
+        userId: owner.userId,
+        removedAt: null,
+      },
     });
     if (!user || user.banned || !member || member.suspended)
       throw new ServiceError(
@@ -87,6 +92,12 @@ export async function identityFromHeaders(
         403,
         "EMAIL_DOMAIN_NOT_ALLOWED",
         "This email domain is not allowed.",
+      );
+    if (requireVerifiedEmail && !user.emailVerified)
+      throw new ServiceError(
+        403,
+        "EMAIL_VERIFICATION_REQUIRED",
+        "Verify your email before accessing an organization.",
       );
     const permissions = keyPermissionsSchema.parse(key.permissions ?? {});
     const installation = await keyInstallation(
@@ -125,10 +136,20 @@ export async function identityFromHeaders(
       "ACCOUNT_DISABLED",
       "This account is disabled.",
     );
-  const members = await db.member.findMany({
-    where: { userId: identity.user.id, suspended: false },
-    orderBy: { createdAt: "asc" },
-  });
+  const currentUser = requireVerifiedEmail
+    ? await db.user.findUniqueOrThrow({ where: { id: identity.user.id } })
+    : null;
+  const members =
+    requireVerifiedEmail && !currentUser?.emailVerified
+      ? []
+      : await db.member.findMany({
+          where: {
+            userId: identity.user.id,
+            suspended: false,
+            removedAt: null,
+          },
+          orderBy: { createdAt: "asc" },
+        });
   const selected = identity.session.activeOrganizationId;
   const member = selected
     ? members.find((value) => value.organizationId === selected)

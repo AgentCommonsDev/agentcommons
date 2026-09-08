@@ -9,12 +9,21 @@ const apps: FastifyInstance[] = [];
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), "agentcommons-static-"));
   await mkdir(join(directory, "assets"));
+  await mkdir(join(directory, "prerender"));
+  await mkdir(join(directory, "blog"));
   await mkdir(join(directory, "hook"));
   const html =
     '<html><head><meta name="robots" content="noindex,nofollow,noarchive"><link rel="canonical" href="__PUBLIC_URL__/"></head><body><script>window.testBootstrap=true</script></body></html>';
   await Promise.all([
     writeFile(join(directory, "logo.png"), Buffer.from([137, 80, 78, 71])),
     writeFile(join(directory, "index.html"), html),
+    writeFile(join(directory, "template.html"), html),
+    writeFile(join(directory, "blog.html"), html),
+    writeFile(join(directory, "blog", "fixture-post.html"), html),
+    writeFile(
+      join(directory, "prerender", "entry-server.js"),
+      'exports.publicRoutes=[{path:"/",file:"index.html"},{path:"/docs",file:"docs.html"}];exports.renderDocument=async template=>template;exports.offeringText=()=>"";',
+    ),
     writeFile(join(directory, "docs.html"), html),
     writeFile(
       join(directory, "app.html"),
@@ -87,4 +96,19 @@ it("exposes only public discovery and marks versioned artifacts immutable", asyn
   expect(
     (await app.inject("/hook/manifest.json")).headers["cache-control"],
   ).toBe("no-cache");
+});
+
+// @req R-WEB-08
+it("serves public blog artifacts and rejects customer or unknown blog paths", async () => {
+  const publicApp = await application("public");
+  for (const path of ["/blog", "/blog/fixture-post"]) {
+    const response = await publicApp.inject(path);
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('content="index,follow"');
+  }
+  expect((await publicApp.inject("/blog/missing")).statusCode).toBe(404);
+  expect((await publicApp.inject("/blog/nested/path")).statusCode).toBe(404);
+  const customer = await application("customer");
+  expect((await customer.inject("/blog")).statusCode).toBe(404);
+  expect((await customer.inject("/blog/fixture-post")).statusCode).toBe(404);
 });

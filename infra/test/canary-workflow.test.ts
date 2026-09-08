@@ -7,6 +7,7 @@ it("runs the live canary nightly and on every native adapter change, with read-o
   const workflow = z
     .object({
       on: z.object({
+        push: z.never().optional(),
         schedule: z.array(z.object({ cron: z.string() })).min(1),
         pull_request: z.object({ paths: z.array(z.string()) }),
       }),
@@ -35,11 +36,14 @@ it("runs the live canary nightly and on every native adapter change, with read-o
   for (const path of [
     "packages/hook/**",
     "packages/pi-extension/**",
+    "packages/traces/**",
     "packages/core/normalizers/**",
     "packages/core/redaction/**",
     "packages/core/schemas/**",
     "packages/core/format/**",
-    "apps/api/src/services/projection.ts",
+    "apps/api/src/services/trace-projection.ts",
+    "apps/api/src/services/trace-audit-projection.ts",
+    "scripts/canary-*.ts",
     "apps/api/src/services/jobs.ts",
     "apps/api/src/routes/**",
     "apps/api/src/mcp/**",

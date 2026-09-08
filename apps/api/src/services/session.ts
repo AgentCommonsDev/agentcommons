@@ -20,6 +20,7 @@ import {
   sessionReuseOutputSchema,
   reusePagePositionSchema,
   sessionIdSchema,
+  searchConditionFields,
   type GetOutput,
   type Message,
 } from "@agentcommons/core";
@@ -31,10 +32,16 @@ import {
   filterSql,
   rawRecords,
   sessionHeader,
+  sessionHeaders,
+  traceJson,
   visibleSession,
   sessionTreePage,
   reuseEdgePage,
 } from "../repositories/read-model.js";
+import {
+  messagePayloadBatches,
+  readMessagePayloads,
+} from "../repositories/message-payload.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import {
   boundedPage,
@@ -66,7 +73,7 @@ function content(row: Record<string, unknown>): string {
   return messageContent(
     String(row.content),
     String(row.kind),
-    row.tool_input === undefined ? undefined : wireValue(row.tool_input),
+    row.tool_input === undefined ? undefined : traceJson(row.tool_input),
   );
 }
 export class SessionService {
@@ -106,7 +113,7 @@ export class SessionService {
             position?.asOf ??
             (
               await client.query<{ time: string }>(
-                `SELECT to_char(statement_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS time`,
+                "SELECT now64(6, 'UTC') AS time",
               )
             ).rows[0]?.time;
           if (!clock)
@@ -143,7 +150,11 @@ export class SessionService {
       async (caller) => {
         const request = getInputSchema.parse(input);
         return this.dependencies.readers.read(caller, async (client) => {
-          const row = await visibleSession(client, request.session_id);
+          const row = await visibleSession(
+            client,
+            request.session_id,
+            "header",
+          );
           const header = await sessionHeader(client, row);
           const output: GetOutput = { header, messages: [], next: null };
           if (!getFits(output))
@@ -152,14 +163,35 @@ export class SessionService {
               "SESSION_HEADER_TOO_LARGE",
               "The session header exceeds the response limit. Use SQL to select the fields you need.",
             );
-          const rows = await client.query<Record<string, unknown>>(
-            "SELECT * FROM api_ro.messages WHERE session_id=$1::uuid AND seq >= $2 AND ($3::int IS NULL OR seq <= $3) ORDER BY seq LIMIT 101",
-            [
-              request.session_id,
-              request.cursor?.seq ?? request.from ?? 0,
-              request.to ?? null,
-            ],
+          const metadataColumns = Object.keys(messageSchema.shape)
+            .filter(
+              (key) =>
+                !["content", "content_cursor", "truncated_fields"].includes(
+                  key,
+                ),
+            )
+            .join(",");
+          const rows = await client.query(
+            `SELECT ${metadataColumns},payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND seq >= {first:UInt32} AND ({last:Nullable(UInt32)} IS NULL OR seq <= {last:Nullable(UInt32)}) ORDER BY seq LIMIT 101`,
+            {
+              id: request.session_id,
+              first: request.cursor?.seq ?? request.from ?? 0,
+              last: request.to ?? null,
+            },
           );
+          // Fetch only a prefix that can contribute to this bounded page. One large
+          // first message remains readable through the existing lossless byte cursor.
+          const firstBatch = messagePayloadBatches(
+            rows.rows.slice(0, 100),
+            32768,
+          ).next();
+          const batch = firstBatch.done ? [] : firstBatch.value;
+          const payloads = await readMessagePayloads(client, batch);
+          const byId = new Map(
+            payloads.map((value) => [value.message_id, value]),
+          );
+          for (const metadata of batch)
+            Object.assign(metadata, byId.get(metadata.message_id));
           if (
             request.cursor &&
             (!rows.rows[0] || rows.rows[0].seq !== request.cursor.seq)
@@ -169,11 +201,7 @@ export class SessionService {
               "INVALID_CURSOR",
               "The cursor does not identify a message in this range.",
             );
-          for (
-            let index = 0;
-            index < Math.min(100, rows.rows.length);
-            index++
-          ) {
+          for (let index = 0; index < batch.length; index++) {
             const message = rows.rows[index];
             if (!message) continue;
             const seq = Number(message.seq);
@@ -295,29 +323,34 @@ export class SessionService {
           const params = new Parameters();
           const conditions = await filterSql(client, request.filters, params);
           const sort = request.sort ?? "started_at";
-          const messageFilter = [
-            request.filters.role,
-            request.filters.tool_name,
-            request.filters.since,
-            request.filters.until,
-          ].some((value) => value !== undefined);
+          const messageFilter =
+            [
+              request.filters.role,
+              request.filters.tool_name,
+              request.filters.since,
+              request.filters.until,
+            ].some((value) => value !== undefined) ||
+            request.filters.where?.some(
+              (condition) =>
+                searchConditionFields[condition.field] === "message",
+            );
           const predicate = messageFilter
-            ? `EXISTS (SELECT 1 FROM api_ro.messages m WHERE m.session_id=s.session_id AND ${conditions})`
+            ? `s.session_id IN (SELECT m.session_id FROM api_ro.messages m JOIN api_ro.sessions s ON s.session_id=m.session_id WHERE ${conditions})`
             : conditions;
-          const rows = await client.query<Record<string, unknown>>(
+          const rows = await client.query(
             `SELECT s.* FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(request.limit + 1)} OFFSET ${params.add(offset)}`,
             params.values,
           );
-          const items = [];
-          for (const row of rows.rows.slice(0, request.limit))
-            items.push({
-              ...(await sessionHeader(client, row)),
-              duration_seconds:
-                row.duration_seconds === null
-                  ? null
-                  : Number(row.duration_seconds),
-              last_activity_at: wireValue(row.last_activity_at),
-            });
+          const selected = rows.rows.slice(0, request.limit);
+          const headers = await sessionHeaders(client, selected);
+          const items = selected.map((row, index) => ({
+            ...headers[index],
+            duration_seconds:
+              row.duration_seconds === null
+                ? null
+                : Number(row.duration_seconds),
+            last_activity_at: wireValue(row.last_activity_at),
+          }));
           return sessionsOutputSchema.parse(
             boundedPage(
               items,
@@ -360,12 +393,8 @@ export class SessionService {
               rawPosition,
             )
           : null;
-        const rows = await rawRecords(
-          this.dependencies.prisma,
-          caller,
-          sessionId,
-          after,
-          request.limit,
+        const rows = await this.dependencies.readers.read(caller, (client) =>
+          rawRecords(client, sessionId, after, request.limit),
         );
         const items = [];
         let cursor: string | null = null;
@@ -469,15 +498,19 @@ export class SessionService {
               treePosition,
             )
           : null;
-        await this.dependencies.readers.read(caller, (client) =>
-          visibleSession(client, sessionId),
-        );
-        const rows = await sessionTreePage(
-          this.dependencies.prisma,
+        const rows = await this.dependencies.readers.read(
           caller,
-          sessionId,
-          after,
-          request.limit,
+          async (client) => {
+            await visibleSession(client, sessionId);
+            return sessionTreePage(
+              client.control,
+              client,
+              caller,
+              sessionId,
+              after,
+              request.limit,
+            );
+          },
         );
         const nodes = rows.slice(0, request.limit).map((row) => {
           const node = wireRow(row);
@@ -514,10 +547,10 @@ export class SessionService {
       { action: "schema", resourceType: "schema" },
       (caller) =>
         this.dependencies.readers.read(caller, async (client) => {
-          const columns = await client.query<Record<string, unknown>>(
+          const columns = await client.query(
             "SELECT * FROM api_ro.schema_columns ORDER BY view_name,ordinal_position",
           );
-          const functions = await client.query<Record<string, unknown>>(
+          const functions = await client.query(
             "SELECT * FROM api_ro.schema_functions ORDER BY function_name",
           );
           return schemaOutputSchema.parse({
@@ -586,9 +619,9 @@ export class SessionService {
             .map(([field, value]) =>
               typeof value === "boolean"
                 ? `${field}=${params.add(value)}`
-                : `strpos(lower(${field}),lower(${params.add(value)}::text))>0`,
+                : `positionCaseInsensitiveUTF8(${field},${params.add(value ?? "")})>0`,
             );
-          const rows = await client.query<Record<string, unknown>>(
+          const rows = await client.query(
             `SELECT * FROM api_ro.${view} WHERE ${predicates.join(" AND ") || "true"} ORDER BY ${request.sort ?? configuration.defaultSort} ${request.order} NULLS LAST,${configuration.tie} LIMIT ${params.add(request.limit + 1)} OFFSET ${params.add(offset)}`,
             params.values,
           );

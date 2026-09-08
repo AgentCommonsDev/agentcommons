@@ -37,6 +37,7 @@ export async function bootstrap(
   input: z.input<typeof bootstrapInputSchema>,
 ) {
   const parsed = bootstrapInputSchema.parse(input);
+  const audits = new AuditService(prisma);
   return membershipTransaction(prisma, async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`bootstrap:${parsed.organization}`},0))`;
     let delivery: PasswordDelivery | undefined;
@@ -57,7 +58,11 @@ export async function bootstrap(
     });
     if (!organization) {
       const created = await native.api.createOrganization({
-        body: { name: parsed.name, slug: parsed.organization, userId: user.id },
+        body: {
+          name: await audits.redactText(operatorContext(), parsed.name, tx),
+          slug: parsed.organization,
+          userId: user.id,
+        },
       });
       organization = await tx.organization.findUniqueOrThrow({
         where: { id: created.id },
@@ -67,7 +72,7 @@ export async function bootstrap(
       const existing = await tx.member.findFirst({
         where: { userId: user.id, organizationId: organization.id },
       });
-      if (existing && existing.role !== "owner")
+      if (existing && (existing.role !== "owner" || existing.removedAt))
         throw new ServiceError(
           409,
           "EXISTING_MEMBERSHIP",
@@ -92,7 +97,7 @@ export async function bootstrap(
         },
       });
     await seedPolicies(tx, organization.id, user.id);
-    const audit = await new AuditService(prisma).write(
+    const audit = await audits.write(
       operatorContext(),
       {
         action: "operator.bootstrap",

@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import * as pulumi from "@pulumi/pulumi";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -16,6 +18,8 @@ function unwrap(value: unknown): unknown {
 
 export function stackContract(stack: "dev" | "prod") {
   const resources: pulumi.runtime.MockResourceArgs[] = [];
+  const generatedAlbHostname = `${stack}-alb.fixture.elb.amazonaws.com`;
+  let exportedAlbHostname: string | undefined;
   const mocksReady = pulumi.runtime.setMocks(
     {
       newResource(args) {
@@ -26,15 +30,18 @@ export function stackContract(stack: "dev" | "prod") {
           name: args.name,
           arn,
           address: "database.internal",
+          privateIp: "10.42.1.25",
           identifier: args.name,
-          versionId: "version-1",
+          versionId: args.name.endsWith("-traces-bootstrap")
+            ? "trace-bootstrap-version-fixture"
+            : "version-1",
           url: "123456789012.dkr.ecr.us-east-1.amazonaws.com/api",
           vpcId: "vpc-123",
           privateSubnetIds: ["subnet-private-a", "subnet-private-b"],
           publicSubnetIds: ["subnet-public-a", "subnet-public-b"],
           imageUri: "example.com/api@sha256:1234",
           loadBalancer: {
-            dnsName: "alb.example.com",
+            dnsName: generatedAlbHostname,
             zoneId: "zone-alb",
             arnSuffix: "app/agentcommons/123",
           },
@@ -45,6 +52,16 @@ export function stackContract(stack: "dev" | "prod") {
         return { id: `${args.name}-id`, state };
       },
       call(args) {
+        if (args.token === "aws:ec2/getSubnet:getSubnet")
+          return {
+            ...z.record(z.string(), z.unknown()).parse(args.inputs),
+            availabilityZone: "us-east-1a",
+          };
+        if (args.token === "aws:ssm/getParameter:getParameter")
+          return {
+            ...z.record(z.string(), z.unknown()).parse(args.inputs),
+            value: "ami-native-fixture",
+          };
         if (args.token === "aws:index/getRegion:getRegion")
           return { region: "us-east-1" };
         return z.record(z.string(), z.unknown()).parse(args.inputs);
@@ -56,6 +73,26 @@ export function stackContract(stack: "dev" | "prod") {
   );
   pulumi.runtime.setAllConfig({
     "agentcommons:hostname": `${stack}.example.com`,
+    "agentcommons:environment": JSON.stringify(
+      stack === "prod"
+        ? {
+            INSTANCE_MODE: "saas",
+            EMAIL_TRANSPORT: "ses",
+            EMAIL_FROM: "hello@example.com",
+            STRIPE_PRO_PRICE_ID: "price_pro",
+            FREE_MONTHLY_RECORDS: "1000",
+            PRO_INCLUDED_RECORDS: "10000",
+          }
+        : { INSTANCE_MODE: "customer", EMAIL_TRANSPORT: "none" },
+    ),
+    // A configured identity alone must not grant mail access when transport is none.
+    "agentcommons:sesIdentityArn":
+      "arn:aws:ses:us-east-1:123456789012:identity/example.com",
+    "agentcommons:applicationSecrets": JSON.stringify({
+      STRIPE_SECRET_KEY: "stripe-secret-fixture",
+      STRIPE_WEBHOOK_SECRET: "stripe-webhook-fixture",
+      SMTP_URL: "smtp://fixture:password@mail.example.com:587",
+    }),
     "agentcommons:certificateArn":
       "arn:aws:acm:us-east-1:123456789012:certificate/test",
     "agentcommons:githubRepository": "example/agentcommons",
@@ -63,8 +100,15 @@ export function stackContract(stack: "dev" | "prod") {
       "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com",
     "agentcommons:databaseMigrationPassword": "migration-password-fixture",
     "agentcommons:databaseAppPassword": "application-password-fixture",
-    "agentcommons:databaseReaderUserPassword": "reader-user-password-fixture",
-    "agentcommons:databaseReaderAdminPassword": "reader-admin-password-fixture",
+    "agentcommons:databaseTraceControlPassword":
+      "trace-control-password-fixture",
+    "agentcommons:clickhouseAdminPassword": "clickhouse-admin-password-fixture",
+    "agentcommons:clickhouseWriterPassword":
+      "clickhouse-writer-password-fixture",
+    "agentcommons:clickhouseAccessPassword":
+      "clickhouse-access-password-fixture",
+    "agentcommons:clickhouseReaderSecret":
+      "clickhouse-reader-principal-secret-fixture",
     "agentcommons:betterAuthSecret":
       "test-only-authentication-secret-at-least-32",
   });
@@ -86,8 +130,10 @@ export function stackContract(stack: "dev" | "prod") {
             outputs.serviceName,
             outputs.githubDeploymentRoleArn,
             outputs.alarmTopicArn,
+            outputs.loadBalancerDnsName,
           ])
-          .apply(() => {
+          .apply(([, , , dnsName]) => {
+            exportedAlbHostname = dnsName;
             resolve();
           });
       });
@@ -123,6 +169,97 @@ export function stackContract(stack: "dev" | "prod") {
       });
     });
     // @req R-INF-02
+    it("keeps the ClickHouse host private with encrypted retained data, native privacy settings and scoped backups", () => {
+      const host = find("aws:ec2/instance:Instance", "-traces");
+      expect(host).toMatchObject({
+        instanceType: "t3.large",
+        associatePublicIpAddress: false,
+        subnetId: "subnet-private-a",
+        metadataOptions: { httpTokens: "required", httpPutResponseHopLimit: 1 },
+      });
+      const volume = find("aws:ebs/volume:Volume", "-traces");
+      expect(volume).toMatchObject({
+        encrypted: true,
+        type: "gp3",
+        size: 100,
+        availabilityZone: "us-east-1a",
+      });
+      expect(
+        find("aws:ec2/securityGroup:SecurityGroup", "-traces"),
+      ).toMatchObject({
+        ingress: [
+          {
+            protocol: "tcp",
+            fromPort: 8123,
+            toPort: 8123,
+            securityGroups: [`agentcommons-${stack}-tasks-id`],
+          },
+        ],
+      });
+      expect(
+        find("aws:ec2/securityGroup:SecurityGroup", "-database"),
+      ).toMatchObject({
+        ingress: [
+          {
+            fromPort: 5432,
+            toPort: 5432,
+            securityGroups: [
+              `agentcommons-${stack}-tasks-id`,
+              `agentcommons-${stack}-traces-id`,
+            ],
+          },
+        ],
+      });
+      const script = z.string().parse(host.userData);
+      execFileSync("bash", ["-n"], { input: script });
+      expect(script).not.toContain("clickhouse-admin-password-fixture");
+      expect(script).toContain(
+        readFileSync(
+          new URL("../../packages/traces/config/privacy.xml", import.meta.url),
+        ).toString("base64"),
+      );
+      expect(script).toContain("/var/lib/clickhouse");
+      expect(script).toContain("lsblk -dn -o PATH,SERIAL");
+      const backups = find(
+        "aws:dlm/lifecyclePolicy:LifecyclePolicy",
+        "-backup",
+      );
+      expect(backups).toMatchObject({
+        state: "ENABLED",
+        policyDetails: {
+          resourceTypes: ["VOLUME"],
+          targetTags: { TraceBackup: `agentcommons-${stack}` },
+          schedules: [
+            {
+              createRule: { interval: 24, intervalUnit: "HOURS" },
+              retainRule: { count: stack === "prod" ? 35 : 7 },
+            },
+          ],
+        },
+      });
+    });
+    // @req R-INF-02
+    it("refreshes the private storage host and migration gate on bootstrap credential rotation while retaining its data volume", () => {
+      const host = find("aws:ec2/instance:Instance", "-traces");
+      expect(host.userDataReplaceOnChange).toBe(true);
+      expect(host.userData).toContain(
+        "--version-id 'trace-bootstrap-version-fixture'",
+      );
+      expect(host.userData).not.toContain("clickhouse-admin-password-fixture");
+      expect(find("command:local:Command").triggers).toContain(
+        "trace-bootstrap-version-fixture",
+      );
+      expect(
+        find("aws:ec2/volumeAttachment:VolumeAttachment", "-traces"),
+      ).toMatchObject({
+        volumeId: `agentcommons-${stack}-traces-id`,
+        stopInstanceBeforeDetaching: true,
+      });
+      expect(find("aws:ebs/volume:Volume", "-traces")).not.toHaveProperty(
+        "instanceId",
+      );
+    });
+    // @req R-INF-02
     it("redirects HTTP to TLS and uses the readiness health check with 120 second idle timeout", () => {
       expect(find("awsx:lb:ApplicationLoadBalancer")).toMatchObject({
         idleTimeout: 120,
@@ -146,6 +283,10 @@ export function stackContract(stack: "dev" | "prod") {
         ],
       });
     });
+    it("exports the generated load balancer hostname for external DNS", () => {
+      expect(exportedAlbHostname).toBe(generatedAlbHostname);
+      expect(exportedAlbHostname).not.toBe(`${stack}.example.com`);
+    });
     // @req R-INF-02
     it("gives only the migration task the migration secret", () => {
       const service = find("awsx:ecs:FargateService");
@@ -168,16 +309,16 @@ export function stackContract(stack: "dev" | "prod") {
         })
         .parse(migration.container);
       expect(serviceTask.container.secrets.map((value) => value.name)).toEqual(
-        expect.arrayContaining([
-          "DATABASE_URL",
-          "DATABASE_READER_USER_URL",
-          "DATABASE_READER_ADMIN_URL",
-          "BETTER_AUTH_SECRET",
-        ]),
+        expect.arrayContaining(["DATABASE_URL", "BETTER_AUTH_SECRET"]),
       );
       expect(
         serviceTask.container.secrets.some(
           (value) => value.name === "DATABASE_MIGRATION_URL",
+        ),
+      ).toBe(false);
+      expect(
+        serviceTask.container.secrets.some((value) =>
+          value.name.startsWith("DATABASE_READER_"),
         ),
       ).toBe(false);
       expect(
@@ -190,6 +331,65 @@ export function stackContract(stack: "dev" | "prod") {
         create: "pnpm exec tsx scripts/migrate.ts",
         update: "pnpm exec tsx scripts/migrate.ts",
       });
+    });
+    // @req R-INF-02
+    it("mounts SaaS credentials as secrets and scopes SES only to the API task and configured sender", () => {
+      const service = find("awsx:ecs:FargateService");
+      const api = z
+        .object({
+          taskRole: z.object({ roleArn: z.string() }),
+          container: z.object({
+            secrets: z.array(
+              z.object({ name: z.string(), valueFrom: z.string() }),
+            ),
+            environment: z.array(
+              z.object({ name: z.string(), value: z.string() }),
+            ),
+          }),
+        })
+        .parse(service.taskDefinitionArgs);
+      expect(api.container.secrets.map((entry) => entry.name)).toEqual(
+        expect.arrayContaining([
+          "STRIPE_SECRET_KEY",
+          "STRIPE_WEBHOOK_SECRET",
+          "SMTP_URL",
+        ]),
+      );
+      expect(
+        api.container.environment.some((entry) =>
+          ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "SMTP_URL"].includes(
+            entry.name,
+          ),
+        ),
+      ).toBe(false);
+      const migration = z
+        .object({ taskRole: z.object({ roleArn: z.string() }) })
+        .parse(find("awsx:ecs:FargateTaskDefinition"));
+      expect(migration.taskRole.roleArn).not.toBe(api.taskRole.roleArn);
+      const mail = resources.filter(
+        (resource) =>
+          resource.type === "aws:iam/rolePolicy:RolePolicy" &&
+          resource.name.endsWith("-mail"),
+      );
+      expect(mail).toHaveLength(stack === "prod" ? 1 : 0);
+      if (stack === "prod") {
+        const policy = find("aws:iam/rolePolicy:RolePolicy", "-mail");
+        expect(policy.role).toBe(`agentcommons-${stack}-task-id`);
+        expect(JSON.parse(z.string().parse(policy.policy))).toEqual({
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Effect: "Allow",
+              Action: ["ses:SendEmail"],
+              Resource:
+                "arn:aws:ses:us-east-1:123456789012:identity/example.com",
+              Condition: {
+                StringEquals: { "ses:FromAddress": "hello@example.com" },
+              },
+            },
+          ],
+        });
+      }
     });
     // @req R-INF-02
     it("creates ECR, logs, four alarms, and an environment-bound OIDC deployment role", () => {

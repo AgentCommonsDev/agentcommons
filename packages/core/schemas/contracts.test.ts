@@ -16,7 +16,7 @@ const sessionId = "0192a3f0-7c1e-7d1a-9b0e-3f2a1c9d4e55";
 const timestamp = "2026-08-01T00:00:00Z";
 describe("shared search contract", () => {
   // @req R-SRCH-03 @req R-SRCH-04
-  it("accepts scalars and nonempty arrays for exactly the nine filters", () => {
+  it("accepts scalars and nonempty arrays for the nine basic filters", () => {
     const values = {
       repo_name: "host/org/repo",
       branch: "main",
@@ -250,4 +250,47 @@ it("generates every exported boundary schema for OpenAPI and MCP", () => {
       ).not.toThrow();
     }
   }
+});
+
+// @req R-SRCH-13
+it("bounds structured conditions and rejects expressions, invalid paths and incompatible primitive types", () => {
+  const valid = {
+    field: "tool_input",
+    path: ["options", "0", "limit"],
+    op: "eq",
+    value: 3,
+  };
+  expect(
+    searchInputSchema.parse({ query: "", filters: { where: [valid] } }).filters
+      .where,
+  ).toEqual([valid]);
+  for (const condition of [
+    { ...valid, field: "organization_id" },
+    { ...valid, field: "tool_name; SELECT 1" },
+    { ...valid, op: "regex" },
+    { ...valid, path: [] },
+    { ...valid, path: Array.from({ length: 9 }, () => "x") },
+    { ...valid, path: ["x".repeat(257)] },
+    { ...valid, path: ["\0"] },
+    { ...valid, value: { nested: true } },
+    { ...valid, value: [] },
+    { ...valid, value: "\0" },
+    { field: "tool_input", op: "exists" },
+    { field: "tool_name", op: "eq", value: 3 },
+    { field: "tool_name", op: "eq", value: false },
+    { field: "tool_name", path: ["query"], op: "exists" },
+    { field: "tool_name", op: "contains", value: "" },
+    { field: "tool_name", op: "contains", value: "x".repeat(4097) },
+    { field: "tool_name", op: "exists", value: "ignored" },
+  ])
+    expect(
+      searchFiltersSchema.safeParse({ where: [condition] }).success,
+      JSON.stringify(condition),
+    ).toBe(false);
+  for (const where of [[], Array.from({ length: 11 }, () => valid)])
+    expect(searchFiltersSchema.safeParse({ where }).success).toBe(false);
+  for (const value of ["2", 2, true, false, null])
+    expect(
+      searchFiltersSchema.safeParse({ where: [{ ...valid, value }] }).success,
+    ).toBe(true);
 });

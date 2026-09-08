@@ -34,6 +34,11 @@ const workspace = {
     sortAscending: "Sort ascending",
     sortDescending: "Sort descending",
     columns: "Columns",
+    columnsHint:
+      "Choose up to five summary columns. Details and CSV exports include all table columns.",
+    summaryColumns: "Open details or export CSV to see every column.",
+    sortBy: "Sort by",
+    viewDetails: "View details",
     export: "Export CSV",
     exporting: "Exporting…",
     cancelExport: "Cancel export",
@@ -64,12 +69,51 @@ const workspace = {
     submit: "Submit",
     pending: "Working…",
   },
+  profiles: {
+    selector: "Dashboard",
+    builtin: "Team overview",
+    create: "New dashboard",
+    edit: "Edit dashboard",
+    duplicate: "Duplicate dashboard",
+    remove: "Delete dashboard",
+    save: "Save dashboard",
+    name: "Dashboard name",
+    editor: "Dashboard editor",
+    form: "Form",
+    json: "JSON",
+    definition: "Dashboard JSON",
+    description:
+      "Build a personal view with queries over the data your organization can access. Saved dashboards belong to you in this organization.",
+    schemaLink: "Browse SQL schema",
+    cancel: "Cancel",
+    deleteHint:
+      "Delete this saved dashboard? Its queries and layout will be removed. Session data stays available.",
+    columnError:
+      "Choose existing result columns and numeric values for this display.",
+    data: "Data and CSV",
+    newName: "My dashboard",
+    widgetTitle: "Captured sessions",
+    invalidJson: "Enter valid JSON before saving.",
+    fields: {
+      version: "Version",
+      widgets: "Widgets",
+      id: "Widget ID",
+      title: "Title",
+      sql: "SQL query",
+      display: "Display",
+      x: "Label column",
+      y: "Value column",
+      unit: "Unit",
+    },
+  },
   navigation: {
     home: "Home",
     label: "Workspace navigation",
     sessions: "Sessions",
     sql: "SQL",
     keys: "My keys",
+    installation: "Installation",
+    docs: "API docs",
     users: "Users",
     adminKeys: "Organization keys",
     audit: "Audit log",
@@ -131,9 +175,17 @@ const workspace = {
   },
   home: {
     title: "Home",
-    description:
-      "See which sessions helped later work and where your team's history has gaps.",
-    currentWeek: "Weekly reuse",
+    description: "Find prior work and see what your team has been using.",
+    currentWeek: "This week",
+    browse: "Browse sessions",
+    captured: "Captured sessions",
+    searchedSessions: "Sessions using search",
+    reusedSessions: "Sessions using prior work",
+    reuseRate: "Reuse rate",
+    getStarted:
+      "Capture your team's first sessions to start building shared history.",
+    setupCapture: "Install capture",
+    moreInsights: "Search, reuse, and your impact",
     definition:
       "A session counts once when its agent reads another visible session while active. Human dashboard views do not count.",
     trend: "Last 8 weeks",
@@ -141,7 +193,7 @@ const workspace = {
     helped: "Your sessions reused",
     readers: "People who reused your sessions",
     made: "Prior sessions your agents reused",
-    activity: "Reuse activity and gaps",
+    activity: "Team activity",
     section: "Show activity",
     sections: {
       reused: "Reused this week",
@@ -172,6 +224,47 @@ const workspace = {
         "Your searches with no results this week. Only you can see this search text.",
     },
   },
+  searchAdoption: {
+    title: "AgentCommons search adoption",
+    scope: "Captured sessions visible to you in this ISO week:",
+    denominator: "captured sessions total",
+    explanation: "How these counts work",
+    source:
+      "Counts come from captured tool calls, including failed or unfinished attempts. They do not prove successful retrieval.",
+    repeats:
+      "Repeat searches are AgentCommons searches after the first one in a session. Later searches are recognized code, file, or web searches recorded after that first AgentCommons search.",
+    coverage:
+      "Shell commands and unknown tool names are excluded. Pi has no built-in AgentCommons MCP bridge. Recorded order can differ from start order for parallel calls.",
+    audit:
+      "These counts use captured transcripts. MCP calls and memory-assisted sessions use server audit records.",
+  },
+  installation: {
+    title: "Install capture",
+    description:
+      "Connect your coding tools to this organization in three steps.",
+    keyTitle: "Name this installation",
+    keyDescription: "Create a key for capture and search on one machine.",
+    machineName: "Installation name",
+    nameExample: "Work laptop",
+    createKey: "Create installation key",
+    keyCreated:
+      "Your key is ready. Copy the command below before leaving this page.",
+    commandTitle: "Run this command in your terminal",
+    commandDescription:
+      "The installer connects Claude Code, Codex, Gemini CLI, and pi. Your machine needs Node.js 20 or newer and curl.",
+    commandPending: "Create the key above to get your installation command.",
+    copyCommand: "Copy installation command",
+    codexTrust:
+      "Codex asks you to trust hooks interactively before capture starts.",
+    captureTitle: "Start a coding session",
+    captureDescription:
+      "Open a supported coding tool and send a prompt. Your captured sessions appear here as they arrive.",
+    recent: "Your latest captured sessions",
+    waiting:
+      "No captured sessions yet. This list checks for new arrivals automatically.",
+    openSessions: "View sessions",
+    manageHint: "Manage or revoke installation keys in",
+  },
   sessions: {
     title: "Sessions",
     description:
@@ -180,6 +273,32 @@ const workspace = {
     results: "Search results",
     filters: "Session filters",
     addFilter: "Add filter",
+    conditions: {
+      title: "Tool and field filters",
+      description:
+        "Use the same field filters as agent search. Match any tool name, an input parameter, or session metadata. Every condition must match; partial matches ignore letter case.",
+      field: "Condition field",
+      operator: "Match",
+      value: "Condition value",
+      path: "Tool parameter path (JSON)",
+      pathExample: '["query"]',
+      pathHelp:
+        'Use ["query"] for a parameter, or ["options", "limit"] for a nested value. Array indexes are strings, such as ["paths", "0"].',
+      json: "Read value as JSON",
+      jsonHelp:
+        'Enter a JSON primitive: "text", 2, true or null. Text fields accept strings or null.',
+      add: "Add condition",
+      remove: "Remove condition",
+      invalid:
+        "Check the field, path and value. Use a JSON array for parameter paths and a JSON primitive when selected.",
+      limit: "You can add up to 10 conditions.",
+      operators: {
+        eq: "equals",
+        contains: "contains",
+        starts_with: "starts with",
+        exists: "exists",
+      },
+    },
     filterField: "Filter field",
     filterValue: "Filter value",
     removeFilter: "Remove filter",
@@ -342,7 +461,22 @@ const workspace = {
   detail: {
     transcript: "Transcript",
     raw: "Raw records",
-    tree: "Session tree",
+    tree: "Messages & subagents",
+    treeDescription:
+      "Expand a session to inspect its messages, tool calls, subagents and forks.",
+    treeSession: "Session",
+    treeCurrent: "Current session",
+    treeMessages: "Messages",
+    treeChildren: "Related agents and forks",
+    treeOpen: "Open transcript",
+    treeEmptyMessages: "No messages have arrived for this session.",
+    treeMessage: "Open message",
+    gitContext: "Repository and revision",
+    gitMissing: "No Git repository was recorded.",
+    rootSession: "Root session",
+    parentSession: "Parent session",
+    startRevision: "Start commit",
+    endRevision: "End commit",
     details: "Session details",
     transcriptSearch: "Find in loaded messages",
     thinking: "Show thinking",
@@ -399,9 +533,19 @@ const workspace = {
     description:
       "Run read-only queries over the views your organization can access.",
     editor: "SQL query",
+    complete: "Suggest fields",
+    diagnostics: "Check syntax",
+    syntaxError: "Unexpected SQL syntax. Check this part of the query.",
+    editorHelp:
+      "Ctrl+Space suggests tables and columns. Ctrl+Enter runs the query. Tab moves to the next control. The server checks permissions and query limits.",
     run: "Run query",
     running: "Running query…",
     schema: "Available schema",
+    copySchema: "Copy full schema",
+    schemaHint:
+      "Copy the available views, columns, types, and descriptions to share with an LLM. The schema follows your organization permissions.",
+    schemaView: "View or function",
+    showSchema: "Browse schema",
     functions: "Available functions",
     empty: "Run a query to see its result.",
     result: "Query result",
@@ -444,6 +588,34 @@ const workspace = {
       sql: "Read-only SQL",
       admin: "Organization administration",
     },
+  },
+  domains: {
+    title: "Google SSO domain access",
+    description:
+      "People with a verified Google email at a verified domain join this organization as members. Existing roles stay unchanged.",
+    disabled:
+      "Domain access requires Google login and an instance signup mode that permits enrollment. Ask your instance operator to enable it.",
+    domain: "Email domain",
+    placeholder: "example.com",
+    hint: "Enter the exact domain after @. Subdomains need their own verification.",
+    register: "Add domain",
+    proof: "DNS verification",
+    proofDescription:
+      "Add this TXT record with your DNS provider, then verify. DNS changes may take time to become visible.",
+    recordName: "TXT record name",
+    recordValue: "TXT record value",
+    copyName: "Copy TXT name",
+    copyValue: "Copy TXT value",
+    verify: "Verify DNS",
+    showProof: "Show DNS record",
+    verified: "Verified",
+    pending: "Awaiting DNS verification",
+    status: "Verification status",
+    all: "All statuses",
+    success:
+      "Domain verified. Matching verified Google accounts can now join as members.",
+    filter: "Filter domains",
+    csvName: "organization-domains.csv",
   },
   users: {
     title: "Users",
@@ -541,10 +713,36 @@ const workspace = {
     invalidOptions: "Rule options must be valid JSON.",
     empty: "No redaction policies found.",
   },
+  organizationEmbeddings: {
+    title: "Embedding search",
+    enable: "Enable embeddings",
+    disable: "Disable embeddings",
+    enabled: "Enabled for this organization",
+    disabled: "Disabled for this organization",
+    unavailable:
+      "An operator must configure and enable a provider before embeddings can be used.",
+    enabledHint:
+      "New and existing sessions are queued for indexing. Search uses available vectors as indexing progresses.",
+    disabledHint:
+      "Search uses words and filters. Existing vectors remain stored and hidden.",
+    enableDescription:
+      "Send this organization's searchable session text to the configured provider, including existing sessions. Provider charges and the daily token budget apply.",
+    disableDescription:
+      "Stop new embedding requests for this organization. Requests already in flight may finish and incur provider costs.",
+    fake: "This test provider uses deterministic vectors. Its results do not establish semantic search quality.",
+    provider: "Configured provider",
+    total: "Sessions",
+    indexed: "Indexed",
+    pending: "Awaiting indexing",
+    failed:
+      "The last provider request failed. Check the provider credential and usage limits.",
+    unchecked:
+      "No provider request has completed yet. Configuration alone does not verify the provider credential.",
+  },
   systemStatus: {
     title: "Status",
     description:
-      "Capture health, shared-session use, and outcomes for this organization.",
+      "Check capture failures, processing queues, and operating costs.",
     ingest: "Sessions ingested per day",
     failures: "Failures per day",
     redaction: "Redaction hits by policy",
@@ -627,6 +825,11 @@ const workspace = {
       dashboard_weekly_actives: "Weekly active dashboard users",
       dashboard_searches: "Dashboard searches",
       dashboard_session_views: "Dashboard session views",
+      agentcommons_search_sessions: "Sessions with AgentCommons search",
+      agentcommons_search_rate: "Sessions using AgentCommons search",
+      agentcommons_search_calls: "AgentCommons search calls",
+      repeat_agentcommons_search_calls: "Repeat AgentCommons searches",
+      subsequent_other_search_calls: "Later code, file, or web searches",
       tool_calls_per_session: "Tool calls per session",
       tokens_per_session: "Tokens per session",
       duration_seconds_per_session: "Duration per session",
@@ -650,6 +853,147 @@ const workspace = {
 } as const;
 
 export const copy = {
+  saas: {
+    signup: "Start free",
+    pricing: "Pricing",
+    pricingTitle: "Start free. Add capacity as you grow.",
+    pricingDescription:
+      "Each plan includes capture, search, and your organization's dashboard.",
+    free: "Free",
+    pro: "Pro",
+    enterprise: "Enterprise",
+    pro_embeddings: "Pro with embeddings",
+    embeddingsAddon: "Embeddings add-on",
+    captureRate: "per 1,000 additional captured records",
+    embeddingRate: "per 1,000 indexed messages",
+    rateUnavailable: "Usage rates are not configured for this instance.",
+    freeDescription: "Try shared session history with your team.",
+    proDescription: "Capture more of your team's daily work.",
+    enterpriseDescription:
+      "Discuss higher limits and your organization's needs.",
+    freePrice: "$0",
+    currency: "USD",
+    perMonth: "/ month",
+    sessionsPerMonth: "captured records included each month",
+    counting:
+      "Usage counts new transcript records. Retries do not count twice; rewritten snapshots can add records. Free allowances reset each UTC calendar month. Pro allowances reset with the subscription period.",
+    included: [
+      "Claude Code, Codex, Gemini CLI, and pi",
+      "Search in the dashboard and through MCP",
+      "Organization access and custom redaction policies",
+    ],
+    demo: "Schedule a demo",
+    demoTitle: "Talk through your team's setup",
+    demoDescription:
+      "Choose a time in the calendar or open it in a separate tab.",
+    openCalendar: "Open booking calendar",
+    calendarTitle: "AgentCommons demo booking calendar",
+    calendarUnavailable: "Demo scheduling is not configured for this instance.",
+    calendarLoading: "Loading booking calendar…",
+    status: "Shared session history for your team.",
+    principlesTitle: "Your team’s history, with organization controls.",
+    principlesDescription:
+      "Members and scoped API keys control who can read and contribute. Custom redaction policies apply before server storage.",
+    madeIn: "Made in San Francisco",
+    securityEyebrow: "ORGANIZATION ACCESS",
+    securityHeading: "Session history with\norganization controls.",
+    securityDescription:
+      "Organization boundaries and scoped keys control who can read and contribute. Owners manage membership, and admins can hide or purge sessions.",
+    footerStatus: "Shared across coding tools",
+    checkoutUnavailable:
+      "Online upgrades are not configured for this instance. Your current plan remains available.",
+    unavailable:
+      "Hosted signup and billing are not available on this instance.",
+  },
+  blog: {
+    title: "Notes on shared agent work",
+    description:
+      "Practical ways to capture coding history, find prior work, and keep team instructions useful.",
+    navigation: "Blog",
+    back: "All posts",
+    published: "Published",
+  },
+  signup: {
+    openDashboard: "Open dashboard",
+    dashboardShort: "Dashboard",
+    continueSetup: "Continue setup",
+    signInDescription: "Sign in to access your team’s shared session history.",
+    title: "Create your AgentCommons account",
+    description: "Verify your email, then create a workspace for your team.",
+    name: "Your name",
+    submit: "Create account",
+    submitting: "Creating account…",
+    failed: "The account could not be created.",
+    verifyTitle: "Check your email",
+    verifyEmail: "Verify your email",
+    verifyRequestDescription:
+      "Request an email verification link before signing in to an account added by your organization.",
+    verifySubmit: "Send verification link",
+    verifyDescription:
+      "Open the verification link to continue setting up your workspace.",
+    resend: "Send another verification email",
+    sending: "Sending email…",
+    sent: "A new verification email has been requested.",
+    emailFailed: "The email could not be sent.",
+    already: "Already have an account?",
+    signIn: "Sign in",
+    unavailable: "Public signup is not enabled for this instance.",
+    forgot: "Forgot your password?",
+    resetTitle: "Reset your password",
+    resetDescription: "Request a password reset link for your account.",
+    resetSubmit: "Send reset link",
+    resetSent:
+      "If an account can use password reset, a link will arrive by email.",
+    onboardingTitle: "Create your team's workspace",
+    onboardingDescription:
+      "Your organization keeps its sessions, members, and API keys together.",
+    organizationName: "Organization name",
+    slug: "Organization slug",
+    slugHint:
+      "Use lowercase letters, numbers, and single hyphens between words.",
+    organizationSubmit: "Create organization",
+    organizationPending: "Creating organization…",
+    contactTitle: "Contact your organization owner",
+    contactDescription:
+      "This account has already created an organization. Ask its owner to restore access.",
+    continue: "Continue to your workspace",
+  },
+  billing: {
+    title: "Usage and billing",
+    description:
+      "Your organization's captured records and embedding usage for the current billing period.",
+    plan: "Current plan",
+    period: "UTC usage period",
+    periodEnd: "Next reset",
+    used: "Captured records",
+    limit: "Monthly allowance",
+    remaining: "Included records remaining",
+    unmetered: "Unmetered",
+    upgrade: "Upgrade to Pro",
+    portal: "Manage billing",
+    planChoice: "Paid plan",
+    changePlan: "Change plan",
+    overage: "Additional captured records",
+    embedded: "Indexed messages",
+    captureEstimate: "Estimated capture usage charge",
+    embeddingEstimate: "Estimated embedding usage charge",
+    estimates:
+      "Usage estimates exclude monthly plan fees and taxes. Your billing invoice is authoritative.",
+    meteringPending: "Usage awaiting billing delivery",
+    reconciliation: "Usage requiring operator review",
+
+    opening: "Opening billing…",
+    ownerOnly: "An organization owner can manage the plan.",
+    cap: "This month's free record allowance has been reached. Your team's saved history remains searchable.",
+    pending:
+      "Pending captures retry after an upgrade or the next monthly reset.",
+    returnHint: "Your plan updates after payment is confirmed.",
+    progress: "Included records used",
+  },
+  startup: {
+    failed: "The application configuration could not be loaded.",
+    retry: "Reload page",
+  },
   workspace,
   meta: {
     title: "AgentCommons · Shared history for coding teams",
@@ -678,7 +1022,7 @@ export const copy = {
     title: "Give your next agent",
     titleEnd: "a place to start.",
     description:
-      "Find what your team already tried, what failed, and why a decision was made. Keep that history across coding tools, models, and projects.",
+      "See what your coding agents did, find work your team already tried, and control who can access it. Keep that history across tools and models.",
     primary: "Open your workspace",
     secondary: "Explore the project",
     status: "Self-hosted session history for your team.",
@@ -812,12 +1156,12 @@ export const copy = {
     eyebrow: "RUN IT ON YOUR INFRASTRUCTURE",
     heading: "Session history on\nyour infrastructure.",
     description:
-      "A self-hosted application with Postgres. Organization boundaries and scoped keys control who can read and contribute.",
+      "A self-hosted application for shared agent history. Organization boundaries and scoped keys control who can read and contribute.",
     items: [
       {
         title: "Redaction before server storage",
         description:
-          "Scan session content and metadata before writing them. Local transcripts and upload spools can still contain secrets.",
+          "Scan session content and metadata before writing them. Add custom redaction policies for your organization.",
       },
       {
         title: "Explicit access and audit records",
@@ -844,7 +1188,7 @@ export const copy = {
   footer: {
     description: "Shared session history for coding teams.",
     source: "Apache 2.0 license",
-    status: "Self-hosted with Postgres",
+    status: "Self-hosted session history",
     links: {
       source: "Source code",
       specification: "Specification",
@@ -867,10 +1211,10 @@ export const copy = {
   publicGuide: {
     title: "AgentCommons public product guide",
     sections: [
-      "AgentCommons is a self-hosted index of coding-agent sessions for organizations. Agents access session history through MCP; people use a web dashboard.",
-      "The three MCP tools are search (find prior work), get (read a session and its context), and sql (read-only queries over caller-visible views). The example on the public homepage uses illustrative data and does not connect to an organization's sessions.",
-      "Versioned AGENTS.md, CLAUDE.md, and skills contain team instructions. Session history records prior investigations, failed approaches, tool outputs, and decisions. Live contracts have been captured for Claude Code, Codex, Gemini CLI, and pi; a tool is supported only after complete live verification passes.",
-      "Organizations have separate data, membership, and scoped API keys. Redaction runs before server storage. Local transcripts and upload spools may contain secrets. Administrators manage visibility, purge, redaction policies, and audit records.",
+      "AgentCommons indexes coding-agent sessions for organizations. Agents access session history through MCP; people use a web dashboard.",
+      "Agents use search to find prior work, get to read a session, and sql to query the data they can access. They can also save personal dashboard definitions through MCP. The example on the public homepage uses illustrative data and does not connect to an organization's sessions.",
+      "Versioned AGENTS.md, CLAUDE.md, and skills contain team instructions. Session history records prior investigations, failed approaches, tool outputs, and decisions. Capture adapters record sessions from Claude Code, Codex, Gemini CLI, and pi.",
+      "Organizations have separate data, membership, and scoped API keys. Redaction runs before server storage. Administrators manage visibility, purge, redaction policies, and audit records.",
       "Customer instances disable public discoverability by default. Login and authenticated workspace pages are not intended for indexing. Public discovery files contain only this guide and repository documentation, never organization session data.",
     ],
   },

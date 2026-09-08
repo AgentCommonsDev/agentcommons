@@ -1,0 +1,187 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index a9fa84b2747d236f504bc70e7cfbc1a4f61be41b..4189a7ae60cebb5b72937468e2fee3081eca76d0 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -185,10 +185,7 @@ async function onCheckoutSessionCompleted(ctx, options, event) {
+ 		if (checkoutSession.mode === "setup" || !options.subscription?.enabled) return;
+ 		const subscription = await client.subscriptions.retrieve(checkoutSession.subscription);
+ 		const resolved = await resolvePlanItem(options, subscription.items.data);
+-		if (!resolved) {
+-			ctx.context.logger.warn(`Stripe webhook warning: Subscription ${subscription.id} has no items matching a configured plan`);
+-			return;
+-		}
++		if (!resolved?.plan) return await onSubscriptionUpdated(ctx, options, event, subscription);
+ 		const { item: subscriptionItem, plan } = resolved;
+ 		if (plan) {
+ 			const checkoutMeta = subscriptionMetadata.get(checkoutSession?.metadata);
+@@ -241,12 +238,13 @@ async function onCheckoutSessionCompleted(ctx, options, event) {
+ 		}
+ 	} catch (e) {
+ 		ctx.context.logger.error(`Stripe webhook failed. Error: ${e.message}`);
++		throw e;
+ 	}
+ }
+ async function onSubscriptionCreated(ctx, options, event) {
+ 	try {
+ 		if (!options.subscription?.enabled) return;
+-		const stripeSubscriptionCreated = event.data.object;
++		const stripeSubscriptionCreated = await options.stripeClient.subscriptions.retrieve(event.data.object.id);
+ 		const stripeCustomerId = stripeSubscriptionCreated.customer?.toString();
+ 		if (!stripeCustomerId) {
+ 			ctx.context.logger.warn(`Stripe webhook warning: customer.subscription.created event received without customer ID`);
+@@ -263,10 +261,7 @@ async function onSubscriptionCreated(ctx, options, event) {
+ 				value: stripeSubscriptionCreated.id
+ 			}]
+ 		});
+-		if (existingSubscription) {
+-			ctx.context.logger.info(`Stripe webhook: Subscription already exists in database (id: ${existingSubscription.id}), skipping creation`);
+-			return;
+-		}
++		if (existingSubscription) return await onSubscriptionUpdated(ctx, options, event, stripeSubscriptionCreated);
+ 		const reference = await findReferenceByStripeCustomerId(ctx, options, stripeCustomerId);
+ 		if (!reference) {
+ 			ctx.context.logger.warn(`Stripe webhook warning: No user or organization found with stripeCustomerId: ${stripeCustomerId}`);
+@@ -315,18 +310,41 @@ async function onSubscriptionCreated(ctx, options, event) {
+ 		});
+ 	} catch (error) {
+ 		ctx.context.logger.error(`Stripe webhook failed. Error: ${error}`);
++		throw error;
+ 	}
+ }
+-async function onSubscriptionUpdated(ctx, options, event) {
++function subscriptionUpdateData(stripeSubscriptionUpdated, plan, subscriptionItem, seats) {
++	const trial = stripeSubscriptionUpdated.trial_start && stripeSubscriptionUpdated.trial_end ? {
++			trialStart: /* @__PURE__ */ new Date(stripeSubscriptionUpdated.trial_start * 1e3),
++			trialEnd: /* @__PURE__ */ new Date(stripeSubscriptionUpdated.trial_end * 1e3)
++		} : {};
++	return {
++				...trial,
++				...plan ? {
++					plan: plan.name.toLowerCase(),
++					limits: plan.limits
++				} : { plan: "" },
++				updatedAt: /* @__PURE__ */ new Date(),
++				status: stripeSubscriptionUpdated.status,
++				periodStart: /* @__PURE__ */ new Date(subscriptionItem.current_period_start * 1e3),
++				periodEnd: /* @__PURE__ */ new Date(subscriptionItem.current_period_end * 1e3),
++				cancelAtPeriodEnd: stripeSubscriptionUpdated.cancel_at_period_end,
++				cancelAt: stripeSubscriptionUpdated.cancel_at ? /* @__PURE__ */ new Date(stripeSubscriptionUpdated.cancel_at * 1e3) : null,
++				canceledAt: stripeSubscriptionUpdated.canceled_at ? /* @__PURE__ */ new Date(stripeSubscriptionUpdated.canceled_at * 1e3) : null,
++				endedAt: stripeSubscriptionUpdated.ended_at ? /* @__PURE__ */ new Date(stripeSubscriptionUpdated.ended_at * 1e3) : null,
++				seats,
++				stripeSubscriptionId: stripeSubscriptionUpdated.id,
++				billingInterval: subscriptionItem.price.recurring?.interval,
++				stripeScheduleId: stripeSubscriptionUpdated.schedule ? typeof stripeSubscriptionUpdated.schedule === "string" ? stripeSubscriptionUpdated.schedule : stripeSubscriptionUpdated.schedule.id : null
++			};
++}
++async function onSubscriptionUpdated(ctx, options, event, currentSubscription) {
+ 	try {
+ 		if (!options.subscription?.enabled) return;
+-		const stripeSubscriptionUpdated = event.data.object;
++		const stripeSubscriptionUpdated = currentSubscription ?? await options.stripeClient.subscriptions.retrieve(event.data.object.id);
+ 		const resolved = await resolvePlanItem(options, stripeSubscriptionUpdated.items.data);
+-		if (!resolved) {
+-			ctx.context.logger.warn(`Stripe webhook warning: Subscription ${stripeSubscriptionUpdated.id} has no items matching a configured plan`);
+-			return;
+-		}
+-		const { item: subscriptionItem, plan } = resolved;
++		const { item: subscriptionItem, plan } = resolved ?? { item: stripeSubscriptionUpdated.items.data[0], plan: void 0 };
++		if (!subscriptionItem) throw new Error("Stripe subscription has no items to reconcile");
+ 		const { subscriptionId } = subscriptionMetadata.get(stripeSubscriptionUpdated.metadata);
+ 		const customerId = stripeSubscriptionUpdated.customer?.toString();
+ 		let subscription = await ctx.context.adapter.findOne({
+@@ -357,31 +375,9 @@ async function onSubscriptionUpdated(ctx, options, event) {
+ 			} else subscription = subs[0];
+ 		}
+ 		const seats = plan ? resolveQuantity(stripeSubscriptionUpdated.items.data, subscriptionItem, plan.seatPriceId) : subscriptionItem.quantity;
+-		const trial = stripeSubscriptionUpdated.trial_start && stripeSubscriptionUpdated.trial_end ? {
+-			trialStart: /* @__PURE__ */ new Date(stripeSubscriptionUpdated.trial_start * 1e3),
+-			trialEnd: /* @__PURE__ */ new Date(stripeSubscriptionUpdated.trial_end * 1e3)
+-		} : {};
+ 		const subscriptionUpdated = await ctx.context.adapter.update({
+ 			model: "subscription",
+-			update: {
+-				...trial,
+-				...plan ? {
+-					plan: plan.name.toLowerCase(),
+-					limits: plan.limits
+-				} : {},
+-				updatedAt: /* @__PURE__ */ new Date(),
+-				status: stripeSubscriptionUpdated.status,
+-				periodStart: /* @__PURE__ */ new Date(subscriptionItem.current_period_start * 1e3),
+-				periodEnd: /* @__PURE__ */ new Date(subscriptionItem.current_period_end * 1e3),
+-				cancelAtPeriodEnd: stripeSubscriptionUpdated.cancel_at_period_end,
+-				cancelAt: stripeSubscriptionUpdated.cancel_at ? /* @__PURE__ */ new Date(stripeSubscriptionUpdated.cancel_at * 1e3) : null,
+-				canceledAt: stripeSubscriptionUpdated.canceled_at ? /* @__PURE__ */ new Date(stripeSubscriptionUpdated.canceled_at * 1e3) : null,
+-				endedAt: stripeSubscriptionUpdated.ended_at ? /* @__PURE__ */ new Date(stripeSubscriptionUpdated.ended_at * 1e3) : null,
+-				seats,
+-				stripeSubscriptionId: stripeSubscriptionUpdated.id,
+-				billingInterval: subscriptionItem.price.recurring?.interval,
+-				stripeScheduleId: stripeSubscriptionUpdated.schedule ? typeof stripeSubscriptionUpdated.schedule === "string" ? stripeSubscriptionUpdated.schedule : stripeSubscriptionUpdated.schedule.id : null
+-			},
++			update: subscriptionUpdateData(stripeSubscriptionUpdated, plan, subscriptionItem, seats),
+ 			where: [{
+ 				field: "id",
+ 				value: subscription.id
+@@ -408,12 +404,13 @@ async function onSubscriptionUpdated(ctx, options, event) {
+ 		}
+ 	} catch (error) {
+ 		ctx.context.logger.error(`Stripe webhook failed. Error: ${error}`);
++		throw error;
+ 	}
+ }
+ async function onSubscriptionDeleted(ctx, options, event) {
+ 	if (!options.subscription?.enabled) return;
+ 	try {
+-		const stripeSubscriptionDeleted = event.data.object;
++		const stripeSubscriptionDeleted = await options.stripeClient.subscriptions.retrieve(event.data.object.id);
+ 		const subscriptionId = stripeSubscriptionDeleted.id;
+ 		const subscription = await ctx.context.adapter.findOne({
+ 			model: "subscription",
+@@ -456,6 +453,7 @@ async function onSubscriptionDeleted(ctx, options, event) {
+ 		} else ctx.context.logger.warn(`Stripe webhook error: Subscription not found for subscriptionId: ${subscriptionId}`);
+ 	} catch (error) {
+ 		ctx.context.logger.error(`Stripe webhook failed. Error: ${error}`);
++		throw error;
+ 	}
+ }
+ //#endregion
+@@ -969,7 +967,7 @@ const upgradeSubscription = (options) => {
+ 					else lineItemDelta.set(si.price.id, d - 1);
+ 				}
+ 				for (const [price, delta] of lineItemDelta) for (let i = 0; i < delta; i++) itemUpdates.push({ price });
+-				await client.subscriptions.update(activeSubscription.id, {
++				const updatedSubscription = await client.subscriptions.update(activeSubscription.id, {
+ 					items: itemUpdates,
+ 					proration_behavior: plan.prorationBehavior ?? "create_prorations"
+ 				}).catch(async (e) => {
+@@ -978,18 +976,17 @@ const upgradeSubscription = (options) => {
+ 						code: e.code
+ 					});
+ 				});
+-				if (dbSubscription) await ctx.context.adapter.update({
+-					model: "subscription",
+-					update: {
+-						plan: plan.name.toLowerCase(),
+-						seats: memberCount,
+-						updatedAt: /* @__PURE__ */ new Date()
+-					},
+-					where: [{
+-						field: "id",
+-						value: dbSubscription.id
+-					}]
+-				});
++				if (dbSubscription) {
++					const resolvedUpdate = await resolvePlanItem(options, updatedSubscription.items.data);
++					const updatedItem = resolvedUpdate?.item ?? updatedSubscription.items.data[0];
++					if (!updatedItem) throw new Error("Stripe subscription has no items to reconcile");
++					const updatedSeats = resolvedUpdate?.plan ? resolveQuantity(updatedSubscription.items.data, updatedItem, resolvedUpdate.plan.seatPriceId) : updatedItem.quantity;
++					await ctx.context.adapter.update({
++						model: "subscription",
++						update: subscriptionUpdateData(updatedSubscription, resolvedUpdate?.plan, updatedItem, updatedSeats),
++						where: [{ field: "id", value: dbSubscription.id }]
++					});
++				}
+ 				upgradeUrl = getUrl(ctx, ctx.body.returnUrl || "/");
+ 			} else ({url: upgradeUrl} = await client.billingPortal.sessions.create({
+ 				customer: customerId,

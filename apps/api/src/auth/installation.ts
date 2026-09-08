@@ -7,10 +7,17 @@ export async function keyInstallation(
   apiKeyId: string | null | undefined,
 ) {
   if (!organizationId || !apiKeyId) return null;
-  const receipt = await db.ingestBatch.findFirst({
+  const receipt = await db.traceReceipt.findFirst({
     where: { organizationId, apiKeyId },
     orderBy: [{ receivedAt: "desc" }, { id: "desc" }],
-    select: { installation: { select: { id: true, toolsEnabled: true } } },
+    select: { installationId: true },
   });
-  return receipt?.installation ?? null;
+  return receipt
+    ? db.installation.findUnique({
+        where: {
+          organizationId_id: { organizationId, id: receipt.installationId },
+        },
+        select: { id: true, toolsEnabled: true },
+      })
+    : null;
 }

@@ -1,3 +1,4 @@
+import { traceEnvironment } from "../../../packages/traces/test/support.ts";
 import Provider from "oidc-provider";
 import { generateKeyPair, exportJWK } from "jose";
 import { createRuntime } from "../../api/src/main.ts";
@@ -59,10 +60,9 @@ export async function startBrowserOidc(database, services, owner, basePort) {
       [basePort + 3, true],
     ]) {
       const env = environment({
+        ...traceEnvironment(database.traceConfig),
         PUBLIC_URL: `http://localhost:${String(port)}`,
         DATABASE_URL: database.urls.app,
-        DATABASE_READER_USER_URL: database.urls.user,
-        DATABASE_READER_ADMIN_URL: database.urls.admin,
         BETTER_AUTH_SECRET: testAuthConfiguration.secret,
         LOG_LEVEL: "silent",
         AUTH_EMAIL_PASSWORD_ENABLED: String(native),

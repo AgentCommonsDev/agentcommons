@@ -1,6 +1,6 @@
 # AgentCommons — Specification
 
-Status: v4, implemented 2026-09-08. Local acceptance results are recorded in
+Status: v5, local ClickHouse acceptance verified 2026-09-08. ClickHouse replaces PostgreSQL trace storage under ADR0047. Current results and external configuration boundaries are recorded in
 `docs/VERIFICATION.md`. Completion requires §16.1 item 8 and is not implied by requirement citations.
 See `docs/reviews/codex-review-2026-09-07.md`; v2 is retained for comparison. Owner: rek7. First deployment: ZeroPath. Self-hostable with one or more organizations per
 instance; each organization is an independent data and authorization boundary
@@ -76,8 +76,9 @@ Cloud deployment is explicitly deferred until operator approval (ADR 0019).
   written atomically with mutations.
 - Operator-created organizations, email access lists, membership roles, and an
   organization switcher. Keys, sessions, queries, policies, jobs, and audit are scoped
-  to one organization. Billing, self-service organization creation, CSV imports, SCIM,
-  and automated suspicious-behavior detection are outside this implementation.
+  to one organization. SaaS mode adds verified public signup, organization onboarding,
+  monthly usage limits, Stripe subscriptions and welcome emails (§9.6). CSV imports,
+  SCIM and automated suspicious-behavior detection remain outside this implementation.
 - AWS deployment with Pulumi; Docker Compose for self-hosting and development.
 
 Out of scope: LLM session summaries and a Windows client.
@@ -85,6 +86,16 @@ Out of scope: LLM session summaries and a Windows client.
 ---
 
 ## 2. Architecture
+
+**Storage decision (ADR0047).** ClickHouse is the only permanent trace and vector
+store. PostgreSQL retains native identity, organization/access settings, audit,
+billing/admission, compact session publication/lifecycle controls, and pg-boss.
+Ingestion commits a bounded temporary redacted outbox with admission and audit before 202. Jobs project versioned data into ClickHouse and publish a complete revision;
+pending work is visible as pending, and the outbox survives terminal queue failures.
+Fresh visibility/purge fences remain authoritative while cleanup is asynchronous.
+PostgreSQL trace tables/views/reader pools, pgvector and the PostgreSQL query dialect
+are superseded and removed, with no dual-store compatibility or historical backfill.
+The runtime and verification contracts below use this storage decision.
 
 ```
  developer machine                              AWS (Pulumi) or Docker Compose
@@ -97,16 +108,17 @@ Out of scope: LLM session summaries and a Windows client.
  │  config state spool  │                      │   /           dashboard (static SPA)   │
  └───────────────────────────────┘             │   in-process worker (pg-boss)           │
  agents ── MCP: search / get / sql ────────────►        │                                │
- people ── dashboard ──────────────────────────►  Postgres 16 + pgvector + pg_trgm       │
+ people ── dashboard ──────────────────────────►  PostgreSQL control + ClickHouse traces       │
                                                └────────────────────────────────────────┘
 ```
 
 Ingest: hook fires → hook mode records intent → detached uploader ships one batch →
-server redacts, stores raw records, normalizes, links, writes audit in the same
-transaction → `202` → uploader advances the acknowledged cursor.
+server redacts and commits admission, audit and a temporary outbox → `202` → uploader
+advances the acknowledged cursor. A durable worker projects ClickHouse rows, then
+publishes their revision and removes the outbox in one control transaction.
 
-Read: dashboard (cookie) or agent (API key, REST or MCP) → auth → service → reader-role
-connection whose views enforce visibility → audit → response.
+Read: dashboard (cookie) or agent (API key, REST or MCP) → auth → service → native ClickHouse reader
+whose row policies enforce current visibility and publication → audit → response.
 
 ---
 
@@ -115,7 +127,7 @@ connection whose views enforce visibility → audit → response.
 ```
 agentcommons/
   package.json  pnpm-workspace.yaml  tsconfig.base.json  eslint.config.js
-  docker-compose.yml              self-host: api + db        docker-compose.dev.yml: db only
+  docker-compose.yml              self-host: api + PostgreSQL + ClickHouse; dev: both databases
   .github/workflows/ci.yml
   apps/api                        Fastify: REST, MCP, auth, audit, worker, static dashboard
     src/services/                 SearchService, SessionService, QueryService, IngestService, AdminService
@@ -124,7 +136,8 @@ agentcommons/
     public/                       install.sh, hook manifest
   apps/dashboard                  Vite + React + Tailwind + shadcn/ui; OpenAPI-generated client
     src/copy.ts                   every user-facing string
-  packages/db                     Prisma schema, migrations, hand-written SQL (api_ro, functions, roles)
+  packages/db                     Prisma identity/control schema and native PostgreSQL migrations
+  packages/traces                 ClickHouse corpus, native reader policies, views, indexes and migrations
   packages/core                   zod schemas, normalizers, redaction, link rules, formatters
   packages/hook                   zero-dependency shim → dist/hook.js
   packages/pi-extension           pi bridge emitting canonical behaviors
@@ -134,7 +147,7 @@ agentcommons/
 ```
 
 Dependency rules: `hook` has no runtime dependencies. `core` depends on zod and
-secretlint. `api` depends on `core` and `db`. `dashboard` depends on `core` types and the
+secretlint. `api` depends on `core`, `db`, and `traces`. `dashboard` depends on `core` types and the
 generated client.
 
 ### 3.1 Core tenet and internal architecture
@@ -149,7 +162,7 @@ adapters   REST routes · MCP tools · dashboard (OpenAPI client)
               validate with SHARED zod schemas → call a service → format with the SHARED formatter
 services   SearchService · SessionService · QueryService · IngestService · AdminService
               one implementation each; caller context {userId, role, keyPermissions}; audit as part of the operation
-data       Prisma (typed) · pg pools per reader role (api_ro) · pg-boss
+data       Prisma control · official ClickHouse client and native reader policies · pg-boss
 ```
 
 - **Shared schemas**: `packages/core/schemas/` holds zod for `search`, `get`, `sql`
@@ -184,10 +197,9 @@ Server and repository development require Node 22.12 or newer; the installed hoo
 supports Node 20. Secretlint profiling is disabled through its native profiler API
 for the long-running server (ADR 0015).
 Fastify 5 (+helmet, cors, rate-limit, static, compress) · zod, `fastify-type-provider-zod`,
-`@fastify/swagger` · `openapi-typescript` + `openapi-fetch` · Better Auth (Prisma adapter;
-`admin`, `organization`, `apiKey`, `genericOAuth`, `openAPI` plugins) · Prisma; PostgreSQL 16 with
-`pgvector`, `pg_trgm`; `pg` pools for `api_ro` · pg-boss · secretlint (`@secretlint/core`,
-preset-recommend, rule-pattern) · `pgsql-ast-parser` · `@modelcontextprotocol/sdk` ·
+`@fastify/swagger` + `@scalar/fastify-api-reference` · `openapi-typescript` + `openapi-fetch` · Better Auth (Prisma adapter;
+`admin`, `organization`, `apiKey`, `genericOAuth`, `openAPI` plugins) · Prisma; PostgreSQL 16 control; ClickHouse 26.8.2.7 with the official Node client · pg-boss · secretlint (`@secretlint/core`,
+preset-recommend, rule-pattern) · `@clickhouse/parser` · `@modelcontextprotocol/sdk` ·
 `uuid` (its `v7` export) · pino · `@t3-oss/env-core` · React 19, Vite, Tailwind, shadcn/ui, TanStack
 Router/Query/Table/Virtual, `shiki` · Pulumi + `@pulumi/awsx` · Vitest,
 `@testcontainers/postgresql`, Playwright, `@axe-core/playwright` · ESLint 9 +
@@ -208,7 +220,8 @@ models retain the types emitted by its generator. Better Auth owns `user`, `sess
 - **Organization / Member / Invitation**: Better Auth organization plugin; membership
   roles `owner`, `admin`, `member`. Instance operators create organizations through
   the bootstrap CLI. Admins add people by email to the organization membership list
-  before first login. No public organization creation endpoint or invitation-email flow.
+  before first login. SaaS verified accounts may create organizations through native
+  onboarding (§9.6). There is no invitation-email flow.
 - **ApiKey**: Better Auth API Key plugin with native organization references; bound
   to one organization for its lifetime; `permissions`
   `{ sessions: ["ingest" | "read"], admin: ["*"] }`; hashed; prefix `ac_`; a user may
@@ -223,13 +236,21 @@ models retain the types emitted by its generator. Better Auth owns `user`, `sess
   Replaces hardware fingerprinting; attribution is by key and installation. Its key
   is `(organizationId, id)` so one machine may connect to multiple organizations.
 
-Every content, batch, audit, redaction-policy, and embedding row carries an
-`organizationId` or an enforced composite foreign key to its organization's parent.
-Foreign keys prevent cross-organization session parents, messages, installations, and
-key ownership. Session identity is unique on `(organizationId, harness, harnessSessionId)`.
+Every content, receipt, audit, policy and embedding row carries an organization scope.
+PostgreSQL composite foreign keys enforce control-plane parent, installation, key and
+receipt ownership. Native ClickHouse policies enforce corpus organization, current
+publication/generation, visibility and purge; repository writes validate the session
+scope before publication. ClickHouse does not provide cross-database foreign keys.
+Session identity is unique on organization, harness and canonical native identity.
 Jobs contain an organization ID and re-authorize their target before processing.
 
 ### 4.2 Session
+
+The following names describe the logical session. PostgreSQL `TraceSessionControl`
+holds identity, ownership, lifecycle, parent links, visibility/purge and publication
+checkpoints. The native ClickHouse `sessions` table holds versioned display metadata,
+observations and counters. Canonical public names are the snake_case columns in §7.4;
+physical columns and native types are declared in `packages/traces/src/schema.ts`.
 
 | column                                                         | notes                                                                                                                                                                                                                                |
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -244,7 +265,7 @@ Jobs contain an organization ID and re-authorize their target before processing.
 | `branch`, `startCommit`, `endCommit`                           | branch null when detached                                                                                                                                                                                                            |
 | `observedCommits`, `observedDiffStat`, `dirtyFileCount`        | observations at session end (`startCommit..endCommit`, `git diff --shortstat`); labeled _observed_, not attributed (§12)                                                                                                             |
 | `model`, `modelsUsed`                                          |                                                                                                                                                                                                                                      |
-| `startedAt`, `endedAt`, `lastActivityAt`                       | `lastActivityAt` is server receipt time                                                                                                                                                                                              |
+| `startedAt`, `endedAt`, `lastActivityAt`                       | `startedAt` uses the normalized source timestamp when available, otherwise first receipt time; publication synchronizes the compact control timestamp for tree ordering and cursors. `lastActivityAt` is server receipt time.        |
 | `status`, `endReason`                                          | `ACTIVE`, `ENDED`, `INACTIVE` (no receipt for 6 h; displayed as inactivity, not death)                                                                                                                                               |
 | `lifecyclePos`, `lifecycleAt`                                  | persisted source ordering markers for lifecycle replay                                                                                                                                                                               |
 | `normalizerContext`, `projectedContext`                        | redacted latest source context and last successfully projected context; a pending pi leaf retains the prior projection, and rescan rebuilds that prior branch from redacted raw records; neither context is exposed through `api_ro` |
@@ -258,20 +279,20 @@ Jobs contain an organization ID and re-authorize their target before processing.
 **SessionFile** (`sessionId`, `path` repo-relative, `ops text[]`): from explicit file
 tools only (Claude `Read/Edit/Write/MultiEdit/NotebookEdit`; Codex `apply_patch`;
 Gemini `read_file/write_file/replace`; pi `read/edit/write`). Shell commands are not
-parsed. `pg_trgm` GIN on `path`. The internal UUID primary key and unique
-`(sessionId, SHA256(UTF8(path)))` index retain complete paths without PostgreSQL btree
-entry limits; the public view still exposes the full path and operations (ADR 0030).
+parsed. ClickHouse stores the full path and operations, keyed by its SHA-256 identity
+within organization, session, generation and revision; no PostgreSQL text index limits
+apply to the corpus.
 
 Relationships are an adjacency list: `parentSessionId` plus `parentRelation`. Root,
 depth, and descendants are computed with recursive SQL. Resume is a lifecycle event on
 the same session, not an edge. Forks are recorded only from explicit native metadata.
 
-Indexes: authoritative unique `(organizationId, harness, native_identity(harnessSessionId))`;
-btree `organizationId`, `userId`, `installationId`, `startedAt desc`, `lastActivityAt desc`,
-`parentSessionId`, `visibility`, `status`; native hash equality indexes on complete `repoName`
-and `branch`; `pg_trgm` GIN `title`. The redundant composite text B-tree and `toolsUsed`
-array GIN are omitted because valid large metadata exceeds their index item limits.
-Product tool-name filters use normalized messages. Full fields remain stored (ADR 0030).
+Control identity uses the unique `(organizationId, harness, nativeIdentity)` key and
+an index for unresolved parent identity. Native corpus tables use ReplacingMergeTree
+keys prefixed by organization and session, with entity identity, generation and
+revision. Canonical views choose the newest published, non-deleted version. The native
+text index uses the shared English Snowball token expression (§7.1); optional vectors
+have native cosine HNSW indexes (§11). There are no PostgreSQL corpus/GIN indexes.
 
 ### 4.3 Records and messages
 
@@ -279,7 +300,7 @@ Product tool-name filters use normalized messages. Full fields remain stored (AD
 array index for JSON documents), `sourceVersion int` (0 for immutable records;
 increasing persisted observation version for rewritten JSON messages), `key text` (native record id when present: Claude
 `uuid`, Codex `ordinal`, Gemini message `id`, pi entry `id`), `recordType`, `payload`
-jsonb (redacted and, if oversized, sanitized per §4.4), `redactionContext` jsonb, `ingestBatchId`, `receivedAt`.
+JSON encoded in native String columns (redacted and, if oversized, sanitized per §4.4), `redactionContext` JSON, `ingestBatchId`, `receivedAt`.
 `redactionContext` is server-owned: SHA-256 tool-call identity hashes with durable sensitive-file
 classification, plus canonical identity locations needed across rescans. It contains no
 original redacted value, is never accepted from the ingest envelope, and is not returned
@@ -298,26 +319,25 @@ and purge. Repeated identical versions never add counts (ADR 0013).
 **Message**: native `id` = UUIDv5(`sessionId`, `rawRecordId`, block index), so the same source
 record always yields the same message ids. Receipt-backed resume markers instead use
 UUIDv5 with the session namespace and `resume:<batch-id>:0` name. `rawRecordId` is
-nullable; `ingestBatchId` is nullable; a database check requires exactly one source,
+nullable; `ingestBatchId` is nullable; the canonical projection requires exactly one source,
 and receipt-backed rows must be non-searchable `SYSTEM META` with block index 0.
-Both source references enforce the same organization and session. `sessionId`, `blockIndex`, `seq` (dense
+The worker resolves both source references within the same organization and session. `sessionId`, `blockIndex`, `seq` (dense
 ordinal assigned by source position/version, canonical native-key identity, then block index, recomputed for the session when an earlier `pos`
 arrives late, which the uploader's in-order rule makes rare; resume markers fall after
 native blocks at the receipt watermark and before higher positions, with same-watermark
 markers ordered by source event time then stable marker ID), `role` (`USER`,
 `ASSISTANT`, `TOOL_RESULT`, `SYSTEM`), `kind` (`TEXT`, `THINKING`, `TOOL_USE`,
 `TOOL_RESULT`, `META`), `content`, `toolName` (on both use and result), `toolUseId`,
-`toolInput` jsonb, `model`, `timestamp` (source; null if missing or invalid),
+`toolInput` JSON, `model`, `timestamp` (source; null if missing or invalid),
 `receivedAt`, `inputTokens`, `outputTokens` (adapter-defined; null when unknown; retries
-never add), `agentId`, `searchable`, `searchText`, `searchTsv` (generated; §7.1).
-Index `(sessionId, seq)`, `(sessionId, toolUseId)`, GIN `searchTsv` where `searchable`.
+never add), `agentId`, `searchable`, `searchText` (§7.1). Native text indexing and
+latest-version selection share the same expression and publication boundary.
 
-**IngestBatch**: primary key `(organizationId, id)`; `id`, `sessionId`, `apiKeyId`, `userId`, `installationId`, `ip`,
+**TraceReceipt** (logical ingest batch): primary key `(organizationId, id)`; `id`, `sessionId`, `apiKeyId`, `userId`, `installationId`, `ip`,
 `userAgent`, `behavior`, `startResume` (explicit native resume, default false), `nativeEvent`, `receivedAt`, `recordCount`, `duplicateCount`,
 `byteCount`, `redactionCount`, `durationMs`.
 `lifecycleApplied` records the server's lifecycle decision from the same transaction:
-true for an applied start/end, false for ignored lifecycle events and sync, null only
-for historical receipts written before this field. Clients cannot set it.
+true for an applied start/end, false for ignored lifecycle events and sync. Clients cannot set it.
 Persisted receipt fields `cursor` (SHA-256 digest of the opaque cursor), `acceptedCount`, `sourcePos`, and `sentAt` allow
 the server to return the committed result on replay and order lifecycle events.
 **RedactionEvent**: `ingestBatchId`, `sessionId`, `policyId`, `count`. Never the value.
@@ -351,9 +371,10 @@ sanitization is rare.
 
 ### 4.5 Prisma notes
 
-`tsvector`/`vector` are `Unsupported(...)`; generated columns, indexes, `api_ro` views
-and functions, roles and grants are hand-written SQL steps kept with the migrations.
-Extensions `vector`, `pg_trgm` in the first migration.
+Prisma owns native identity and compact control models. ClickHouse columns, text/vector
+indexes, canonical views, grants and row policies are defined once in `packages/traces`.
+PostgreSQL has no trace corpus, pgvector extension, SQL reader roles or trace functions.
+Fresh migrations create the final control schema without a corpus backfill.
 
 ---
 
@@ -378,6 +399,7 @@ Extensions `vector`, `pg_trgm` in the first migration.
     "cwd": "…", "git": { "root": "…", "remoteUrl": "…", "branch": "…", "head": "…" } | null,
     "installation": { "hostname": "…", "osUser": "…", "platform": "…", "arch": "…" },
     "activeLeafId": null,                     // pi active transcript branch; null for other readers
+    "transcriptMetadata": null,               // JSON document reader supplies native sessionId/startTime/sourceRecordCount
     "parentHint": { "harnessSessionId": "…", "relation": "SUBAGENT" | "SPAWNED", "agentId": "…", "agentType": "…" } | null
   },
   "records": [ { "pos": 48213, "sourceVersion": 0, "key": "c008375c-…", "line": "{…}" }, … ],   // in source order; sourceVersion defaults to 0
@@ -386,8 +408,12 @@ Extensions `vector`, `pg_trgm` in the first migration.
 }
 ```
 
-Response `202 { "sessionId", "accepted", "duplicates", "cursor" }`. `202` means the whole
-batch, its derived rows, and its audit row are committed. There is no partial acceptance.
+Response `202 { "sessionId", "accepted", "duplicates", "cursor", "publication" }`, with
+`publication` equal to `queued` or `published`. The complete redacted batch, immutable
+admission, quota decision, durable outbox and audit commit before acknowledgement.
+There is no partial batch admission. Projection is asynchronous; queued data is not
+claimed searchable. The durable outbox survives queue terminal failures and is removed
+only in the transaction publishing the complete ClickHouse revision.
 Errors: `401/403` (suspend and report), `409` (session owned by another user, or
 tombstoned), `413` (split), `422` (permanently invalid record: quarantined client-side,
 other records accepted on resend without it), `429/5xx` (retry with backoff).
@@ -422,25 +448,56 @@ other records accepted on resend without it), `429/5xx` (retry with backoff).
   the shim coalesces duplicate hook delivery before assigning a new intent. Rescans
   reconstruct markers from receipts. A pending pi leaf preserves the last displayed
   branch while adding its resume marker (ADR 0020).
+- The JSON-document reader records `transcriptMetadata.sourceRecordCount` on each
+  observed rewrite. The Gemini normalizer projects only positions within that current
+  document length. A shrinking document removes obsolete derived slots while retaining
+  previously accepted raw observations for review; delegation does not imply a child
+  session identity when the native tool provides none.
 - Metadata idempotency: counters, `toolsUsed`, `SessionFile`, lifecycle markers change
   only for newly accepted records or events. A new mutable-record version replaces
   that position's derived messages and counter contributions; it never adds a second
   copy. An active-leaf change updates pi's displayed branch even without new records.
-- One transaction per batch: raw records, messages, files, counters, links, IngestBatch,
-  AuditEvent.
+- Admission uses one PostgreSQL transaction for the ownership/purge check, complete
+  redacted batch, record identities, quota ledger, compact receipt, durable outbox,
+  queue intent and AuditEvent. `202` means that transaction committed.
+- A worker claims a bounded source revision and reconstructs the canonical session
+  from redacted raw records and receipt observations. It writes only changed native
+  messages/files plus the complete header to ClickHouse. Older versions remain
+  append-only; deleted derived records receive tombstones.
+- Native row policies hide every unpublished revision. Only after every write is
+  acknowledged does a PostgreSQL transaction advance the published revision, mark
+  receipts published, remove the corresponding outboxes, and schedule embeddings.
+  Readers hold a shared publication fence; publication, visibility, purge and redaction
+  generation changes take its exclusive counterpart. Partial writes and failed
+  publication checkpoints remain invisible and retry with stable identities.
+- Durable outbox recovery does not depend on a surviving queue job. A failed worker
+  leaves the last published revision readable; status exposes queued, waiting-source
+  and failed projections separately from completed publication.
 
 ### 5.3 Redaction
 
 Applied to **every persisted free-text path**: record lines, envelope git fields, commit
-subjects, titles, first prompts, and audit `detail` text. In memory, before any write.
+subjects, titles, first prompts, native display names and organization names, and audit
+`detail` text. In memory, before any write. Global native display names use the shared
+default redactor in native create/update hooks; organization-specific rules cannot
+change a global identity shared across organizations. Native authentication identifiers
+and credential fields retain their library-owned values.
 Local spool and state files on the client are not redacted (they are the transcript's
-own machine); they are `0600` in a `0700` directory. README says "never stored
-unredacted on the server", not "never reach disk".
+own machine); they are `0600` in a `0700` directory. Public copy describes server-side
+redaction and custom policies.
 
 Rules = shipped secretlint preset + pattern rule (Anthropic, OpenAI, JWTs, connection
 strings with passwords, generic `token=…`, `ac_` keys) + `RedactionPolicy` rows,
 composed into one secretlint configuration, validated on save (regex compiles, bounded
-length, catastrophic-backtracking check), cached 30 s. Admins manage policies from the
+length, catastrophic-backtracking check). JSON object values retain assignment-name
+context for secret scanners. Regex policies additionally scan the unprefixed value,
+so anchors have the same meaning on standalone strings, object values and array items.
+Matches from both native scans merge before replacement/counting; overlaps count once
+and repeat scans preserve terminal replacements (ADR 0039). Ordinary reads cache policies for 30 s.
+Transactional ingestion, embedding, rescan, policy changes, moderation and audit redaction
+load policies through the active transaction client; their local cache never publishes uncommitted policies to the
+shared cache or requests an extra root-pool connection (ADR 0033). Worker audits use their
+explicit organization policy set. Admins manage policies from the
 dashboard or `/admin/redaction/policies`; `REDACTION_EXTRA_PATTERNS` seeds rows at boot. Each changed organization seeds and
 writes one `redaction.policies.seed` audit in the same transaction; restart or concurrent
 boot with no new rows writes no extra seed audit.
@@ -471,9 +528,10 @@ never restored after redaction (ADR 0017).
 Deleting a custom policy removes its per-policy hit counters in the same transaction;
 the deletion audit retains the removed hit total and reason. Disable it to retain
 the policy and its counters. Policy mutations, ingestion, moderation, and rescans take
-the organization lock before session locks. A deleted policy may remain in another
-process's 30-second cache; its matches still contribute to the operation audit total,
-but only extant policy rows receive per-policy counters.
+the organization lock before session locks. Ordinary reads may retain a deleted policy
+in another process's 30-second cache until expiry. Transactional writes use their current
+policy rows and ignore that shared cache; only extant policy rows receive per-policy
+counters. Deleting a policy does not undo already-redacted stored text.
 
 **Sensitive files.** Tool results whose input path matches `**/.env*`, `**/*.pem`,
 `**/*.key`, `**/id_rsa*`, `**/credentials*`, `**/.npmrc`, `**/.netrc` are replaced
@@ -552,6 +610,11 @@ version. User content is an array of `{text}`, assistant content a string. Input
 `toolCalls[].args`; results are `toolCalls[].result[].functionResponse.response`.
 `AfterTool` can run before result persistence; `AfterAgent` and `SessionEnd` drain the
 final document. Duplicate `SessionEnd` events were observed.
+Native `generalist` delegation can temporarily append child messages to this same
+document and then shrink it (observed five → two → four messages). Preserve every
+accepted raw version; project only positions within the latest observed document
+length. The delegation call/result remains a parent tool trace. Hooks provide no
+separate child-session identity, so no child session or parent link is fabricated.
 
 **pi**. `~/.pi/agent/sessions/--<cwd-encoded>--/<ts>_<uuid>.jsonl`, append-only
 tree JSONL: header `{ type: "session", version: 3, id, timestamp, cwd, parentSession? }`,
@@ -731,14 +794,12 @@ result from one operation is a valid input to the next.
 
 A prompt is appended to the transcript and fires a hook (≈50 ms: map event, mark
 intent, spawn uploader). The uploader ships the new records with their source positions.
-The server authenticates, redacts every line, stores raw records, normalizes them into
-messages with deterministic ids and `seq` from source position, marks which parts are
-searchable, and lets Postgres compute the search vector on insert, all in one
-transaction with the audit row. Ten seconds later a teammate's agent calls `search` with
-a query and a repo filter; the service validates against the shared schema, runs one
-ranked statement on the caller's reader role (private rows are filtered inside the
-view), fetches one neighbour either side of each hit, merges overlapping windows, cuts
-match-centered excerpts, and returns blocks carrying `session_id` and `seq`.
+The server authenticates and redacts the complete batch, then commits admission,
+its durable outbox and audit before returning `202`. The worker normalizes source
+records into native messages and publishes a complete revision. Search validates its
+shared schema, ranks caller-visible native messages, and fetches bounded context and
+headers concurrently inside the same publication fence. It merges overlapping windows
+and returns match-centered excerpts carrying `session_id` and `seq`.
 
 ### 7.1 Ingest decides what is searchable
 
@@ -749,13 +810,12 @@ match-centered excerpts, and returns blocks carrying `session_id` and `seq`.
 | `TOOL_RESULT`                          | yes        | first 2 KB **and last 2 KB** (test and compiler failures appear at the end) |
 | `THINKING`, `META`, images             | no         | stored, returned by `get`, never ranked                                     |
 
-```sql
-search_tsv = setweight(to_tsvector('english', search_text), w) || setweight(to_tsvector('simple', search_text), w)
--- w: A USER · B ASSISTANT/SYSTEM · C TOOL_USE · D TOOL_RESULT
-```
-
-Stemmed and exact-token lexemes both match. This is token search, not substring search;
-literal substrings outside the ranked portion are reachable with SQL `LIKE` on `content`.
+The native text-index expression lowercases and tokenizes `searchText`, then applies
+ClickHouse's English Snowball stemmer to each token. Query tokens use the identical
+expression. All nonempty query tokens must match; ranking weights are defined in
+§7.2. Literal substrings outside the ranked portion remain available through SQL
+`LIKE` on `content`. PostgreSQL tsvectors and a query-language translation layer are
+not retained.
 
 ### 7.2 `search`
 
@@ -763,7 +823,7 @@ Input (`packages/core/schemas/search.ts`):
 
 ```jsonc
 {
-  "query": "rate limiter", // PostgreSQL websearch syntax; may be "" if filters given
+  "query": "rate limiter", // token search with English stemming; may be "" if filters given
   "filters": {
     "repo_name": "cunningham",
     "branch": ["feat/x", "main"],
@@ -774,6 +834,15 @@ Input (`packages/core/schemas/search.ts`):
     "session_id": "…",
     "since": "2026-08-01T00:00:00Z",
     "until": "2026-09-01T00:00:00Z",
+    "where": [
+      { "field": "tool_name", "op": "contains", "value": "search" },
+      {
+        "field": "tool_input",
+        "path": ["query"],
+        "op": "contains",
+        "value": "auth",
+      },
+    ],
   },
   "context": 1,
   "limit": 5,
@@ -786,14 +855,49 @@ Input (`packages/core/schemas/search.ts`):
   `host/org/repo` or a short name when unambiguous (400 otherwise). `user_email` exact.
   `tool_name` matches tool-use/result messages themselves. `file_prefix` selects
   _sessions_ that touched the path. `since` inclusive / `until` exclusive on **message
-  time** (UTC). `session_id` searches within a session. Nothing else; the rest is SQL.
+  time** (UTC). `session_id` searches within a session. Structured conditions below
+  cover partial text and tool parameters; more complex queries use SQL.
+- `filters.where` is an optional array of 1–10 AND conditions, combined with all ordinary
+  filters. Each condition names a static field and `eq`, `contains`, `starts_with` or
+  `exists`. Text fields are `tool_name`, `tool_use_id`, `content`, `role`, `kind`, `model`
+  (message fields), and `harness`, `title`, `repo_name`, `branch`, `user_email`, `status`
+  (session fields). Values are live stored data, not a generated tool-name allowlist.
+  `eq` is exact and case-sensitive; a null value matches SQL null. `contains` and
+  `starts_with` are case-insensitive literal string operations, including literal `%`,
+  `_` and backslash. They do not interpret SQL, wildcards or regex. `exists` requires a
+  non-null text field and has no value. String values are bounded to 4,096 characters;
+  partial/prefix values must be nonempty. Unknown fields/operators and excess conditions
+  are rejected before querying.
+- The additional field `tool_input` requires a `path` array of 1–8 JSON object keys or
+  array-index strings (each at most 256 characters). Path traversal uses the full stored,
+  redacted JSON, independently of the 1 KB full-text indexing prefix. `eq` compares a
+  JSON primitive with its original type (string, number, boolean or explicit JSON null);
+  a missing path does not equal JSON null. `contains`/`starts_with` match JSON strings
+  only; `exists` accepts any present JSON value, including null. `path` on other fields
+  and values on `exists` are invalid. All paths and values are SQL parameters. No raw
+  WHERE clause, arbitrary SQL expression, regex or harness-specific interpretation is
+  added. Multiple message conditions must hold on the same message. Matching neighbors
+  remain context, not additional filtered hits. A condition-only search is valid.
+- The same predicate compiler serves lexical search, embedding eligibility and session
+  lists/exports. In session lists and exports, a session-only condition can match a session
+  with no messages; message conditions require a matching message. Search results still
+  require an anchor message, including condition-only searches. Cursors bind all conditions. The dashboard's
+  basic chips remain, with a compact advanced condition form shared with the MCP schema.
+  GET requests can JSON-encode `filters` to preserve primitive types and literal JSON
+  path keys; the generated dashboard client uses that encoding.
 - `limit` = hit messages before window merging (default 5, max 50), with at most 3 hits
   per session so one noisy session cannot fill a page. `context` 0–3 (default 1) counts
   normalized non-thinking messages either side.
-- Pipeline: filters → `WHERE`; `websearch_to_tsquery('english') || websearch_to_tsquery('simple')`
-  against `search_tsv`; `ts_rank_cd(…, 1|32)`; (embeddings on: fused with cosine
-  neighbours internally); deterministic order `(rank desc, session_id, seq)`; neighbours
-  by `(session_id, seq)`; merge touching windows; excerpts.
+- Pipeline: shared structured filters → native ClickHouse text-index candidates → latest
+  published message identity. Query and indexed text use native lowercase tokenization
+  and English Snowball stemming. Every query token must match; punctuation separates
+  tokens. The search box is a text query, with structured filters for conditions; SQL
+  uses native ClickHouse syntax. PostgreSQL websearch operators are superseded by ADR0047.
+  Rank is weighted matching-token frequency divided by `1 + log(1 + token_count)`;
+  weights are user text 1.0, assistant text 0.4, tool input 0.2 and tool result 0.1.
+  Embeddings, when enabled, fuse native cosine neighbors with lexical rank. Ordering is
+  `(rank desc, session_id, seq)`. Batched neighbor/header queries form and merge touching
+  message windows. The unchanged golden corpus must retain its top-three hit rate.
 - Empty `query` with filters: one most-recent anchor message per matching session.
 - Output: blocks `{ session_id, title, harness, model, repo_name, branch, user_email,
 started_at, messages: [{ seq, role, kind, tool_name?, tool_use_id?, content, hit,
@@ -830,71 +934,73 @@ pagination, and stable database IDs are never shortened (ADR 0022).
 
 ### 7.4 `sql`
 
-`{ sql }`: one read-only PostgreSQL `SELECT` over `api_ro`.
+`{ sql }`: one read-only ClickHouse `SELECT` over `api_ro`.
 
-- Views: `sessions` (§4.2 columns snake_case + `user_email`, `user_name`,
-  `installation_hostname`, `parent_title` (visible parents only), `child_count` (visible
-  children), `duration_seconds`, `file_count`), `messages` (§4.3 + `session_title`,
-  `repo_name`, `branch`, `user_email`, `search_tsv`), `session_files`,
-  `session_observed_commits`, `session_tools`, `users (id, email, name)`,
-  `installations`, `repos`, `schema_columns`, `schema_functions`.
-- Functions: `search_messages(q text)` → uncapped relation `(session_id, seq, rank)` for
-  composing ranking with any predicate or aggregate; `similar_sessions(session_id,
-max_rows)` only when embeddings are enabled (§11).
+- Canonical views expose the snake_case session, message, file, tool, repository,
+  installation and analytics fields. `schema_columns` reads actual native column
+  names, types and ordinals. Descriptions use native column comments when present,
+  otherwise the column name with underscores replaced by spaces. A migration-added
+  column on a canonical view appears without rebuilding the catalog.
+  `schema_functions` describes parameterized search views.
+  Both hide embedding capabilities unless available to the current organization.
+- `search_messages(q='words')` returns an uncapped `(session_id, seq, rank)` relation.
+  It composes with ordinary predicates and aggregates. With embeddings enabled,
+  `similar_sessions(source='session UUID',max_rows=5)` returns visible sessions and
+  cosine distance. Named literal parameters are native ClickHouse syntax.
 - Response `{ columns: [{name, type}], rows: [[…]], row_count, capped, truncated_cells:
-[[row, col]], duration_ms }`. Fetch 501 to set `capped`; big integers and decimals as
-  strings; text cells cut at 2 KB; ≤ 256 KB total. Errors: `{ code, message, position }`
-  plus "see `schema_columns`". No psql shortcuts, no enrichment.
+[[row, col]], duration_ms }`. Native column types and duplicate column order survive.
+  Fetch 501 to set `capped`; Int64/UInt64 and decimals retain the driver's lossless
+  representation. Decimal constants requiring explicit precision use native string
+  conversion, such as `toDecimal128('1.234567890123456789',18)`. Text cells are cut at
+  2 KB; total output is at most 256 KB. Errors contain a safe code, message and position
+  with schema guidance. Native SQL bodies and errors containing values are not logged.
 
 ### 7.5 Security, silently
 
-1. Key verified; caller context built with its immutable organization and current
-   issuing-user membership. **Effective authority**: admin visibility and
-   admin operations require organization role `owner` or `admin` **and** key permission `admin:*`;
-   admin-owned `read`-only keys see public data only.
-2. Connection from the pool for the caller's authority: `ac_reader_user` or
-   `ac_reader_admin`; both: `USAGE` on `api_ro`, `SELECT` on its views, `EXECUTE` on its
-   functions, nothing on `public`, `search_path = api_ro`, read-only transactions,
-   `statement_timeout = 5s`, `work_mem = 16MB`, `temp_file_limit = 64MB`.
-3. Each repository read begins a read-only transaction and sets
-   `agentcommons.organization_id` locally from the authenticated caller using a
-   parameterized `set_config` call. Missing context yields no tenant rows. The setting
-   expires at transaction end; pooled connections never retain tenant scope.
-   The same transaction sets `agentcommons.user_id` from the authenticated caller.
-   Author-only views also require this identity; missing identity yields no personal
-   rows, even for an organization admin. Caller SQL cannot read or change either setting.
-   Views are `security_barrier`, require
-   `organization_id = current_setting('agentcommons.organization_id', true)`, and end with
-   `AND ((visibility = 'PUBLIC' AND purged_at IS NULL) OR current_user = 'ac_reader_admin')`;
-   functions are `SECURITY INVOKER` over those views. Derived columns (`parent_title`,
-   `child_count`, `repos` counts, `installations`) are computed from the caller-visible
-   set; a hidden parent appears as null, never reparented.
-4. Guard (`pgsql-ast-parser`): one statement; `SELECT`/`WITH … SELECT` including
-   `WITH RECURSIVE` (trees are recursive CTEs over `parent_session_id`); **allowlist**
-   validation: every relation reference resolves to an `api_ro` view or a CTE, every
-   function to `api_ro` or a small allowlist of builtins (`count`, `sum`, `min`, `max`,
-   `avg`, `array_agg`, `string_agg`, `coalesce`, `nullif`, `lower`, `upper`, `length`,
-   `left`, `right`, `substring`, `position`, `now`, `date_trunc`, `to_char`,
-   `websearch_to_tsquery`, `to_tsquery`, `ts_rank_cd`, `jsonb_*` readers, `unnest`,
-   `generate_series` bounded); no `INTO`, `FOR UPDATE`, `SET`, `COPY`, `DO`, `CALL`;
-   ≤ 20 KB. Reject `set_config`, `current_setting`, `SET ROLE`, catalog access, and all
-   alternate configuration paths. Roles independently enforce base-table denial,
-   read-only access, and lack of privilege escalation. PostgreSQL permits ordinary
-   roles to change user-settable parameters and read system catalogs, so the AST guard
-   is a required security boundary for caller SQL, including organization isolation;
-   it is not merely an error formatter (ADR 0012).
-5. `SELECT * FROM (<sql>) q LIMIT 501`. `search`/`get` run parameterized statements on
-   the same pools.
-6. Rate limits per key: `search`/`get` 300/min, `sql` 60/min. Audit rows carry filters,
-   SQL text (redacted), row counts, duration, and transport (`rest` | `mcp`, tool name):
-   one row per logical operation.
+1. Better Auth verifies the key/cookie, immutable organization and current membership.
+   Admin visibility requires an owner/admin membership and `admin:*` on a key; a
+   read-only key owned by an admin remains an ordinary reader.
+2. A native ClickHouse principal binds organization, user, effective authority,
+   operator embedding capability and SaaS mode. Its credentials derive from the private
+   reader secret. Grants permit only canonical views; the default role has no vector
+   views. Native settings require read-only queries, a five-second deadline, 256 MiB
+   memory and a 32 MiB internal result limit.
+3. Native row policies protect every underlying corpus table and PostgreSQL-engine
+   control metadata table. Fresh direct dictionaries read current publication,
+   redaction generation, visibility, purge and embedding entitlement. A missing or
+   unavailable control source fails closed. Published rows require their current
+   generation and an accepted publication revision. Vector rows additionally require
+   the completed vector epoch whose source equals the published trace revision.
+   Purged content is invisible even to admins; admins retain only a sanitized control
+   skeleton. DEFINER views alone are not a security boundary because native optimizer
+   evaluation may precede their WHERE clause. Derived counts and parent fields use
+   only caller-visible rows. Hidden parents appear null in headers; the explicit tree
+   endpoint marks hidden-node gaps.
+4. A shared PostgreSQL publication lock covers the complete bounded reader callback;
+   publication, visibility and purge mutations use its exclusive counterpart. Compact
+   graph reads use that same transaction. This prevents a single response combining
+   two publication generations without acquiring nested PostgreSQL connections.
+5. The shared official `@clickhouse/parser` guard accepts one SELECT/CTE, canonical
+   relations and reviewed scalar/aggregate functions, at most 20 KB. It serializes the
+   vetted AST without comments. Writes, settings, caller query parameters, external
+   databases, system catalogs, arbitrary table functions, files, networks and output
+   destinations are rejected. Only the named canonical search views accept table
+   parameters. Native grants independently deny underlying tables and mutations.
+6. SQL executes inside `SELECT * FROM (<validated sql>) q LIMIT 501`. Search/get use
+   named typed parameters on the same readers. Rate limits are 300/min for search/get
+   and 60/min for SQL per key. Services write one redacted audit event per operation.
 
 ### 7.6 REST
 
 All under `/api/v1`, zod-validated, OpenAPI at `/api/docs`; application routes anywhere
 under `/api` without complete Zod response schemas and a summary fail boot. The reserved
-`/api/docs` namespace belongs to the native Swagger UI plugin and its schemas, including
-static assets. Params and query schemas are declared on every application route;
+`/api/docs` namespace belongs to the native Scalar Fastify reference plugin and its
+locally served assets. Scalar renders the live `/api/docs/json` document generated from
+the same shared Zod route schemas as the checked-in OpenAPI artifact. It provides operation
+search and request/response schema inspection without handwritten OpenAPI, a CDN bundle,
+or an external request proxy. The public reference contains no tenant records and does
+not bypass authentication when trying API operations. Its browser rendering is checked
+under an explicit Content Security Policy (ADR 0040). Params and query schemas are declared on every application route;
 body schemas are declared for methods that support a body. Fastify rejects body
 validation schemas on GET/HEAD routes. List requests with `format=csv` return the
 same bounded page as JSON, with `X-Next-Cursor` when another page exists. Full filtered
@@ -922,6 +1028,20 @@ cells for null values. Table exports retain duplicate SQL column labels and thei
 | GET             | `/health`, `/ready`                                                    | none              |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET             | `/install.sh`, `/hook/manifest.json`, `/hook/<version>/hook.js` (root) | none              | §6.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET             | `/auth/config` (root)                                                  | none              | enabled login methods                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+
+`GET /billing/config` is public and returns mode/enabled, shared plan prices and record
+allowances, nullable per-1,000 usage rates, checkout availability and an optional Cal.com
+URL. It contains no organization data. `GET /billing` requires active membership and read
+authority. It returns plan, billing period, records_used, included_records, remaining,
+overage_records, embedding_messages_used, estimated usage charges, pending/reconciliation
+meter counts and owner action availability. Non-SaaS returns `unmetered` with null allowance.
+Owner-cookie `POST /billing/checkout` accepts `{plan: "pro" | "pro_embeddings"}`;
+`POST /billing/portal` accepts an empty object. Both return `{url}` on credential-free HTTPS
+`checkout.stripe.com` or `billing.stripe.com`. A completed native in-place plan update
+returns `{url: null}` and the client refetches authoritative state; it never grants access
+from a browser return. Organization references, prices and fixed return URLs are server-owned.
+Missing complete Stripe price/meter/rate configuration disables checkout with typed
+`503 BILLING_UNAVAILABLE`. See §9.6.
 
 `GET /sessions/:id/reuse` requires read permission and accepts `direction=by|from`
 (default `by`), `limit` (default 50/max 100), an opaque cursor, optional `reader_user_id`,
@@ -963,6 +1083,11 @@ keyset cursors bind caller, filters, ordering and snapshot time, use bounded sor
 and stable identities, and survive removal of the preceding page's row. Reuse continues
 to use the same keyset implementation as session detail. ADR 0029 records these choices.
 
+Key responses include `user_email` and `user_name` for the issuing identity, joined only
+through the current organization's key attribution. Both are null if that identity no
+longer exists. `user_id` remains the stable identity binding and filter; the dashboard
+shows the email/name as the owner label.
+
 Admin (`/api/v1/admin`; current organization owner/admin + key `admin:*`, or organization admin cookie session):
 `/users` (list, add emails, role, suspend/remove), `/keys` (list, revoke), `/sessions/:id/visibility`,
 `/sessions/:id/purge`, `/audit`, `/redaction/policies` (CRUD), `/redaction/test`,
@@ -971,6 +1096,15 @@ Admin (`/api/v1/admin`; current organization owner/admin + key `admin:*`, or org
 `/status` (current organization queue/backlog/spend snapshots), and `/metrics/:group`
 (historical §10 metric groups with the shared `filters: {date_from, date_to, repo_name?, metric?}`
 and server pagination/sort/CSV fields).
+`GET /admin/domains` returns `{enabled,items,cursor}` for the current organization's
+native Google bindings. Query fields are `limit` (default 50/max 100), opaque `cursor`,
+literal domain substring, `verified=true|false`, `sort=domain|verified`, and `order=asc|desc`.
+`POST /admin/domains` and `POST /admin/domains/verify` accept `{domain}` and return
+`{organization_id,domain,provider_id,verified,dns_record}`. The nullable DNS record contains
+native TXT `type`, `name`, and `value`. Registration retries recover the pending proof;
+verification retries preserve the same binding. Owner/admin cookies are required for writes. Enrollment domains have labels of at most
+63 characters and at most 202 characters total, leaving room for the native TXT proof
+label within the DNS name limit.
 Rescan progress is organization-scoped and admin-only: `{job_id, state, total_sessions, processed_sessions, redaction_count, error}`. State is `queued`, `running`, `completed`, or `failed`; error is nullable, redacted safe text. Progress reads are audited. The persisted run ledger and per-session completion receipts survive retries (§9.5, ADR 0016).
 `/users` operates on organization membership, never another organization's membership
 or the global identity. `/users` accepts manually entered email addresses and a role,
@@ -996,7 +1130,8 @@ depends on re-listing.
 
 ### 8.2 Catalog: static, permission-filtered
 
-User tools (`sessions:read`): `search`, `get`, `sql`, exactly as §7.2–7.4, schemas
+User tools (`sessions:read`): `search`, `get`, `sql`, exactly as §7.2–7.4, plus personal
+`dashboard_list`, `dashboard_save` and `dashboard_delete` (§10). Schemas
 generated from the shared zod. If the key's installation has `toolsEnabled = false`
 (staged rollout, §10), `tools/list` is empty for that key and calls return a clear
 error; ingest is unaffected. Admin tools, listed only when the caller has effective
@@ -1014,9 +1149,11 @@ latest installation; this is not an immutable per-device key binding. Replaying 
 batch does not replace the latest receipt. Every list and call refreshes this decision,
 so cached tool catalogs cannot bypass a disabled installation.
 
-Every description opens with one governing sentence:
+Search, get, SQL and administrative history descriptions open with this governing sentence:
 _"Only use this when the user asks about previous sessions or prior work; where possible
 run multi-step investigation in a subagent that returns only findings with session ids."_
+
+Dashboard profile tools instead open with a request to view or manage the caller's dashboard profiles. They retain the same current-organization authorization.
 
 ### 8.3 Repository snippet (the one guidance mechanism)
 
@@ -1043,23 +1180,24 @@ from the hooks in `~/.claude/settings.json`; Codex and Gemini use their hook con
 
 ### 9.1 Login
 
-Better Auth (Prisma adapter; `admin`, `organization`, `apiKey`, `genericOAuth`, `openAPI`). Configure
+Better Auth (Prisma adapter; `admin`, `organization`, `apiKey`, `genericOAuth`, `sso`, `openAPI`). Configure
 email/password and/or one social or OIDC provider (Appendix B); the server refuses to
 boot with none. Optional `AUTH_ALLOWED_EMAIL_DOMAINS`. `AUTH_SIGNUP_MODE` `invite`
 (default) | `open` | `closed`. **Bootstrap**: `pnpm db:seed --admin <email>` prints a
 one-time credential; there is no "first matching email becomes admin". Password
 initial setup links are shown to authorized admins in the dashboard for manual delivery.
-There are no invitation emails or outbound email transport.
+Customer/public mode sends no invitation emails. SaaS verification and welcome email
+are defined in §9.6; adding members remains the same email-list workflow.
 
 Bootstrap accepts `--organization <slug>` and `--name <name>` to create an organization
 and its first owner; omitted organization options select the default organization for
 self-hosting. Existing accounts receive membership without resetting their password.
 Bootstrap is idempotent and never exposed as a public route. Public password signup
-is disabled through Better Auth's `emailAndPassword.disableSignUp`; all password
-identities are provisioned by an authorized admin. `AUTH_SIGNUP_MODE` controls verified
+is disabled outside SaaS mode through Better Auth's `emailAndPassword.disableSignUp`;
+customer password identities are provisioned by an authorized admin. `AUTH_SIGNUP_MODE` controls verified
 SSO identity creation (`open`) or admission of pre-provisioned identities (`invite`),
 with `closed` admitting existing identities only. SSO signup grants no organization or
-corpus access by itself. Members can belong to multiple
+corpus access by itself, except for the explicit verified-domain enrollment below. Members can belong to multiple
 organizations. Cookies use a server-validated active organization; API keys always use
 their bound organization and ignore browser selection.
 
@@ -1085,7 +1223,36 @@ API-key calls. Only owners grant owner authority; no operation can remove, suspe
 demote the last active owner. Better Auth owns identity and membership lifecycle;
 services enforce these constraints and audit them. Operators configure email/password
 and/or the existing instance login provider; SCIM, group sync, and per-organization
-identity-provider administration are outside this spec.
+identity-provider configuration beyond native Google domain access is outside this spec.
+
+**Verified-domain enrollment.** Organization owners and administrators manage Google
+SSO domain access in Users: list bindings, register an exact domain, copy the native DNS
+TXT proof, and verify its current status. The operator CLI calls the same audited service.
+Better Auth owns registration, DNS ownership verification, and ordinary `member`
+provisioning; Google continues to use `/auth/callback/google`. Writes require a real
+owner/admin cookie and current organization authority. No synthetic sessions or manual
+provider-table inserts are used. Lists are bounded, filtered, sortable and paginated.
+
+A verified native domain binding permits matching Google-verified identities under
+`AUTH_SIGNUP_MODE=invite` as well as `open`. A nonempty operator email-domain allowlist
+still restricts admission; `closed` disables new identities and domain provisioning.
+Unverified, wrong-domain and ambiguous multi-organization matches never gain access.
+Existing roles are unchanged, and a password email suffix alone grants no membership.
+The Users form explains Google login and DNS verification separately from adding people
+by explicit email. See ADR 0042.
+
+Removing a member retains a native membership marked `removedAt` and suspended, so a
+later matching Google login cannot silently restore access. Removed memberships are
+absent from application lists, organization selection and member denominators, and
+confer no cookie, key or worker authority. They remain visible to the SSO plugin's
+existing-member check. Explicit authorized add-people can restore access with the
+requested permitted role; ordinary login cannot. Suspension and restoration retain their
+existing key-authority semantics. Better Auth models and additional fields are generated,
+never hand-edited. See ADR 0035.
+
+Removing an unclaimed identity invalidates its outstanding initial password-setup
+tokens before it can join another organization. It does not invalidate global recovery
+tokens for established identities.
 
 ### 9.2 Authorization
 
@@ -1123,34 +1290,163 @@ The composite installation foreign key prevents cross-organization attribution.
 
 helmet, CORS to `PUBLIC_URL`, rate limits (ingest 600/min per key; read 300; `sql` 60;
 MCP 120; auth 20/min per IP), secure cookies, CSRF origin checks, body limits, versioned
-immutable client artifacts, optional AWS WAF in prod. `ac_` prefix for secret scanners.
+immutable client artifacts, optional AWS WAF in prod. `ac_` prefix for secret scanners. The exact
+`POST /auth/stripe/webhook` endpoint accepts server-to-server delivery without a browser
+Origin; the official Stripe signature over the untouched raw body remains mandatory.
+Browser checkout and portal mutations retain the normal Origin check. Request logs omit
+query values and native password-reset token path segments.
 
 ### 9.5 Private and purge
 
 **Private**: hidden from members everywhere (lists, search, SQL, `get`, MCP), including
 from the uploader's own key; organization-admin-only; reversible. Named "admin-only" in the UI.
-**Purge**: within one transaction, serialized against ingest for the session: delete
-RawRecord, Message, SessionFile, MessageChunk, SessionEmbedding, RedactionEvent; null
-`title`, `firstPrompt`, `observedCommits`, `observedDiffStat`, `branch`; clear
-`normalizerContext`, `messageCount`, `toolCallCount`, `inputTokens`, `outputTokens`, and
-`toolsUsed`; set tombstone. The response manifest lists exact deleted-row counts,
-`nulled_fields`, `reset_fields`, and retained entity kinds;
-subsequent appends → `409`; all workers check the tombstone. Kept: Session identity row,
-IngestBatch, AuditEvent (whose `detail` is redacted text). Backups are outside the
+**Purge**: one control transaction serializes against ingest and readers, installs the
+irreversible tombstone, clears normalization contexts and records a durable cleanup
+outbox and audit. Native row policies hide the corpus immediately, including from
+admins; admin session views expose only the retained identity skeleton. Subsequent
+appends return `409`, and all workers check the tombstone.
+
+The response reports `cleanup: queued` until physical ClickHouse deletion is complete.
+Native deleted-row counts are nullable while pending. The worker captures an exact
+manifest before deletion, removes raw records/messages/files/vectors across every
+revision and generation, and records completion. Failed deletion stays hidden and
+retries with the original manifest; repeated purge requests retain its counts. Compact
+identity, admission/usage ledgers, receipts and redacted audit survive. PostgreSQL
+redaction-event rows are deleted in the initial transaction. Backups are outside the
 manifest and documented as such.
 
 ---
+
+### 9.6 SaaS signup, usage and billing
+
+`INSTANCE_MODE=saas` enables the hosted product in the same application. Customer remains
+the default and public mode adds only public discovery. SaaS uses the same organization,
+permission, ingest, search and audit services. It does not relax tenant isolation.
+
+**Signup.** SaaS permits public email/password and configured Google/OIDC signup through
+Better Auth. A password signup must verify its email using Better Auth's native expiring
+verification link before creating an organization or accessing a corpus. SaaS corpus authority
+requires current email verification for both cookies and keys, including identities
+provisioned before SaaS was enabled. Native implicit account linking requires the local
+email to be verified in SaaS, preventing an unverified public password preclaim from
+inheriting a later Google identity. Customer linking remains unchanged. A trusted
+provider's verified email satisfies verification. Existing memberships and provisioned
+identities retain the §9.1 protection against account takeover. A verified user without
+an eligible organization can submit its name/slug to create one organization and become
+its owner through Better Auth's organization API. Onboarding is serialized and idempotent;
+retries or simultaneous initial requests cannot create additional organizations. An existing
+eligible membership, including verified-domain enrollment, goes to the organization picker
+or dashboard instead. SaaS users with verified native cookie sessions can explicitly create
+another organization from that picker. Each new organization has its own owner membership,
+keys, sessions and billing allowance. `POST /me/organizations` uses the same name/slug and
+result schemas as onboarding; retrying an existing slug owned by the caller returns the
+same organization without renaming it. Other slug collisions return 409. Removed or
+suspended memberships cannot be restored through this action. Customer/public organization
+creation remains operator-only. See ADR 0043. SaaS public
+signup does not require a global domain allowlist; an explicit native verified-domain
+binding is the allow rule for optional domain enrollment. Suspended/removed memberships
+are never restored by signup or login.
+
+**Email.** SaaS native verification/reset hooks use a configured email transport. Emailed
+SaaS password recovery is an explicit exception to §9.1 operator-only global recovery;
+customer recovery remains manual. Welcome email
+is queued durably after verified signup and successful onboarding, once per identity,
+with the application URL and setup guidance. Delivery failure retries independently and
+cannot undo an account or grant membership. A persisted delivery marker plus pg-boss job
+idempotency prevents duplicate enqueue; an ambiguous provider response may retry the same
+provider idempotency key when supported. Customer member access never depends on outbound
+email. Local verification uses an SMTP capture server; production uses a verified sender
+through a standard mail/SES library. Real email delivery requires configured credentials
+and a verified sender. Test sinks are identified as local delivery, never live delivery.
+
+**Plans and units.** Customer/public deployments do not enforce SaaS allowances or send
+billing usage. SaaS Free includes 1,000 newly accepted raw records per organization per
+UTC calendar month. Pro costs $100/month and includes 10,000 records per native Stripe
+billing period, followed by a configured USD rate per 1,000 records. Optional embeddings
+add $50/month and a separate configured rate per 1,000 successfully indexed messages.
+The native plans have distinct primary prices (`pro` $100 and `pro_embeddings` $150).
+All allowances and usage rates come from shared validated operator configuration; absent
+meter prices/rates disable online checkout. Local demonstration rates are labeled as such.
+
+A capture unit is a newly persisted `RawRecord.id`, after the existing harness-neutral
+source identity/deduplication algorithm. Retries of the same accepted source key do not
+count again. A newly accepted version of a rewritten native document is a new record;
+resumes and uploads count only their new records. No separate billing parser interprets
+native payloads. Records present before SaaS admission is enabled are grandfathered.
+A message usage unit is a `Message.id` whose complete vector chunks were first successfully
+indexed. Query vectors, session-summary vectors, chunks, retries and repeat indexing of
+that ID are not additional message units. Stale, failed or discarded embeddings do not count.
+Immutable admission ledgers survive transcript purge without retaining transcript text.
+
+Free capture admission and its count check share the ingest transaction and organization
+lock. A batch that would exceed the free allowance returns typed HTTP
+`402 USAGE_LIMIT_REACHED` and commits no records, usage or partial projection. The shim
+retains its exact pending batch and acknowledged cursor for retry after upgrade/month
+reset. Duplicate-only uploads, lifecycle receipts and authorized reads remain available.
+Pro capture has metered overage instead of a hard cap. Paid records use the authoritative
+subscription's paid period; upgrading does not retroactively bill Free records.
+
+Paid admissions atomically append a durable Stripe meter outbox event. The official SDK
+sends immutable customer/event/value/timestamp/identifier payloads, serialized per customer
+and meter. Each attempt reuses the same identifier and idempotency key. Stripe guarantees
+identifier uniqueness for at least 24 hours, so an ambiguous event is never blindly retried
+after a conservative 23-hour window from its first dispatch. It enters a visible
+`reconciliation_required` state for operator investigation. Events older than Stripe's
+35-day timestamp window also require reconciliation. Pending and reconciliation counts
+are visible in organization usage and operational status; no response timeout is treated
+as proof of delivery. See ADR 0046.
+
+**Stripe.** Better Auth's native Stripe plugin owns organization customers, subscription
+models and checkout/portal/webhook lifecycle. Only a current, active organization owner
+using a browser session may create checkout or portal sessions. References, configured
+Pro price and return URLs come from the server, not arbitrary client values. Every
+active member can read organization usage. Pro entitlement requires a verified Stripe
+subscription matching the configured Pro price in `active` status and its current paid period; cancellation at period end
+retains entitlement through that period. Incomplete, past-due, unpaid, expired or canceled
+subscriptions do not grant Pro. No paid trial is defined. A checkout return URL never
+grants entitlement. Signed raw-body webhooks update native subscription state idempotently;
+failed persistence or provider reconciliation must be retryable. Any required correction
+to the native plugin is documented and tested, not replaced by a custom billing engine. Existing-subscription
+plan changes project the actual returned Stripe status and period through the same native
+field mapper used by webhook updates; a returned `past_due` subscription never retains
+previously active entitlement. Entitlement commits take the organization publication lock
+after remote SDK work, so one bounded trace read cannot straddle a paid-state change.
+
+The usage API/page shows plan, native paid-period or Free UTC-month boundaries, records,
+included and overage records, successfully indexed messages, estimated usage charges and
+meter delivery status. Owner actions open Stripe Checkout, select the optional embeddings
+plan or open its customer portal. The public billing
+configuration contains only mode, plan allowances/pricing, checkout availability and an
+optional configured Cal.com URL. No tenant usage enters public configuration/discovery.
+Absent Stripe credentials disable checkout with a clear setup message; local protocol
+tests cannot be represented as live Stripe validation. Test-mode Stripe is used for
+end-to-end billing validation when test credentials are supplied; no real charges are made.
+
+**Public SaaS UI.** Landing pricing shows Free, $100/month Pro and Enterprise with a demo
+CTA. Primary calls to action lead to `/signup`; authenticated users can reach `/usage`.
+The operator supplies an HTTPS Cal.com booking URL; an accessible responsive embed and
+open-calendar fallback are shown for enterprise/demo actions. Enterprise describes white-glove
+on-premises or single-tenant deployment and identity integration services; it does not claim
+that an unimplemented LDAP connector already exists. Missing
+calendar configuration shows an honest unavailable state. The footer says “Made in San
+Francisco.” A SOC 2 logo or attestation claim is only published after the operator supplies
+a completed report and approved wording; no certification is implied by the application.
+Signup, verification, onboarding, quota/upgrade, portal and demo flows meet §16's browser,
+mobile, theme and accessibility requirements. Customer mode hides SaaS pricing and billing.
+
+See ADR 0038. Deployment is still deferred; a local SaaS demo is a separate isolated
+runtime using private configuration, native auth and real supported-harness sessions.
 
 ## 10. Dashboard
 
 Screens: Login, password setup, organization switcher (only memberships), and a
 no-organization state; **Home**, the first screen after login for every member, not only
-admins: the organization's weekly reuse rate (the north star, §10 Status) with its 8-week
-trend and cross-user variant, "Reused this week" (sessions read by other sessions, with
-who read them and when), "Your impact" (sessions you ran that later sessions read, and
-prior sessions your agents reused), and "Gaps" (repos with sessions but no reuse, and this
-week's zero-result searches, visible only to their author) so people can see what the corpus is missing;
-repository gaps mean no outgoing reuse, consistent with the weekly reuse numerator.
+admins: the selected built-in or personal dashboard profile. The built-in preset
+contains the four current-week KPIs described below. The underlying Home API retains
+eight-week reuse trends, cross-user reuse, personal impact and bounded reuse/gap feeds
+for authorized consumers. Repository gaps mean no outgoing reuse; zero-result searches
+are visible only to their author. These feeds do not add panels outside the selected
+dashboard profile.
 Sessions (search box + filter chips mirroring §7.2, result blocks exactly
 as `search` returns them, and a list view whose columns are title, harness and version,
 model, repo and branch, user, host, started, duration, messages, tool calls, observed
@@ -1162,11 +1458,22 @@ role, kind, tool name, timestamp, and the model when it changes, with token coun
 raw record id on hover; collapsible tool blocks and thinking toggle; a **Reused by** panel listing every later session that read this one through `get`
 (session, user, harness, when) and a "Reused from" list of the sessions this one read; a Raw tab paging
 the redacted raw records; live tail over SSE with 5 s polling fallback while `ACTIVE`, parent and children as a linked list plus a tree view
-fed by `/sessions/:id/tree`: the current session highlighted, subagents nested under
-their parent with agent type and status, forks and spawned sessions labeled, every node
-a link, hidden nodes shown as a gap marker for admins only; deep links `/s/<id>#<seq>`;
-"Similar sessions" when embeddings are on); SQL page (editor with schema sidebar from
-`/schema`, results grid, CSV export); My keys (create shows plaintext once; install
+fed by `/sessions/:id/tree`: an expandable session and message outline, with the current
+session highlighted, subagents nested under their parent with agent type and status,
+and forks and spawned sessions labeled. Expanding a visible session loads a bounded
+page of its messages from `get`; earlier/later controls retain its response cursors.
+Messages stay in source order, with results nested only under an unambiguous matching
+recorded tool-use ID. Messages link to `/s/<id>#<seq>` and can expand their content.
+A child session attaches to its recorded parent session; the UI never invents a spawning
+message link. Hidden nodes remain gap markers for admins only and never load messages.
+Repository, branch, start SHA and end SHA are visible in the transcript header; validated
+GitHub, GitLab and Bitbucket Cloud repositories have clickable branch/commit refs, while
+other hosts retain a safe repository link and copyable values (ADR 0041). Missing Git
+observations display an unavailable state; deep links `/s/<id>#<seq>`;
+"Similar sessions" when embeddings are on); SQL page (full-width editor, an in-flow schema browser from `/schema`, and Copy schema
+that copies the complete canonical response including types and descriptions for sharing
+with an LLM; responsive results and CSV export); Installation (create an ingest/read key,
+copy the served installer command, and check actual captured sessions); My keys (create shows plaintext once; install
 command with key inlined); Admin: Users, Keys, Audit (filters, CSV), Moderation
 (visibility, purge with reason), Redaction (policies, test, rescan progress), Status
 (ingest per day, redaction hits, failures, queue depth, embedding backlog and spend,
@@ -1178,20 +1485,39 @@ selection prompt when memberships exist. Members who open an admin URL see an ac
 message before any admin controls render or admin data requests run; server authority
 checks remain mandatory. Keys show their bound organization.
 
-**Status page: is it working?** The page opens with one headline number, the **north
-star**, then three metric groups. Everything is scoped to the active organization, has a
-date range and a repo filter, and is computed by SQL views `api_ro.metrics_*` over
-existing tables.
+**Page purposes.** Home opens with four concise current-week counts/rates: captured
+sessions, sessions using AgentCommons search, sessions using prior work, and reuse rate.
+These belong to the built-in preset. Selecting a personal profile replaces the entire
+dashboard content; Home has no separate activity feed or extra metric panels.
+Status covers operational health only: capture failures, redaction, queues, embedding
+work and spend. It does not duplicate Home adoption/reuse/outcome panels. Historical
+health has date/repository filters; current queue/spend snapshots remain organization-wide.
+The existing Usage, Outcomes and Reuse metric APIs and SQL views remain available to
+authorized callers and configurable dashboard profiles.
+
+Home's dashboard dropdown selects the built-in preset or a personal profile scoped
+to the user and organization (ADR0045). Up to20 profiles, each1–12 number/line/bar/table
+widgets, persist through GET/POST `/me/dashboards` and DELETE `/me/dashboards/:id`.
+JSON Forms uses the shared Zod-generated versioned declaration schema; JSON editing
+uses the same validation. Recharts renders responsive charts. Names, SQL and chart
+bindings are redacted before persistence. Updates require the saved revision;
+conflicts return409. Each query executes through the existing guarded `/query` service
+using current caller visibility. Profiles never store query results. Explicit MCP
+`dashboard_list`, `dashboard_save`, and `dashboard_delete` provide the same personal
+preferences capability to read keys, without organization-wide mutation authority.
+The built-in preset is read-only; create, edit, duplicate, delete and reload are
+available in the UI. No custom scripts or arbitrary executable chart declarations.
 
 _North star: weekly reuse rate._ A session is a reuse session if, while it was `ACTIVE`,
 the same installation called `get` on a different session id (attributed via
 `AuditEvent.installationId` and the time window). Reuse rate is reuse sessions divided
-by all sessions in the ISO week. The headline shows the current week, the trailing
-8-week trend, and the cross-user variant (the read session belongs to another member).
+by all sessions in the ISO week. The built-in Home preset shows the current week.
+The trailing eight-week trend and cross-user variant (the read session belongs to
+another member) remain available through the API and SQL for personal profiles.
 It is a rate so it is independent of team size, and it moves only when capture, indexing,
-search, and an agent's judgment all worked. Shown beside it, as guardrails: follow-through
+search, and an agent's judgment all worked. Related guardrail metrics remain available through the authorized metric API: follow-through
 precision (`get` within 10 minutes on an id returned by `search`), zero-result rate, and
-capture coverage. The view is `api_ro.metrics_reuse_weekly (week, sessions,
+capture coverage. The concise default Home does not duplicate these operational/API panels. The view is `api_ro.metrics_reuse_weekly (week, sessions,
 reuse_sessions, cross_user_reuse_sessions, reuse_rate, cross_user_reuse_rate)`, also
 exposed to `sql` so an agent or a spreadsheet can read it.
 
@@ -1199,7 +1525,8 @@ The same concept exists at two finer grains, from the same audit data: per sessi
 `api_ro.session_reuse (session_id, reuse_count, unique_readers, cross_user_reuse_count,
 last_reused_at)`, surfaced as the "Reused by" panel and list column and as `reuse_count`
 in the `sessions` view and the `get` header; per member, `api_ro.member_impact (user_id,
-sessions_reused_by_others, distinct_readers, reuses_made)`, surfaced on Home. Reuse is
+sessions_reused_by_others, distinct_readers, reuses_made)`, available through the API
+and SQL for personal profiles. Reuse is
 recorded only from `get` reads made through MCP or REST by a key whose installation had
 an active session at the time; dashboard views by humans do not count.
 
@@ -1215,9 +1542,9 @@ an active session at the time; dashboard views by humans do not count.
 - _Outcomes_, always split by `installations.tools_enabled` so a staged rollout is a
   controlled comparison: tool calls, tokens, and duration per session by repo;
   near-duplicate sessions (same repo, different users, within 30 days, first prompts with
-  `pg_trgm` `similarity() > 0.6`, or cosine when embeddings are on); re-run loops
+  native ClickHouse UTF-8 three-gram similarity `1-ngramDistanceUTF8() > 0.6`, or cosine when embeddings are on); re-run loops
   (repeated test or build commands with failing output in one session); sessions ending
-  with observed commits. The page states that outcome numbers are comparisons, not
+  with observed commits. Outcome presentations state that numbers are comparisons, not
   causation, and are meaningful only with both groups populated.
 
 **Metric contracts and interpretation.** `GET /api/v1/admin/metrics/:group` accepts
@@ -1227,6 +1554,32 @@ UTC bounds. Rows carry a typed metric name, nullable dimensions, value, numerato
 denominator, unit and explicit truncated metadata fields; an empty denominator gives a
 null ratio. Live queue/backlog/current-UTC-day spend remain clearly labeled organization
 snapshots on `/admin/status`, rather than fabricated historical or per-repo allocations.
+
+**Transcript search adoption.** Home shows a current-UTC-week search-adoption summary
+for every member. The authorized Usage metric API exposes the same measures over its
+selected date/repo window, including sortable rows and CSV. The common source is the caller-visible,
+nonpurged `api_ro.metrics_search_sessions` relation, one row per captured session:
+`session_id`, `started_at`, `repo_name`, `harness`, `user_id`,
+`agentcommons_search_calls`, `repeat_agentcommons_search_calls`, and
+`subsequent_other_search_calls`. Selection uses the session's start time. Home returns
+the selected session count, sessions with at least one AgentCommons search, the three
+call totals, and the resulting session-adoption ratio (null for an empty denominator).
+The Usage API uses metric names `agentcommons_search_sessions`, `agentcommons_search_rate`,
+`agentcommons_search_calls`, `repeat_agentcommons_search_calls`, and
+`subsequent_other_search_calls`.
+
+Only actual captured typed tool invocations count. A shared classification reads exact
+native tool identities verified in live fixtures; tool results, prose mentioning search,
+advertised tool lists and arbitrary shell/program text are not searches. Native invocation
+IDs deduplicate repeated observations within a session; a message identity is the fallback
+when no invocation ID exists. Repeat AgentCommons searches are calls after its first call
+in that session. Subsequent other searches are recognized code/web-search invocations
+after that first AgentCommons call in canonical source order. Calls before it are excluded.
+The active projected branch is counted, so retries, rewritten documents, forks, rescan,
+privacy changes and purge cannot accumulate obsolete observations. Counts describe
+attempted calls, including failures; they do not assert a successful response, saved time
+or causation. The UI states the captured-tool coverage and keeps server-audit usage
+measures available separately. See ADR 0034.
 
 Reuse has one canonical `api_ro.reuse_edges` relation, shared by weekly, session and member
 aggregates. Both reading and read sessions must be caller-visible and nonpurged. Only
@@ -1244,7 +1597,9 @@ identity is invented. Distinct reading sessions determine `reuse_count`; distinc
 determine `unique_readers`. New search/get audits put ordered returned database UUIDs in
 `resourceIds`; search numeric result metadata is preserved within the 8KB audit budget.
 These server-owned identities/numbers and declared search audit field names are structural;
-all user text and unknown JSON keys remain redacted. The complete `memory_assisted`
+condition keys and their schema-declared field/operator tokens are also structural.
+Condition values, JSON path components, unknown field/operator tokens, all other user
+text and unknown JSON keys remain redacted. The complete `memory_assisted`
 field is admin-only; member SQL returns `NULL` rather than an incomplete count.
 A bounded redacted query preview
 survives detail omission so own zero-result searches do not disappear under large filters.
@@ -1256,7 +1611,7 @@ timestamps have no sample and negative clock-skew samples are counted separately
 median. Coverage is installations per current member, so multiple machines can exceed one.
 Outcome cohorts use current `tools_enabled`, which regroups historical sessions on toggle.
 Near-duplicate candidates are visible sessions in the same repo within 30 days of each
-selected source, with trigram or enabled cosine similarity strictly greater than 0.6.
+selected source, with native ClickHouse UTF-8 three-gram or enabled cosine similarity strictly greater than 0.6.
 Re-run loops require repeated commands with paired failing text evidence, not inferred
 exit statuses. ADR 0028 records exact denominators, time fields and limitations.
 
@@ -1268,8 +1623,8 @@ Use one key with ingest and read permissions per machine for this comparison. Sh
 follow their latest ingest installation; unassociated read-only keys remain enabled.
 
 This is an enterprise operations tool, not a consumer app. No command palette, no
-novelty. Quality bar: dense, consistent screens; results under 150 ms for typical default lexical
-queries; every list paginated server-side with TanStack Table sort and filter; CSV
+novelty. Quality bar: dense, consistent screens; warm seeded-data lexical search p95 under 1 second including the audit commit
+(ADR 0047); every list paginated server-side with TanStack Table sort and filter; CSV
 export on every admin table; deep links to `/s/<id>#<seq>` that survive in tickets and
 chat; light and dark; skeletons and honest empty states; keyboard reachable;
 accessibility (focus rings, ARIA on lists, no color-only meaning); every destructive
@@ -1282,19 +1637,29 @@ patterns. The rule covers public-facing text only: the README, dashboard copy, e
 and error messages shown to users. Internal documents (this spec, CLAUDE.md, ADRs) are
 exempt.
 
+The SQL editor uses an established editor library with syntax highlighting, parser diagnostics, and completion from the caller-authorized canonical schema (tables, columns, functions and descriptions). Diagnostics are advisory; the service remains the query authority. Ctrl/Command+Enter runs, Ctrl+Space opens suggestions, and Tab leaves the editor. Completion and diagnostics must remain usable at320/390px without horizontal document expansion.
+
 ### 10.1 Public site and discovery
+
+Public blog content lives in validated Markdown files. Frontmatter supplies slug, title, summary and publication date. One generated catalog supplies the index, post routes, prerendered HTML, canonical/OG/BlogPosting metadata, sitemap and LLM discovery content. Adding a Markdown post requires no route-list edit. Customer instances return404 for blog routes and omit blog navigation and discovery. Article prose lives in Markdown; interface labels remain in copy.ts. Native runtime SSR uses the actual instance mode for identical markup and hydration configuration.
 
 The application serves a public landing page at `/`, login at `/login`, and the
 organization dashboard at `/home`, `/sessions`, and the existing detail/admin paths. The landing
 page and bundled `/docs` product guide use the generated logo and explain cross-tool session history, prior-work reuse,
 and its relationship to versioned CLAUDE.md, AGENTS.md, and skills. Its calls to action
-link to working login and documentation routes. Product claims match verified behavior;
+link to working login and documentation routes. An authenticated landing visit remains on the public page. It resolves
+the native session and offers Dashboard or Continue setup as its primary action; public navigation
+shows Open dashboard or Continue setup instead of Create account. Anonymous calls to
+action offer signup only in SaaS mode. Product claims match verified behavior;
 illustrative examples are labeled. All visible copy lives in copy.ts.
 
 Landing and dashboard are responsive at mobile and desktop sizes, including forms,
 admin tables, transcript controls, touch targets, and navigation. Both themes meet the
 existing accessibility and browser verification bar. No horizontal viewport overflow;
-wide data grids may scroll within labeled containers.
+tables fit the viewport with a small selectable summary of fields, mobile labeled
+records, and an accessible full-record dialog. Actions remain visible without horizontal
+scrolling. CSV exports include all data fields, independently of the summary selection.
+No global overflow clipping may hide an oversized layout.
 
 The landing page is rendered to static HTML at build time so its content is available
 without JavaScript. Runtime PUBLIC_URL supplies canonical URLs, title/description,
@@ -1304,9 +1669,9 @@ usage claims. Authentication and dashboard routes always send noindex headers/me
 `INSTANCE_MODE=customer` is the default. Customer responses send
 `X-Robots-Tag: noindex, nofollow, noarchive`, the HTML has matching robots metadata,
 `robots.txt` disallows all crawling, and sitemap/LLM-discovery URLs return 404.
-`INSTANCE_MODE=public` enables a sitemap containing only `/` and `/docs`, a robots file
+`INSTANCE_MODE=public` or `saas` enables a sitemap containing `/`, `/docs`, `/blog` and published Markdown posts, a robots file
 that disallows auth/API/dashboard paths, and generated `llms.txt` plus `llms-full.txt`
-from public documentation and static capability contracts. No database query or tenant
+from public documentation, published Markdown blog content and static capability contracts. No database query or tenant
 record supplies discovery content. Generation and link validity are checked in tests;
 customer/public behavior is verified with real HTTP and browser requests. These crawler
 hints do not replace authorization. Deployment of customer instances remains deferred
@@ -1322,17 +1687,37 @@ and search input schema unchanged. Administrative status fields and exact purge 
 counts retain their stable typed schemas, including zero/inactive metrics or old derived
 vectors retained from an earlier enabled period; disabling does not make cleanup counts
 inaccurate. No similarity capability or embedding-specific tool description is advertised.
-Auth configuration returns `features: []`; enabled
-instances include `similar_sessions`. The generated build-time OpenAPI artifact includes
-the optional route for the dashboard client; live Swagger lists only active routes.
+Auth configuration returns `features: []` without an effectively enabled organization;
+effectively enabled organizations include `similar_sessions`. The generated build-time OpenAPI artifact includes
+the optional route for the dashboard client; the live generated OpenAPI reference lists only active routes.
 
-When enabled, `js-tiktoken` (`cl100k_base`) chunks the `searchText` of searchable messages
+Organization administrators additionally control a persisted `embeddingsEnabled` setting,
+default false. Effective use requires both this opt-in and the deployment flag. The setting
+is read from the database for each operation; no process-local settings cache may delay a
+disable. Members inspect `GET /api/v1/organization/embeddings`; effective admins change
+`PATCH /api/v1/organization/embeddings` with `{enabled, reason}`. Changes are org-scoped,
+locked and audited. Enabling requires a configured operator provider and durably schedules
+catch-up for the existing corpus. The response distinguishes stored enablement, configured
+availability and effective use, and reports current indexing progress. A configured provider
+is not a successful live provider health check; the fake provider is explicitly a test adapter.
+
+Disabled organizations use lexical search, cannot use similarity through REST or SQL, and
+have no similarity discovery/configuration feature. MCP schemas remain unchanged. The
+public OpenAPI document still describes deployment capabilities. Queued jobs recheck the
+setting before reserving provider work. A reservation committed before disable is already
+in flight and may finish; its cost stays charged, but completion discards results if the
+settings revision changed, including disable/re-enable. Existing vectors remain hidden and
+can be reused after re-enable when their source fingerprint is current. No database
+transaction spans provider HTTP. See ADR 0044.
+
+When effectively enabled, `js-tiktoken` (`cl100k_base`) chunks the `searchText` of searchable messages
 at approximately 512 tokens with 64 tokens of overlap. Chunk boundaries preserve Unicode
 characters, so overlap may be slightly shorter for multibyte characters. One session
 vector combines title, first prompt (up to 2048 tokens), last assistant text reply (up to
 4096), and sorted file paths (up to 2048), capped at 8191 input tokens. Full searchable
 message text remains represented by the message chunks. `MessageChunk` and
-`SessionEmbedding` use nullable pending vectors and HNSW cosine indexes. V1 fixes
+`SessionEmbedding` store native Float32 arrays and HNSW cosine indexes. Pending
+vectors remain unpublished under a distinct vector epoch and source revision. V1 fixes
 `EMBEDDINGS_DIMENSIONS=1024` and `EMBEDDINGS_MODEL=text-embedding-3-small`; other values
 fail configuration validation. A persisted deployment profile prevents mixing providers,
 models or dimensions. Changing these requires an operator migration that clears derived
@@ -1358,7 +1743,8 @@ input costs before every HTTP attempt. Reserved tokens remain charged after time
 provider failure, or a crash with an uncertain result; retries reserve again. Provider
 usage is recorded separately. Reservation/prepare and completion are separately audited
 transactions; a prepare audit failure prevents dispatch, and a completion audit failure
-rolls back vectors and usage while retaining the already committed reservation. Query
+rolls back vector publication and usage while retaining the already committed reservation
+and any unpublished native vector writes for idempotent retry. Query
 phases retain the initiating caller, followed by the logical search read audit. Status reports reserved tokens and conservative reserved
 cost (OpenAI small: $0.02/million tokens; fake: zero). Index batches take only inputs that
 fit the remaining budget and defer to the next UTC day when no pending input fits. An
@@ -1379,7 +1765,7 @@ and response budgets. There is no mode field. Both candidate sets apply the same
 visibility, organization, and filters. `similar_sessions(session_id,max_rows)` and
 `GET /api/v1/sessions/:id/similar?max_rows=5` return caller-visible neighbors; `max_rows`
 is 1–50. The REST response is `{sessions: SessionHeader[]}`. The database installs the
-invoker function, but its guarded SQL allowlist, discovery entry, and internal vector
+native parameterized view, but its guarded SQL allowlist, discovery entry, and internal vector
 views require the trusted transaction feature flag; off instances expose none of it.
 The dashboard shows “Similar sessions” only when the configuration feature is present.
 Purge removes all message chunks and session vectors. See ADR 0021.
@@ -1416,7 +1802,7 @@ Purge removes all message chunks and session vectors. See ADR 0021.
 - **Gemini rewrites its file**: `json-document` reader; mutation semantics captured before
   the adapter is written (§5.4). **pi branches in place**: stored with `parentId`; the
   transcript view follows the active leaf.
-- **Very long sessions**: all reads are bounded and paged; nothing loads a session whole.
+- **Very long sessions**: user reads are bounded and paged. Background projection preserves native whole-session semantics and may materialize full normalization context; a resource failure keeps the durable outbox pending rather than dropping records.
 - **Not captured**: what the harness never writes to disk; images.
 
 ---
@@ -1427,13 +1813,35 @@ Pulumi TypeScript with `@pulumi/awsx`; stacks `dev`, `prod`; region and hostname
 config. VPC (2 AZ; one NAT in dev), ECR, `awsx.ecs.FargateService` behind
 `awsx.lb.ApplicationLoadBalancer` (idle 120 s), one-off migration task before service
 update, ACM + optional Route53, RDS PostgreSQL 16 (`db.t4g.micro`/`small`, gp3, encrypted,
-7/35-day backups, deletion protection in prod), Secrets Manager (`DATABASE_URL`, two
-reader URLs, `BETTER_AUTH_SECRET`, IdP secrets, embedding keys), CloudWatch logs and
+7/35-day backups, deletion protection in prod), Secrets Manager (`DATABASE_URL`, restricted trace-control and ClickHouse credentials,
+`BETTER_AUTH_SECRET`, IdP secrets, embedding keys, Stripe secrets and
+credential-bearing SMTP URLs), CloudWatch logs and
 alarms, GitHub Actions OIDC (`preview` on PR, `up dev` on main, `prod` behind approval).
 Deployment jobs require repository variable `DEPLOYMENTS_ENABLED=true`; it remains
 unset until local verification and operator confirmation (ADR 0019).
-Self-host without AWS: `docker-compose.yml` runs `api` + `db`. Development:
-`docker-compose.dev.yml` (db only) + `pnpm dev`.
+SaaS mail configuration is explicit: SES requires `sesIdentityArn` for an already verified
+sending identity and `EMAIL_FROM`. Only the API task receives `ses:SendEmail`, scoped to
+that ARN and exact From address; the migration task and non-SES configurations receive
+no mail permission. SMTP credentials remain in Secrets Manager. The image retains the
+runtime dashboard SSR renderer and tracked native Stripe patches, so operator-configured
+plan allowances are reflected in both served HTML and admission without a rebuild.
+The `loadBalancerDnsName` stack output exposes the generated ALB hostname for external
+DNS providers; it is the CNAME target, not a fixed application IP address.
+ClickHouse uses one private `t3.large` host with an encrypted independent 100 GiB gp3
+volume, retained on host replacement and protected in prod. Daily native EBS snapshots
+retain 7/35 copies. Only API/migration tasks reach 8123; the host reaches private RDS
+control views on 5432. This single-host deployment has snapshot recovery, not replicas.
+Both Docker environments and EC2 mount the shared native privacy configuration.
+Bootstrap credential rotation replaces the host using the exact new secret version,
+retains its separate data volume, and reruns the migration gate. Only the opaque secret
+version ID, never its value, appears in those resource dependencies.
+Migration tasks receive the ClickHouse administrator and PostgreSQL control credentials;
+API tasks receive only the ClickHouse writer/access credentials and their reader secret.
+The `clickhouseInstanceId` and `clickhouseVolumeId` outputs identify these operational
+resources. No cloud deployment is required to validate the local replacement.
+Self-host without AWS: `docker-compose.yml` runs `api`, PostgreSQL and ClickHouse.
+Development runs both databases on loopback with `docker-compose.dev.yml`, plus `pnpm dev`.
+`pnpm db:migrate` applies the PostgreSQL control schema before the native ClickHouse schema.
 
 ---
 
@@ -1462,7 +1870,7 @@ the same.
 
 ### 16.1 Requirements
 
-1. **Real database, real artifacts.** Integration tests run on Postgres via
+1. **Real database, real artifacts.** Integration tests run on PostgreSQL and ClickHouse via
    testcontainers; shim tests run the built `dist/hook.js` as child processes with the
    captured hook payloads; installer tests run `install.sh` in clean containers.
 2. **Invariants over ceremony.** Tests target the properties that matter: record
@@ -1474,7 +1882,7 @@ the same.
    visibility through every view, function, and derived column for user and admin
    roles; admin-owned `read`-only keys see public only; guard allowlist against an
    injection corpus incl. `pg_catalog`, `SET`, `set_config`, `SET ROLE`; `api_ro`
-   contract snapshot (columns, types, `security_barrier`).
+   contract checks (columns, native types, grants and underlying row policies).
 3. **Search quality**: `fixtures/search-golden.yaml`, 30 question → session pairs over
    the fixture corpus including identifiers, error strings, long outputs, and failure
    tails; top-3 hit rate must not drop.
@@ -1493,14 +1901,23 @@ the same.
    watermarks and matching projected leaves. An earlier end during a fork or native
    process exit alone does not prove that detached uploads have finished. Full header
    equality remains required after that completion barrier.
+   Each recorded child must also be independently searchable and readable through
+   REST and MCP, with its native parent relation and captured tool-result content.
+   The mobile tree must expand that child's messages. A parent link alone does not
+   prove child capture. pi forks retain native inherited context; they are not labeled
+   as spawned subagents. Gemini's inline delegation stays in its native session.
 6. **Feature flags**: the suite runs with embeddings off (default) and on with `fake`;
    nothing else is matrixed.
-7. **Browser verification**: Playwright over every dashboard route, light/dark, 1440/390:
+7. **Browser verification**: Playwright over every dashboard route, light/dark, 1440/390/320:
    screenshot baselines, `@axe-core/playwright` (no serious/critical), console or network
    errors fail, layout assertions (no horizontal overflow, no clipped transcript rows,
    empty states have copy). Nightly and on dashboard PRs, an agent with browser control
    walks the core flows as a new user and files a findings report; `blocking` findings
    fail the job.
+   For this ClickHouse implementation handoff, the user explicitly owns the external
+   Fable review and prohibits invoking it. Complete the deterministic browser suites
+   and implementation-agent walkthrough first; do not represent an earlier external
+   review as verification of the current branch.
 8. **Done** means all of the above green, plus a dogfooding session on this workstation
    visible in the dashboard and found by an agent, for every supported harness.
 
@@ -1528,12 +1945,12 @@ verification; the whole spec is done when §16.1 item 8 holds.
 2. Core: organization-scoped caller schemas, redaction and policies, normalizers (Claude Code and Codex from the
    captured fixtures; Gemini CLI and pi after capturing their contracts live), links,
    metadata, searchable decision, formatter.
-3. API: Better Auth organizations and email access lists, effective authority, ingest with source identity, services,
+3. API: Better Auth organizations and email access lists, SaaS signup/billing and metered admission (§9.6), effective authority, ingest with source identity, services,
    `/search`, `/sessions/:id`, `/query`, `/schema`, admin endpoints, OpenAPI + client,
    installer artifacts.
 4. Shim + installer: state machine, readers, harness table for all four, pi extension,
    install/doctor/uninstall.
-5. MCP: static registry, three tools, admin tools, snippet.
+5. MCP: static registry, six read-permission tools, admin tools, snippet.
 6. Embeddings behind the flag: chunker, `openai` and `fake` adapters, jobs, budget,
    fusion inside `search`, `similar_sessions`, catch-up.
 7. Dashboard: all screens in §10, browser verification.
@@ -1625,6 +2042,12 @@ All events include `session_id, transcript_path, cwd, hook_event_name, timestamp
 Resume sets `source: "resume"`. The transcript is one rewritten JSON document; existing
 assistant message objects change as tools finish. Headless captures required the privately
 supplied `GEMINI_API_KEY`; the available individual Code Assist login was rejected.
+A 2026-09-08 native `generalist` capture adds thirty same-session hook payloads and
+five shrinking transcript snapshots under `fixtures/transcripts/gemini-cli/delegation/`.
+The child read and parent read are actual tool executions; the child has no separately
+identified transcript. See `docs/gemini-delegation-capture-2026-09-08.md` for the method
+and the distinction between built-in Gemini delegation and pi's optional, non-persisting
+subagent example extension.
 
 **pi 0.73.1** (`fixtures/hooks/pi-0.73.1-cli-events.jsonl` and
 `pi-0.73.1-lifecycle-events.jsonl`). Live extension/SDK captures establish six observed
@@ -1637,37 +2060,83 @@ produce shutdown/start pairs with `reason: "fork"` or `"resume"`; final shutdown
 root package lists the extension source in `pi.extensions`; the one-line installer
 registers its bundled Node-only extension file in pi user settings.
 
+**Native search tool identities, 2026-09-08.** Seven sanitized native transcripts in
+`fixtures/transcripts/tool-identities/` capture Claude `mcp__agentcommons__search`,
+`Grep`, `Glob`, `WebSearch`; Gemini `mcp_agentcommons_search`, `grep_search`, `glob`,
+`google_web_search`; and pi `grep`, `find`. The pi capture extension has no MCP tool
+bridge, so an unqualified third-party `search` name is not AgentCommons evidence.
+Codex stores MCP calls as typed `event_msg/item_completed` `McpToolCall` objects with
+`id,server,tool,arguments,status,result|error` and payload start/completion milliseconds.
+The adapter projects `mcp__<server>__<tool>` from those fields, without parsing `exec`
+source. Its typed `Extension` with `kind:web.search` is projected as `web.search` only
+when `action.type:search`; unknown extensions and web open/find actions remain raw-only.
+Repeated observations of one invocation and overlapping ordinary call/result records
+are deduplicated by native identity. Actual failures retain their error result rather
+than fabricated successful output. See `docs/tool-identity-capture-2026-09-08.md` and
+ADR 0036 for live methods, successful/rejected captures, and projection rules.
+
 ## Appendix B. Configuration
 
-| variable                                                                                                                  | default                                                        | purpose                                                                                           |
-| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `PUBLIC_URL`                                                                                                              | required                                                       | origin for CORS, cookies, callbacks, installer                                                    |
-| `INSTANCE_MODE`                                                                                                           | `customer`                                                     | `public` enables only public-site discovery; `customer` disables indexing and discovery artifacts |
-| `DATABASE_URL`, `DATABASE_READER_USER_URL`, `DATABASE_READER_ADMIN_URL`                                                   | required                                                       | app role and the two reader roles                                                                 |
-| `DATABASE_MIGRATION_URL`                                                                                                  | required for migrations only                                   | privileged migration principal; runtime app never uses it                                         |
-| `BETTER_AUTH_SECRET`                                                                                                      | required                                                       |                                                                                                   |
-| `AUTH_EMAIL_PASSWORD_ENABLED`                                                                                             | `true`                                                         |                                                                                                   |
-| `AUTH_SOCIAL_PROVIDER` + `AUTH_<PROVIDER>_CLIENT_ID/SECRET`                                                               | empty                                                          | one of Better Auth's built-ins                                                                    |
-| `AUTH_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET/SCOPES`                                                                         | empty                                                          | generic OIDC                                                                                      |
-| `AUTH_ALLOWED_EMAIL_DOMAINS`                                                                                              | empty                                                          |                                                                                                   |
-| `AUTH_SIGNUP_MODE`                                                                                                        | `invite`                                                       | `open`, `invite`, `closed`                                                                        |
-| `EMAIL_TRANSPORT`                                                                                                         | `none`                                                         | outbound email is not implemented; setup links are delivered manually                             |
-| `TRUST_PROXY`                                                                                                             | ALB CIDRs                                                      | trusted proxy chain                                                                               |
-| `REDACTION_EXTRA_PATTERNS`                                                                                                | `[]`                                                           | seeds each organization's `RedactionPolicy` rows                                                  |
-| `AUDIT_RETENTION_DAYS`                                                                                                    | `365`                                                          |                                                                                                   |
-| `EMBEDDINGS_ENABLED`, `EMBEDDINGS_PROVIDER`, `EMBEDDINGS_MODEL`, `EMBEDDINGS_DIMENSIONS`, `EMBEDDINGS_DAILY_TOKEN_BUDGET` | `false`, `openai`, `text-embedding-3-small`, `1024`, `5000000` | §11                                                                                               |
-| `SEARCH_CONTEXT_DEFAULT`, `SEARCH_LIMIT_DEFAULT`                                                                          | `1`, `5`                                                       |                                                                                                   |
-| `LOG_LEVEL`                                                                                                               | `info`                                                         |                                                                                                   |
-| client `config.json`: `realtime`, `syncIntervalSeconds`, `syncBytesThreshold`, `disabledPaths`, `installationId`          | `true`, `10`, `65536`, `[]`, generated                         | §6                                                                                                |
+| variable                                                     | default                          | purpose                                                                                                                                        |
+| ------------------------------------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_URL`                                                 | required                         | origin for CORS, cookies, callbacks, installer                                                                                                 |
+| `INSTANCE_MODE`                                              | `customer`                       | `public` enables public-site discovery; `saas` additionally enables §9.6; `customer` disables discovery and billing                            |
+| `FREE_MONTHLY_RECORDS`, `PRO_INCLUDED_RECORDS`               | `1000`, `10000`                  | SaaS Free UTC-month and Pro native-period record allowances; Free nonnegative, Pro positive and at least Free; shared by pricing and admission |
+| `CAL_COM_URL`                                                | empty                            | optional HTTPS Cal.com booking URL for Enterprise inquiries; absence is an explicit unavailable state                                          |
+| `DATABASE_URL`                                               | required                         | PostgreSQL application role; no trace SQL reader roles                                                                                         |
+| `DATABASE_MIGRATION_URL`                                     | required for migrations only     | privileged migration principal; runtime app never uses it                                                                                      |
+| `DATABASE_TRACE_CONTROL_URL`                                 | required for migrations only     | restricted PostgreSQL control-reader URL used by native ClickHouse dictionaries; API does not receive it                                       |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_DATABASE`                      | required, `ac_trace`             | native trace server URL and database                                                                                                           |
+| `CLICKHOUSE_WRITER_USER`, `CLICKHOUSE_WRITER_PASSWORD`       | required                         | trace writer principal; no native user-management authority                                                                                    |
+| `CLICKHOUSE_ACCESS_USER`, `CLICKHOUSE_ACCESS_PASSWORD`       | required                         | restricted provisioner for per-caller native reader principals                                                                                 |
+| `CLICKHOUSE_READER_SECRET`                                   | required, at least 32 characters | key for deriving native reader credentials                                                                                                     |
+| `CLICKHOUSE_MIGRATION_USER`, `CLICKHOUSE_MIGRATION_PASSWORD` | required for migrations only     | native ClickHouse schema/access administrator; excluded from API runtime                                                                       |
+| `CLICKHOUSE_POSTGRES_HOST`, `CLICKHOUSE_POSTGRES_PORT`       | original control URL             | optional reachable control host/port override when the migrator and ClickHouse use different network routes; TLS policy is retained            |
+
+| `BETTER_AUTH_SECRET` | required | |
+| `AUTH_EMAIL_PASSWORD_ENABLED` | `true` | |
+| `AUTH_SOCIAL_PROVIDER` + `AUTH_<PROVIDER>_CLIENT_ID/SECRET` | empty | one of Better Auth's built-ins |
+| `AUTH_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET/SCOPES` | empty | generic OIDC |
+| `AUTH_ALLOWED_EMAIL_DOMAINS` | empty | |
+| `AUTH_SIGNUP_MODE` | `invite` | `open`, `invite`, `closed` |
+| `EMAIL_TRANSPORT` | `none` | `none`, `smtp`, or `ses`; customer setup links remain manual. SMTP uses `SMTP_URL`; SES uses the standard AWS credential chain and `AWS_REGION`. Both require `EMAIL_FROM`. |
+| `TRUST_PROXY` | ALB CIDRs | trusted proxy chain |
+| `REDACTION_EXTRA_PATTERNS` | `[]` | seeds each organization's `RedactionPolicy` rows |
+| `AUDIT_RETENTION_DAYS` | `365` | |
+| `EMBEDDINGS_ENABLED`, `EMBEDDINGS_PROVIDER`, `EMBEDDINGS_MODEL`, `EMBEDDINGS_DIMENSIONS`, `EMBEDDINGS_DAILY_TOKEN_BUDGET` | `false`, `openai`, `text-embedding-3-small`, `1024`, `5000000` | §11 |
+| `SEARCH_CONTEXT_DEFAULT`, `SEARCH_LIMIT_DEFAULT` | `1`, `5` | |
+| `LOG_LEVEL` | `info` | |
+| client `config.json`: `realtime`, `syncIntervalSeconds`, `syncBytesThreshold`, `disabledPaths`, `installationId` | `true`, `10`, `65536`, `[]`, generated | §6 |
+
+For verified-domain enrollment, configure `AUTH_SOCIAL_PROVIDER=google`, its client
+credentials and `AUTH_SIGNUP_MODE=invite` or `open`. A nonempty
+`AUTH_ALLOWED_EMAIL_DOMAINS` must include the exact domain. Organization administrators
+can also register and verify the same DNS proof in Users. Bootstrap the organization owner and sign in normally.
+Save that real session's Cookie header value as one line in a file owned by the
+operator with mode `0600`. It is a credential; do not put it in command arguments,
+source control, or logs.
+
+```sh
+pnpm db:domain register --organization goodhart-labs --domain goodhartlabs.com --cookie-file /private/owner.cookie
+pnpm db:domain verify --organization goodhart-labs --domain goodhartlabs.com --cookie-file /private/owner.cookie
+```
+
+Registration returns `dns_record` with the native TXT `name` and `value`. Add that
+record before verification. Repeating registration reuses an active verification
+token; repeating successful verification is a no-op with an audit event. A verified
+binding returns `verified:true` and `dns_record:null`. No provider management route is
+publicly exposed. The organization slug selects the target; a native owner/admin
+session for another organization cannot register or verify its domain.
 
 ## Appendix C. What the agent sees (regenerated by contract tests)
 
-Generated from the real PostgreSQL and official MCP SDK contract fixture at
+Generated from the real PostgreSQL and ClickHouse and official MCP SDK contract fixture at
 `fixtures/contracts/mcp.json`. Regenerate with
 `UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts`.
 Identifiers, receipt timestamps, and SQL timings are normalized for reproducibility.
 
-Read keys list `search`, `get`, and `sql`; effective admin keys also list
+Read keys list `search`, `get`, `sql`, `dashboard_list`, `dashboard_save`, and
+`dashboard_delete`; effective admin keys also list
 `set_visibility`, `purge`, `audit`, and `status`.
 
 `tools/list` input contracts (output schemas are present in the fixture):
@@ -1675,8 +2144,130 @@ Read keys list `search`, `get`, and `sql`; effective admin keys also list
 ```json
 [
   {
+    "name": "dashboard_list",
+    "description": "Use this when the user asks to view or manage their dashboard profiles. List your personal dashboard profiles in the current organization and the versioned declaration schema.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dashboard_save",
+    "description": "Use this when the user asks to view or manage their dashboard profiles. Create or update your personal dashboard with number, line, bar or table widgets over guarded SELECT queries. Use id and revision to update an existing profile.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "definition": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "number",
+              "const": 1
+            },
+            "widgets": {
+              "minItems": 1,
+              "maxItems": 12,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,39}$"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "sql": {
+                    "type": "string"
+                  },
+                  "display": {
+                    "type": "string",
+                    "enum": ["number", "line", "bar", "table"]
+                  },
+                  "x": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "y": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  "unit": {
+                    "type": "string",
+                    "enum": ["count", "ratio", "seconds", "tokens", "usd"]
+                  }
+                },
+                "required": ["id", "title", "sql", "display", "unit"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["version", "widgets"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["name", "definition"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dashboard_delete",
+    "description": "Use this when the user asks to view or manage their dashboard profiles. Delete one of your personal dashboards in the current organization.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": ["id"],
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "search",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Search previous coding-agent messages using PostgreSQL websearch syntax and structured filters. Results contain message windows grouped by session; use session_id and seq with get or sql.",
+    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results contain message windows grouped by session; use session_id and seq with get or sql.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1838,6 +2429,192 @@ Read keys list `search`, `get`, and `sql`; effective admin keys also list
                   }
                 }
               ]
+            },
+            "where": {
+              "minItems": 1,
+              "maxItems": 10,
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "field": {
+                        "type": "string",
+                        "enum": [
+                          "tool_name",
+                          "tool_use_id",
+                          "content",
+                          "role",
+                          "kind",
+                          "model",
+                          "harness",
+                          "title",
+                          "repo_name",
+                          "branch",
+                          "user_email",
+                          "status",
+                          "tool_input"
+                        ]
+                      },
+                      "path": {
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256
+                        }
+                      },
+                      "op": {
+                        "type": "string",
+                        "const": "eq"
+                      },
+                      "value": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "boolean"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": ["field", "op", "value"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "field": {
+                        "type": "string",
+                        "enum": [
+                          "tool_name",
+                          "tool_use_id",
+                          "content",
+                          "role",
+                          "kind",
+                          "model",
+                          "harness",
+                          "title",
+                          "repo_name",
+                          "branch",
+                          "user_email",
+                          "status",
+                          "tool_input"
+                        ]
+                      },
+                      "path": {
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256
+                        }
+                      },
+                      "op": {
+                        "type": "string",
+                        "const": "contains"
+                      },
+                      "value": {
+                        "type": "string",
+                        "maxLength": 4096
+                      }
+                    },
+                    "required": ["field", "op", "value"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "field": {
+                        "type": "string",
+                        "enum": [
+                          "tool_name",
+                          "tool_use_id",
+                          "content",
+                          "role",
+                          "kind",
+                          "model",
+                          "harness",
+                          "title",
+                          "repo_name",
+                          "branch",
+                          "user_email",
+                          "status",
+                          "tool_input"
+                        ]
+                      },
+                      "path": {
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256
+                        }
+                      },
+                      "op": {
+                        "type": "string",
+                        "const": "starts_with"
+                      },
+                      "value": {
+                        "type": "string",
+                        "maxLength": 4096
+                      }
+                    },
+                    "required": ["field", "op", "value"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "field": {
+                        "type": "string",
+                        "enum": [
+                          "tool_name",
+                          "tool_use_id",
+                          "content",
+                          "role",
+                          "kind",
+                          "model",
+                          "harness",
+                          "title",
+                          "repo_name",
+                          "branch",
+                          "user_email",
+                          "status",
+                          "tool_input"
+                        ]
+                      },
+                      "path": {
+                        "minItems": 1,
+                        "maxItems": 8,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256
+                        }
+                      },
+                      "op": {
+                        "type": "string",
+                        "const": "exists"
+                      }
+                    },
+                    "required": ["field", "op"],
+                    "additionalProperties": false
+                  }
+                ]
+              }
             }
           },
           "additionalProperties": false
@@ -1935,7 +2712,7 @@ Read keys list `search`, `get`, and `sql`; effective admin keys also list
   },
   {
     "name": "sql",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Run one read-only PostgreSQL SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q) returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions'. Limits: 500 rows, 5 seconds.",
+    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions'. Limits: 500 rows, 5 seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2132,9 +2909,9 @@ ended_at: null | status: ACTIVE | visibility: PUBLIC
 end_reason: null | message_count: 1 | tool_call_count: 0
 input_tokens: 0 | output_tokens: 0 | tools_used: []
 file_count: 0 | observed_commit_count: 0 | reuse_count: 0
-agent_type: null | parent: null | children: []
-child_count: 0 | children_truncated: false | truncated_fields: []
-root_session_id: 00000000-0000-4000-8000-000000000001
+agent_type: null | parent_session_id: null | parent_relation: null
+parent: null | children: [] | child_count: 0
+children_truncated: false | truncated_fields: [] | root_session_id: 00000000-0000-4000-8000-000000000001
 
 seq 0 USER TEXT timestamp=2026-09-07T01:00:00.000Z model=null
 Investigate the transport session index
@@ -2146,7 +2923,7 @@ input_tokens: null | output_tokens: null
 
 ```text
 1 row
-session_id (uuid) | title (text)
+session_id (UUID) | title (Nullable(String))
 00000000-0000-4000-8000-000000000001 | Investigate the transport session index
 ```
 

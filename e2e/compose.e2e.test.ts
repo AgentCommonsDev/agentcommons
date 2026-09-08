@@ -1,6 +1,12 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,10 +18,31 @@ import { chromium } from "@playwright/test";
 import { getOutputSchema } from "../packages/core/schemas/get.js";
 import { ingestOutputSchema } from "../packages/core/schemas/ingest.js";
 import { searchOutputSchema } from "../packages/core/schemas/search.js";
+import { organizationEmbeddingsOutputSchema } from "../packages/core/schemas/embeddings.js";
+import { sqlOutputSchema } from "../packages/core/schemas/sql.js";
+import { billingConfigSchema } from "../packages/core/schemas/billing.js";
 import { cleanup } from "../scripts/cleanup.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-// @req R-INF-01
+async function ready(origin: string) {
+  const deadline = Date.now() + 90_000;
+  for (;;) {
+    try {
+      if (
+        (await fetch(`${origin}/ready`, { signal: AbortSignal.timeout(1000) }))
+          .ok
+      )
+        return;
+    } catch {
+      /* Wait for this isolated API boot. */
+    }
+    if (Date.now() > deadline)
+      throw new Error("The Compose API did not become ready.");
+    await delay(500);
+  }
+}
+
+// @req R-INF-01 @req R-SAAS-07
 it(
   "builds and runs the self-host image through Compose, migrates, bootstraps native auth, and ingests/searches a captured transcript",
   async () => {
@@ -68,6 +95,11 @@ it(
       join(root, "docker-compose.yml"),
       join(directory, "docker-compose.yml"),
     );
+    await mkdir(join(directory, "packages/traces/config"), { recursive: true });
+    await copyFile(
+      join(root, "packages/traces/config/privacy.xml"),
+      join(directory, "packages/traces/config/privacy.xml"),
+    );
     // Native Compose override gives this disposable instance an unused loopback port.
     await writeFile(
       join(directory, "ports.yml"),
@@ -83,8 +115,16 @@ it(
         "POSTGRES_PASSWORD=compose-database-password",
         "DATABASE_MIGRATION_URL=postgres://agentcommons:compose-database-password@db:5432/agentcommons",
         "DATABASE_URL=postgres://ac_app:compose-app-password@db:5432/agentcommons",
-        "DATABASE_READER_USER_URL=postgres://ac_reader_user:compose-reader-password@db:5432/agentcommons",
-        "DATABASE_READER_ADMIN_URL=postgres://ac_reader_admin:compose-admin-password@db:5432/agentcommons",
+        "DATABASE_TRACE_CONTROL_URL=postgres://ac_trace_control:compose-control-password@db:5432/agentcommons",
+        "CLICKHOUSE_MIGRATION_USER=default",
+        "CLICKHOUSE_MIGRATION_PASSWORD=compose-clickhouse-admin-password",
+        "CLICKHOUSE_URL=http://clickhouse:8123",
+        "CLICKHOUSE_DATABASE=ac_trace",
+        "CLICKHOUSE_WRITER_USER=ac_trace_writer",
+        "CLICKHOUSE_WRITER_PASSWORD=compose-clickhouse-writer-password",
+        "CLICKHOUSE_ACCESS_USER=ac_trace_access",
+        "CLICKHOUSE_ACCESS_PASSWORD=compose-clickhouse-access-password",
+        `CLICKHOUSE_READER_SECRET=${randomUUID()}${randomUUID()}`,
         `BETTER_AUTH_SECRET=${secret}`,
         "AUTH_EMAIL_PASSWORD_ENABLED=true",
         "TRUST_PROXY=loopback",
@@ -116,24 +156,7 @@ it(
       const published = (await compose(["port", "api", "3000"])).stdout.trim();
       expect(published).toMatch(/^127\.0\.0\.1:\d+$/);
       const origin = `http://${published}`;
-      const deadline = Date.now() + 90_000;
-      for (;;) {
-        try {
-          if (
-            (
-              await fetch(`${origin}/ready`, {
-                signal: AbortSignal.timeout(1000),
-              })
-            ).ok
-          )
-            break;
-        } catch {
-          /* Wait for this API's first boot. */
-        }
-        if (Date.now() > deadline)
-          throw new Error("The Compose API did not become ready.");
-        await delay(500);
-      }
+      await ready(origin);
       const seeded = await compose([
         "run",
         "--rm",
@@ -250,6 +273,20 @@ it(
       });
       expect(ingested.status).toBe(202);
       const receipt = ingestOutputSchema.parse(await ingested.json());
+      await expect
+        .poll(
+          async () => {
+            const replay = await fetch(`${origin}/api/v1/ingest`, {
+              method: "POST",
+              headers: apiHeaders,
+              body: JSON.stringify(envelope),
+            });
+            expect(replay.status).toBe(202);
+            return ingestOutputSchema.parse(await replay.json()).publication;
+          },
+          { timeout: 60_000, interval: 250 },
+        )
+        .toBe("published");
       const detail = await fetch(
         `${origin}/api/v1/sessions/${receipt.sessionId}`,
         { headers: apiHeaders },
@@ -272,6 +309,63 @@ it(
           .parse(await search.json())
           .blocks.some((block) => block.session_id === receipt.sessionId),
       ).toBe(true);
+      const embeddingSettings = async () => {
+        const response = await fetch(
+          `${origin}/api/v1/organization/embeddings`,
+          { headers: apiHeaders },
+        );
+        expect(response.status).toBe(200);
+        return organizationEmbeddingsOutputSchema.parse(await response.json());
+      };
+      const enabled = process.env.EMBEDDINGS_ENABLED === "true";
+      expect(await embeddingSettings()).toMatchObject({
+        available: enabled,
+        enabled: false,
+        effective: false,
+      });
+      if (enabled) {
+        const optIn = await fetch(`${origin}/api/v1/organization/embeddings`, {
+          method: "PATCH",
+          headers: { ...headers, cookie },
+          body: JSON.stringify({
+            enabled: true,
+            reason: "Verify the container's deterministic embedding worker",
+          }),
+        });
+        expect(optIn.status).toBe(200);
+        expect(
+          organizationEmbeddingsOutputSchema.parse(await optIn.json()),
+        ).toMatchObject({ effective: true, provider: "fake" });
+        await expect
+          .poll(async () => (await embeddingSettings()).sessions_indexed, {
+            timeout: 60_000,
+            interval: 250,
+          })
+          .toBe(1);
+        const vectors = await fetch(`${origin}/api/v1/query`, {
+          method: "POST",
+          headers: apiHeaders,
+          body: JSON.stringify({
+            sql: "SELECT count() AS vectors,min(length(embedding)) AS dimensions FROM message_chunks",
+          }),
+        });
+        expect(vectors.status).toBe(200);
+        const result = sqlOutputSchema.parse(await vectors.json());
+        expect(
+          Number(
+            result.rows[0]?.[
+              result.columns.findIndex((column) => column.name === "vectors")
+            ],
+          ),
+        ).toBeGreaterThan(0);
+        expect(
+          Number(
+            result.rows[0]?.[
+              result.columns.findIndex((column) => column.name === "dimensions")
+            ],
+          ),
+        ).toBe(1024);
+      }
       const landing = await fetch(origin);
       expect(landing.status).toBe(200);
       expect(landing.headers.get("x-robots-tag")).toContain("noindex");
@@ -311,20 +405,81 @@ it(
           .object({ sha256: z.string().regex(/^[a-f0-9]{64}$/) })
           .parse(await manifest.json()).sha256,
       ).toHaveLength(64);
-      // Runtime receives only the app and reader principals, never migration authority.
+      // Runtime receives app and trace principals, never migration authority.
       const identity = await compose([
         "exec",
         "-T",
         "api",
         "node",
         "-e",
-        "process.stdout.write(JSON.stringify({uid:process.getuid(),migration:process.env.DATABASE_MIGRATION_URL,rootPassword:process.env.POSTGRES_PASSWORD}))",
+        "process.stdout.write(JSON.stringify({uid:process.getuid(),migration:process.env.DATABASE_MIGRATION_URL,traceControl:process.env.DATABASE_TRACE_CONTROL_URL,traceMigration:process.env.CLICKHOUSE_MIGRATION_PASSWORD,rootPassword:process.env.POSTGRES_PASSWORD}))",
       ]);
       expect(JSON.parse(identity.stdout)).toEqual({
         uid: 1000,
         migration: "",
+        traceControl: "",
+        traceMigration: "",
         rootPassword: "",
       });
+      // Reuse the same built image with runtime-only SaaS values. This boot imports
+      // the retained SSR renderer; customer mode alone does not exercise that artifact.
+      await writeFile(
+        join(directory, "ports.yml"),
+        'services:\n  api:\n    ports: !override\n      - "127.0.0.1::3000"\n    environment:\n      INSTANCE_MODE: saas\n      FREE_MONTHLY_RECORDS: "7"\n      PRO_INCLUDED_RECORDS: "13"\n',
+      );
+      await compose([
+        "up",
+        "-d",
+        "--no-build",
+        "--no-deps",
+        "--force-recreate",
+        "api",
+      ]);
+      const saasPort = (await compose(["port", "api", "3000"])).stdout.trim();
+      expect(saasPort).toMatch(/^127\.0\.0\.1:\d+$/);
+      const saasOrigin = `http://${saasPort}`;
+      await ready(saasOrigin);
+      const pricingResponse = await fetch(
+        `${saasOrigin}/api/v1/billing/config`,
+      );
+      expect(pricingResponse.status).toBe(200);
+      expect(
+        billingConfigSchema.parse(await pricingResponse.json()),
+      ).toMatchObject({
+        mode: "saas",
+        enabled: true,
+        plans: {
+          free: { monthly_records: 7 },
+          pro: { included_records: 13, monthly_price_usd: 100 },
+        },
+        checkout_enabled: false,
+        cal_com_url: null,
+      });
+      const ssrBrowser = await chromium.launch();
+      try {
+        const context = await ssrBrowser.newContext({
+          javaScriptEnabled: false,
+          viewport: { width: 390, height: 844 },
+        });
+        const page = await context.newPage();
+        const response = await page.goto(saasOrigin);
+        expect(response?.status()).toBe(200);
+        expect(await response?.headerValue("x-robots-tag")).toBeNull();
+        expect(
+          await page.locator(".pricing-free .plan-allowance").textContent(),
+        ).toContain("7");
+        expect(
+          await page.locator(".pricing-pro .plan-allowance").textContent(),
+        ).toContain("13");
+        expect(
+          await page
+            .getByRole("link", { name: "Start free", exact: true })
+            .first()
+            .getAttribute("href"),
+        ).toBe("/signup");
+      } finally {
+        await ssrBrowser.close();
+      }
     } finally {
       cleanupErrors = await cleanup([
         () => compose(["down", "--volumes", "--remove-orphans"]),

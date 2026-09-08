@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { ArrowLeft, LockKeyhole } from "lucide-react";
 import { copy, links } from "../copy";
+import { ProviderSignIn } from "../components/provider-sign-in";
+import { useBillingConfig } from "../lib/billing-config";
 import { authClient } from "../lib/auth-client";
 import { errorMessage } from "../lib/display";
 import { Button } from "../components/ui/button";
@@ -8,25 +10,26 @@ import { Field } from "../components/workspace/primitives";
 import type { AuthConfig } from "../lib/types";
 
 export function NativeLogin({ config }: { config: AuthConfig }) {
+  const billing = useBillingConfig();
+  const callbackPath = billing.enabled ? "/onboarding" : "/home";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const signIn = async (provider?: string) => {
+  const signIn = async () => {
     setPending(true);
     setError(null);
     try {
-      const response = provider
-        ? await authClient.signIn.social({
-            provider,
-            callbackURL: new URL("/home", window.location.origin).href,
-          })
-        : await authClient.signIn.email({ email, password });
+      const response = await authClient.signIn.email({
+        email,
+        password,
+        callbackURL: new URL(callbackPath, window.location.origin).href,
+      });
       if (response.error)
         throw new Error(
           response.error.message ?? copy.workspace.auth.signInFailed,
         );
-      if (!provider) window.location.assign("/home");
+      window.location.assign(callbackPath);
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
@@ -41,7 +44,11 @@ export function NativeLogin({ config }: { config: AuthConfig }) {
           <LockKeyhole size={26} strokeWidth={1.4} aria-hidden />
         </div>
         <h1>{copy.workspace.auth.nativeTitle}</h1>
-        <p>{copy.workspace.auth.nativeDescription}</p>
+        <p>
+          {billing.enabled
+            ? copy.signup.signInDescription
+            : copy.workspace.auth.nativeDescription}
+        </p>
         {config.email_password_enabled && (
           <form
             className="auth-form"
@@ -90,20 +97,12 @@ export function NativeLogin({ config }: { config: AuthConfig }) {
         {config.email_password_enabled && provider && (
           <div className="auth-divider">{copy.workspace.auth.or}</div>
         )}
-        {provider && (
-          <Button
-            className="auth-provider"
-            variant="secondary"
-            disabled={pending}
-            onClick={() => {
-              void signIn(provider);
-            }}
-          >
-            {config.oidc_enabled
-              ? copy.workspace.auth.sso
-              : `${copy.workspace.auth.continueWith} ${provider}`}
-          </Button>
-        )}
+        <ProviderSignIn
+          config={config}
+          callbackPath={callbackPath}
+          disabled={pending}
+          onError={setError}
+        />
         {!config.email_password_enabled && !provider && (
           <p role="alert">{copy.workspace.auth.noMethods}</p>
         )}
@@ -112,7 +111,17 @@ export function NativeLogin({ config }: { config: AuthConfig }) {
             {error}
           </p>
         )}
-        <p className="login-detail">{copy.workspace.auth.noAccount}</p>
+        {billing.enabled ? (
+          <div className="auth-related">
+            <a href="/verify-email">{copy.signup.verifyEmail}</a>
+            <a href="/signup">{copy.saas.signup}</a>
+            {config.email_password_enabled && (
+              <a href="/forgot-password">{copy.signup.forgot}</a>
+            )}
+          </div>
+        ) : (
+          <p className="login-detail">{copy.workspace.auth.noAccount}</p>
+        )}
         <a href={links.documentation} className="text-link login-back">
           <ArrowLeft size={15} aria-hidden />
           {copy.navigation.docs}

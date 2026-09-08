@@ -46,7 +46,12 @@ describe("Compose configuration", () => {
   // @req R-INF-01
   it("starts the self-host API only after a healthy database and successful migration", () => {
     const services = compose("docker-compose.yml");
-    expect(Object.keys(services).sort()).toEqual(["api", "db", "migrate"]);
+    expect(Object.keys(services).sort()).toEqual([
+      "api",
+      "clickhouse",
+      "db",
+      "migrate",
+    ]);
     expect(services.api).toMatchObject({
       image: "agentcommons:local",
       depends_on: { migrate: { condition: "service_completed_successfully" } },
@@ -55,20 +60,43 @@ describe("Compose configuration", () => {
     });
     expect(services.migrate).toMatchObject({
       command: ["pnpm", "db:migrate"],
-      depends_on: { db: { condition: "service_healthy" } },
+      depends_on: {
+        db: { condition: "service_healthy" },
+        clickhouse: { condition: "service_healthy" },
+      },
     });
     expect(services.db).toMatchObject({
-      image: "pgvector/pgvector:pg16",
+      image: "postgres:16",
       environment: { POSTGRES_PASSWORD: "agentcommons" },
     });
     expect(services.db?.ports).toBeUndefined();
+    expect(services.clickhouse?.ports).toBeUndefined();
+    expect(services.clickhouse).toMatchObject({
+      image: "clickhouse/clickhouse-server:26.8.2.7",
+    });
+    expect(services.clickhouse?.volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          target: "/etc/clickhouse-server/config.d/privacy.xml",
+          read_only: true,
+        }),
+        expect.objectContaining({
+          target: "/var/lib/clickhouse",
+          type: "volume",
+        }),
+      ]),
+    );
   });
   // @req R-INF-01
-  it("exposes only PostgreSQL on loopback in development", () => {
+  it("exposes both databases only on loopback in development", () => {
     const services = compose("docker-compose.dev.yml");
-    expect(Object.keys(services)).toEqual(["db"]);
+    expect(Object.keys(services).sort()).toEqual(["clickhouse", "db"]);
+    expect(services.clickhouse).toMatchObject({
+      image: "clickhouse/clickhouse-server:26.8.2.7",
+      ports: [{ host_ip: "127.0.0.1", target: 8123, published: "8123" }],
+    });
     expect(services.db).toMatchObject({
-      image: "pgvector/pgvector:pg16",
+      image: "postgres:16",
       ports: [{ host_ip: "127.0.0.1", target: 5432, published: "5432" }],
     });
   });

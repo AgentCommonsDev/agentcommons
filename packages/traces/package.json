@@ -1,0 +1,24 @@
+{
+  "name": "@agentcommons/traces",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. packages/traces/test",
+    "migrate": "tsx --env-file-if-exists=../../.env src/migrate-cli.ts"
+  },
+  "dependencies": {
+    "@agentcommons/db": "workspace:*",
+    "@clickhouse/client": "1.23.1",
+    "zod": "4.5.4",
+    "@agentcommons/core": "workspace:*"
+  },
+  "devDependencies": {
+    "testcontainers": "11.14.0"
+  }
+}

@@ -1,5 +1,6 @@
 import type { CallerContext } from "@agentcommons/core";
-import type { PrismaClient, ReaderPools } from "@agentcommons/db";
+import type { PrismaClient } from "@agentcommons/db";
+import type { TraceReaders } from "@agentcommons/traces";
 import {
   auditFailure,
   type AuditDescription,
@@ -14,9 +15,10 @@ import {
 
 export interface ReadDependencies {
   prisma: PrismaClient;
-  readers: ReaderPools;
+  readers: TraceReaders;
   audit: AuditService;
   cursors: CursorCodec;
+  saas?: boolean;
 }
 export async function readOperation<T>(
   audit: AuditService,

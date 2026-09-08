@@ -1,10 +1,11 @@
+import { organizationEmbeddingSetting } from "../embeddings/settings.js";
+import { ClickHouseError } from "@agentcommons/traces";
 import {
   sqlInputSchema,
   sqlOutputSchema,
   utf8Slice,
   type SqlOutput,
 } from "@agentcommons/core";
-import { z } from "zod";
 import { guardSql } from "../repositories/sql-guard.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import { bytes, wireValue } from "./read-budget.js";
@@ -30,44 +31,35 @@ export class QueryService {
             { position: null },
           );
         const { sql } = parsed.data;
-        const validated = guardSql(sql, this.embeddings);
-        const wrapperPrefix = "SELECT * FROM (";
-        const sourceOffset = Array.from(
-          sql.slice(0, sql.indexOf(validated)),
-        ).length;
-        const statementLength = Array.from(validated).length;
+        const validated = guardSql(
+          sql,
+          this.embeddings &&
+            (
+              await organizationEmbeddingSetting(
+                this.dependencies.prisma,
+                caller.organizationId,
+                false,
+                Boolean(this.dependencies.saas),
+              )
+            ).enabled,
+        );
         const started = performance.now();
         try {
           return await this.dependencies.readers.read(
             caller,
             async (client) => {
-              const result = await client.query<unknown[]>({
-                text: `${wrapperPrefix}${validated}) q LIMIT 501`,
-                rowMode: "array",
-              });
-              const types = await client.query<{
-                oid: number;
-                typname: string;
-              }>(
-                "SELECT oid, typname FROM pg_catalog.pg_type WHERE oid = ANY($1::oid[])",
-                [result.fields.map((field) => field.dataTypeID)],
-              );
-              const typeNames = new Map(
-                types.rows.map((row) => [row.oid, row.typname]),
-              );
+              const result = await client.query(`SELECT * FROM (
+${validated}
+) q LIMIT 501`);
               const output: SqlOutput = {
-                columns: result.fields.map((field) => ({
-                  name: field.name,
-                  type:
-                    typeNames.get(field.dataTypeID) ?? String(field.dataTypeID),
-                })),
+                columns: result.fields,
                 rows: [],
                 row_count: 0,
-                capped: result.rows.length > 500,
+                capped: result.data.length > 500,
                 truncated_cells: [],
                 duration_ms: 0,
               };
-              for (const row of result.rows.slice(0, 500)) {
+              for (const row of result.data.slice(0, 500)) {
                 const truncated: [number, number][] = [];
                 const converted = row.map((cell, columnIndex) => {
                   const value = wireValue(cell);
@@ -114,30 +106,27 @@ export class QueryService {
           );
         } catch (error) {
           if (error instanceof ServiceError) throw error;
-          const pg = z
-            .object({
-              code: z.string().optional(),
-              position: z.string().optional(),
-            })
-            .safeParse(error);
-          const code = pg.success ? (pg.data.code ?? "SQL_ERROR") : "SQL_ERROR";
-          const position =
-            pg.success && pg.data.position ? Number(pg.data.position) : null;
+          if (!(error instanceof ClickHouseError))
+            throw new ServiceError(
+              503,
+              "TRACE_QUERY_UNAVAILABLE",
+              "The trace database did not complete the query. Try again.",
+              { position: null },
+            );
+          const code = error.code;
+          const failure = queryFailures[code];
+          if (!failure)
+            throw new ServiceError(
+              503,
+              "TRACE_QUERY_UNAVAILABLE",
+              "The trace database did not complete the query. Try again.",
+              { position: null },
+            );
           throw new ServiceError(
             400,
             code,
-            code === "57014"
-              ? "The query exceeded five seconds. Narrow the query and try again. Query schema_columns for the available columns."
-              : "The query could not be executed. Query schema_columns for the available columns.",
-            {
-              position:
-                position !== null && Number.isFinite(position)
-                  ? position > wrapperPrefix.length &&
-                    position <= wrapperPrefix.length + statementLength
-                    ? position - wrapperPrefix.length + sourceOffset
-                    : null
-                  : null,
-            },
+            `${failure} Query schema_columns for available columns.`,
+            { position: null },
           );
         }
       },
@@ -149,3 +138,29 @@ export class QueryService {
     );
   }
 }
+
+/** Native errors are classified without returning SQL, parameter values or server details. */
+const queryFailures: Readonly<Record<string, string>> = {
+  "6": "A query value could not be parsed.",
+  "27": "A query value could not be parsed.",
+  "36": "A function argument is invalid.",
+  "43": "A function received an incompatible value type.",
+  "44": "A function requires a constant or a different column type.",
+  "47": "A column in this query is unavailable.",
+  "53": "The query combines incompatible value types.",
+  "60": "A table in this query is unavailable.",
+  "62": "The SQL syntax is invalid.",
+  "207":
+    "A column appears in more than one source. Qualify it with its table alias.",
+  "159": "The query exceeded its time limit. Narrow the query and try again.",
+  "160": "The query exceeded its time limit. Narrow the query and try again.",
+  "179":
+    "Different expressions use the same alias. Give each one a unique alias.",
+  "184": "An aggregate function is used outside an aggregate expression.",
+  "215": "Include the selected column in GROUP BY or an aggregate function.",
+  "206": "Give each joined subquery a table alias.",
+  "241": "The query exceeded its memory limit. Narrow the query and try again.",
+  "396":
+    "The query result exceeded its size limit. Select fewer or smaller values.",
+  "386": "The query combines value types that cannot share a result column.",
+};

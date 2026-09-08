@@ -6,7 +6,17 @@ import type { paths } from "./generated";
 export const api = createClient<paths, "application/json">({
   credentials: "include",
   querySerializer: (query) =>
-    qs.stringify(query, { arrayFormat: "brackets", skipNulls: true }),
+    qs.stringify(
+      {
+        ...query,
+        ...(typeof query.filters !== "object" ||
+        query.filters === null ||
+        !("where" in query.filters)
+          ? {}
+          : { filters: JSON.stringify(query.filters) }),
+      },
+      { arrayFormat: "brackets", skipNulls: true },
+    ),
 });
 export class ApiError extends Error {
   constructor(
@@ -36,11 +46,13 @@ export function unwrap<T>(result: {
   return result.data;
 }
 
-/** Omit optional undefined fields before passing Zod output to the wire contract. */
-export function defined<T extends object>(
-  value: T,
-): { [K in keyof T]: Exclude<T[K], undefined> } {
-  return Object.fromEntries(
-    Object.entries(value).filter(([, item]) => item !== undefined),
-  ) as { [K in keyof T]: Exclude<T[K], undefined> };
+type Defined<T> = T extends readonly unknown[]
+  ? { [K in keyof T]: Defined<T[K]> }
+  : T extends object
+    ? { [K in keyof T]: Defined<Exclude<T[K], undefined>> }
+    : T;
+
+/** Match JSON's omission of optional undefined properties, including nested filters. */
+export function defined<T extends object>(value: T): Defined<T> {
+  return JSON.parse(JSON.stringify(value)) as Defined<T>;
 }

@@ -149,6 +149,7 @@ export const liveHarnesses = [
     cli: "gemini",
     harness: "GEMINI_CLI",
     version: "0.35.3",
+    delegationTool: "generalist",
     links: null,
     async run(options: CanaryEnvironment) {
       await mkdir(join(options.repository, ".gemini"), { mode: 0o700 });
@@ -160,7 +161,7 @@ export const liveHarnesses = [
         "gemini",
         [
           "--prompt",
-          `${options.marker}. Use read_file to read probe.txt, then use run_shell_command to run printf capture-second-tool. Reply with the file content and command output.`,
+          `${options.marker}. Call the native generalist tool exactly once. Give it this task: use read_file to read probe.txt, then use complete_task to return the exact file content. After the generalist returns, independently use read_file to read probe.txt yourself, then use run_shell_command to run printf capture-second-tool. Reply with both observed file values and the command output.`,
           "--approval-mode",
           "yolo",
         ],

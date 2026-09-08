@@ -61,8 +61,14 @@ describe("embedding provider contracts", () => {
       PUBLIC_URL: "http://localhost:3000",
       BETTER_AUTH_SECRET: "embedding-test-secret-at-least-32-characters",
       DATABASE_URL: "postgresql://localhost/app",
-      DATABASE_READER_USER_URL: "postgresql://localhost/user",
-      DATABASE_READER_ADMIN_URL: "postgresql://localhost/admin",
+      CLICKHOUSE_URL: "http://localhost:8123",
+      CLICKHOUSE_DATABASE: "ac_trace",
+      CLICKHOUSE_WRITER_USER: "ac_trace_writer",
+      CLICKHOUSE_WRITER_PASSWORD: "embedding-test-writer-password",
+      CLICKHOUSE_ACCESS_USER: "ac_trace_access",
+      CLICKHOUSE_ACCESS_PASSWORD: "embedding-test-access-password",
+      CLICKHOUSE_READER_SECRET:
+        "embedding-reader-secret-at-least-32-characters",
     };
     expect(environment(base).EMBEDDINGS_DAILY_TOKEN_BUDGET).toBe(5_000_000);
     expect(

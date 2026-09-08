@@ -1,5 +1,6 @@
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
+import { Client as PgClient } from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -9,14 +10,22 @@ import { createApp } from "../src/app.js";
 import { createRuntime } from "../src/main.js";
 import { environment } from "../src/env.js";
 import { keyInstallation } from "../src/auth/installation.js";
+import { requireCaller } from "../src/services/context.js";
 import {
-  startDatabase,
   provisionOrganization,
   provisionMember,
   testAuthConfiguration,
 } from "./support.js";
 
-let db: Awaited<ReturnType<typeof startDatabase>>;
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
+import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
+import { traceServices } from "./trace-services.js";
+let db: Awaited<ReturnType<typeof startTraceDatabase>>;
+let native: ReturnType<typeof traceServices>;
+let fixtures: TraceFixtures;
 let runtime: Awaited<ReturnType<typeof createRuntime>>;
 let app: Awaited<ReturnType<typeof createApp>>;
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
@@ -75,6 +84,11 @@ async function ingest(key: string, installationId: string) {
     payload: body,
   });
   expect(response.statusCode, response.body).toBe(202);
+  const id = z.object({ sessionId: z.uuid() }).parse(response.json()).sessionId;
+  const control = await db.prisma.traceSessionControl.findFirstOrThrow({
+    where: { id },
+  });
+  await native.projection.process(control.organizationId, id);
   return body;
 }
 async function search(key: string) {
@@ -97,16 +111,19 @@ async function client(key: string) {
   return value;
 }
 beforeAll(async () => {
-  db = await startDatabase();
+  db = await startTraceDatabase();
   shutdown.push(() => db.close());
+  native = traceServices(db);
+  shutdown.push(() => native.close());
+  fixtures = new TraceFixtures(db);
+  shutdown.push(() => fixtures.close());
   owner = await provisionOrganization(db, "rollout-primary");
   other = await provisionOrganization(db, "rollout-other");
   member = await provisionMember(db, owner.owner, "rollout-member@example.com");
   const env = environment({
     PUBLIC_URL: testAuthConfiguration.publicUrl,
     DATABASE_URL: db.urls.app,
-    DATABASE_READER_USER_URL: db.urls.user,
-    DATABASE_READER_ADMIN_URL: db.urls.admin,
+    ...traceEnvironment(db.traceConfig),
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     LOG_LEVEL: "silent",
     TRUST_PROXY: "loopback",
@@ -197,7 +214,14 @@ it("disables current installation keys immediately on cached MCP clients while i
   const memberClient = await client(member.key);
   expect(
     (await memberClient.listTools()).tools.map((tool) => tool.name),
-  ).toEqual(["search", "get", "sql"]);
+  ).toEqual([
+    "dashboard_list",
+    "dashboard_save",
+    "dashboard_delete",
+    "search",
+    "get",
+    "sql",
+  ]);
   const unassociated = await db.auth.createKey(owner.owner, {
     name: "Unassociated reader",
     permissions: { sessions: ["read"] },
@@ -247,7 +271,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   expect(JSON.stringify(change.detail)).not.toContain("ac_" + "b".repeat(32));
   expect((await ownerClient.listTools()).tools).toEqual([]);
   expect((await memberClient.listTools()).tools).toEqual([]);
-  expect((await reader.listTools()).tools).toHaveLength(3);
+  expect((await reader.listTools()).tools).toHaveLength(6);
   const count = await db.prisma.auditEvent.count({
     where: {
       apiKeyId: z.string().parse(member.context.caller?.apiKeyId),
@@ -292,7 +316,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   ).toContainEqual({ installation_id: installation, tools_enabled: false });
   // The same UUID in another organization is a separate installation and rollout cohort.
   await ingest(other.key, installation);
-  expect((await (await client(other.key)).listTools()).tools).toHaveLength(7);
+  expect((await (await client(other.key)).listTools()).tools).toHaveLength(10);
   expect(
     (
       await keyInstallation(
@@ -304,7 +328,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   ).toBe(true);
   const moved = randomUUID();
   await ingest(member.key, moved);
-  expect((await memberClient.listTools()).tools).toHaveLength(3);
+  expect((await memberClient.listTools()).tools).toHaveLength(6);
   expect(
     (
       await memberClient.callTool({
@@ -323,7 +347,7 @@ it("disables current installation keys immediately on cached MCP clients while i
     payload: { enabled: true, reason: "Finish staged comparison" },
   });
   expect(enabled.statusCode, enabled.body).toBe(200);
-  expect((await ownerClient.listTools()).tools).toHaveLength(7);
+  expect((await ownerClient.listTools()).tools).toHaveLength(10);
 });
 
 // @req R-DASH-14
@@ -378,18 +402,28 @@ it("normalizes typed audit detail before redaction, retains bounds, and rejects 
     8192,
   );
   expect(JSON.stringify(bounded.detail)).not.toContain(secret);
-  const storage = vi
-    .spyOn(db.prisma.auditEvent, "create")
-    .mockRejectedValueOnce(new Error("Injected audit storage failure"));
+  const writer = new PgClient({ connectionString: db.urls.migration });
+  await writer.connect();
+  await writer.query(
+    "ALTER TABLE audit_event ADD CONSTRAINT test_audit_storage_failure CHECK(action <> 'audit.storage-failure') NOT VALID",
+  );
   try {
     await expect(
       db.audit.write(owner.context, {
         action: "audit.storage-failure",
         detail: { optional: undefined },
       }),
-    ).rejects.toThrow("Injected audit storage failure");
+    ).rejects.toThrow();
+    expect(
+      await db.prisma.auditEvent.count({
+        where: { action: "audit.storage-failure" },
+      }),
+    ).toBe(0);
   } finally {
-    storage.mockRestore();
+    await writer.query(
+      "ALTER TABLE audit_event DROP CONSTRAINT test_audit_storage_failure",
+    );
+    await writer.end();
   }
 });
 
@@ -490,7 +524,7 @@ it("exposes distinct visible reuse counts and pages both directions from real at
   const recorded = async (key: string) => {
     const body = await ingest(key, randomUUID());
     return (
-      await db.prisma.ingestBatch.findUniqueOrThrow({
+      await db.prisma.traceReceipt.findUniqueOrThrow({
         where: { organizationId_id: { organizationId: org, id: body.batchId } },
       })
     ).sessionId;
@@ -505,6 +539,9 @@ it("exposes distinct visible reuse counts and pages both directions from real at
       arguments: { session_id: id },
     });
     expect(result.isError).not.toBe(true);
+    while ((await native.traceAudit.flush()) === 100) {
+      /* Drain committed audit observations. */
+    }
   };
   await get(target);
   await get(target);
@@ -532,10 +569,16 @@ it("exposes distinct visible reuse counts and pages both directions from real at
         edge.reader_harness === "CLAUDE_CODE",
     ),
   ).toBe(true);
-  await db.prisma.agentSession.update({
-    where: { id: firstReader },
-    data: { title: "界".repeat(2000) },
-  });
+  const title = async (id: string, value: string | null) => {
+    const header = await native.header(org, id);
+    await fixtures.insert("sessions", id, {
+      ...header,
+      observed_commits: JSON.stringify(header.observed_commits),
+      observed_diff_stat: JSON.stringify(header.observed_diff_stat),
+      title: value,
+    });
+  };
+  await title(firstReader, "界".repeat(2000));
   const first = await runtime.services.sessions.reuse(member.context, target, {
     direction: "by",
     limit: 1,
@@ -604,14 +647,9 @@ it("exposes distinct visible reuse counts and pages both directions from real at
   await expect(
     runtime.services.sessions.reuse(other.context, target, {}),
   ).rejects.toMatchObject({ statusCode: 404 });
-  await db.prisma.agentSession.updateMany({
-    where: { id: { in: [firstReader, thirdReader] } },
-    data: { title: "界".repeat(200_000) },
-  });
-  await db.prisma.agentSession.update({
-    where: { id: secondReader },
-    data: { title: null },
-  });
+  for (const id of [firstReader, thirdReader])
+    await title(id, "界".repeat(200_000));
+  await title(secondReader, null);
   const sortedInput = {
     direction: "by",
     sort: "source_title",
@@ -623,7 +661,16 @@ it("exposes distinct visible reuse counts and pages both directions from real at
     target,
     sortedInput,
   );
-  const tied = [firstReader, thirdReader].sort();
+  const tied = await db.traceReaders.read(
+    requireCaller(member.context),
+    async (client) =>
+      (
+        await client.query<{ session_id: string }>(
+          "SELECT session_id FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)} ORDER BY session_id",
+          { ids: [firstReader, thirdReader] },
+        )
+      ).rows.map((row) => row.session_id),
+  );
   expect(sorted.result.items[0]?.source_session_id).toBe(tied[0]);
   expect(Buffer.byteLength(sorted.result.cursor ?? "")).toBeLessThan(4096);
   const anchor = z.string().parse(sorted.result.items[0]?.source_session_id);

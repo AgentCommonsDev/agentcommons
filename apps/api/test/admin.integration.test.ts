@@ -1,3 +1,6 @@
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
+import { traceServices } from "./trace-services.js";
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { beforeAll, afterAll, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -5,17 +8,19 @@ import { PrismaClient, type Prisma } from "@agentcommons/db";
 import { z } from "zod";
 import { AdminService, type AdminJobs } from "../src/services/admin.js";
 import { CursorCodec } from "../src/services/cursor.js";
-import { IngestService } from "../src/services/ingest.js";
+import type { IngestService } from "../src/services/ingest.js";
 import { SessionService } from "../src/services/session.js";
 import { reauthorizeJob } from "../src/auth/jobs.js";
 import { operatorContext } from "../src/auth/bootstrap.js";
-import { startDatabase, provisionOrganization } from "./support.js";
-import type { ServiceContext } from "../src/services/context.js";
-let database: Awaited<ReturnType<typeof startDatabase>>;
+import { provisionOrganization } from "./support.js";
+import { requireCaller, type ServiceContext } from "../src/services/context.js";
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let admin: AdminService;
-let ingest: IngestService;
+let ingest: Pick<IngestService, "execute">;
+let native: ReturnType<typeof traceServices>;
+let fixtures: TraceFixtures;
 let sessions: SessionService;
 let reader: ServiceContext;
 let adminOnly: ServiceContext;
@@ -81,8 +86,12 @@ async function keyContext(permissions: {
 }
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
+  native = traceServices(database);
+  release.unshift(() => native.jobs.stop());
+  fixtures = new TraceFixtures(database);
+  release.unshift(() => fixtures.close());
   organization = await provisionOrganization(database, "admin-primary");
   other = await provisionOrganization(database, "admin-other");
   const migration = new PrismaClient({
@@ -95,6 +104,7 @@ beforeAll(async () => {
     await migration.$disconnect();
   }
   const jobs: AdminJobs = {
+    enqueue: (tx, data) => native.jobs.enqueue(tx, data),
     async rescan(tx, context, input) {
       const id = randomUUID();
       await tx.$executeRaw`INSERT INTO test_admin_job(id,organization_id,payload) VALUES(${id}::uuid,${context.caller?.organizationId},${JSON.stringify({ input, actor: context.caller })}::jsonb)`;
@@ -114,21 +124,16 @@ beforeAll(async () => {
   };
   const cursors = new CursorCodec("admin-integration-secret");
   admin = new AdminService({
-    readers: database.readers,
+    readers: database.traceReaders,
     prisma: database.prisma,
     audit: database.audit,
     cursors,
-    policies: database.policies,
     jobs,
   });
-  ingest = new IngestService({
-    prisma: database.prisma,
-    audit: database.audit,
-    policies: database.policies,
-  });
+  ingest = { execute: (context, input) => native.publish(context, input) };
   sessions = new SessionService({
     prisma: database.prisma,
-    readers: database.readers,
+    readers: database.traceReaders,
     audit: database.audit,
     cursors,
   });
@@ -201,70 +206,79 @@ it("purges every declared row type, clears derived metadata, retains receipts an
   const id = (await ingest.execute(organization.context, request)).result
     .sessionId;
   const orgId = z.string().parse(organization.context.caller?.organizationId);
-  const message = await database.prisma.message.findFirstOrThrow({
-    where: { sessionId: id },
+  const messages = await database.traceReaders.read(
+    requireCaller(organization.context),
+    (client) =>
+      client.query(
+        "SELECT message_id FROM messages WHERE session_id={id:UUID}",
+        { id },
+      ),
+  );
+  const messageId = z.string().parse(messages.rows[0]?.message_id);
+  await fixtures.insert("session_files", id, {
+    file_id: "src/private.ts",
+    path: "src/private.ts",
+    ops: ["write"],
   });
-  await database.prisma.sessionFile.create({
-    data: {
-      organizationId: orgId,
-      sessionId: id,
-      path: "src/private.ts",
-      ops: ["write"],
-    },
+  const vector = Array.from({ length: 1024 }, () => 0.1);
+  await fixtures.insert("message_chunks", id, {
+    chunk_id: randomUUID(),
+    message_id: messageId,
+    ordinal: 0,
+    content: "chunk",
+    content_hash: "a".repeat(64),
+    token_count: 1,
+    model: "fixture",
+    embedding: vector,
   });
-  const vector = `[${Array.from({ length: 1024 }, () => "0.1").join(",")}]`;
-  await database.prisma
-    .$executeRaw`INSERT INTO message_chunk(organization_id,id,session_id,message_id,ordinal,content,token_count,model,embedding) VALUES(${orgId},${randomUUID()}::uuid,${id}::uuid,${message.id}::uuid,0,'chunk',1,'fixture',${vector}::vector)`;
-  await database.prisma
-    .$executeRaw`INSERT INTO session_embedding(organization_id,session_id,model,token_count,updated_at,embedding) VALUES(${orgId},${id}::uuid,'fixture',1,now(),${vector}::vector)`;
-  await database.prisma.agentSession.update({
-    where: { id },
-    data: {
-      normalizerContext: { activeLeafId: "private-leaf" },
-      observedCommits: [{ sha: "private" }],
-      observedDiffStat: { text: "private" },
-      inputTokens: 100,
-      outputTokens: 20,
-      toolCallCount: 1,
-      toolsUsed: ["private-tool"],
-    },
+  await fixtures.insert("session_embeddings", id, {
+    model: "fixture",
+    token_count: 1,
+    updated_at: new Date(),
+    embedding: vector,
+  });
+  await database.prisma.traceSessionControl.update({
+    where: { organizationId_id: { organizationId: orgId, id } },
+    data: { normalizerContext: { activeLeafId: "private-leaf" } },
   });
   const before = {
-    raw_records: await database.prisma.rawRecord.count({
-      where: { sessionId: id },
-    }),
-    messages: await database.prisma.message.count({ where: { sessionId: id } }),
-    session_files: 1,
-    message_chunks: 1,
-    session_embeddings: 1,
+    ...(await database.traces.sessionCounts({
+      organizationId: orgId,
+      sessionId: id,
+    })),
     redaction_events: await database.prisma.redactionEvent.count({
       where: { sessionId: id },
     }),
   };
   expect(before.redaction_events).toBeGreaterThan(0);
   const result = await admin.purge(adminOnly, { session_id: id, reason });
-  expect(result.result.manifest.deleted).toEqual(before);
+  expect(result.result.cleanup).toBe("queued");
+  expect(result.result.manifest.deleted.raw_records).toBeNull();
+  await native.projection.process(orgId, id);
+  const complete = await admin.purge(adminOnly, { session_id: id, reason });
+  expect(complete.result.cleanup).toBe("completed");
+  expect(complete.result.manifest.deleted).toEqual(before);
   expect(result.result.manifest.reset_fields).toContain("normalizer_context");
-  const tombstone = await database.prisma.agentSession.findUniqueOrThrow({
-    where: { id },
-  });
+  const tombstone = await database.prisma.traceSessionControl.findUniqueOrThrow(
+    { where: { organizationId_id: { organizationId: orgId, id } } },
+  );
   expect(tombstone).toMatchObject({
-    title: null,
-    firstPrompt: null,
-    observedCommits: null,
-    observedDiffStat: null,
-    branch: null,
     normalizerContext: {},
     projectedContext: {},
-    messageCount: 0,
-    toolCallCount: 0,
-    inputTokens: 0n,
-    outputTokens: 0n,
-    toolsUsed: [],
   });
   expect(tombstone.purgedAt).not.toBeNull();
+  const skeleton = await sessions.get(organization.context, { session_id: id });
+  expect(skeleton.result.header).toMatchObject({
+    title: null,
+    branch: null,
+    message_count: 0,
+    input_tokens: "0",
+    output_tokens: "0",
+    tools_used: [],
+  });
+  expect(skeleton.result.messages).toEqual([]);
   expect(
-    await database.prisma.ingestBatch.count({ where: { sessionId: id } }),
+    await database.prisma.traceReceipt.count({ where: { sessionId: id } }),
   ).toBe(1);
   expect(
     await database.prisma.auditEvent.count({
@@ -276,9 +290,7 @@ it("purges every declared row type, clears derived metadata, retains receipts an
   ).rejects.toMatchObject({ statusCode: 409 });
   const repeated = await admin.purge(adminOnly, { session_id: id, reason });
   expect(repeated.result.updated).toBe(false);
-  expect(Object.values(repeated.result.manifest.deleted)).toEqual([
-    0, 0, 0, 0, 0, 0,
-  ]);
+  expect(repeated.result.manifest.deleted).toEqual(before);
 });
 
 // @req R-MOD-03
@@ -311,12 +323,14 @@ it("serializes purge against a concurrent ingest and leaves no source or derived
   expect(results[1].status).toBe("fulfilled");
   if (results[0].status === "rejected")
     expect(results[0].reason).toMatchObject({ statusCode: 409 });
-  expect(
-    await database.prisma.rawRecord.count({ where: { sessionId: id } }),
-  ).toBe(0);
-  expect(
-    await database.prisma.message.count({ where: { sessionId: id } }),
-  ).toBe(0);
+  const orgId = z.string().parse(organization.context.caller?.organizationId);
+  await native.projection.process(orgId, id);
+  const counts = await database.traces.sessionCounts({
+    organizationId: orgId,
+    sessionId: id,
+  });
+  expect(counts.raw_records).toBe(0);
+  expect(counts.messages).toBe(0);
 });
 
 it("scopes audit cursors and atomically enqueues a validated, redacted rescan with its audit", async () => {

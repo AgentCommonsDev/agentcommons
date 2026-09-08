@@ -1,4 +1,7 @@
-import { expect, test, type Page } from "@playwright/test";
+import { waitForSession } from "./trace-controls";
+import { test } from "./browser-test";
+import { selectOrganization } from "./organization-controls";
+import { expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
@@ -46,6 +49,12 @@ const baseFixtureSchema = z.object({
   setupUrl: z.url(),
 });
 const fixtureSchema = baseFixtureSchema.extend({
+  adoption: z.object({
+    organizationId: z.string(),
+    emptyOrganizationId: z.string(),
+    ownerStorageState: baseFixtureSchema.shape.storageState,
+    memberStorageState: baseFixtureSchema.shape.storageState,
+  }),
   reuse: z.object({
     sourceSessionId: z.uuid(),
     targetSessionId: z.uuid(),
@@ -86,6 +95,23 @@ async function accessible(page: Page) {
         });
       }),
   );
+  // Reduced motion still creates finite native theme transitions. Wait for
+  // their real completion so axe does not cache colors from different frames.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          document
+            .getAnimations()
+            .filter(
+              (animation) =>
+                animation instanceof CSSTransition &&
+                animation.playState === "running" &&
+                Number.isFinite(animation.effect?.getComputedTiming().endTime),
+            ).length,
+      ),
+    )
+    .toBe(0);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -150,7 +176,7 @@ for (const theme of ["dark", "light"] as const)
       await expect(page.getByRole("alert")).toHaveCount(0);
       await expect(
         page.getByLabel(copy.workspace.navigation.organization),
-      ).toHaveValue(data.organizationId);
+      ).toHaveAttribute("data-organization-id", data.organizationId);
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
       await accessible(page);
       await page.screenshot({
@@ -184,17 +210,33 @@ test("sessions paginate, sort, choose columns and export all filtered rows", asy
     .getByRole("button", { name: copy.workspace.common.previous, exact: true })
     .click();
   await page
-    .getByRole("columnheader", { name: copy.workspace.fields.started_at })
-    .getByRole("button")
+    .getByRole("combobox", { name: copy.workspace.common.sortBy, exact: true })
+    .selectOption("started_at");
+  await page
+    .getByRole("button", {
+      name: copy.workspace.common.sortDescending,
+      exact: true,
+    })
     .click();
   await expect(
-    page.getByRole("columnheader", { name: copy.workspace.fields.started_at }),
-  ).toHaveAttribute("aria-sort", "ascending");
-  await page.getByText(copy.workspace.common.columns, { exact: true }).click();
-  await page.getByLabel(copy.workspace.fields.model, { exact: true }).uncheck();
+    page.getByRole("button", {
+      name: copy.workspace.common.sortAscending,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: copy.workspace.common.columns, exact: true })
+    .click();
+  const chooser = page.getByRole("dialog");
+  await chooser
+    .getByRole("checkbox", { name: copy.workspace.fields.harness, exact: true })
+    .uncheck();
+  await chooser
+    .getByRole("button", { name: copy.workspace.common.close, exact: true })
+    .click();
   await expect(
     page.getByRole("columnheader", {
-      name: copy.workspace.fields.model,
+      name: copy.workspace.fields.harness,
       exact: true,
     }),
   ).toHaveCount(0);
@@ -308,12 +350,10 @@ test("organization switch clears previous data and closes its stream", async ({
   await expect(
     page.getByText(copy.workspace.detail.live, { exact: true }),
   ).toBeVisible();
-  await page
-    .getByLabel(copy.workspace.navigation.organization)
-    .selectOption(data.secondaryOrganizationId);
+  await selectOrganization(page, data.secondaryOrganizationId);
   await expect(
     page.getByLabel(copy.workspace.navigation.organization),
-  ).toHaveValue(data.secondaryOrganizationId);
+  ).toHaveAttribute("data-organization-id", data.secondaryOrganizationId);
   await expect(page.locator(".transcript")).toHaveCount(0);
   await expect.poll(() => streamClosed).toBe(true);
   await page.goto("/sessions");
@@ -323,12 +363,10 @@ test("organization switch clears previous data and closes its stream", async ({
   await expect(page.getByRole("table")).not.toContainText(
     "Dashboard verification",
   );
-  await page
-    .getByLabel(copy.workspace.navigation.organization)
-    .selectOption(data.organizationId);
+  await selectOrganization(page, data.organizationId);
   await expect(
     page.getByLabel(copy.workspace.navigation.organization),
-  ).toHaveValue(data.organizationId);
+  ).toHaveAttribute("data-organization-id", data.organizationId);
   await expect(page.getByRole("table")).not.toContainText(
     "Browser pagination session 52",
   );
@@ -473,7 +511,7 @@ test("an admin adds an email and its owner completes native password setup and s
   );
   await expect(
     setup.getByLabel(copy.workspace.navigation.organization),
-  ).toHaveValue((await fixture()).organizationId);
+  ).toHaveAttribute("data-organization-id", (await fixture()).organizationId);
   await page.goto("/admin/users");
   const member = page.getByRole("row").filter({ hasText: email });
   await member.getByRole("combobox").selectOption("admin");
@@ -532,7 +570,19 @@ test("SQL uses the discovered schema and exports the actual bounded result", asy
   page,
 }) => {
   await page.goto("/sql");
-  await expect(page.locator(".schema-sidebar")).toContainText("sessions");
+  await page.getByText(copy.workspace.sql.showSchema, { exact: true }).click();
+  await page
+    .getByLabel(copy.workspace.sql.schemaView, { exact: true })
+    .selectOption("sessions");
+  const schemaFields = page.locator(".sql-schema-fields");
+  await expect(schemaFields).toContainText("session_id");
+  await page.getByLabel(copy.workspace.sql.schemaView, { exact: true }).focus();
+  await page.keyboard.press("Tab");
+  await expect(schemaFields).toBeFocused();
+  await page.keyboard.press("PageDown");
+  await expect
+    .poll(() => schemaFields.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
   await page
     .getByRole("textbox", { name: copy.workspace.sql.editor })
     .fill("SELECT title FROM sessions ORDER BY started_at ASC LIMIT 2");
@@ -547,7 +597,9 @@ test("SQL uses the discovered schema and exports the actual bounded result", asy
   expect((await readFile(path, "utf8")).split(/\r?\n/)).toHaveLength(3);
   await page
     .getByRole("textbox", { name: copy.workspace.sql.editor })
-    .fill("SELECT 1 AS duplicate, NULL AS duplicate, '=1+1' AS formula");
+    .fill(
+      "SELECT 1 AS duplicate, 1 AS duplicate, NULL AS empty, '=1+1' AS formula",
+    );
   await page.getByRole("textbox", { name: copy.workspace.sql.editor }).focus();
   await page.keyboard.press("Control+Enter");
   await expect(
@@ -562,8 +614,8 @@ test("SQL uses the discovered schema and exports the actual bounded result", asy
   );
   expect(duplicateCsv.errors).toEqual([]);
   expect(duplicateCsv.data).toEqual([
-    ["duplicate", "duplicate", "formula"],
-    ["1", "", "'=1+1"],
+    ["duplicate", "duplicate", "empty", "formula"],
+    ["1", "1", "", "'=1+1"],
   ]);
   await accessible(page);
 });
@@ -754,7 +806,7 @@ test("native OIDC sign-in verifies a real local issuer in SSO-only and mixed mod
     );
     await expect(
       page.getByLabel(copy.workspace.navigation.organization),
-    ).toHaveValue((await fixture()).organizationId);
+    ).toHaveAttribute("data-organization-id", (await fixture()).organizationId);
     await accessible(page);
     const data = await fixture();
     if (port === 3003) {
@@ -852,10 +904,11 @@ test("real public and customer instances serve the correct discovery and indexin
   await context.close();
 });
 
-// @req R-DASH-05 @req R-DASH-01
+// @req R-DASH-05 @req R-DASH-01 @req R-WEB-02
 test("moderation confirms visibility and purge with a reason on an actual session", async ({
   page,
   request,
+  isMobile,
 }, info) => {
   const data = await fixture();
   const text = `Browser moderation ${info.project.name} ${String(Date.now())}`;
@@ -889,6 +942,7 @@ test("moderation confirms visibility and purge with a reason on an actual sessio
   const session = z
     .object({ sessionId: z.uuid() })
     .parse(await accepted.json()).sessionId;
+  await waitForSession(request, session, data.ingestKey);
   await page.goto("/admin/moderation");
   await page
     .getByLabel(copy.workspace.sessions.filterField)
@@ -912,13 +966,25 @@ test("moderation confirms visibility and purge with a reason on an actual sessio
       await page
         .locator(".table-scroll")
         .evaluate((element) => element.scrollLeft),
-    ).toBeGreaterThan(0);
+    ).toBe(0);
     expect((await privateAction.boundingBox())?.height).toBeGreaterThanOrEqual(
       44,
     );
-    await expect(
-      page.getByText(copy.workspace.common.tableScrollHint, { exact: true }),
-    ).toBeVisible();
+    expect(
+      await page
+        .locator(".table-scroll")
+        .evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+    ).toBe(true);
+  }
+  if (isMobile) {
+    await privateAction.tap();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: copy.workspace.common.cancel, exact: true })
+      .tap();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await privateAction.focus();
   }
   await page.keyboard.press("Enter");
   let dialog = page.getByRole("dialog");
@@ -1042,9 +1108,10 @@ test("a server page renders a bounded number of virtual rows while scrolling", a
   ).toBeEnabled();
 });
 
-// @req R-DASH-09
+// @req R-DASH-09 @req R-WEB-02
 test("workspace navigation contains the specified operations and no command palette", async ({
   page,
+  isMobile,
 }) => {
   await page.goto("/sessions");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(
@@ -1054,7 +1121,10 @@ test("workspace navigation contains the specified operations and no command pale
     name: copy.workspace.navigation.menu,
     exact: true,
   });
-  if (await menu.isVisible()) await menu.click();
+  if (await menu.isVisible()) {
+    if (isMobile) await menu.tap();
+    else await menu.click();
+  }
   const navigation = page.getByRole("navigation", {
     name: copy.workspace.navigation.label,
     exact: true,
@@ -1062,8 +1132,10 @@ test("workspace navigation contains the specified operations and no command pale
   await expect(navigation.getByRole("link")).toHaveText([
     copy.workspace.navigation.home,
     copy.workspace.navigation.sessions,
+    copy.workspace.navigation.installation,
     copy.workspace.navigation.sql,
     copy.workspace.navigation.keys,
+    copy.workspace.navigation.docs,
     copy.workspace.navigation.users,
     copy.workspace.navigation.adminKeys,
     copy.workspace.navigation.audit,
@@ -1071,6 +1143,34 @@ test("workspace navigation contains the specified operations and no command pale
     copy.workspace.navigation.redaction,
     copy.workspace.navigation.status,
   ]);
+  const sqlLink = navigation.getByRole("link", {
+    name: copy.workspace.navigation.sql,
+    exact: true,
+  });
+  if (isMobile) await sqlLink.tap();
+  else await sqlLink.click();
+  await expect(page).toHaveURL("/sql");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  if (isMobile) {
+    await menu.tap();
+    await page
+      .getByRole("button", {
+        name: copy.workspace.navigation.closeMenu,
+        exact: true,
+      })
+      .tap();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await menu.tap();
+  }
+  const sessionsLink = navigation.getByRole("link", {
+    name: copy.workspace.navigation.sessions,
+    exact: true,
+  });
+  if (isMobile) await sessionsLink.tap();
+  else await sessionsLink.click();
+  await expect(page).toHaveURL("/sessions");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  if (isMobile) await menu.tap();
   if (await page.getByRole("dialog").count())
     await page.keyboard.press("Escape");
   await page.keyboard.press("Control+k");
@@ -1165,6 +1265,7 @@ test("shortened response metadata is labeled in transcript and search results", 
   const id = z
     .object({ sessionId: z.uuid() })
     .parse(await accepted.json()).sessionId;
+  await waitForSession(request, id, data.ingestKey);
   await page.goto(`/s/${id}#1`);
   const notice = page.locator(".transcript-message.selected .shortened-fields");
   await expect(notice).toContainText(copy.workspace.fields.tool_name);
@@ -1230,6 +1331,7 @@ test("a message deep link resets transcript pagination", async ({
   const id = z
     .object({ sessionId: z.uuid() })
     .parse(await accepted.json()).sessionId;
+  await waitForSession(request, id, data.ingestKey);
   await page.goto(`/s/${id}`);
   await page
     .getByRole("button", { name: copy.workspace.detail.next, exact: true })
@@ -1278,14 +1380,10 @@ test("an unselected organization uses a neutral picker placeholder", async ({
       }),
     ).toBeVisible();
     await expect(
-      page
-        .getByLabel(copy.workspace.navigation.organization)
-        .locator("option:checked"),
+      page.getByLabel(copy.workspace.navigation.organization),
     ).toHaveText(copy.workspace.navigation.selectOrganization);
     await formThemes(page);
-    await page
-      .getByLabel(copy.workspace.navigation.organization)
-      .selectOption(data.organizationId);
+    await selectOrganization(page, data.organizationId);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(
       copy.workspace.home.title,
     );
@@ -1355,10 +1453,16 @@ test("status cards follow the instance embedding feature flag", async ({
     [3000, true],
   ] as const) {
     await page.goto(`http://localhost:${String(port)}/admin/status`);
-    await expect(page.locator(".status-metrics dt").first()).toHaveText(
+    const snapshot = page.locator(".metric-section").filter({
+      has: page.getByRole("heading", {
+        name: copy.workspace.systemStatus.snapshot,
+        exact: true,
+      }),
+    });
+    await expect(snapshot.locator(".status-metrics dt").first()).toHaveText(
       copy.workspace.systemStatus.queue,
     );
-    await expect(page.locator(".status-metrics dt")).toHaveText([
+    await expect(snapshot.locator(".status-metrics dt")).toHaveText([
       copy.workspace.systemStatus.queue,
       ...(enabled
         ? [
@@ -1374,14 +1478,7 @@ test("status cards follow the instance embedding feature flag", async ({
 
 // @req R-DASH-07 @req R-WEB-02
 for (const theme of ["dark", "light"] as const)
-  test(`dashboard visual baselines in ${theme}`, async ({
-    page,
-    context,
-  }, info) => {
-    test.skip(
-      info.project.name === "small-mobile",
-      "320px retains the full functional and overflow matrix; visual baselines cover 390px and 1440px.",
-    );
+  test(`dashboard visual baselines in ${theme}`, async ({ page, context }) => {
     const data = await fixture();
     await installVisualTime(page, data.visual.timeShiftMs);
     await context.clearCookies();
@@ -1414,6 +1511,7 @@ for (const theme of ["dark", "light"] as const)
     // prefixes and receipt clocks remain covered by the functional matrix.
     for (const [name, path] of [
       ["home", "/home"],
+      ["installation", "/installation"],
       ["sessions", "/sessions"],
       ["session", `/s/${data.visual.sessionId}`],
       ["sql", "/sql"],
@@ -1448,29 +1546,45 @@ for (const theme of ["dark", "light"] as const)
           })
           .click();
         await expect(
-          page.getByRole("cell", { name: "ingest", exact: true }),
+          page.getByRole("table").getByText("ingest", { exact: true }),
         ).toHaveCount(3);
         await page
           .getByText(copy.workspace.audit.filters, { exact: true })
           .click();
       }
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(
+        page.getByRole("button", {
+          name: theme === "dark" ? copy.theme.light : copy.theme.dark,
+          exact: true,
+        }),
+      ).toBeVisible();
       if (name === "session")
         await expect(page.locator(".shiki")).toBeVisible();
       await accessible(page);
       await expect(page.getByRole("alert")).toHaveCount(0);
       for (const table of await page.locator(".data-table").all()) {
-        const chooser = table.locator(".column-chooser");
+        const chooser = page.getByRole("dialog");
         const labels = (await table.locator("thead th").allTextContents())
           .map((label) => label.trim())
           .filter((label) => dynamicColumns.has(label));
         if (labels.length) {
-          await chooser.locator("summary").click();
+          await table
+            .getByRole("button", {
+              name: copy.workspace.common.columns,
+              exact: true,
+            })
+            .click();
           for (const label of labels)
             await chooser
               .getByRole("checkbox", { name: label, exact: true })
               .uncheck();
-          await chooser.locator("summary").click();
+          await chooser
+            .getByRole("button", {
+              name: copy.workspace.common.close,
+              exact: true,
+            })
+            .click();
         }
       }
       await page.evaluate(() => {
@@ -1481,42 +1595,27 @@ for (const theme of ["dark", "light"] as const)
     expect(errors).toEqual([]);
   });
 
-// @req R-DASH-13 @req R-DASH-15 @req R-WEB-02
-test("Status filters real metrics, keeps units separate, and exports the filtered rows", async ({
+// @req R-DASH-13 @req R-WEB-02
+test("Status filters operational health and exports its rows without duplicating Home", async ({
   page,
 }) => {
   await page.goto("/admin/status");
   await expect(
-    page.getByRole("heading", {
-      name: copy.workspace.systemStatus.currentWeek,
+    page.getByRole("region", {
+      name: copy.workspace.systemStatus.groups.usage,
       exact: true,
     }),
-  ).toBeVisible();
-  await expect(page.locator(".reuse-values dd")).toHaveCount(2);
-  await expect(page.locator(".reuse-guardrails dt")).toHaveText([
-    copy.workspace.systemStatus.metrics.capture_coverage,
-    copy.workspace.systemStatus.metrics.follow_through_rate,
-    copy.workspace.systemStatus.metrics.zero_result_rate,
-  ]);
-  await page
-    .getByText(copy.workspace.systemStatus.trend, { exact: true })
-    .click();
-  const trend = page.locator(".reuse-headline .metric-chart");
-  await expect(trend).toHaveCount(2);
-  await expect(trend.first().locator("li")).toHaveCount(8);
-  const since = new Date();
-  since.setUTCDate(since.getUTCDate() - 1);
-  const sinceDate = since.toISOString().slice(0, 10);
-  await page
-    .getByLabel(copy.workspace.systemStatus.dateFrom, { exact: true })
-    .fill(sinceDate);
-  const dateFiltered = page.waitForRequest((request) => {
-    const url = new URL(request.url());
-    return (
-      url.pathname === "/api/v1/admin/metrics/health" &&
-      url.searchParams.get("filters[date_from]") ===
-        `${sinceDate}T00:00:00.000Z`
-    );
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("region", {
+      name: copy.workspace.searchAdoption.title,
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(page.locator(".reuse-headline")).toHaveCount(0);
+  const health = page.getByRole("region", {
+    name: copy.workspace.systemStatus.groups.health,
+    exact: true,
   });
   await page
     .getByRole("textbox", {
@@ -1528,24 +1627,19 @@ test("Status filters real metrics, keeps units separate, and exports the filtere
     .getByRole("form", { name: copy.workspace.systemStatus.dateFilters })
     .getByRole("button", { name: copy.workspace.common.apply, exact: true })
     .click();
-  await dateFiltered;
-  const health = page.getByRole("region", {
-    name: copy.workspace.systemStatus.groups.health,
-    exact: true,
-  });
-  await expect(health.locator(".metric-scope")).toHaveText(
-    `${copy.workspace.systemStatus.repoScope} github.com/rek7/agentcommons`,
-  );
   await health
     .getByRole("combobox", {
       name: copy.workspace.systemStatus.metric,
       exact: true,
     })
     .selectOption("sessions");
-  await expect(health.locator(".loading-state")).toHaveCount(0);
-  await expect(health.locator(".chart-unit")).toHaveText(
+  await expect(health.locator(".metric-plot figcaption span")).toHaveText(
     copy.workspace.systemStatus.units.count,
   );
+  await expect(health.locator(".metric-scope")).toContainText(
+    "github.com/rek7/agentcommons",
+  );
+  await health.locator(".metric-data > summary").click();
   const download = page.waitForEvent("download");
   await health
     .getByRole("button", { name: copy.workspace.common.export, exact: true })
@@ -1561,27 +1655,9 @@ test("Status filters real metrics, keeps units separate, and exports the filtere
       (row) =>
         row[copy.workspace.systemStatus.dimensions.metric] === "sessions" &&
         row[copy.workspace.systemStatus.dimensions.repo_name] ===
-          "github.com/rek7/agentcommons" &&
-        Number(row[copy.workspace.systemStatus.dimensions.value]) > 0,
+          "github.com/rek7/agentcommons",
     ),
   ).toBe(true);
-  await page
-    .getByLabel(copy.workspace.systemStatus.group, { exact: true })
-    .selectOption("usage");
-  const usage = page.getByRole("region", {
-    name: copy.workspace.systemStatus.groups.usage,
-    exact: true,
-  });
-  await usage
-    .getByRole("combobox", {
-      name: copy.workspace.systemStatus.metric,
-      exact: true,
-    })
-    .selectOption("follow_through_rate");
-  await expect(usage.locator(".loading-state")).toHaveCount(0);
-  await expect(usage.locator(".chart-unit")).toHaveText(
-    copy.workspace.systemStatus.units.ratio,
-  );
   await page
     .getByRole("textbox", {
       name: copy.workspace.systemStatus.repo,
@@ -1592,27 +1668,16 @@ test("Status filters real metrics, keeps units separate, and exports the filtere
     .getByRole("form", { name: copy.workspace.systemStatus.dateFilters })
     .getByRole("button", { name: copy.workspace.common.apply, exact: true })
     .click();
-  await expect(usage.locator(".metric-chart strong")).toContainText(
-    copy.workspace.common.unavailable,
+  await expect(health.locator(".metric-scope")).toContainText(
+    "no-such-browser-repository",
   );
-  await expect(usage.locator(".metric-scope")).toHaveText(
-    `${copy.workspace.systemStatus.repoScope} no-such-browser-repository`,
-  );
-  const emptyDownload = page.waitForEvent("download");
-  await usage
-    .getByRole("button", { name: copy.workspace.common.export, exact: true })
-    .click();
-  const emptyCsv = Papa.parse<Record<string, string>>(
-    await readFile(await (await emptyDownload).path(), "utf8"),
-    { header: true, skipEmptyLines: true },
-  );
-  expect(emptyCsv.errors).toEqual([]);
-  expect(emptyCsv.data).toHaveLength(1);
-  expect(emptyCsv.data[0]).toMatchObject({
-    [copy.workspace.systemStatus.dimensions.numerator]: "0",
-    [copy.workspace.systemStatus.dimensions.denominator]: "0",
-    [copy.workspace.systemStatus.dimensions.value]: "",
-  });
+  await health.locator(".metric-data > summary").click();
+  await expect(
+    health.getByRole("button", {
+      name: copy.workspace.common.export,
+      exact: true,
+    }),
+  ).toBeDisabled();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await formThemes(page);
 });
@@ -1653,34 +1718,24 @@ test("installation rollout requires reasons and exposes both outcome groups", as
     .click();
   await expect(dialog).toHaveCount(0);
   await expect(row).toContainText(copy.workspace.systemStatus.toolsDisabled);
-  await page
-    .getByLabel(copy.workspace.systemStatus.group, { exact: true })
-    .selectOption("outcomes");
-  const outcomes = page.getByRole("region", {
-    name: copy.workspace.systemStatus.groups.outcomes,
-    exact: true,
+  const outcomeFilters = new URLSearchParams({
+    filters: JSON.stringify({
+      date_from: "2020-01-01T00:00:00.000Z",
+      date_to: "2100-01-01T00:00:00.000Z",
+      metric: "tool_calls_per_session",
+    }),
   });
-  await expect(outcomes).toContainText(copy.workspace.systemStatus.comparisons);
-  await expect(
-    outcomes.getByRole("cell", {
-      name: copy.workspace.systemStatus.toolsEnabled,
-      exact: true,
-    }),
-  ).toHaveCount(1);
-  await expect(
-    outcomes.getByRole("cell", {
-      name: copy.workspace.systemStatus.toolsDisabled,
-      exact: true,
-    }),
-  ).toHaveCount(1);
-  await outcomes
-    .getByRole("combobox", {
-      name: copy.workspace.systemStatus.metric,
-      exact: true,
+  const outcomeResponse = await page.request.get(
+    `/api/v1/admin/metrics/outcomes?${outcomeFilters.toString()}`,
+  );
+  expect(outcomeResponse.ok()).toBe(true);
+  const outcomes = z
+    .object({
+      items: z.array(z.object({ tools_enabled: z.boolean().nullable() })),
     })
-    .selectOption("duration_seconds_per_session");
-  await expect(outcomes.locator(".chart-unit")).toHaveText(
-    copy.workspace.systemStatus.units.seconds,
+    .parse(await outcomeResponse.json());
+  expect(new Set(outcomes.items.map((item) => item.tools_enabled))).toEqual(
+    new Set([true, false]),
   );
   await row
     .getByRole("button", {
@@ -1724,8 +1779,8 @@ test("installation rollout requires reasons and exposes both outcome groups", as
     );
   });
   await rollout
-    .getByRole("columnheader", {
-      name: copy.workspace.fields.last_seen_at,
+    .getByRole("button", {
+      name: copy.workspace.common.sortDescending,
       exact: true,
     })
     .click();
@@ -1784,12 +1839,8 @@ test("session reuse follows actual cross-user reads in both directions", async (
     );
   });
   await inbound
-    .getByRole("columnheader", {
-      name: copy.workspace.home.reader,
-      exact: true,
-    })
-    .getByRole("button")
-    .click();
+    .getByRole("combobox", { name: copy.workspace.common.sortBy, exact: true })
+    .selectOption("reader_email");
   expect(new URL((await sorted).url()).searchParams.get("reader_user_id")).toBe(
     data.reuse.readerUserId,
   );
@@ -1813,6 +1864,20 @@ test("session reuse follows actual cross-user reads in both directions", async (
   ).toBeVisible();
   await formThemes(page);
   await page.goto("/sessions");
+  await page
+    .getByRole("button", { name: copy.workspace.common.columns, exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("checkbox", {
+      name: copy.workspace.fields.reuse_count,
+      exact: true,
+    })
+    .check();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: copy.workspace.common.close, exact: true })
+    .click();
   await expect(
     page.getByRole("columnheader", {
       name: copy.workspace.fields.reuse_count,
@@ -1821,8 +1886,21 @@ test("session reuse follows actual cross-user reads in both directions", async (
   ).toHaveCount(1);
 });
 
-// @req R-DASH-16 @req R-ORG-10 @req R-WEB-02
-test("Home shows native reuse and keeps search gaps private to each member", async ({
+async function runWorkspaceSql(page: Page, sql: string) {
+  await page.goto("http://localhost:3000/sql");
+  const editor = page.getByRole("textbox", { name: copy.workspace.sql.editor });
+  await editor.focus();
+  await editor.press("ControlOrMeta+A");
+  await editor.pressSequentially(sql);
+  await editor.press("Escape");
+  await page
+    .getByRole("button", { name: copy.workspace.sql.run, exact: true })
+    .click();
+  await expect(page.getByRole("table")).toBeVisible();
+}
+
+// @req R-DASH-16 @req R-DASH-15 @req R-ORG-10 @req R-WEB-02
+test("Home shows only the selected dashboard and native SQL keeps search gaps private", async ({
   page,
   browser,
 }, info) => {
@@ -1831,88 +1909,295 @@ test("Home shows native reuse and keeps search gaps private to each member", asy
   await expect(
     page.getByRole("heading", { name: copy.workspace.home.title, exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".reuse-values dd")).toHaveCount(2);
+  const summary = page.getByRole("region", {
+    name: copy.workspace.home.currentWeek,
+    exact: true,
+  });
+  await expect(summary.locator(".home-summary-grid > div")).toHaveCount(4);
   await expect(
-    page
-      .locator(".status-metrics > div")
-      .filter({ hasText: copy.workspace.home.helped })
+    summary
+      .locator(".home-summary-grid > div")
+      .filter({ hasText: copy.workspace.home.reusedSessions })
       .locator("dd"),
-  ).toHaveText("1");
-  await page.getByText(copy.workspace.home.trend, { exact: true }).click();
-  await expect(page.locator(".metric-chart").first().locator("li")).toHaveCount(
-    8,
-  );
+  ).toHaveText(/[1-9]\d*/);
+  await expect(page.locator(".home-insights")).toHaveCount(0);
   await expect(
-    page.locator(`a[href="/s/${data.reuse.sourceSessionId}"]`),
+    page.getByLabel(copy.workspace.profiles.selector, { exact: true }),
   ).toBeVisible();
-  await page
-    .getByLabel(copy.workspace.home.section, { exact: true })
-    .selectOption("zero_results");
-  await expect(
-    page.getByText(copy.workspace.home.hints.zero_results, { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(copy.workspace.home.hints.reused, { exact: true }),
-  ).toHaveCount(0);
+  await formThemes(page);
+  const sql =
+    "SELECT query FROM metrics_own_zero_results ORDER BY searched_at DESC";
+  await runWorkspaceSql(page, sql);
   await expect(page.getByRole("table")).toContainText(
     "missing-owner-only-browser-evidence-8c2f",
   );
   await expect(page.getByRole("table")).not.toContainText(
     "missing-browser-reuse-evidence-7f9a",
   );
-  await page
-    .getByLabel(copy.workspace.home.textFilter, { exact: true })
-    .fill("no-matching-browser-query");
-  await page
-    .getByRole("button", { name: copy.workspace.common.apply, exact: true })
-    .click();
-  await expect(page.getByRole("table")).not.toContainText(
-    "missing-owner-only-browser-evidence-8c2f",
-  );
-  await page
-    .getByLabel(copy.workspace.home.textFilter, { exact: true })
-    .fill("missing-owner-only");
-  await page
-    .getByRole("button", { name: copy.workspace.common.apply, exact: true })
-    .click();
-  await expect(page.getByRole("table")).toContainText(
-    "missing-owner-only-browser-evidence-8c2f",
-  );
-  await formThemes(page);
   const member = await browser.newContext({
     viewport: info.project.use.viewport ?? { width: 390, height: 844 },
   });
-  await member.addCookies(data.reuse.storageState.cookies);
-  const memberPage = await member.newPage();
-  await memberPage.goto("http://localhost:3000/home");
+  try {
+    await member.addCookies(data.reuse.storageState.cookies);
+    const memberPage = await member.newPage();
+    await memberPage.goto("http://localhost:3000/home");
+    await runWorkspaceSql(memberPage, sql);
+    await expect(memberPage.getByRole("table")).toContainText(
+      "missing-browser-reuse-evidence-7f9a",
+    );
+    await expect(memberPage.getByRole("table")).not.toContainText(
+      "missing-owner-only-browser-evidence-8c2f",
+    );
+    const download = memberPage.waitForEvent("download");
+    await memberPage
+      .getByRole("button", { name: copy.workspace.common.export, exact: true })
+      .click();
+    const csv = await readFile(await (await download).path(), "utf8");
+    expect(csv).toContain("missing-browser-reuse-evidence-7f9a");
+    expect(csv).not.toContain("missing-owner-only-browser-evidence-8c2f");
+    await formThemes(memberPage);
+  } finally {
+    await member.close();
+  }
+});
+
+// @req R-DASH-18 @req R-ORG-10 @req R-WEB-02 @req R-DASH-02
+test("transcript search adoption counts attempts, respects visibility, and exports Usage", async ({
+  page,
+  context,
+}, info) => {
+  const data = await fixture();
+  await context.clearCookies();
+  await context.addCookies(data.adoption.ownerStorageState.cookies);
+  await page.goto("/home");
+  await selectOrganization(page, data.adoption.organizationId);
+  const metric = (label: string) =>
+    page
+      .locator(".home-summary-grid > div")
+      .filter({ hasText: label })
+      .locator("dd");
+  await expect(metric(copy.workspace.home.searchedSessions)).toHaveText("2");
+  const sql =
+    "SELECT count() AS sessions,countIf(agentcommons_search_calls>0) AS searched_sessions,sum(agentcommons_search_calls) AS calls,sum(repeat_agentcommons_search_calls) AS repeat_calls,sum(subsequent_other_search_calls) AS later_calls FROM metrics_search_sessions";
+  const counts = async (values: string[]) => {
+    await runWorkspaceSql(page, sql);
+    const details = page
+      .getByRole("table")
+      .getByRole("row")
+      .nth(1)
+      .getByRole("button", {
+        name: copy.workspace.common.viewDetails,
+        exact: true,
+      });
+    if (info.project.use.hasTouch) await details.tap();
+    else await details.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.locator(".record-fields dd")).toHaveText(values);
+    await dialog
+      .getByRole("button", { name: copy.workspace.common.close, exact: true })
+      .click();
+  };
+  await counts(["2", "2", "4", "2", "4"]);
+  await formThemes(page);
+  await page.screenshot({ path: info.outputPath("search-adoption.png") });
+
+  const expected = {
+    agentcommons_search_sessions: 2,
+    agentcommons_search_rate: 1,
+    agentcommons_search_calls: 4,
+    repeat_agentcommons_search_calls: 2,
+    subsequent_other_search_calls: 4,
+  } as const;
+  for (const [name, value] of Object.entries(expected)) {
+    const query = new URLSearchParams({
+      format: "csv",
+      filters: JSON.stringify({
+        date_from: "2020-01-01T00:00:00.000Z",
+        date_to: "2100-01-01T00:00:00.000Z",
+        metric: name,
+      }),
+    });
+    const response = await page.request.get(
+      `/api/v1/admin/metrics/usage?${query.toString()}`,
+    );
+    expect(response.ok()).toBe(true);
+    const csv = Papa.parse<Record<string, string>>(await response.text(), {
+      header: true,
+      skipEmptyLines: true,
+    });
+    expect(csv.errors).toEqual([]);
+    expect(csv.data.length).toBeGreaterThan(0);
+    expect(csv.data.every((row) => row.metric === name)).toBe(true);
+    const values = csv.data.map((row) => Number(row.value));
+    expect(
+      name === "agentcommons_search_rate"
+        ? Math.max(...values)
+        : values.reduce((sum, current) => sum + current, 0),
+    ).toBe(value);
+  }
+  await formThemes(page);
+
+  await context.clearCookies();
+  await context.addCookies(data.adoption.memberStorageState.cookies);
+  await page.goto("/home");
+  await expect(metric(copy.workspace.home.searchedSessions)).toHaveText("1");
+  await counts(["1", "1", "2", "1", "2"]);
+  await formThemes(page);
+  await context.clearCookies();
+  await context.addCookies(data.adoption.ownerStorageState.cookies);
+  await page.goto("/home");
+  await selectOrganization(page, data.adoption.emptyOrganizationId);
+  await expect(metric(copy.workspace.home.searchedSessions)).toHaveText("0");
   await expect(
-    memberPage.getByRole("heading", {
-      name: copy.workspace.home.title,
+    page.getByRole("link", {
+      name: copy.workspace.home.setupCapture,
       exact: true,
     }),
   ).toBeVisible();
+  await counts(["0", "0", "0", "0", "0"]);
+  await formThemes(page);
+  await selectOrganization(page, data.adoption.organizationId);
+  await counts(["2", "2", "4", "2", "4"]);
+});
+
+// @req R-SRCH-13 @req R-WEB-02
+test("structured tool conditions search full typed parameters and retain them in CSV exports", async ({
+  page,
+}, info) => {
+  const data = await fixture();
+  const labels = copy.workspace.sessions.conditions;
+  const identity = randomUUID();
+  const toolName = `mcp__FutureVendor_${identity}__Search`;
+  const envelope = {
+    ...data.liveEnvelope,
+    harnessSessionId: identity,
+    context: {
+      ...data.liveEnvelope.context,
+      git: {
+        ...data.liveEnvelope.context.git,
+        branch: `structured-${identity}`,
+      },
+    },
+    batchId: randomUUID(),
+    sourcePos: 0,
+    cursor: "1:0",
+    behavior: "sync",
+    end: null,
+    records: [
+      {
+        pos: 0,
+        sourceVersion: 0,
+        key: "structured-browser",
+        line: JSON.stringify({
+          type: "assistant",
+          uuid: "structured-browser",
+          timestamp: new Date().toISOString(),
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "browser-condition-call",
+                name: toolName,
+                input: {
+                  padding: "x".repeat(3000),
+                  options: { limit: 2, "dot.key": ["Auth%_literal"] },
+                },
+              },
+            ],
+          },
+        }),
+      },
+    ],
+  };
+  const captured = await page.request.post("/api/v1/ingest", {
+    headers: {
+      authorization: `Bearer ${data.ingestKey}`,
+      origin: "http://localhost:3000",
+    },
+    data: envelope,
+  });
+  expect(captured.status(), await captured.text()).toBe(202);
+  const id = z
+    .object({ sessionId: z.uuid() })
+    .parse(await captured.json()).sessionId;
+  await waitForSession(page.request, id, data.ingestKey);
+  await page.goto("/sessions");
+  await page.getByText(labels.title, { exact: true }).click();
+  await page
+    .getByRole("combobox", { name: labels.field, exact: true })
+    .selectOption("tool_name");
+  await page
+    .getByRole("combobox", { name: labels.operator, exact: true })
+    .selectOption("contains");
+  await page
+    .getByLabel(labels.value, { exact: true })
+    .fill(toolName.toLowerCase());
+  await page.getByRole("button", { name: labels.add, exact: true }).click();
+  await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1);
   await expect(
-    memberPage
-      .locator(".status-metrics > div")
-      .filter({ hasText: copy.workspace.home.made })
-      .locator("dd"),
-  ).toHaveText("1");
-  await memberPage
-    .getByLabel(copy.workspace.home.section, { exact: true })
-    .selectOption("zero_results");
-  await expect(memberPage.getByRole("table")).toContainText(
-    "missing-browser-reuse-evidence-7f9a",
-  );
-  await expect(memberPage.getByRole("table")).not.toContainText(
-    "missing-owner-only-browser-evidence-8c2f",
-  );
-  const download = memberPage.waitForEvent("download");
-  await memberPage
+    page.getByRole("table").locator(`a[href="/s/${id}"]`),
+  ).toBeVisible();
+  await page
+    .getByRole("combobox", { name: labels.field, exact: true })
+    .selectOption("tool_input");
+  await page
+    .getByLabel(labels.path, { exact: true })
+    .fill('["options", "limit"]');
+  await page
+    .getByRole("combobox", { name: labels.operator, exact: true })
+    .selectOption("eq");
+  await page.getByLabel(labels.json, { exact: true }).check();
+  await page.getByLabel(labels.value, { exact: true }).fill("2");
+  const filtered = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/v1/sessions" &&
+      (url.searchParams.get("filters") ?? "").includes('"value":2')
+    );
+  });
+  await page.getByRole("button", { name: labels.add, exact: true }).click();
+  expect((await filtered).status()).toBe(200);
+  await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1);
+  const downloaded = page.waitForEvent("download");
+  await page
     .getByRole("button", { name: copy.workspace.common.export, exact: true })
     .click();
-  const exported = await readFile(await (await download).path(), "utf8");
-  expect(exported).toContain("missing-browser-reuse-evidence-7f9a");
-  expect(exported).not.toContain("missing-owner-only-browser-evidence-8c2f");
-  await formThemes(memberPage);
-  await member.close();
+  const csv = await readFile(await (await downloaded).path(), "utf8");
+  const exported = Papa.parse<Record<string, string>>(csv, {
+    header: true,
+    skipEmptyLines: true,
+  });
+  expect(exported.errors).toEqual([]);
+  expect(exported.data).toHaveLength(1);
+  expect(exported.data[0]?.[copy.workspace.fields.branch]).toBe(
+    `structured-${identity}`,
+  );
+  await page
+    .getByLabel(copy.workspace.common.search, { exact: true })
+    .fill("padding");
+  const searched = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/v1/search",
+  );
+  await page
+    .getByRole("button", { name: copy.workspace.sessions.search, exact: true })
+    .click();
+  expect((await searched).status()).toBe(200);
+  await expect(page.locator(".search-block")).toHaveCount(1);
+  await page
+    .getByRole("button", {
+      name: copy.workspace.sessions.showList,
+      exact: true,
+    })
+    .click();
+  await page.getByLabel(labels.value, { exact: true }).fill('"2"');
+  await page.getByRole("button", { name: labels.add, exact: true }).click();
+  await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(0);
+  const remove = page.getByRole("button", {
+    name: `${labels.remove} 3`,
+    exact: true,
+  });
+  if (info.project.name === "desktop") await remove.click();
+  else await remove.tap();
+  await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1);
+  await formThemes(page);
 });

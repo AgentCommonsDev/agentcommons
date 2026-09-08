@@ -1,6 +1,110 @@
 // Generated from the server OpenAPI contract. Do not edit.
 import type { JsonValue } from "@agentcommons/core/schemas/common";
 export interface paths {
+  "/api/v1/me/dashboards": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List personal dashboards and their declaration schema */
+    get: operations["get_me_dashboards"];
+    put?: never;
+    /** Create or update a personal dashboard */
+    post: operations["post_me_dashboards"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/me/dashboards/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** Delete a personal dashboard */
+    delete: operations["delete_me_dashboards_id"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/organization/embeddings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read organization embedding configuration and progress */
+    get: operations["get_organization_embeddings"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Enable or disable embeddings for this organization */
+    patch: operations["patch_organization_embeddings"];
+    trace?: never;
+  };
+  "/api/v1/billing": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read the organization's monthly session usage */
+    get: operations["get_billing"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/billing/checkout": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Open Pro checkout for the current organization */
+    post: operations["post_billing_checkout"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/billing/portal": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Open the current organization's billing portal */
+    post: operations["post_billing_portal"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/home": {
     parameters: {
       query?: never;
@@ -305,17 +409,35 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/me": {
+  "/api/v1/admin/domains": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** Read the current identity and organization */
-    get: operations["get_me"];
+    /** List Google SSO domain access */
+    get: operations["get_admin_domains"];
     put?: never;
-    post?: never;
+    /** Register a Google SSO domain and return its DNS proof */
+    post: operations["post_admin_domains"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/domains/verify": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Verify Google SSO domain DNS ownership */
+    post: operations["post_admin_domains_verify"];
     delete?: never;
     options?: never;
     head?: never;
@@ -331,6 +453,41 @@ export interface paths {
     };
     /** List current organization memberships */
     get: operations["get_me_organizations"];
+    put?: never;
+    /** Create another organization with a verified SaaS identity */
+    post: operations["post_me_organizations"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/onboarding": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Create the verified identity's first organization */
+    post: operations["post_onboarding"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/me": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read the current identity and organization */
+    get: operations["get_me"];
     put?: never;
     post?: never;
     delete?: never;
@@ -880,6 +1037,70 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/billing/config": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read public plans and billing availability */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Default Response */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              /** @enum {string} */
+              mode: "customer" | "public" | "saas";
+              enabled: boolean;
+              plans: {
+                free: {
+                  monthly_records: number;
+                };
+                pro: {
+                  included_records: number;
+                  /**
+                   * @default 100
+                   * @enum {number}
+                   */
+                  monthly_price_usd: 100;
+                  capture_usd_per_1000: number | null;
+                };
+                embeddings: {
+                  /**
+                   * @default 50
+                   * @enum {number}
+                   */
+                  monthly_price_usd: 50;
+                  messages_usd_per_1000: number | null;
+                };
+              };
+              checkout_enabled: boolean;
+              cal_com_url: string | null;
+            };
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/auth/config": {
     parameters: {
       query?: never;
@@ -939,6 +1160,537 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  get_me_dashboards: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            items: {
+              /** Format: uuid */
+              id: string;
+              organization_id: string;
+              user_id: string;
+              name: string;
+              definition: {
+                /** @enum {number} */
+                version: 1;
+                widgets: {
+                  id: string;
+                  title: string;
+                  sql: string;
+                  /** @enum {string} */
+                  display: "number" | "line" | "bar" | "table";
+                  x?: string;
+                  y?: string;
+                  /** @enum {string} */
+                  unit: "count" | "ratio" | "seconds" | "tokens" | "usd";
+                }[];
+              };
+              revision: number;
+              /** Format: date-time */
+              updated_at: string;
+            }[];
+            definition_schema: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_me_dashboards: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** Format: uuid */
+          id?: string;
+          revision?: number;
+          name: string;
+          definition: {
+            /** @enum {number} */
+            version: 1;
+            widgets: {
+              id: string;
+              title: string;
+              sql: string;
+              /** @enum {string} */
+              display: "number" | "line" | "bar" | "table";
+              x?: string;
+              y?: string;
+              /** @enum {string} */
+              unit: "count" | "ratio" | "seconds" | "tokens" | "usd";
+            }[];
+          };
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            /** Format: uuid */
+            id: string;
+            organization_id: string;
+            user_id: string;
+            name: string;
+            definition: {
+              /** @enum {number} */
+              version: 1;
+              widgets: {
+                id: string;
+                title: string;
+                sql: string;
+                /** @enum {string} */
+                display: "number" | "line" | "bar" | "table";
+                x?: string;
+                y?: string;
+                /** @enum {string} */
+                unit: "count" | "ratio" | "seconds" | "tokens" | "usd";
+              }[];
+            };
+            revision: number;
+            /** Format: date-time */
+            updated_at: string;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  delete_me_dashboards_id: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": Record<string, never> | null;
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            deleted: boolean;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_organization_embeddings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            enabled: boolean;
+            available: boolean;
+            entitled: boolean;
+            effective: boolean;
+            provider: ("openai" | "fake") | null;
+            model: string | null;
+            sessions_total: number;
+            sessions_indexed: number;
+            sessions_pending: number;
+            last_attempt: ("completed" | "failed" | "reserved") | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  patch_organization_embeddings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          reason: string;
+          enabled: boolean;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            enabled: boolean;
+            available: boolean;
+            entitled: boolean;
+            effective: boolean;
+            provider: ("openai" | "fake") | null;
+            model: string | null;
+            sessions_total: number;
+            sessions_indexed: number;
+            sessions_pending: number;
+            last_attempt: ("completed" | "failed" | "reserved") | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_billing: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            /** @enum {string} */
+            plan: "free" | "pro" | "pro_embeddings" | "unmetered";
+            /** Format: date-time */
+            period_start: string;
+            /** Format: date-time */
+            period_end: string;
+            records_used: number;
+            included_records: number | null;
+            remaining: number | null;
+            overage_records: number;
+            embedding_messages_used: number;
+            estimated_capture_usd: number | null;
+            estimated_embedding_usd: number | null;
+            metering_pending: number;
+            metering_reconciliation_required: number;
+            can_manage: boolean;
+            checkout_enabled: boolean;
+            portal_enabled: boolean;
+            cal_com_url: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_billing_checkout: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @enum {string} */
+          plan: "pro" | "pro_embeddings";
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            url: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_billing_portal: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": Record<string, never>;
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            url: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
   get_home: {
     parameters: {
       query?: never;
@@ -971,6 +1723,14 @@ export interface operations {
               sessions_reused_by_others: number;
               distinct_readers: number;
               reuses_made: number;
+            };
+            search_adoption: {
+              sessions: number;
+              agentcommons_search_sessions: number;
+              agentcommons_search_rate: number | null;
+              agentcommons_search_calls: number;
+              repeat_agentcommons_search_calls: number;
+              subsequent_other_search_calls: number;
             };
           };
         };
@@ -1196,6 +1956,8 @@ export interface operations {
         };
         content: {
           "application/json": {
+            /** @enum {string} */
+            publication: "queued" | "published";
             /** Format: uuid */
             sessionId: string;
             accepted: number;
@@ -1258,6 +2020,91 @@ export interface operations {
             session_id?: string | string[];
             since?: string | string[];
             until?: string | string[];
+            where?: (
+              | {
+                  /** @enum {string} */
+                  field:
+                    | "tool_name"
+                    | "tool_use_id"
+                    | "content"
+                    | "role"
+                    | "kind"
+                    | "model"
+                    | "harness"
+                    | "title"
+                    | "repo_name"
+                    | "branch"
+                    | "user_email"
+                    | "status"
+                    | "tool_input";
+                  path?: string[];
+                  /** @enum {string} */
+                  op: "eq";
+                  value: string | number | boolean | null;
+                }
+              | {
+                  /** @enum {string} */
+                  field:
+                    | "tool_name"
+                    | "tool_use_id"
+                    | "content"
+                    | "role"
+                    | "kind"
+                    | "model"
+                    | "harness"
+                    | "title"
+                    | "repo_name"
+                    | "branch"
+                    | "user_email"
+                    | "status"
+                    | "tool_input";
+                  path?: string[];
+                  /** @enum {string} */
+                  op: "contains";
+                  value: string;
+                }
+              | {
+                  /** @enum {string} */
+                  field:
+                    | "tool_name"
+                    | "tool_use_id"
+                    | "content"
+                    | "role"
+                    | "kind"
+                    | "model"
+                    | "harness"
+                    | "title"
+                    | "repo_name"
+                    | "branch"
+                    | "user_email"
+                    | "status"
+                    | "tool_input";
+                  path?: string[];
+                  /** @enum {string} */
+                  op: "starts_with";
+                  value: string;
+                }
+              | {
+                  /** @enum {string} */
+                  field:
+                    | "tool_name"
+                    | "tool_use_id"
+                    | "content"
+                    | "role"
+                    | "kind"
+                    | "model"
+                    | "harness"
+                    | "title"
+                    | "repo_name"
+                    | "branch"
+                    | "user_email"
+                    | "status"
+                    | "tool_input";
+                  path?: string[];
+                  /** @enum {string} */
+                  op: "exists";
+                }
+            )[];
           };
           /** @default 1 */
           context?: number;
@@ -1504,6 +2351,91 @@ export interface operations {
           session_id?: string | string[];
           since?: string | string[];
           until?: string | string[];
+          where?: (
+            | {
+                /** @enum {string} */
+                field:
+                  | "tool_name"
+                  | "tool_use_id"
+                  | "content"
+                  | "role"
+                  | "kind"
+                  | "model"
+                  | "harness"
+                  | "title"
+                  | "repo_name"
+                  | "branch"
+                  | "user_email"
+                  | "status"
+                  | "tool_input";
+                path?: string[];
+                /** @enum {string} */
+                op: "eq";
+                value: string | number | boolean | null;
+              }
+            | {
+                /** @enum {string} */
+                field:
+                  | "tool_name"
+                  | "tool_use_id"
+                  | "content"
+                  | "role"
+                  | "kind"
+                  | "model"
+                  | "harness"
+                  | "title"
+                  | "repo_name"
+                  | "branch"
+                  | "user_email"
+                  | "status"
+                  | "tool_input";
+                path?: string[];
+                /** @enum {string} */
+                op: "contains";
+                value: string;
+              }
+            | {
+                /** @enum {string} */
+                field:
+                  | "tool_name"
+                  | "tool_use_id"
+                  | "content"
+                  | "role"
+                  | "kind"
+                  | "model"
+                  | "harness"
+                  | "title"
+                  | "repo_name"
+                  | "branch"
+                  | "user_email"
+                  | "status"
+                  | "tool_input";
+                path?: string[];
+                /** @enum {string} */
+                op: "starts_with";
+                value: string;
+              }
+            | {
+                /** @enum {string} */
+                field:
+                  | "tool_name"
+                  | "tool_use_id"
+                  | "content"
+                  | "role"
+                  | "kind"
+                  | "model"
+                  | "harness"
+                  | "title"
+                  | "repo_name"
+                  | "branch"
+                  | "user_email"
+                  | "status"
+                  | "tool_input";
+                path?: string[];
+                /** @enum {string} */
+                op: "exists";
+              }
+          )[];
         };
       };
       header?: never;
@@ -1558,6 +2490,8 @@ export interface operations {
               observed_commit_count: number;
               reuse_count: number;
               agent_type: string | null;
+              parent_session_id: string | null;
+              parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
               parent: {
                 /** Format: uuid */
                 session_id: string;
@@ -1676,6 +2610,8 @@ export interface operations {
               observed_commit_count: number;
               reuse_count: number;
               agent_type: string | null;
+              parent_session_id: string | null;
+              parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
               parent: {
                 /** Format: uuid */
                 session_id: string;
@@ -1793,6 +2729,8 @@ export interface operations {
               observed_commit_count: number;
               reuse_count: number;
               agent_type: string | null;
+              parent_session_id: string | null;
+              parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
               parent: {
                 /** Format: uuid */
                 session_id: string;
@@ -2271,9 +3209,16 @@ export interface operations {
       };
     };
   };
-  get_me: {
+  get_admin_domains: {
     parameters: {
-      query?: never;
+      query?: {
+        limit?: number;
+        cursor?: string;
+        domain?: string;
+        verified?: "true" | "false";
+        sort?: "domain" | "verified";
+        order?: "asc" | "desc";
+      };
       header?: never;
       path?: never;
       cookie?: never;
@@ -2287,37 +3232,149 @@ export interface operations {
         };
         content: {
           "application/json": {
-            user: {
-              id: string;
-              /** Format: email */
-              email: string;
+            enabled: boolean;
+            items: {
+              organization_id: string;
+              domain: string;
+              provider_id: string;
+              verified: boolean;
+              dns_record: {
+                /** @enum {string} */
+                type: "TXT";
+                name: string;
+                value: string;
+              } | null;
+            }[];
+            cursor: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_admin_domains: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          domain: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            organization_id: string;
+            domain: string;
+            provider_id: string;
+            verified: boolean;
+            dns_record: {
+              /** @enum {string} */
+              type: "TXT";
               name: string;
-            };
-            organization: {
-              id: string;
+              value: string;
+            } | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_admin_domains_verify: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          domain: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            organization_id: string;
+            domain: string;
+            provider_id: string;
+            verified: boolean;
+            dns_record: {
+              /** @enum {string} */
+              type: "TXT";
               name: string;
-              slug: string;
-              /** @enum {string} */
-              role: "owner" | "admin" | "member";
-            } | null;
-            caller: {
-              organizationId: string;
-              userId: string;
-              /** @enum {string} */
-              role: "owner" | "admin" | "member";
-              apiKeyId: string | null;
-              installationId?: string | null;
-              toolsEnabled?: boolean;
-              /** @enum {string} */
-              authMethod: "cookie" | "key";
-              permissions: {
-                sessions?: ("ingest" | "read")[];
-                admin?: "*"[];
-              };
-            } | null;
-            key: {
-              id: string;
-              name: string | null;
+              value: string;
             } | null;
           };
         };
@@ -2376,6 +3433,211 @@ export interface operations {
               role: "owner" | "admin" | "member";
             }[];
             active_organization_id: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_me_organizations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          name: string;
+          slug: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            organization_id: string;
+            created: boolean;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_onboarding: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          name: string;
+          slug: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            organization_id: string;
+            created: boolean;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_me: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            user: {
+              id: string;
+              /** Format: email */
+              email: string;
+              name: string;
+              email_verified: boolean;
+            };
+            /** @enum {string} */
+            onboarding:
+              | "not_applicable"
+              | "verify_email"
+              | "create_organization"
+              | "ready"
+              | "contact_admin";
+            organization: {
+              id: string;
+              name: string;
+              slug: string;
+              /** @enum {string} */
+              role: "owner" | "admin" | "member";
+            } | null;
+            caller: {
+              organizationId: string;
+              userId: string;
+              /** @enum {string} */
+              role: "owner" | "admin" | "member";
+              apiKeyId: string | null;
+              installationId?: string | null;
+              toolsEnabled?: boolean;
+              /** @enum {string} */
+              authMethod: "cookie" | "key";
+              permissions: {
+                sessions?: ("ingest" | "read")[];
+                admin?: "*"[];
+              };
+            } | null;
+            key: {
+              id: string;
+              name: string | null;
+            } | null;
           };
         };
       };
@@ -2507,6 +3769,8 @@ export interface operations {
               id: string;
               organization_id: string;
               user_id: string;
+              user_email: string | null;
+              user_name: string | null;
               name: string | null;
               prefix: string | null;
               permissions: {
@@ -2587,6 +3851,8 @@ export interface operations {
               id: string;
               organization_id: string;
               user_id: string;
+              user_email: string | null;
+              user_name: string | null;
               name: string | null;
               prefix: string | null;
               permissions: {
@@ -3110,6 +4376,8 @@ export interface operations {
               id: string;
               organization_id: string;
               user_id: string;
+              user_email: string | null;
+              user_name: string | null;
               name: string | null;
               prefix: string | null;
               permissions: {
@@ -3365,13 +4633,15 @@ export interface operations {
           "application/json": {
             id: string;
             updated: boolean;
+            /** @enum {string} */
+            cleanup: "queued" | "completed";
             manifest: {
               deleted: {
-                raw_records: number;
-                messages: number;
-                session_files: number;
-                message_chunks: number;
-                session_embeddings: number;
+                raw_records: number | null;
+                messages: number | null;
+                session_files: number | null;
+                message_chunks: number | null;
+                session_embeddings: number | null;
                 redaction_events: number;
               };
               nulled_fields: string[];
@@ -3544,6 +4814,11 @@ export interface operations {
             | "negative_capture_latency_records"
             | "authorization_blocked_sessions"
             | "redaction_hits"
+            | "agentcommons_search_sessions"
+            | "agentcommons_search_rate"
+            | "agentcommons_search_calls"
+            | "repeat_agentcommons_search_calls"
+            | "subsequent_other_search_calls"
             | "mcp_calls"
             | "memory_assisted_rate"
             | "follow_through_rate"
@@ -3586,6 +4861,11 @@ export interface operations {
                 | "negative_capture_latency_records"
                 | "authorization_blocked_sessions"
                 | "redaction_hits"
+                | "agentcommons_search_sessions"
+                | "agentcommons_search_rate"
+                | "agentcommons_search_calls"
+                | "repeat_agentcommons_search_calls"
+                | "subsequent_other_search_calls"
                 | "mcp_calls"
                 | "memory_assisted_rate"
                 | "follow_through_rate"
@@ -3667,6 +4947,14 @@ export interface operations {
         };
         content: {
           "application/json": {
+            projection: {
+              queued_sessions: number;
+              outbox_batches: number;
+              oldest_accepted_at: string | null;
+              failed_sessions: number;
+              waiting_source_sessions: number;
+              pending_audit_events: number;
+            };
             ingest_per_day: {
               /** Format: date */
               date: string;

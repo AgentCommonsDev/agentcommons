@@ -36,6 +36,7 @@ export class Redactor {
   private readonly policies: Map<string, RedactionPolicy>;
   private readonly rulePolicies = new Map<string, RedactionPolicy>();
   private readonly config: Config;
+  private readonly valuePatterns: Config;
   private readonly replacements: readonly string[];
 
   constructor(rows: readonly RedactionPolicy[] = []) {
@@ -55,12 +56,15 @@ export class Redactor {
         name: policy.name,
         pattern: new RegExp(policy.pattern, policy.flags).toString(),
       }));
-    if (patterns.length)
-      this.config.rules.push({
+    this.valuePatterns = { rules: [] };
+    if (patterns.length) {
+      this.valuePatterns.rules.push({
         id: pattern.meta.id,
         rule: pattern,
         options: { patterns },
       });
+      this.config.rules.push(...this.valuePatterns.rules);
+    }
     const scanners = new Map<string, Config["rules"][number]>();
     for (const policy of policies) {
       if (policy.kind !== "SECRETLINT_RULE") continue;
@@ -82,29 +86,43 @@ export class Redactor {
   }
 
   async text(value: string, prefix = ""): Promise<RedactionResult<string>> {
-    const result = await lintSource({
-      source: {
-        content: prefix + value,
-        filePath: "record.txt",
-        contentType: "text",
-      },
-      options: { config: this.config, noPhysicFilePath: true },
-    });
-    const ranges = result.messages
-      .map((message) => {
-        const data = reportDataSchema.safeParse(message.data);
-        const name = data.success ? data.data.PATTERN_NAME : undefined;
-        const policy = name
-          ? this.policies.get(name)
-          : this.rulePolicies.get(message.ruleId);
-        return {
-          start: Math.max(0, message.range[0] - prefix.length),
-          end: message.range[1] - prefix.length,
-          policy,
-          name:
-            name ?? message.ruleId.replace("@secretlint/secretlint-rule-", ""),
-        };
-      })
+    const sources = [
+      { prefix, config: this.config },
+      ...(prefix && this.valuePatterns.rules.length
+        ? [{ prefix: "", config: this.valuePatterns }]
+        : []),
+    ];
+    const scans = await Promise.all(
+      sources.map(async ({ prefix, config }) => ({
+        prefix,
+        result: await lintSource({
+          source: {
+            content: prefix + value,
+            filePath: "record.txt",
+            contentType: "text",
+          },
+          options: { config, noPhysicFilePath: true },
+        }),
+      })),
+    );
+    const ranges = scans
+      .flatMap(({ prefix, result }) =>
+        result.messages.map((message) => {
+          const data = reportDataSchema.safeParse(message.data);
+          const name = data.success ? data.data.PATTERN_NAME : undefined;
+          const policy = name
+            ? this.policies.get(name)
+            : this.rulePolicies.get(message.ruleId);
+          return {
+            start: Math.max(0, message.range[0] - prefix.length),
+            end: message.range[1] - prefix.length,
+            policy,
+            name:
+              name ??
+              message.ruleId.replace("@secretlint/secretlint-rule-", ""),
+          };
+        }),
+      )
       .filter((range) => range.end > range.start)
       .sort((a, b) => a.start - b.start || b.end - a.end);
     const merged: typeof ranges = [];

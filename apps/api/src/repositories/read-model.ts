@@ -1,9 +1,12 @@
-import type { PoolClient } from "pg";
-import { hasAdminAuthority, type PrismaClient } from "@agentcommons/db";
+import type { TraceQueryClient, TraceParameters } from "@agentcommons/traces";
+import { hasAdminAuthority, type Prisma } from "@agentcommons/db";
 import {
   sessionHeaderSchema,
+  jsonValueSchema,
   type CallerContext,
   type SearchFilters,
+  type SearchCondition,
+  searchConditionFields,
   type SessionHeader,
   truncateUtf8,
   reuseEdgeSchema,
@@ -15,78 +18,155 @@ import { ServiceError } from "../services/context.js";
 import { wireRow, compactMetadata } from "../services/read-budget.js";
 
 export class Parameters {
-  readonly values: unknown[] = [];
-  add(value: unknown): string {
-    this.values.push(value);
-    return `$${String(this.values.length)}`;
+  readonly values: TraceParameters = {};
+  add(value: TraceParameters[string], type?: string): string {
+    const name = `p${String(Object.keys(this.values).length + 1)}`;
+    this.values[name] = value;
+    if (type === "DateTime64(6, 'UTC')")
+      return `parseDateTime64BestEffort({${name}:String},6,'UTC')`;
+    const inferred =
+      typeof value === "boolean"
+        ? "Bool"
+        : typeof value === "number"
+          ? Number.isInteger(value)
+            ? "Int64"
+            : "Float64"
+          : typeof value === "bigint"
+            ? "Int64"
+            : Array.isArray(value)
+              ? "Array(String)"
+              : value === null
+                ? "Nullable(String)"
+                : "String";
+    return `{${name}:${type ?? inferred}}`;
   }
 }
 function array<T>(value: T | readonly T[]): readonly T[] {
   return Array.isArray(value) ? value : [value as T];
 }
+export function traceJson(value: unknown) {
+  return jsonValueSchema.parse(
+    typeof value === "string" ? JSON.parse(value) : value,
+  );
+}
+function conditionSql(condition: SearchCondition, params: Parameters): string {
+  if (condition.field === "tool_input") {
+    // Traverse with native JSON functions. Object keys remain strings; array offsets are zero-based,
+    // including negative offsets, matching the shared filter contract.
+    const path = params.add(condition.path ?? [], "Array(String)");
+    const offset = "accurateCastOrNull(key,'Int64')";
+    const json = `arrayFold((value,key)->if(toString(JSONType(value))='Array' AND match(key,'^-?[0-9]+$'),JSONExtractRaw(value,ifNull(if(${offset}<0,${offset},if(${offset}<9223372036854775807,${offset}+1,NULL)),0)),JSONExtractRaw(value,key)),${path},m.tool_input)`;
+    const exists = `${json}!=''`;
+    const type = `toString(JSONType(${json}))`;
+    const text = `JSONExtractString(${json})`;
+    if (condition.op === "exists") return exists;
+    if (condition.op === "eq") {
+      const value = condition.value;
+      if (value === null) return `(${exists} AND ${type}='Null')`;
+      if (typeof value === "string")
+        return `(${type}='String' AND ${text}=${params.add(value)})`;
+      if (typeof value === "boolean")
+        return `(${type}='Bool' AND JSONExtractBool(${json})=${params.add(value)})`;
+      return `(${type} IN ('Int64','UInt64','Float64') AND JSONExtractFloat(${json})=${params.add(value, "Float64")})`;
+    }
+    const value = params.add(condition.value);
+    const comparison =
+      condition.op === "contains"
+        ? `positionCaseInsensitiveUTF8(${text},${value})>0`
+        : `startsWith(lowerUTF8(${text}),lowerUTF8(${value}))`;
+    return `(${type}='String' AND ${comparison})`;
+  }
+  const expression = `${searchConditionFields[condition.field] === "message" ? "m" : "s"}.${condition.field}`;
+  if (condition.op === "exists") return `${expression} IS NOT NULL`;
+  if (condition.op === "eq")
+    return condition.value === null
+      ? `${expression} IS NULL`
+      : `${expression}=${params.add(condition.value)}`;
+  const value = params.add(condition.value);
+  return condition.op === "contains"
+    ? `positionCaseInsensitiveUTF8(${expression},${value})>0`
+    : `startsWith(lowerUTF8(${expression}),lowerUTF8(${value}))`;
+}
 export async function filterSql(
-  client: PoolClient,
+  client: TraceQueryClient,
   filters: SearchFilters,
   params: Parameters,
 ): Promise<string> {
-  const conditions: string[] = [];
+  const conditions = (filters.where ?? []).map((condition) =>
+    conditionSql(condition, params),
+  );
   if (filters.repo_name !== undefined) {
+    const requested = array(filters.repo_name);
+    const aliases = [
+      ...new Set(requested.filter((repo) => !repo.includes("/"))),
+    ];
+    const matches = aliases.length
+      ? await client.query<{ repo_name: string; alias: string }>(
+          "SELECT repo_name,arrayElement(splitByChar('/',repo_name),-1) AS alias FROM api_ro.repos WHERE alias IN {aliases:Array(String)}",
+          { aliases },
+        )
+      : { rows: [] };
+    const byAlias = new Map<string, string[]>();
+    for (const match of matches.rows) {
+      const names = byAlias.get(match.alias) ?? [];
+      names.push(match.repo_name);
+      byAlias.set(match.alias, names);
+    }
     const names: string[] = [];
-    for (const repo of array(filters.repo_name)) {
+    for (const repo of requested) {
       if (repo.includes("/")) {
         names.push(repo);
         continue;
       }
-      const matches = await client.query<{ repo_name: string }>(
-        "SELECT repo_name FROM api_ro.repos WHERE regexp_replace(repo_name, '^.*/', '') = $1",
-        [repo],
-      );
-      if (matches.rows.length > 1)
+      const resolved = byAlias.get(repo) ?? [];
+      if (resolved.length > 1)
         throw new ServiceError(
           400,
           "AMBIGUOUS_REPO",
           "This repository name matches several repositories. Use its full host/organization/repository name.",
         );
-      names.push(matches.rows[0]?.repo_name ?? repo);
+      names.push(resolved[0] ?? repo);
     }
-    conditions.push(`s.repo_name = ANY(${params.add(names)}::text[])`);
+    conditions.push(`s.repo_name IN ${params.add(names)}`);
   }
   for (const key of ["branch", "user_email", "session_id"] as const) {
     const value = filters[key];
     if (value !== undefined)
       conditions.push(
-        `s.${key} = ANY(${params.add(array(value))}::${key === "session_id" ? "uuid" : "text"}[])`,
+        `s.${key} IN ${params.add(array(value), key === "session_id" ? "Array(UUID)" : "Array(String)")}`,
       );
   }
   for (const key of ["role", "tool_name"] as const) {
     const value = filters[key];
     if (value !== undefined)
-      conditions.push(
-        `m.${key}::text = ANY(${params.add(array(value))}::text[])`,
-      );
+      conditions.push(`m.${key} IN ${params.add(array(value))}`);
   }
   if (filters.file_prefix !== undefined)
     conditions.push(
-      `EXISTS (SELECT 1 FROM api_ro.session_files f WHERE f.session_id = s.session_id AND EXISTS (SELECT 1 FROM unnest(${params.add(array(filters.file_prefix))}::text[]) prefix WHERE starts_with(f.path, prefix)))`,
+      `s.session_id IN (SELECT session_id FROM api_ro.session_files WHERE arrayExists(prefix -> startsWith(path,prefix),${params.add(array(filters.file_prefix))}))`,
     );
-  if (filters.since !== undefined)
-    conditions.push(
-      `coalesce(m.timestamp,m.received_at) >= ANY(${params.add(array(filters.since))}::timestamptz[])`,
-    );
-  if (filters.until !== undefined)
-    conditions.push(
-      `coalesce(m.timestamp,m.received_at) < ANY(${params.add(array(filters.until))}::timestamptz[])`,
-    );
-  return conditions.length ? conditions.join(" AND ") : "true";
+  for (const key of ["since", "until"] as const) {
+    const value = filters[key];
+    if (value !== undefined)
+      conditions.push(
+        `arrayExists(bound -> coalesce(m.timestamp,m.received_at) ${key === "since" ? ">=" : "<"} parseDateTime64BestEffort(bound,6,'UTC'),${params.add(array(value))})`,
+      );
+  }
+  return conditions.length
+    ? conditions.map((condition) => `(${condition})`).join(" AND ")
+    : "true";
 }
 
 export async function visibleSession(
-  client: PoolClient,
+  client: TraceQueryClient,
   sessionId: string,
+  projection: "state" | "header" = "state",
 ): Promise<Record<string, unknown>> {
-  const result = await client.query<Record<string, unknown>>(
-    "SELECT * FROM api_ro.sessions WHERE session_id=$1::uuid",
-    [sessionId],
+  const result = await client.query(
+    projection === "header"
+      ? "SELECT * FROM api_ro.sessions WHERE session_id={id:UUID}"
+      : "SELECT session_id,status,message_count,last_activity_at FROM api_ro.session_state WHERE session_id={id:UUID}",
+    { id: sessionId },
   );
   const row = result.rows[0];
   if (!row)
@@ -97,22 +177,40 @@ export async function visibleSession(
     );
   return row;
 }
-const refSql = "session_id,title,parent_relation,agent_type";
+const refSql = "session_id,title,parent_relation,agent_type,parent_session_id";
 export async function sessionHeader(
-  client: PoolClient,
+  client: TraceQueryClient,
   row: Record<string, unknown>,
 ): Promise<SessionHeader> {
-  const sessionId = String(row.session_id);
-  const relatives = await client.query<Record<string, unknown>>(
-    `(SELECT ${refSql}, parent_session_id FROM api_ro.sessions WHERE session_id=$1::uuid) UNION ALL (SELECT ${refSql}, parent_session_id FROM api_ro.sessions WHERE parent_session_id=$2::uuid ORDER BY started_at,session_id LIMIT 10)`,
-    [row.parent_session_id, sessionId],
+  const headers = await sessionHeaders(client, [row]);
+  const header = headers[0];
+  if (!header) throw new Error("The session header is unavailable.");
+  return header;
+}
+/** Batch related references for a whole list instead of issuing queries per session. */
+export async function sessionHeaders(
+  client: TraceQueryClient,
+  rows: Record<string, unknown>[],
+): Promise<SessionHeader[]> {
+  if (!rows.length) return [];
+  const ids = rows.map((row) => String(row.session_id));
+  const parents = rows.flatMap((row) =>
+    typeof row.parent_session_id === "string" ? [row.parent_session_id] : [],
   );
-  const root = await client.query<{ session_id: string }>(
+  const relatives = await client.query(
+    `SELECT ${refSql} FROM api_ro.session_details WHERE session_id IN {parents:Array(UUID)}
+     UNION ALL SELECT ${refSql} FROM (SELECT * FROM api_ro.session_details WHERE parent_session_id IN {ids:Array(UUID)} ORDER BY started_at,session_id LIMIT 10 BY parent_session_id)`,
+    { parents, ids },
+  );
+  const roots = await client.query(
     `WITH RECURSIVE ancestors AS (
-    SELECT session_id,parent_session_id,ARRAY[session_id] path FROM api_ro.sessions WHERE session_id=$1::uuid
-    UNION ALL SELECT s.session_id,s.parent_session_id,a.path||s.session_id FROM api_ro.sessions s JOIN ancestors a ON s.session_id=a.parent_session_id WHERE NOT s.session_id=ANY(a.path)
-  ) SELECT session_id FROM ancestors ORDER BY cardinality(path) DESC LIMIT 1`,
-    [sessionId],
+      SELECT session_id AS origin,session_id,parent_session_id,[session_id] AS path FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}
+      UNION ALL SELECT a.origin,s.session_id,s.parent_session_id,arrayConcat(a.path,[s.session_id]) FROM api_ro.session_details s JOIN ancestors a ON s.session_id=a.parent_session_id WHERE NOT has(a.path,s.session_id)
+    ) SELECT origin,argMax(session_id,length(path)) AS root_session_id FROM ancestors GROUP BY origin`,
+    { ids },
+  );
+  const rootById = new Map(
+    roots.rows.map((row) => [String(row.origin), row.root_session_id]),
   );
   const ref = (value: Record<string, unknown>) => ({
     session_id: value.session_id,
@@ -120,28 +218,32 @@ export async function sessionHeader(
     parent_relation: value.parent_relation,
     agent_type: value.agent_type,
   });
-  const header: Record<string, unknown> = {};
-  const wire = wireRow(row);
-  for (const key of Object.keys(sessionHeaderSchema.shape))
-    if (key in wire) header[key] = wire[key];
-  header.file_count = Number(row.file_count);
-  header.observed_commit_count = Number(row.observed_commit_count);
-  header.reuse_count = Number(row.reuse_count);
-  header.parent = relatives.rows.find(
-    (relative) => relative.session_id === row.parent_session_id,
-  );
-  header.parent = header.parent
-    ? ref(header.parent as Record<string, unknown>)
-    : null;
-  header.children = relatives.rows
-    .filter((relative) => relative.parent_session_id === sessionId)
-    .map(ref);
-  header.root_session_id = root.rows[0]?.session_id ?? sessionId;
-  header.child_count = Number(row.child_count);
-  header.children_truncated =
-    Number(row.child_count) > (header.children as unknown[]).length;
-  header.truncated_fields = [];
-  return boundedHeader(sessionHeaderSchema.parse(header));
+  return rows.map((row) => {
+    const header: Record<string, unknown> = {};
+    const wire = wireRow(row);
+    for (const key of Object.keys(sessionHeaderSchema.shape))
+      if (key in wire) header[key] = wire[key];
+    for (const key of [
+      "file_count",
+      "observed_commit_count",
+      "reuse_count",
+      "child_count",
+    ])
+      header[key] = Number(row[key]);
+    const parent = relatives.rows.find(
+      (relative) => relative.session_id === row.parent_session_id,
+    );
+    const children = relatives.rows
+      .filter((relative) => relative.parent_session_id === row.session_id)
+      .slice(0, 10);
+    header.parent = parent ? ref(parent) : null;
+    header.children = children.map(ref);
+    header.root_session_id =
+      rootById.get(String(row.session_id)) ?? row.session_id;
+    header.children_truncated = Number(row.child_count) > children.length;
+    header.truncated_fields = [];
+    return boundedHeader(sessionHeaderSchema.parse(header));
+  });
 }
 
 function boundedHeader(original: SessionHeader): SessionHeader {
@@ -195,19 +297,8 @@ function boundedHeader(original: SessionHeader): SessionHeader {
   );
 }
 
-/** Prisma paths use the same tenant and effective visibility rule as the reader views. */
-function visibleSessionWhere(caller: CallerContext, sessionId: string) {
-  return {
-    id: sessionId,
-    organizationId: caller.organizationId,
-    ...(hasAdminAuthority(caller)
-      ? {}
-      : { visibility: "PUBLIC" as const, purgedAt: null }),
-  };
-}
 export async function rawRecords(
-  prisma: PrismaClient,
-  caller: CallerContext,
+  client: TraceQueryClient,
   sessionId: string,
   after: {
     pos: string;
@@ -217,80 +308,78 @@ export async function rawRecords(
   } | null,
   limit: number,
 ) {
-  const session = await prisma.agentSession.findFirst({
-    where: visibleSessionWhere(caller, sessionId),
-    select: { id: true },
-  });
-  if (!session)
-    throw new ServiceError(
-      404,
-      "SESSION_NOT_FOUND",
-      "This session is not available.",
-    );
-  return prisma.rawRecord.findMany({
-    where: {
-      organizationId: caller.organizationId,
-      sessionId,
-      session: visibleSessionWhere(caller, sessionId),
-      ...(after
-        ? {
-            OR: [
-              { pos: { gt: BigInt(after.pos) } },
-              {
-                pos: BigInt(after.pos),
-                sourceVersion: { gt: after.sourceVersion },
-              },
-              {
-                pos: BigInt(after.pos),
-                sourceVersion: after.sourceVersion,
-                id: after.offset > 0 ? { gte: after.id } : { gt: after.id },
-              },
-            ],
-          }
-        : {}),
-    },
-    orderBy: [{ pos: "asc" }, { sourceVersion: "asc" }, { id: "asc" }],
-    take: limit + 1,
-  });
+  await visibleSession(client, sessionId);
+  const params = new Parameters();
+  const id = params.add(sessionId, "UUID");
+  const checkpoint = after
+    ? `(pos,source_version,raw_record_id) ${after.offset > 0 ? ">=" : ">"} (${params.add(after.pos, "Int64")},${params.add(after.sourceVersion, "UInt32")},${params.add(after.id, "UUID")})`
+    : "true";
+  const result = await client.query(
+    `SELECT * FROM api_ro.raw_records WHERE session_id=${id} AND ${checkpoint} ORDER BY pos,source_version,raw_record_id LIMIT ${params.add(limit + 1)}`,
+    params.values,
+  );
+  return result.rows.map((row) => ({
+    id: String(row.raw_record_id),
+    sessionId: String(row.session_id),
+    organizationId: String(row.organization_id),
+    pos: BigInt(String(row.pos)),
+    sourceVersion: Number(row.source_version),
+    key: row.key,
+    recordType: String(row.record_type),
+    payload: traceJson(row.payload),
+    ingestBatchId: String(row.ingest_batch_id),
+    receivedAt: new Date(String(row.received_at)),
+  }));
 }
 
-export function sessionTreePage(
-  prisma: PrismaClient,
+/** Graph traversal uses only compact control; visible presentation comes from ClickHouse. */
+export async function sessionTreePage(
+  prisma: Prisma.TransactionClient,
+  client: TraceQueryClient,
   caller: CallerContext,
   sessionId: string,
   after: { time: string; id: string } | null,
   limit: number,
 ) {
   const admin = hasAdminAuthority(caller);
-  return prisma.$queryRaw<Record<string, unknown>[]>`
+  const graph = await prisma.$queryRaw<
+    { session_id: string; parent_session_id: string | null; gap: boolean }[]
+  >`
     WITH RECURSIVE ancestors AS (
-      SELECT id,parent_session_id,ARRAY[id] path FROM public.agent_session
+      SELECT id,parent_session_id,ARRAY[id] path FROM public.trace_session_control
       WHERE organization_id=${caller.organizationId} AND id=${sessionId}::uuid
-      UNION ALL SELECT s.id,s.parent_session_id,a.path||s.id FROM public.agent_session s
-      JOIN ancestors a ON s.id=a.parent_session_id
+      UNION ALL SELECT s.id,s.parent_session_id,a.path||s.id FROM public.trace_session_control s JOIN ancestors a ON s.id=a.parent_session_id
       WHERE s.organization_id=${caller.organizationId} AND NOT s.id=ANY(a.path)
     ), root AS (SELECT id FROM ancestors ORDER BY cardinality(path) DESC LIMIT 1), descendants AS (
       SELECT s.id,ARRAY[s.id] path,NULL::uuid visible_parent_id,false gap,
-        ((s.visibility='PUBLIC' AND s.purged_at IS NULL) OR ${admin}) visible
-      FROM public.agent_session s JOIN root r ON s.id=r.id WHERE s.organization_id=${caller.organizationId}
+        (s.published_revision>0 AND ((s.visibility='PUBLIC' AND s.purged_at IS NULL) OR ${admin})) visible
+      FROM public.trace_session_control s JOIN root r ON s.id=r.id WHERE s.organization_id=${caller.organizationId}
       UNION ALL SELECT s.id,d.path||s.id,CASE WHEN d.visible THEN d.id ELSE d.visible_parent_id END,NOT d.visible,
-        ((s.visibility='PUBLIC' AND s.purged_at IS NULL) OR ${admin}) visible
-      FROM public.agent_session s JOIN descendants d ON s.parent_session_id=d.id
-      WHERE s.organization_id=${caller.organizationId} AND NOT s.id=ANY(d.path)
-    ) SELECT s.id session_id,s.title,s.harness,s.agent_type,s.parent_relation,d.visible_parent_id parent_session_id,
-      u.email user_email,to_char(s.started_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') started_at,s.status,s.message_count,d.gap
-    FROM descendants d JOIN public.agent_session s ON s.id=d.id AND s.organization_id=${caller.organizationId}
-    JOIN public."user" u ON u.id=s.user_id
+        (s.published_revision>0 AND ((s.visibility='PUBLIC' AND s.purged_at IS NULL) OR ${admin})) visible
+      FROM public.trace_session_control s JOIN descendants d ON s.parent_session_id=d.id WHERE s.organization_id=${caller.organizationId} AND NOT s.id=ANY(d.path)
+    ) SELECT s.id session_id,d.visible_parent_id parent_session_id,d.gap FROM descendants d
+    JOIN public.trace_session_control s ON s.id=d.id AND s.organization_id=${caller.organizationId}
     WHERE d.visible AND (${after?.time ?? null}::timestamptz IS NULL OR (s.started_at,s.id)>(${after?.time ?? null}::timestamptz,${after?.id ?? null}::uuid))
     ORDER BY s.started_at,s.id LIMIT ${limit + 1}`;
+  if (!graph.length) return [];
+  const result = await client.query(
+    `SELECT session_id,title,harness,agent_type,parent_relation,user_email,started_at,status,message_count FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}`,
+    { ids: graph.map((row) => row.session_id) },
+  );
+  const byId = new Map(result.rows.map((row) => [String(row.session_id), row]));
+  // PostgreSQL and ClickHouse order UUIDs differently. Keep the graph's keyset order.
+  return graph.flatMap((node) => {
+    const row = byId.get(node.session_id);
+    return row ? [{ ...row, ...node }] : [];
+  });
 }
 
 /** Shared projection for a caller-visible, filtered edge CTE named peers. */
 const reuseEdgeSelectSql = `SELECT e.source_session_id,e.target_session_id,s.title AS source_title,t.title AS target_title,
   e.reader_user_id,e.reader_email,e.reader_harness,e.audit_id,
-  to_char(e.read_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS read_at
-FROM peers e JOIN api_ro.sessions s ON s.session_id=e.source_session_id
-JOIN api_ro.sessions t ON t.session_id=e.target_session_id`;
+  e.read_at AS read_at
+FROM peers e JOIN api_ro.session_details s ON s.session_id=e.source_session_id
+JOIN api_ro.session_details t ON t.session_id=e.target_session_id`;
 function reuseEdge(row: Record<string, unknown>) {
   return reuseEdgeSchema.parse(
     compactMetadata(wireRow(row), [
@@ -303,7 +392,7 @@ function reuseEdge(row: Record<string, unknown>) {
 
 /** Latest edge per visible peer pair, with a bounded, deletion-safe keyset. */
 export async function reuseEdgePage(
-  client: PoolClient,
+  client: TraceQueryClient,
   options: {
     scope:
       | { sessionId: string; direction: "by" | "from" }
@@ -317,50 +406,55 @@ export async function reuseEdgePage(
   },
 ) {
   const params = new Parameters();
-  const predicates = [`e.read_at<=${params.add(options.asOf)}::timestamptz`];
+  const predicates = [
+    `e.read_at<=${params.add(options.asOf, "DateTime64(6, 'UTC')")}`,
+  ];
   if ("sessionId" in options.scope) {
     const column = { by: "target_session_id", from: "source_session_id" }[
       options.scope.direction
     ];
-    predicates.push(`e.${column}=${params.add(options.scope.sessionId)}::uuid`);
+    predicates.push(
+      `e.${column}=${params.add(options.scope.sessionId, "UUID")}`,
+    );
   } else {
     const owner = { reused: null, inbound: "target", outbound: "source" }[
       options.scope.home
     ];
     if (owner)
-      predicates.push(`${owner}.user_id=${params.add(options.scope.userId)}`);
+      predicates.push(
+        `e.${owner}_session_id IN (SELECT session_id FROM api_ro.session_details WHERE user_id=${params.add(options.scope.userId)})`,
+      );
     if (options.scope.home === "reused")
       predicates.push(
-        `e.read_at>=date_trunc('week',${params.add(options.asOf)}::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`,
+        `e.read_at>=toStartOfWeek(${params.add(options.asOf, "DateTime64(6, 'UTC')")},1,'UTC')`,
       );
   }
   if (options.readerUserId !== undefined)
     predicates.push(`e.reader_user_id=${params.add(options.readerUserId)}`);
   const sortExpression =
     options.sort === "read_at"
-      ? "read_at::timestamptz"
-      : `left(${options.sort},256) COLLATE "C"`;
+      ? "read_at"
+      : `substringUTF8(${options.sort},1,256)`;
   const after = options.after;
   let checkpoint = "true";
   if (after) {
-    const ties = `(source_session_id,target_session_id)>(${params.add(after.source_session_id)}::uuid,${params.add(after.target_session_id)}::uuid)`;
+    const ties = `(source_session_id,target_session_id)>(${params.add(after.source_session_id, "UUID")},${params.add(after.target_session_id, "UUID")})`;
     if (after.value === null) checkpoint = `sort_value IS NULL AND ${ties}`;
     else {
-      const value = params.add(after.value);
-      const typed =
-        options.sort === "read_at"
-          ? `${value}::timestamptz`
-          : `${value}::text COLLATE "C"`;
+      const value = params.add(
+        after.value,
+        options.sort === "read_at" ? "DateTime64(6, 'UTC')" : "String",
+      );
+      const typed = options.sort === "read_at" ? value : value;
       checkpoint = `(sort_value IS NULL OR sort_value${options.order === "asc" ? ">" : "<"}${typed} OR (sort_value=${typed} AND ${ties}))`;
     }
   }
-  const result = await client.query<Record<string, unknown>>(
+  const result = await client.query(
     `WITH peers AS (
-      SELECT DISTINCT ON(e.source_session_id,e.target_session_id) e.*
-      FROM api_ro.reuse_edges e JOIN api_ro.sessions source ON source.session_id=e.source_session_id
-      JOIN api_ro.sessions target ON target.session_id=e.target_session_id
+      SELECT e.*
+      FROM api_ro.reuse_edges e
       WHERE ${predicates.join(" AND ")}
-      ORDER BY e.source_session_id,e.target_session_id,e.read_at DESC,e.audit_id DESC
+      ORDER BY e.read_at DESC,e.audit_id DESC LIMIT 1 BY e.source_session_id,e.target_session_id
     ), selected AS (${reuseEdgeSelectSql}), sorted AS (SELECT selected.*,${sortExpression} AS sort_value FROM selected)
     SELECT * FROM sorted WHERE ${checkpoint}
     ORDER BY sort_value ${options.order} NULLS LAST,source_session_id,target_session_id LIMIT ${params.add(options.limit)}`,

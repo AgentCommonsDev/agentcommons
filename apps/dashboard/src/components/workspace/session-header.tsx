@@ -1,4 +1,7 @@
-import { formatSessionHeader } from "@agentcommons/core/format";
+import {
+  formatSessionHeader,
+  repositoryLinks,
+} from "@agentcommons/core/format";
 import { ChevronDown, GitFork } from "lucide-react";
 import { copy } from "../../copy";
 import { dateTime, number, textValue, harnessLabel } from "../../lib/display";
@@ -9,6 +12,7 @@ import {
   StatusBadge,
   ShortenedFields,
 } from "./primitives";
+import "./session-navigation.css";
 
 const labels: Record<keyof SessionHeader, string> = {
   ...copy.workspace.fields,
@@ -25,13 +29,34 @@ const numeric = new Set([
   "reuse_count",
 ]);
 export function SessionSummary({ header }: { header: SessionHeader }) {
+  const links = repositoryLinks(header.repo_url);
+  const git = [
+    {
+      label: copy.workspace.fields.repo_name,
+      value: header.repo_name ?? header.repo_url,
+      href: links?.repository,
+    },
+    {
+      label: copy.workspace.fields.branch,
+      value: header.branch,
+      href: links?.branch(header.branch),
+    },
+    {
+      label: copy.workspace.detail.startRevision,
+      value: header.start_commit,
+      href: links?.commit(header.start_commit),
+    },
+    {
+      label: copy.workspace.detail.endRevision,
+      value: header.end_commit,
+      href: links?.commit(header.end_commit),
+    },
+  ];
   return (
     <>
       <PageHeading
         title={header.title ?? copy.workspace.sessions.untitled}
-        description={[header.repo_name, header.branch, header.user_email]
-          .filter(Boolean)
-          .join(copy.workspace.common.separator)}
+        description={header.user_email}
         actions={
           <>
             <StatusBadge value={header.status} />
@@ -42,6 +67,49 @@ export function SessionSummary({ header }: { header: SessionHeader }) {
           </>
         }
       />
+      <div className="session-affiliation">
+        <GitFork size={16} aria-hidden />
+        {header.parent_relation ? (
+          <StatusBadge value={header.parent_relation} />
+        ) : (
+          <span>{copy.workspace.detail.rootSession}</span>
+        )}
+        {header.agent_type && <span>{header.agent_type}</span>}
+        {header.parent && (
+          <>
+            <span>{copy.workspace.detail.parentSession}</span>
+            <a href={`/s/${header.parent.session_id}`}>
+              {header.parent.title ?? copy.workspace.sessions.untitled}
+            </a>
+          </>
+        )}
+      </div>
+      <dl className="session-git" aria-label={copy.workspace.detail.gitContext}>
+        {git.map(({ label, value, href }) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>
+              {value ? (
+                <>
+                  {href ? (
+                    <a href={href} target="_blank" rel="noreferrer">
+                      {value}
+                    </a>
+                  ) : (
+                    <span>{value}</span>
+                  )}
+                  <CopyButton
+                    value={value}
+                    label={`${copy.workspace.common.copy} ${label}`}
+                  />
+                </>
+              ) : (
+                <span>{copy.workspace.common.unavailable}</span>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
       <div className="session-facts">
         <span>
           {harnessLabel(header.harness)}
@@ -114,8 +182,8 @@ export function SessionSummary({ header }: { header: SessionHeader }) {
               <a href={`/s/${header.parent.session_id}`}>
                 {header.parent.title ?? copy.workspace.sessions.untitled}
               </a>
-              {header.parent.parent_relation && (
-                <StatusBadge value={header.parent.parent_relation} />
+              {header.parent_relation && (
+                <StatusBadge value={header.parent_relation} />
               )}
             </div>
           )}

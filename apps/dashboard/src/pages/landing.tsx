@@ -14,8 +14,12 @@ import {
   Users,
 } from "lucide-react";
 import { copy, links } from "../copy";
+import { Pricing } from "../components/pricing";
+import { DemoCalendar } from "../components/demo-calendar";
+import { useBillingConfig } from "../lib/billing-config";
 import { Example } from "../components/example";
 import { Button } from "../components/ui/button";
+import { usePublicAccount } from "../lib/public-account";
 
 function Architecture() {
   return (
@@ -93,6 +97,8 @@ function Architecture() {
 }
 
 export function LandingPage() {
+  const billing = useBillingConfig();
+  const account = usePublicAccount();
   return (
     <main id="main">
       <section className="hero">
@@ -110,8 +116,8 @@ export function LandingPage() {
           <p className="hero-description">{copy.hero.description}</p>
           <div className="hero-actions">
             <Button asChild>
-              <a href="/login">
-                {copy.hero.primary}
+              <a href={account.href}>
+                {account.label}
                 <ArrowRight size={16} aria-hidden />
               </a>
             </Button>
@@ -124,7 +130,7 @@ export function LandingPage() {
           </div>
           <p className="hero-status">
             <span className="status-dot" />
-            {copy.hero.status}
+            {billing.enabled ? copy.saas.status : copy.hero.status}
           </p>
         </div>
       </section>
@@ -168,7 +174,11 @@ export function LandingPage() {
       >
         <div className="section-heading">
           <span className="eyebrow">{copy.principles.eyebrow}</span>
-          <h2 id="principles-heading">{copy.principles.heading}</h2>
+          <h2 id="principles-heading">
+            {billing.enabled
+              ? copy.saas.principlesTitle
+              : copy.principles.heading}
+          </h2>
         </div>
         <div className="principle-grid">
           {copy.principles.cards.map((card, index) => {
@@ -194,9 +204,21 @@ export function LandingPage() {
       >
         <div className="container security-layout">
           <div className="security-intro">
-            <span className="eyebrow">{copy.security.eyebrow}</span>
-            <h2 id="security-heading">{copy.security.heading}</h2>
-            <p>{copy.security.description}</p>
+            <span className="eyebrow">
+              {billing.enabled
+                ? copy.saas.securityEyebrow
+                : copy.security.eyebrow}
+            </span>
+            <h2 id="security-heading">
+              {billing.enabled
+                ? copy.saas.securityHeading
+                : copy.security.heading}
+            </h2>
+            <p>
+              {billing.enabled
+                ? copy.saas.securityDescription
+                : copy.security.description}
+            </p>
             <a className="text-link" href={links.specification}>
               {copy.security.link}
               <ArrowUpRight size={15} aria-hidden />
@@ -234,6 +256,12 @@ export function LandingPage() {
         </div>
       </section>
 
+      <Pricing />
+      {billing.enabled && (
+        <div className="container">
+          <DemoCalendar />
+        </div>
+      )}
       <section className="closing-section">
         <div className="container">
           <span className="eyebrow">{copy.closing.eyebrow}</span>
@@ -241,8 +269,8 @@ export function LandingPage() {
           <p>{copy.closing.description}</p>
           <div className="hero-actions">
             <Button asChild>
-              <a href="/login">
-                {copy.closing.primary}
+              <a href={account.href}>
+                {account.label}
                 <ArrowRight size={16} aria-hidden />
               </a>
             </Button>

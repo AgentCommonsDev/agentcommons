@@ -140,7 +140,10 @@ export function readSource(
       cursor: { kind: "document", entries, documentHash, watermark: sourcePos },
       sourcePos,
       complete,
-      transcriptMetadata: metadata,
+      transcriptMetadata: {
+        ...metadata,
+        sourceRecordCount: parsed.messages.length,
+      },
     };
   }
   const fd = openSync(path, "r");

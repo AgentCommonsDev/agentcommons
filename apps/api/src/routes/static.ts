@@ -1,6 +1,17 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { z } from "zod";
+import {
+  billingConfigSchema,
+  defaultBillingConfig,
+  type BillingConfig,
+} from "@agentcommons/core/schemas/billing";
+import {
+  withPublicConfig,
+  withScriptNonce,
+} from "@agentcommons/core/format/public-config";
 import fastifyStatic from "@fastify/static";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { ServiceError } from "../services/context.js";
@@ -9,12 +20,55 @@ export async function registerStaticRoutes(
   app: FastifyInstance,
   options: {
     publicUrl: string;
-    mode: "public" | "customer";
+    mode: BillingConfig["mode"];
+    billingConfig?: BillingConfig;
     dashboardDirectory: string;
     artifactDirectory: string;
   },
 ): Promise<void> {
   const origin = options.publicUrl.replace(/\/$/, "");
+  const config = billingConfigSchema.parse(
+    options.billingConfig ?? {
+      ...defaultBillingConfig,
+      mode: options.mode,
+      enabled: options.mode === "saas",
+    },
+  );
+  const renderedDocuments = new Map<string, string>();
+  let publicOffering = "";
+  {
+    type RenderDocument = (
+      template: string,
+      path: string,
+      config: BillingConfig,
+    ) => Promise<string>;
+    const loaded: unknown = await import(
+      pathToFileURL(
+        resolve(options.dashboardDirectory, "prerender/entry-server.js"),
+      ).href
+    );
+    const renderer = z
+      .object({
+        publicRoutes: z.array(z.object({ path: z.string(), file: z.string() })),
+        renderDocument: z.custom<RenderDocument>(
+          (value) => typeof value === "function",
+        ),
+        offeringText: z.custom<(config: BillingConfig) => string>(
+          (value) => typeof value === "function",
+        ),
+      })
+      .parse(loaded);
+    publicOffering = z.string().parse(renderer.offeringText(config));
+    const template = await readFile(
+      resolve(options.dashboardDirectory, "template.html"),
+      "utf8",
+    );
+    for (const { path, file } of renderer.publicRoutes)
+      renderedDocuments.set(
+        file,
+        z.string().parse(await renderer.renderDocument(template, path, config)),
+      );
+  }
   await app.register(fastifyStatic, {
     root: resolve(options.dashboardDirectory, "assets"),
     prefix: "/assets/",
@@ -31,14 +85,18 @@ export async function registerStaticRoutes(
   ) => {
     const nonce = randomBytes(18).toString("base64");
     let html = replacement(
-      await readFile(resolve(options.dashboardDirectory, file), "utf8"),
+      withPublicConfig(
+        renderedDocuments.get(file) ??
+          (await readFile(resolve(options.dashboardDirectory, file), "utf8")),
+        config,
+      ),
     );
-    html = html.replaceAll(/<script\b/g, `<script nonce="${nonce}"`);
+    html = withScriptNonce(html, nonce);
     if (indexable)
       html = html.replaceAll("noindex,nofollow,noarchive", "index,follow");
     reply.header(
       "Content-Security-Policy",
-      `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self' 'nonce-${nonce}'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; frame-src ${config.enabled && config.cal_com_url ? `${new URL(config.cal_com_url).origin} https://app.cal.com` : "'none'"}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
     );
     reply.header("Cache-Control", "no-cache");
     if (!indexable)
@@ -46,10 +104,35 @@ export async function registerStaticRoutes(
     return reply.type("text/html; charset=utf-8").send(html);
   };
   app.get("/", async (_request, reply) =>
-    document("index.html", options.mode === "public", reply),
+    document("index.html", options.mode !== "customer", reply),
   );
   app.get("/docs", async (_request, reply) =>
-    document("docs.html", options.mode === "public", reply),
+    document("docs.html", options.mode !== "customer", reply),
+  );
+  const blogDocument = async (
+    slug: string | undefined,
+    reply: FastifyReply,
+  ) => {
+    if (
+      options.mode === "customer" ||
+      (slug !== undefined && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+    )
+      return reply.code(404).send();
+    try {
+      return await document(
+        slug ? `blog/${slug}.html` : "blog.html",
+        true,
+        reply,
+      );
+    } catch (error) {
+      if (z.object({ code: z.literal("ENOENT") }).safeParse(error).success)
+        return reply.code(404).send();
+      throw error;
+    }
+  };
+  app.get("/blog", async (_request, reply) => blogDocument(undefined, reply));
+  app.get<{ Params: { slug: string } }>("/blog/:slug", async (request, reply) =>
+    blogDocument(request.params.slug, reply),
   );
   app.get("/robots.txt", (_request, reply) =>
     reply
@@ -57,17 +140,23 @@ export async function registerStaticRoutes(
       .send(
         options.mode === "customer"
           ? "User-agent: *\nDisallow: /\n"
-          : `User-agent: *\nAllow: /$\nAllow: /docs$\nDisallow: /\nSitemap: ${origin}/sitemap.xml\n`,
+          : `User-agent: *\nAllow: /$\nAllow: /docs$\nAllow: /blog$\nAllow: /blog/\nDisallow: /\nSitemap: ${origin}/sitemap.xml\n`,
       ),
   );
   for (const file of ["sitemap.xml", "llms.txt", "llms-full.txt"])
     app.get(`/${file}`, async (_request, reply) => {
-      if (options.mode !== "public") return reply.code(404).send();
+      if (options.mode === "customer") return reply.code(404).send();
       return reply
         .type(file.endsWith(".xml") ? "application/xml" : "text/plain")
         .send(
           replacement(
-            await readFile(resolve(options.dashboardDirectory, file), "utf8"),
+            (await readFile(
+              resolve(options.dashboardDirectory, file),
+              "utf8",
+            )) +
+              (file.startsWith("llms") && publicOffering
+                ? `\n\n${publicOffering}\n`
+                : ""),
           ),
         );
     });
@@ -106,7 +195,7 @@ export async function registerStaticRoutes(
   app.setNotFoundHandler(async (request, reply) => {
     if (
       request.method === "GET" &&
-      !/^\/(api|auth|mcp|hook|assets)(\/|$)/.test(request.url)
+      !/^\/(api|auth|mcp|hook|assets|blog)(\/|$)/.test(request.url)
     )
       return document("app.html", false, reply);
     throw new ServiceError(

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { Harness } from "@agentcommons/core/schemas/common";
 import { copy } from "../copy";
 const dateFormat = new Intl.DateTimeFormat(undefined, {
@@ -25,6 +26,8 @@ export function textValue(value: unknown): string {
   return JSON.stringify(value);
 }
 export function errorMessage(error: unknown): string {
+  if (error instanceof z.ZodError)
+    return error.issues.map((issue) => issue.message).join(" ");
   return error instanceof Error && error.message
     ? error.message
     : copy.workspace.common.requestFailed;

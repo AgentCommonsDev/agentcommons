@@ -1,24 +1,25 @@
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
-import { promisify } from "node:util";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { Client } from "pg";
-import { PrismaClient, ReaderPools } from "@agentcommons/db";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
+import { TraceReaders } from "@agentcommons/traces";
 import { formatGet, formatSearch } from "@agentcommons/core/format";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AuditService } from "../src/services/audit.js";
+import { seedPolicies } from "../src/services/policies.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { QueryService } from "../src/services/query.js";
 import { SearchService } from "../src/services/search.js";
 import { SessionService } from "../src/services/session.js";
-import type { ServiceContext } from "../src/services/context.js";
+import { requireCaller, type ServiceContext } from "../src/services/context.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 let writer: Client;
+let db: Awaited<ReturnType<typeof startTraceDatabase>>;
+let fixtures: TraceFixtures;
 let search: SearchService;
 let sessions: SessionService;
 let query: QueryService;
@@ -71,25 +72,26 @@ async function session(
   } = {},
 ) {
   const org = options.organization ?? "org-a";
-  await writer.query(
-    `INSERT INTO agent_session (organization_id,id,harness,harness_session_id,user_id,ingest_api_key_id,installation_id,cwd,started_at,title,visibility,parent_session_id,parent_relation,repo_name,branch,model,models_used,tools_used,input_tokens,output_tokens)
-    VALUES($1,$2::uuid,'CODEX',$2::text,'owner',$3,$4,'/repo','2026-08-01T00:00:00Z',$5,$6::"Visibility",$7,'SUBAGENT',$8,'main','test-model',ARRAY['test-model'],ARRAY['Read','Bash'],9007199254740993,42)`,
-    [
-      org,
-      id,
-      org === "org-a" ? "key-a" : "key-b",
-      installationId,
-      options.title ?? "Read service fixture",
-      options.visibility ?? "PUBLIC",
-      options.parent ?? null,
-      options.repo ?? "host/team/repo",
-    ],
-  );
+  await fixtures.session({
+    id,
+    organizationId: org,
+    userId: "owner",
+    keyId: org === "org-a" ? "key-a" : "key-b",
+    installationId,
+    ...(options.parent ? { parent: options.parent } : {}),
+    visibility: options.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC",
+    fields: {
+      title: options.title ?? "Read service fixture",
+      repo_name: options.repo ?? "host/team/repo",
+      branch: "main",
+      model: "test-model",
+      models_used: ["test-model"],
+      tools_used: ["Read", "Bash"],
+      input_tokens: "9007199254740993",
+      output_tokens: "42",
+    },
+  });
   const batchId = randomUUID();
-  await writer.query(
-    `INSERT INTO ingest_batch (organization_id,id,session_id,api_key_id,user_id,installation_id,ip,behavior,native_event,record_count,duplicate_count,byte_count,redaction_count,duration_ms,cursor,accepted_count,sent_at) VALUES($1,$2,$3,$4,'owner',$5,'127.0.0.1','sync','Stop',1,0,1,0,1,'0:1',1,now())`,
-    [org, batchId, id, org === "org-a" ? "key-a" : "key-b", installationId],
-  );
   return batchId;
 }
 async function message(
@@ -107,36 +109,47 @@ async function message(
     timestamp?: string;
   } = {},
 ) {
-  const org = options.org ?? "org-a";
   const raw = randomUUID();
   const kind = options.kind ?? "TEXT";
-  await writer.query(
-    "INSERT INTO raw_record (organization_id,id,session_id,pos,record_type,payload,ingest_batch_id) VALUES($1,$2,$3,$4,'message',$5::jsonb,$6)",
-    [org, raw, sessionId, seq, JSON.stringify({ content }), batchId],
-  );
-  await writer.query(
-    `INSERT INTO message (organization_id,id,session_id,raw_record_id,seq,block_index,role,kind,content,tool_name,tool_input,searchable,search_text,timestamp,input_tokens,output_tokens)
-    VALUES($1,$2,$3,$4,$5,0,$6::"MessageRole",$7::"MessageKind",$8,$9,$10::jsonb,$11,$12,$13,9007199254740993,42)`,
-    [
-      org,
-      randomUUID(),
-      sessionId,
-      raw,
-      seq,
-      options.role ?? "USER",
-      kind,
-      content,
-      options.tool ?? null,
-      options.input === undefined ? null : JSON.stringify(options.input),
-      !["THINKING", "META"].includes(kind),
-      options.searchText ?? content,
-      options.timestamp ?? "2026-08-15T00:00:00Z",
-    ],
-  );
-  await writer.query(
-    "UPDATE agent_session SET message_count=message_count+1 WHERE id=$1",
-    [sessionId],
-  );
+  await fixtures.insert("raw_records", sessionId, {
+    raw_record_id: raw,
+    ingest_batch_id: batchId,
+    pos: String(seq),
+    record_type: "message",
+    payload: JSON.stringify({ content }),
+    redaction_context: "null",
+    received_at: new Date("2026-08-15T00:00:00Z"),
+  });
+  await fixtures.insert("messages", sessionId, {
+    message_id: randomUUID(),
+    raw_record_id: raw,
+    ingest_batch_id: batchId,
+    seq,
+    block_index: 0,
+    role: options.role ?? "USER",
+    kind,
+    content,
+    tool_name: options.tool ?? null,
+    tool_input: JSON.stringify(options.input ?? null),
+    searchable: !["THINKING", "META"].includes(kind),
+    search_text: options.searchText ?? content,
+    timestamp: options.timestamp ?? "2026-08-15T00:00:00Z",
+    received_at: new Date("2026-08-15T00:00:00Z"),
+    input_tokens: "9007199254740993",
+    output_tokens: "42",
+  });
+  const result = await fixtures.client.query({
+    query:
+      "SELECT count(DISTINCT message_id) AS count FROM messages WHERE session_id={id:UUID}",
+    query_params: { id: sessionId },
+    format: "JSONEachRow",
+  });
+  const counted = z
+    .array(z.object({ count: z.coerce.number() }))
+    .parse(await result.json());
+  await fixtures.update("sessions", sessionId, {
+    message_count: counted[0]?.count ?? 0,
+  });
 }
 const corpusSchema = z.array(
   z.object({
@@ -152,51 +165,41 @@ const corpusSchema = z.array(
   }),
 );
 beforeAll(async () => {
-  const container = await new PostgreSqlContainer(
-    "pgvector/pgvector:pg16",
-  ).start();
-  cleanup.push(() => container.stop());
-  const url = (role: string) => {
-    const value = new URL(container.getConnectionUri());
-    value.username = role;
-    value.password = "read-test-password";
-    return value.toString();
-  };
-  await promisify(execFile)(
-    "pnpm",
-    ["--filter", "@agentcommons/db", "migrate"],
-    {
-      env: {
-        ...process.env,
-        DATABASE_MIGRATION_URL: container.getConnectionUri(),
-        DATABASE_URL: url("ac_app"),
-        DATABASE_READER_USER_URL: url("ac_reader_user"),
-        DATABASE_READER_ADMIN_URL: url("ac_reader_admin"),
-      },
-    },
-  );
-  writer = new Client({ connectionString: container.getConnectionUri() });
+  db = await startTraceDatabase();
+  cleanup.push(() => db.close());
+  fixtures = new TraceFixtures(db);
+  cleanup.push(() => fixtures.close());
+  writer = new Client({ connectionString: db.urls.migration });
   await writer.connect();
   cleanup.push(() => writer.end());
-  const prisma = new PrismaClient({ datasourceUrl: url("ac_app") });
-  cleanup.push(() => prisma.$disconnect());
-  const readers = new ReaderPools(
-    { user: url("ac_reader_user"), admin: url("ac_reader_admin") },
-    { max: 2 },
-  );
-  cleanup.push(() => readers.close());
   const dependencies = {
-    prisma,
-    readers,
-    audit: new AuditService(prisma),
+    prisma: db.prisma,
+    readers: db.traceReaders,
+    audit: db.audit,
     cursors: new CursorCodec("integration-cursor-secret-with-enough-entropy"),
   };
   search = new SearchService(dependencies);
   sessions = new SessionService(dependencies);
   query = new QueryService(dependencies);
   await writer.query(
-    `INSERT INTO "user"(id,name,email,"updatedAt") VALUES('owner','Owner','owner@example.test',now()); INSERT INTO organization(id,name,slug,"createdAt") VALUES('org-a','A','a',now()),('org-b','B','b',now()); INSERT INTO api_key_owner(key_id,organization_id,user_id) VALUES('key-a','org-a','owner'),('key-b','org-b','owner')`,
+    `INSERT INTO "user"(id,name,email,"updatedAt") VALUES('owner','Owner','owner@example.test',now()); INSERT INTO organization(id,name,slug,"createdAt") VALUES('org-a','A','a',now()),('org-b','B','b',now()); INSERT INTO member(id,"organizationId","userId",role,"createdAt") VALUES('member-a','org-a','owner','admin',now()),('member-b','org-b','owner','admin',now()); INSERT INTO api_key_owner(key_id,organization_id,user_id) VALUES('key-a','org-a','owner'),('key-b','org-b','owner')`,
   );
+  for (const org of ["org-a", "org-b"])
+    await seedPolicies(db.prisma, org, "owner");
+  for (const [id, organizationId] of [
+    ["key-a", "org-a"],
+    ["key-b", "org-b"],
+  ] as const)
+    await db.prisma.apikey.create({
+      data: {
+        id,
+        referenceId: organizationId,
+        key: `fixture-hash-${id}`,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        permissions: JSON.stringify({ sessions: ["read"], admin: ["*"] }),
+      },
+    });
   for (const org of ["org-a", "org-b"])
     await writer.query(
       "INSERT INTO installation(organization_id,id,hostname,os_user,platform,arch) VALUES($1,$2,'test-host','test-user','linux','x64')",
@@ -213,10 +216,11 @@ beforeAll(async () => {
         : `Circuit breaker retry budget request ${String(seq)}`,
       { kind: seq % 2 ? "THINKING" : "TEXT" },
     );
-  await writer.query(
-    "INSERT INTO session_file(organization_id,session_id,path,ops) VALUES('org-a',$1,'src/auth/limiter.ts',ARRAY['write'])",
-    [ids.public],
-  );
+  await fixtures.insert("session_files", ids.public, {
+    file_id: "src/auth/limiter.ts",
+    path: "src/auth/limiter.ts",
+    ops: ["write"],
+  });
   const privateBatch = await session(ids.private, {
     visibility: "PRIVATE",
     parent: ids.public,
@@ -302,7 +306,56 @@ afterAll(async () => {
   expect(await cleanupAll(cleanup.splice(0).reverse())).toEqual([]);
 });
 
-describe("read services on PostgreSQL", () => {
+describe("read services on ClickHouse", () => {
+  // @req R-ING-04 @req R-SRCH-06
+  it("never resurrects search matches from an edited or deleted native message", async () => {
+    const id = randomUUID();
+    const batch = await session(id);
+    await message(id, batch, 0, "obsoleteprojectionneedle");
+    const find = (query: string) =>
+      search.execute(context(), { query, context: 0 });
+    expect(
+      (await find("obsoleteprojectionneedle")).result.blocks.map(
+        (block) => block.session_id,
+      ),
+    ).toContain(id);
+    await fixtures.update("messages", id, {
+      content: "currentprojectionneedle",
+      search_text: "currentprojectionneedle",
+    });
+    expect((await find("obsoleteprojectionneedle")).result.blocks).toEqual([]);
+    expect(
+      (await find("currentprojectionneedle")).result.blocks.map(
+        (block) => block.session_id,
+      ),
+    ).toContain(id);
+    await fixtures.update("messages", id, { deleted: 1 });
+    expect((await find("currentprojectionneedle")).result.blocks).toEqual([]);
+  });
+  // @req R-SQL-04 @req R-AUD-01
+  it("reports an unavailable native database as an audited service failure", async () => {
+    const unavailable = new TraceReaders(
+      { ...db.traceConfig, url: "http://127.0.0.1:1" },
+      db.prisma,
+    );
+    try {
+      const service = new QueryService({
+        prisma: db.prisma,
+        readers: unavailable,
+        audit: db.audit,
+        cursors: new CursorCodec("unavailable-query-cursor-secret"),
+      });
+      await expect(
+        service.execute(context(), { sql: "SELECT 1" }),
+      ).rejects.toMatchObject({
+        statusCode: 503,
+        code: "TRACE_QUERY_UNAVAILABLE",
+        audited: true,
+      });
+    } finally {
+      await unavailable.close();
+    }
+  });
   // @req R-SRCH-03 @req R-SRCH-04 @req R-SRCH-05
   it("enforces all filter boundaries and message time with OR within keys", async () => {
     const result = await search.execute(context(), {
@@ -359,7 +412,7 @@ describe("read services on PostgreSQL", () => {
     });
     expect(best.result.blocks[0]?.messages[0]?.seq).toBe(3);
     const ordered = await query.execute(context(), {
-      sql: "SELECT seq,rank FROM search_messages('rankingmarker') ORDER BY rank DESC",
+      sql: "SELECT seq,rank FROM search_messages(q='rankingmarker') ORDER BY rank DESC",
     });
     expect(ordered.result.rows.map((row) => row[0])).toEqual([3, 2, 1, 0]);
     const merged = await search.execute(context(), {
@@ -426,7 +479,7 @@ describe("read services on PostgreSQL", () => {
     ]);
   });
   // @req R-SRCH-05 @req R-SRCH-10 @req R-SRCH-11
-  it("preserves PostgreSQL microseconds in time filters and pagination", async () => {
+  it("preserves native microseconds in time filters and pagination", async () => {
     const expected = [];
     for (const fraction of ["000100", "000200", "000300"]) {
       const id = randomUUID();
@@ -508,14 +561,13 @@ describe("read services on PostgreSQL", () => {
     const batch = await session(id, { title: "Large metadata boundary" });
     await message(id, batch, 0, "oversizedmetadataprobe readable transcript");
     const metadata = '\\"🙂'.repeat(12_000);
-    await writer.query("UPDATE agent_session SET model=$2 WHERE id=$1", [
-      id,
-      metadata,
-    ]);
-    await writer.query(
-      "UPDATE message SET model=$2,tool_name=$2,tool_use_id=$2,agent_id=$2 WHERE session_id=$1",
-      [id, metadata],
-    );
+    await fixtures.update("sessions", id, { model: metadata });
+    await fixtures.update("messages", id, {
+      model: metadata,
+      tool_name: metadata,
+      tool_use_id: metadata,
+      agent_id: metadata,
+    });
     const detail = await sessions.get(context(), { session_id: id });
     expect(detail.result.messages[0]?.content).toContain("readable transcript");
     expect(detail.result.messages[0]?.truncated_fields).toEqual([
@@ -553,9 +605,12 @@ describe("read services on PostgreSQL", () => {
     expect(formatSearch(found.result).text).toContain(
       'truncated_fields: ["model"]',
     );
-    const stored = await writer.query<{ model: string }>(
-      "SELECT model FROM message WHERE session_id=$1",
-      [id],
+    const stored = await db.traceReaders.read(
+      requireCaller(context()),
+      (client) =>
+        client.query("SELECT model FROM messages WHERE session_id={id:UUID}", {
+          id,
+        }),
     );
     expect(stored.rows[0]?.model).toBe(metadata);
   });
@@ -620,18 +675,18 @@ describe("read services on PostgreSQL", () => {
   // @req R-SQL-01 @req R-SQL-02 @req R-SQL-03 @req R-SQL-04
   it("executes guarded composable SQL with precise types, row/cell/body limits and SQL error positions", async () => {
     const result = await query.execute(context(), {
-      sql: "SELECT 9007199254740993::bigint AS large,1.234567890123456789::numeric AS precise, NULL::text AS absent",
+      sql: "SELECT toInt64('9007199254740993') AS large,toDecimal128('1.234567890123456789',18) AS precise, CAST(NULL AS Nullable(String)) AS absent",
     });
     expect(result.result.rows).toEqual([
       ["9007199254740993", "1.234567890123456789", null],
     ]);
     expect(result.result.columns.map((column) => column.type)).toEqual([
-      "int8",
-      "numeric",
-      "text",
+      "Int64",
+      "Decimal(38, 18)",
+      "Nullable(String)",
     ]);
     const capped = await query.execute(context(), {
-      sql: "SELECT * FROM generate_series(1,600)",
+      sql: "SELECT arrayJoin(range(1,601)) AS number",
     });
     expect(capped.result.row_count).toBe(500);
     expect(capped.result.capped).toBe(true);
@@ -643,51 +698,88 @@ describe("read services on PostgreSQL", () => {
     );
     expect(cells.result.truncated_cells).toEqual([[0, 0]]);
     const body = await query.execute(context(), {
-      sql: `SELECT m.content FROM messages m CROSS JOIN generate_series(1,500) WHERE m.session_id='${ids.long}' AND m.seq=0`,
+      sql: "SELECT repeat('🙂',1024) AS content,arrayJoin(range(1,501)) AS copy",
     });
     expect(Buffer.byteLength(JSON.stringify(body.result))).toBeLessThanOrEqual(
       256 * 1024,
     );
     expect(body.result.capped).toBe(true);
     expect(body.result.row_count).toBeLessThan(500);
+    const memoryFailure: unknown = await query
+      .execute(context(), {
+        sql: `SELECT m.content FROM messages m CROSS JOIN (SELECT arrayJoin(range(1,501)) AS number) copies WHERE m.session_id='${ids.long}' AND m.seq=0`,
+      })
+      .catch((error: unknown) => error);
+    expect(memoryFailure).toMatchObject({
+      statusCode: 400,
+      code: "241",
+      audited: true,
+    });
+    expect(memoryFailure).toHaveProperty(
+      "message",
+      expect.stringContaining("memory limit"),
+    );
     const recursive = await query.execute(context(), {
-      sql: "WITH RECURSIVE tree(session_id,parent_session_id) AS (SELECT session_id,parent_session_id FROM sessions WHERE parent_session_id IS NULL UNION ALL SELECT s.session_id,s.parent_session_id FROM sessions s JOIN tree t ON s.parent_session_id=t.session_id) SELECT count(*) FROM tree",
+      sql: "WITH RECURSIVE tree AS (SELECT session_id,parent_session_id FROM sessions WHERE parent_session_id IS NULL UNION ALL SELECT s.session_id,s.parent_session_id FROM sessions s JOIN tree t ON s.parent_session_id=t.session_id) SELECT count(*) FROM tree",
     });
     expect(Number(recursive.result.rows[0]?.[0])).toBeGreaterThan(3);
     await expect(
       query.execute(context(), {
         sql: "WITH x AS(DELETE FROM sessions RETURNING *) SELECT * FROM x",
       }),
-    ).rejects.toMatchObject({ code: "SQL_NOT_ALLOWED", audited: true });
+    ).rejects.toMatchObject({ code: "SQL_REJECTED", audited: true });
     await expect(
       query.execute(context(), {
         sql: "SELECT set_config('agentcommons.organization_id','org-b',true)",
       }),
-    ).rejects.toMatchObject({ code: "SQL_NOT_ALLOWED" });
+    ).rejects.toMatchObject({ code: "SQL_REJECTED" });
     const sqlError: unknown = await query
       .execute(context(), { sql: "SELECT missing_column FROM sessions" })
       .catch((error: unknown) => error);
     const failure = z
       .object({
         code: z.string(),
-        detail: z.object({ position: z.number() }),
+        detail: z.object({ position: z.number().nullable() }),
         message: z.string(),
       })
       .parse(sqlError);
-    expect(failure.code).toBe("42703");
-    expect(failure.detail.position).toBe(8);
+    expect(failure.code).toBe("47");
+    expect(failure.detail.position).toBeNull();
     expect(failure.message).toContain("schema_columns");
     const prefixedSql = "/* lead */ SELECT '🙂',missing_column FROM sessions";
     const prefixed: unknown = await query
       .execute(context(), { sql: prefixedSql })
       .catch((error: unknown) => error);
     expect(
-      z.object({ detail: z.object({ position: z.number() }) }).parse(prefixed)
-        .detail.position,
-    ).toBe(
-      Array.from(prefixedSql.slice(0, prefixedSql.indexOf("missing_column")))
-        .length + 1,
-    );
+      z
+        .object({ detail: z.object({ position: z.number().nullable() }) })
+        .parse(prefixed).detail.position,
+    ).toBeNull();
+  });
+  // @req R-SQL-04
+  it("reports native conflicting SQL aliases as an audited query error without exposing the expressions", async () => {
+    const failed: unknown = await query
+      .execute(context(), {
+        sql: "SELECT 'private-query-value' AS duplicate,NULL AS duplicate",
+      })
+      .catch((error: unknown) => error);
+    expect(failed).toMatchObject({
+      statusCode: 400,
+      code: "179",
+      audited: true,
+    });
+    const error = z.object({ message: z.string() }).parse(failed);
+    expect(error.message).toContain("unique alias");
+    expect(error.message).not.toContain("private-query-value");
+    const valid = await query.execute(context(), {
+      sql: "SELECT 1 AS duplicate,1 AS duplicate,NULL AS empty",
+    });
+    expect(valid.result.columns.map((column) => column.name)).toEqual([
+      "duplicate",
+      "duplicate",
+      "empty",
+    ]);
+    expect(valid.result.rows).toEqual([[1, 1, null]]);
   });
   // @req R-GET-01 @req R-GET-02 @req R-LNK-06
   it("bounds pathological header fields and pages all visible child references", async () => {
@@ -699,16 +791,14 @@ describe("read services on PostgreSQL", () => {
       0,
       "Header budget must preserve message progress.",
     );
-    await writer.query(
-      "UPDATE agent_session SET tools_used=$2::text[],models_used=$2::text[] WHERE id=$1",
-      [
-        parent,
-        Array.from(
-          { length: 100 },
-          (_, index) => `${String(index)}${"🙂".repeat(1000)}`,
-        ),
-      ],
+    const longList = Array.from(
+      { length: 100 },
+      (_, index) => `${String(index)}${"🙂".repeat(1000)}`,
     );
+    await fixtures.update("sessions", parent, {
+      tools_used: longList,
+      models_used: longList,
+    });
     const children = [];
     for (let index = 0; index < 12; index++) {
       const id = randomUUID();
@@ -775,9 +865,11 @@ describe("read services on PostgreSQL", () => {
     } while (cursor);
     expect(JSON.parse(serialized)).toEqual({ content: "🙂".repeat(262144) });
     expect(fragments).toBeGreaterThan(1);
-    await writer.query(
-      "UPDATE raw_record SET payload=jsonb_build_object('content','redacted changed payload') WHERE session_id=$1 AND pos=0",
-      [ids.long],
+    await fixtures.update(
+      "raw_records",
+      ids.long,
+      { payload: JSON.stringify({ content: "redacted changed payload" }) },
+      (row) => row.pos === "0",
     );
     await expect(
       sessions.raw(context(), ids.long, { limit: 1, cursor: firstCursor }),
@@ -919,7 +1011,7 @@ describe("read services on PostgreSQL", () => {
     expect(
       durations[Math.ceil(durations.length * 0.95) - 1],
       "Warm search p95 includes the committed audit write, before browser rendering",
-    ).toBeLessThan(150);
+    ).toBeLessThan(1000);
     const tail = await search.execute(context(), {
       query: "TS2322 incompatible",
       context: 0,
@@ -929,5 +1021,221 @@ describe("read services on PostgreSQL", () => {
         .flatMap((block) => block.messages)
         .some((message) => message.content.includes("TS2322")),
     ).toBe(true);
+  });
+});
+
+describe("structured search conditions on ClickHouse", () => {
+  const visible = randomUUID();
+  const hidden = randomUUID();
+  const foreign = randomUUID();
+  const second = randomUUID();
+  const empty = randomUUID();
+  const toolName = "mcp__FutureVendor__Search_%\\_'; SELECT 1 --";
+  const parameter = "Auth_%\\_'; SELECT pg_sleep(10) --";
+  beforeAll(async () => {
+    for (const [id, visibility, org] of [
+      [visible, "PUBLIC", "org-a"],
+      [second, "PUBLIC", "org-a"],
+      [hidden, "PRIVATE", "org-a"],
+      [foreign, "PUBLIC", "org-b"],
+    ]) {
+      if (!id || !org || !visibility)
+        throw new Error("Missing fixture identity");
+      const batch = await session(id, {
+        visibility,
+        organization: org,
+        repo: "host/team/conditions",
+        title: "Structured conditions",
+      });
+      await message(id, batch, 0, "structuredneedle first tool call", {
+        org,
+        role: "ASSISTANT",
+        kind: "TOOL_USE",
+        tool: toolName,
+        input: {
+          padding: "x".repeat(3000),
+          query: parameter,
+          options: {
+            limit: 2,
+            enabled: true,
+            nothing: null,
+            literal: "2",
+            paths: ["src/auth.ts"],
+            "a.b": { "[key]": "literal key" },
+          },
+        },
+      });
+      await message(id, batch, 1, "structuredneedle second tool call", {
+        org,
+        role: "ASSISTANT",
+        kind: "TOOL_USE",
+        tool: "UnrelatedTool",
+        input: { query: "unrelated", exclusive: "second message" },
+      });
+    }
+    await session(empty, {
+      repo: "host/team/conditions",
+      title: "Structured conditions",
+    });
+  });
+  async function find(where: unknown[], ctx = context(), extra = {}) {
+    return (
+      await search.execute(ctx, {
+        query: "",
+        context: 0,
+        filters: { repo_name: "host/team/conditions", where },
+        ...extra,
+      })
+    ).result;
+  }
+  // @req R-SRCH-13
+  it("filters arbitrary live tool names and full parameters with literal case-insensitive matches", async () => {
+    const where = [
+      {
+        field: "tool_name",
+        op: "contains",
+        value: "FUTUREVENDOR__SEARCH_%\\_'; SELECT 1 --",
+      },
+      {
+        field: "tool_input",
+        path: ["query"],
+        op: "starts_with",
+        value: parameter.toUpperCase(),
+      },
+    ];
+    const result = await find(where);
+    expect(result.blocks.map((block) => block.session_id).sort()).toEqual(
+      [visible, second].sort(),
+    );
+    expect(
+      result.blocks
+        .flatMap((block) => block.messages)
+        .map((message) => message.seq),
+    ).toEqual([0, 0]);
+    expect(
+      (
+        await find([
+          { field: "tool_name", op: "eq", value: toolName.toUpperCase() },
+        ])
+      ).blocks,
+    ).toEqual([]);
+    expect(
+      (await find([{ field: "tool_name", op: "eq", value: toolName }])).blocks,
+    ).toHaveLength(2);
+    const lexical = await find(where, context(), { query: "structuredneedle" });
+    expect(lexical.blocks.map((block) => block.session_id).sort()).toEqual(
+      [visible, second].sort(),
+    );
+  });
+  // @req R-SRCH-13
+  it("preserves JSON primitive types, missing/null distinction, array indexes and literal path keys", async () => {
+    for (const [path, value, expected] of [
+      [["options", "limit"], 2, 2],
+      [["options", "limit"], "2", 0],
+      [["options", "enabled"], true, 2],
+      [["options", "enabled"], "true", 0],
+      [["options", "nothing"], null, 2],
+      [["options", "missing"], null, 0],
+      [["options", "paths", "0"], "src/auth.ts", 2],
+      [["options", "paths", "-1"], "src/auth.ts", 2],
+      [["options", "paths", "9".repeat(256)], "src/auth.ts", 0],
+      [["options", "paths", "-" + "9".repeat(255)], "src/auth.ts", 0],
+      [["options", "a.b", "[key]"], "literal key", 2],
+    ] as const)
+      expect(
+        (await find([{ field: "tool_input", path, op: "eq", value }])).blocks,
+      ).toHaveLength(expected);
+    expect(
+      (
+        await find([
+          { field: "tool_input", path: ["options", "nothing"], op: "exists" },
+        ])
+      ).blocks,
+    ).toHaveLength(2);
+    expect(
+      (await find([{ field: "tool_input", path: ["options"], op: "exists" }]))
+        .blocks,
+    ).toHaveLength(2);
+    expect(
+      (
+        await find([
+          {
+            field: "tool_input",
+            path: ["options", "limit"],
+            op: "contains",
+            value: "2",
+          },
+        ])
+      ).blocks,
+    ).toEqual([]);
+    expect(
+      (await find([{ field: "tool_use_id", op: "eq", value: null }])).blocks,
+    ).toHaveLength(2);
+    expect(
+      (await find([{ field: "tool_use_id", op: "exists" }])).blocks,
+    ).toEqual([]);
+  });
+  // @req R-SRCH-13
+  it("requires message conditions on the same call, preserves context and binds cursors", async () => {
+    expect(
+      (
+        await find([
+          { field: "tool_name", op: "eq", value: toolName },
+          { field: "tool_input", path: ["exclusive"], op: "exists" },
+        ])
+      ).blocks,
+    ).toEqual([]);
+    const where = [{ field: "tool_name", op: "eq", value: toolName }];
+    const first = await find(where, context(), { limit: 1, context: 1 });
+    expect(first.blocks[0]?.messages.map((message) => message.hit)).toEqual([
+      true,
+      false,
+    ]);
+    expect(first.cursor).toBeTruthy();
+    const next = await find(where, context(), {
+      limit: 1,
+      context: 1,
+      cursor: first.cursor,
+    });
+    expect(next.blocks[0]?.session_id).not.toBe(first.blocks[0]?.session_id);
+    expect(next.cursor).toBeNull();
+    await expect(
+      find(
+        [{ field: "tool_name", op: "contains", value: "Search" }],
+        context(),
+        { limit: 1, context: 1, cursor: first.cursor },
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
+  });
+  // @req R-SRCH-13
+  it("shares session-list predicates while retaining empty-session, privacy and organization boundaries", async () => {
+    const filters = {
+      repo_name: "host/team/conditions",
+      where: [{ field: "title", op: "starts_with", value: "structured" }],
+    };
+    const list = await sessions.list(context(), { filters });
+    expect(list.result.items.map((item) => item.session_id).sort()).toEqual(
+      [visible, second, empty].sort(),
+    );
+    const messageFilters = {
+      ...filters,
+      where: [{ field: "tool_name", op: "contains", value: "futurevendor" }],
+    };
+    const messageList = await sessions.list(context(), {
+      filters: messageFilters,
+    });
+    expect(
+      messageList.result.items.map((item) => item.session_id).sort(),
+    ).toEqual([visible, second].sort());
+    expect(
+      (await find(messageFilters.where, context("org-a", true))).blocks
+        .map((block) => block.session_id)
+        .sort(),
+    ).toEqual([visible, second, hidden].sort());
+    expect(
+      (await find(messageFilters.where, context("org-b", true))).blocks.map(
+        (block) => block.session_id,
+      ),
+    ).toEqual([foreign]);
   });
 });

@@ -1,18 +1,27 @@
+import { queryTrace } from "@agentcommons/traces";
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
-import { type AgentSession } from "@agentcommons/db";
-import { startDatabase, provisionOrganization } from "./support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
+import { provisionOrganization } from "./support.js";
 import { requireCaller } from "../src/services/context.js";
 import { MetricsService } from "../src/services/metrics.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { IngestService } from "../src/services/ingest.js";
+import { JobService } from "../src/services/jobs.js";
+import { TraceProjectionService } from "../src/services/trace-projection.js";
+import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 
-let db: Awaited<ReturnType<typeof startDatabase>>;
+let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let org: Awaited<ReturnType<typeof provisionOrganization>>;
+let fixture: TraceFixtures;
 let service: MetricsService;
-const cleanup: (() => Promise<void>)[] = [];
+let ingest: IngestService;
+let projection: TraceProjectionService;
+const cleanup: (() => Promise<unknown>)[] = [];
+const workerErrors: Error[] = [];
 const at = (day: number, hour = 0, minute = 0) =>
   new Date(Date.UTC(2026, 8, day, hour, minute));
 const filters = {
@@ -32,75 +41,122 @@ async function session(repoName: string) {
       arch: "x64",
     },
   });
-  return db.prisma.agentSession.create({
-    data: {
-      id: randomUUID(),
-      organizationId: caller.organizationId,
+  const id = await fixture.session({
+    organizationId: caller.organizationId,
+    userId: caller.userId,
+    keyId: z.string().parse(caller.apiKeyId),
+    installationId,
+    fields: {
       harness: "CLAUDE_CODE",
-      harnessSessionId: randomUUID(),
-      userId: caller.userId,
-      ingestApiKeyId: z.string().parse(caller.apiKeyId),
-      installationId,
-      cwd: "/test",
-      repoName,
-      startedAt: at(7, 9),
-      endedAt: at(7, 10),
-      lastActivityAt: at(7, 10),
+      repo_name: repoName,
+      started_at: at(7, 9),
+      ended_at: at(7, 10),
+      last_activity_at: at(7, 10),
       status: "ENDED",
     },
   });
+  await db.prisma.traceSessionControl.update({
+    where: { organizationId_id: { organizationId: caller.organizationId, id } },
+    data: {
+      startedAt: at(7, 9),
+      lastActivityAt: at(7, 10),
+      endedAt: at(7, 10),
+      status: "ENDED",
+    },
+  });
+  return {
+    id,
+    organizationId: caller.organizationId,
+    userId: caller.userId,
+    installationId,
+    ingestApiKeyId: z.string().parse(caller.apiKeyId),
+    repoName,
+  };
 }
 async function receipt(
-  row: AgentSession,
+  row: Awaited<ReturnType<typeof session>>,
   behavior: string,
   sentAt: Date,
   sourcePos: number,
   id: string,
   receivedAt = sentAt,
+  lifecycleApplied = behavior !== "sync",
 ) {
-  return db.prisma.ingestBatch.create({
-    data: {
-      organizationId: row.organizationId,
-      id,
-      sessionId: row.id,
-      apiKeyId: row.ingestApiKeyId,
-      userId: row.userId,
-      installationId: row.installationId,
-      ip: "review",
-      cursor: randomUUID(),
-      acceptedCount: 0,
-      sourcePos,
-      sentAt,
-      behavior,
-      nativeEvent: behavior,
-      receivedAt,
-      recordCount: 0,
-      duplicateCount: 0,
-      byteCount: 0,
-      redactionCount: 0,
-      durationMs: 0,
-    },
+  await fixture.insert("ingest_receipts", row.id, {
+    receipt_id: id,
+    installation_id: row.installationId,
+    api_key_id: row.ingestApiKeyId,
+    user_id: row.userId,
+    source_pos: BigInt(sourcePos),
+    sent_at: sentAt,
+    received_at: receivedAt,
+    behavior,
+    native_event: behavior,
+    lifecycle_applied: lifecycleApplied,
+  });
+  return { id };
+}
+async function windows(id: string) {
+  return db.traceReaders.read(requireCaller(org.context), async (client) => {
+    const rows = (
+      await client.query(
+        "SELECT active_from,active_to FROM api_ro.metrics_active_windows WHERE session_id={id:UUID}",
+        { id },
+      )
+    ).rows;
+    return z
+      .array(
+        z.object({ active_from: z.coerce.date(), active_to: z.coerce.date() }),
+      )
+      .parse(rows);
   });
 }
 beforeAll(async () => {
-  db = await startDatabase();
-  cleanup.push(() => db.close());
+  db = await startTraceDatabase();
+  cleanup.unshift(() => db.close());
+  fixture = new TraceFixtures(db);
+  cleanup.unshift(() => fixture.close());
   org = await provisionOrganization(db, "metrics-review");
   service = new MetricsService({
     ...db,
+    readers: db.traceReaders,
     cursors: new CursorCodec("metrics-independent-review"),
   });
+  projection = new TraceProjectionService({
+    prisma: db.prisma,
+    audit: db.audit,
+    repository: db.traces,
+  });
+  const jobs = new JobService({
+    prisma: db.prisma,
+    audit: db.audit,
+    traces: projection,
+    traceAudit: new TraceAuditProjectionService({
+      prisma: db.prisma,
+      audit: db.audit,
+      traces: db.traces,
+    }),
+    connectionString: db.urls.app,
+    auditRetentionDays: 365,
+    allowedEmailDomains: [],
+    onError: (error) => {
+      workerErrors.push(error);
+    },
+  });
+  cleanup.unshift(() => jobs.stop());
+  ingest = new IngestService({ ...db, traces: jobs });
 }, 120_000);
 afterAll(async () => {
-  expect(await cleanupAll(cleanup.splice(0).reverse())).toEqual([]);
+  expect(await cleanupAll(cleanup.splice(0))).toEqual([]);
+  expect(workerErrors).toEqual([]);
 });
 
 it("reports consistent persisted aggregate totals and denominators across sessions", async () => {
   const known = await session("review-known-tokens");
   await session("review-known-tokens");
-  await db.prisma.agentSession.update({
-    where: { id: known.id },
-    data: { inputTokens: 150, outputTokens: 50 },
+  await fixture.update("sessions", known.id, {
+    input_tokens: 150n,
+    output_tokens: 50n,
   });
   const result = await service.get(org.context, "outcomes", {
     filters: {
@@ -120,9 +176,9 @@ it("reports consistent persisted aggregate totals and denominators across sessio
 it("aggregates valid bigint token columns without overflowing their combined total", async () => {
   const row = await session("review-bigint-tokens");
   const maximum = 9223372036854775807n;
-  await db.prisma.agentSession.update({
-    where: { id: row.id },
-    data: { inputTokens: maximum, outputTokens: maximum },
+  await fixture.update("sessions", row.id, {
+    input_tokens: maximum,
+    output_tokens: maximum,
   });
   const result = await service.get(org.context, "outcomes", {
     filters: {
@@ -162,6 +218,7 @@ it("does not let an equal-watermark later start reactivate a completed session t
     10,
     "00000000-0000-4000-8000-000000000003",
     at(7, 10, 1),
+    false,
   );
   await receipt(
     row,
@@ -170,18 +227,9 @@ it("does not let an equal-watermark later start reactivate a completed session t
     11,
     "00000000-0000-4000-8000-000000000004",
   );
-  const windows = await db.readers.read(
-    requireCaller(org.context),
-    async (client) =>
-      (
-        await client.query<{ active_from: Date; active_to: Date }>(
-          "SELECT active_from,active_to FROM api_ro.metrics_active_windows WHERE session_id=$1",
-          [row.id],
-        )
-      ).rows,
-  );
+  const activeWindows = await windows(row.id);
   expect(
-    windows.some(
+    activeWindows.some(
       (window) =>
         window.active_from <= at(7, 10, 3) && window.active_to > at(7, 10, 3),
     ),
@@ -193,10 +241,7 @@ it("counts historical capture receipts even when the same session ingests again 
   const row = await session("review-historical-coverage");
   await receipt(row, "start", at(7, 9), 0, randomUUID());
   await receipt(row, "sync", at(15, 9), 10, randomUUID());
-  await db.prisma.agentSession.update({
-    where: { id: row.id },
-    data: { lastActivityAt: at(15, 9) },
-  });
+  await fixture.update("sessions", row.id, { last_activity_at: at(15, 9) });
   const result = await service.get(org.context, "health", {
     filters: {
       ...filters,
@@ -210,18 +255,16 @@ it("counts historical capture receipts even when the same session ingests again 
     denominator: 1,
   });
   expect(
-    await db.readers.read(
+    await db.traceReaders.read(
       { ...requireCaller(org.context), role: "member" },
       async (client) =>
-        (
-          await client.query<Record<string, unknown>>(
-            "SELECT * FROM api_ro.metrics_activity",
-          )
-        ).rows,
+        (await client.query("SELECT * FROM api_ro.metrics_activity")).rows,
     ),
   ).toEqual([]);
-  await db.prisma.agentSession.update({
-    where: { id: row.id },
+  await db.prisma.traceSessionControl.update({
+    where: {
+      organizationId_id: { organizationId: row.organizationId, id: row.id },
+    },
     data: { purgedAt: new Date() },
   });
   const purged = await service.get(org.context, "health", {
@@ -236,7 +279,6 @@ it("counts historical capture receipts even when the same session ingests again 
 
 // @req R-ING-07
 it("persists the actual lifecycle decision when opposite events share native and receipt clocks", async () => {
-  const ingest = new IngestService(db);
   const base = {
     envelopeVersion: 2,
     harness: "CLAUDE_CODE",
@@ -264,13 +306,13 @@ it("persists the actual lifecycle decision when opposite events share native and
     "00000000-0000-4000-8000-000000000012",
     "00000000-0000-4000-8000-000000000014",
   ];
-  const send = (
+  const send = async (
     index: number,
     behavior: string,
     sourcePos: number,
     sentAt: Date,
-  ) =>
-    ingest.execute(org.context, {
+  ) => {
+    const accepted = await ingest.execute(org.context, {
       ...base,
       batchId: ids[index],
       behavior,
@@ -278,44 +320,57 @@ it("persists the actual lifecycle decision when opposite events share native and
       sourcePos,
       sentAt: sentAt.toISOString(),
     });
+    await projection.process(
+      requireCaller(org.context).organizationId,
+      accepted.result.sessionId,
+    );
+    return accepted;
+  };
   await send(0, "start", 0, at(7, 9));
   await send(1, "end", 10, at(7, 10));
   await send(2, "start", 10, at(7, 10));
   await send(3, "sync", 11, at(7, 10, 2));
-  const receipts = await db.prisma.ingestBatch.findMany({
-    where: {
-      organizationId: requireCaller(org.context).organizationId,
-      id: { in: ids },
-    },
-  });
+  const receipts = (
+    await queryTrace(
+      fixture.client,
+      "SELECT * FROM ingest_receipts WHERE receipt_id IN {ids:Array(UUID)} ORDER BY revision DESC LIMIT 1 BY receipt_id",
+      { ids },
+    )
+  ).rows;
   expect(
-    ids.map((id) => receipts.find((row) => row.id === id)?.lifecycleApplied),
+    ids.map(
+      (id) => receipts.find((row) => row.receipt_id === id)?.lifecycle_applied,
+    ),
   ).toEqual([true, true, false, false]);
-  const sessionId = z.string().parse(receipts[0]?.sessionId);
+  const sessionId = z.string().parse(receipts[0]?.session_id);
   expect(
     (
-      await db.prisma.agentSession.findUniqueOrThrow({
-        where: { id: sessionId },
+      await db.prisma.traceSessionControl.findUniqueOrThrow({
+        where: {
+          organizationId_id: {
+            organizationId: requireCaller(org.context).organizationId,
+            id: sessionId,
+          },
+        },
       })
     ).status,
   ).toBe("ENDED");
-  // Equal receipt milliseconds cannot be disambiguated by client UUID order.
-  await db.prisma.ingestBatch.updateMany({
-    where: { id: { in: ids.slice(1, 3) } },
-    data: { receivedAt: at(7, 10) },
-  });
-  const windows = await db.readers.read(
-    requireCaller(org.context),
-    async (client) =>
-      (
-        await client.query<{ active_from: Date; active_to: Date }>(
-          "SELECT active_from,active_to FROM api_ro.metrics_active_windows WHERE session_id=$1",
-          [sessionId],
-        )
-      ).rows,
-  );
+  // Re-publish the actual receipt facts with tied observation clocks; their recorded
+  // lifecycle decisions must remain authoritative over arbitrary receipt UUID order.
+  for (const receipt of receipts.filter((row) =>
+    ids.slice(1, 3).includes(z.string().parse(row.receipt_id)),
+  )) {
+    await fixture.insert("ingest_receipts", sessionId, {
+      ...receipt,
+      source_pos: z.coerce.bigint().parse(receipt.source_pos),
+      byte_count: z.coerce.bigint().parse(receipt.byte_count),
+      sent_at: z.coerce.date().parse(receipt.sent_at),
+      received_at: at(7, 10),
+    });
+  }
+  const activeWindows = await windows(sessionId);
   expect(
-    windows.some(
+    activeWindows.some(
       (window) =>
         window.active_from <= at(7, 10, 3) && window.active_to > at(7, 10, 3),
     ),
@@ -334,22 +389,10 @@ it("does not let an older accepted end close a newer resume when the native cloc
     randomUUID(),
     at(7, 12),
   );
-  await db.prisma.ingestBatch.updateMany({
-    where: { id: { in: [start.id, end.id, resume.id] } },
-    data: { lifecycleApplied: true },
-  });
-  const windows = await db.readers.read(
-    requireCaller(org.context),
-    async (client) =>
-      (
-        await client.query<{ active_from: Date; active_to: Date }>(
-          "SELECT active_from,active_to FROM api_ro.metrics_active_windows WHERE session_id=$1",
-          [row.id],
-        )
-      ).rows,
-  );
+  expect([start.id, end.id, resume.id]).toHaveLength(3);
+  const activeWindows = await windows(row.id);
   expect(
-    windows.some(
+    activeWindows.some(
       (window) =>
         window.active_from <= at(7, 13, 30) && window.active_to > at(7, 13, 30),
     ),

@@ -5,7 +5,10 @@ import {
   metricsInputSchema,
   metricsOutputSchema,
   metricRowSchema,
+  searchAdoptionMetricNames,
 } from "@agentcommons/core";
+import { Parameters } from "../repositories/read-model.js";
+import { searchAdoptionSelect } from "../repositories/search-adoption.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 import type { ServiceContext } from "./context.js";
 
@@ -29,28 +32,31 @@ function metric(
     where?: string;
   } = {},
 ) {
-  return `SELECT '${metric}'::text AS metric, ${options.date ?? "NULL"}::text AS date,
- ${options.repo ?? "NULL"}::text AS repo_name, ${options.harness ?? "NULL"}::text AS harness,
- ${options.user ?? "NULL"}::text AS user_id, ${options.tool ?? "NULL"}::text AS tool,
- ${options.policy ?? "NULL"}::text AS policy_id, ${options.enabled ?? "NULL"}::boolean AS tools_enabled,
- (${value})::double precision AS value, (${options.numerator ?? "NULL"})::double precision AS numerator,
- (${options.denominator ?? "NULL"})::double precision AS denominator, '${options.unit ?? "count"}'::text AS unit
+  return `SELECT '${metric}' AS metric, CAST(toString(${options.date ?? "NULL"}),'Nullable(String)') AS date,
+ CAST(${options.repo ?? "NULL"},'Nullable(String)') AS repo_name, CAST(${options.harness ?? "NULL"},'Nullable(String)') AS harness,
+ CAST(${options.user ?? "NULL"},'Nullable(String)') AS user_id, CAST(${options.tool ?? "NULL"},'Nullable(String)') AS tool,
+ CAST(${options.policy ?? "NULL"},'Nullable(String)') AS policy_id, CAST(${options.enabled ?? "NULL"},'Nullable(Bool)') AS tools_enabled,
+ toFloat64(${value}) AS value, toFloat64(${options.numerator ?? "NULL"}) AS numerator,
+ toFloat64(${options.denominator ?? "NULL"}) AS denominator, '${options.unit ?? "count"}' AS unit
  ${options.from ? `FROM ${options.from}` : ""} ${options.where ? `WHERE ${options.where}` : ""}
  ${options.group ? `GROUP BY ${options.group}` : ""}`;
 }
 const ratio = (count: string, denominator = "count(*)") =>
-  `${count}::double precision/nullif(${denominator},0)`;
-const filter = (date: string) =>
-  `${date}>=$1::timestamptz AND ${date}<$2::timestamptz AND ($3::text IS NULL OR repo_name=$3)`;
-const weekly = "date_trunc('week',started_at AT TIME ZONE 'UTC')::date";
-function statements(group: z.infer<typeof metricsGroupSchema>) {
+  `toFloat64(${count})/nullIf(${denominator},0)`;
+const weekly = "toMonday(started_at)";
+function statements(
+  group: z.infer<typeof metricsGroupSchema>,
+  bounds: { from: string; to: string; repo: string },
+) {
+  const filter = (date: string, qualifier = "") =>
+    `${date}>=${bounds.from} AND ${date}<${bounds.to} AND (${bounds.repo} IS NULL OR ${qualifier}repo_name=${bounds.repo})`;
   switch (group) {
     case "reuse":
       return {
-        cte: `s AS (SELECT * FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), weeks AS (
-        SELECT generate_series(date_trunc('week',$1::timestamptz AT TIME ZONE 'UTC'),date_trunc('week',($2::timestamptz-interval '1 microsecond') AT TIME ZONE 'UTC'),interval '1 week')::date AS week
-      ), totals AS (SELECT ${weekly} AS week,count(*) AS sessions,count(*) FILTER(WHERE reused) AS reuse_sessions,
-       count(*) FILTER(WHERE cross_user_reused) AS cross_user_reuse_sessions FROM s GROUP BY 1), w AS (
+        cte: `s AS MATERIALIZED (SELECT started_at,reused,cross_user_reused FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), weeks AS MATERIALIZED (
+        SELECT addWeeks(toMonday(${bounds.from}),arrayJoin(range(toUInt64(dateDiff('week',toMonday(${bounds.from}),toMonday(subtractMicroseconds(${bounds.to},1)))+1)))) AS week
+      ), totals AS MATERIALIZED (SELECT ${weekly} AS week,count(*) AS sessions,countIf(reused) AS reuse_sessions,
+       countIf(cross_user_reused) AS cross_user_reuse_sessions FROM s GROUP BY 1), w AS MATERIALIZED (
        SELECT weeks.week,coalesce(t.sessions,0) AS sessions,coalesce(t.reuse_sessions,0) AS reuse_sessions,
        coalesce(t.cross_user_reuse_sessions,0) AS cross_user_reuse_sessions FROM weeks LEFT JOIN totals t USING(week))`,
         selects: (
@@ -70,7 +76,7 @@ function statements(group: z.infer<typeof metricsGroupSchema>) {
       };
     case "health":
       return {
-        cte: `s AS (SELECT * FROM api_ro.metrics_health WHERE ${filter("started_at")}), c AS (SELECT * FROM api_ro.metrics_capture WHERE ${filter("received_at")}), r AS (SELECT * FROM api_ro.metrics_redaction WHERE ${filter("created_at")})`,
+        cte: `s AS MATERIALIZED (SELECT * FROM api_ro.metrics_health WHERE ${filter("started_at")}), c AS MATERIALIZED (SELECT * FROM api_ro.metrics_capture WHERE ${filter("received_at")}), r AS MATERIALIZED (SELECT * FROM api_ro.metrics_redaction WHERE ${filter("created_at")})`,
         selects: [
           metric(
             "capture_coverage",
@@ -79,8 +85,8 @@ function statements(group: z.infer<typeof metricsGroupSchema>) {
               "(SELECT member_count FROM api_ro.metrics_members)",
             ),
             {
-              from: "api_ro.metrics_activity",
-              where: `${filter("received_at")} AND received_at>=$2::timestamptz-interval '7 days'`,
+              from: "api_ro.metrics_activity activity",
+              where: `${filter("activity.received_at", "activity.")} AND activity.received_at>=subtractDays(${bounds.to},7)`,
               numerator: "count(DISTINCT installation_id)",
               denominator: "(SELECT member_count FROM api_ro.metrics_members)",
               unit: "ratio",
@@ -88,7 +94,7 @@ function statements(group: z.infer<typeof metricsGroupSchema>) {
           ),
           metric("sessions", "count(*)", {
             from: "s",
-            date: "(started_at AT TIME ZONE 'UTC')::date",
+            date: "toDate(started_at)",
             repo: "repo_name",
             harness: "harness",
             user: "user_id",
@@ -96,7 +102,7 @@ function statements(group: z.infer<typeof metricsGroupSchema>) {
           }),
           metric(
             "capture_latency_seconds",
-            "percentile_cont(0.5) WITHIN GROUP(ORDER BY latency_seconds)",
+            "quantileExactInclusiveOrNull(0.5)(latency_seconds)",
             { from: "c", where: "latency_seconds>=0", unit: "seconds" },
           ),
           metric("negative_capture_latency_records", "count(*)", {
@@ -116,75 +122,75 @@ function statements(group: z.infer<typeof metricsGroupSchema>) {
       };
     case "usage":
       return {
-        cte: `a AS (SELECT * FROM api_ro.metrics_usage WHERE ${filter("ts")}), s AS (SELECT * FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), m AS (SELECT * FROM api_ro.metrics_mcp_calls WHERE ${filter("ts")}), d AS (SELECT * FROM api_ro.metrics_dashboard WHERE ${filter("ts")})`,
+        cte: `a AS MATERIALIZED (SELECT * FROM api_ro.metrics_usage WHERE ${filter("ts")}), s AS MATERIALIZED (SELECT memory_assisted FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), m AS MATERIALIZED (SELECT * FROM api_ro.metrics_mcp_calls WHERE ${filter("ts")}), d AS MATERIALIZED (SELECT * FROM api_ro.metrics_dashboard WHERE ${filter("ts")}), t AS MATERIALIZED (SELECT agentcommons_search_calls,repeat_agentcommons_search_calls,subsequent_other_search_calls FROM api_ro.metrics_search_sessions WHERE ${filter("started_at")}), adoption AS MATERIALIZED (SELECT ${searchAdoptionSelect} FROM t)`,
         selects: [
+          ...searchAdoptionMetricNames.map((name) =>
+            metric(name, name, {
+              from: "adoption",
+              ...(name === "agentcommons_search_rate"
+                ? {
+                    numerator: "agentcommons_search_sessions",
+                    denominator: "sessions",
+                    unit: "ratio",
+                  }
+                : {}),
+            }),
+          ),
           metric("mcp_calls", "count(*)", {
             from: "m",
-            date: "(ts AT TIME ZONE 'UTC')::date",
+            date: "toDate(ts)",
             tool: "action",
             group: "2,6",
           }),
-          metric(
-            "memory_assisted_rate",
-            ratio("count(*) FILTER(WHERE memory_assisted)"),
-            {
-              from: "s",
-              numerator: "count(*) FILTER(WHERE memory_assisted)",
-              denominator: "count(*)",
-              unit: "ratio",
-            },
-          ),
-          metric(
-            "follow_through_rate",
-            ratio("count(*) FILTER(WHERE followed_through)"),
-            {
-              from: "a",
-              where: "action='search' AND hits IS NOT NULL",
-              numerator: "count(*) FILTER(WHERE followed_through)",
-              denominator: "count(*)",
-              unit: "ratio",
-            },
-          ),
-          metric("zero_result_rate", ratio("count(*) FILTER(WHERE hits=0)"), {
-            from: "a",
-            where: "action='search' AND hits IS NOT NULL",
-            numerator: "count(*) FILTER(WHERE hits=0)",
+          metric("memory_assisted_rate", ratio("countIf(memory_assisted)"), {
+            from: "s",
+            numerator: "countIf(memory_assisted)",
             denominator: "count(*)",
             unit: "ratio",
           }),
-          metric(
-            "cross_user_hit_rate",
-            ratio("count(*) FILTER(WHERE cross_user_hit)"),
-            {
-              from: "a",
-              where: "action='search' AND hits>0",
-              numerator: "count(*) FILTER(WHERE cross_user_hit)",
-              denominator: "count(*)",
-              unit: "ratio",
-            },
-          ),
-          metric("dashboard_weekly_actives", "count(DISTINCT user_id)", {
+          metric("follow_through_rate", ratio("countIf(followed_through)"), {
+            from: "a",
+            where: "action='search' AND hits IS NOT NULL",
+            numerator: "countIf(followed_through)",
+            denominator: "count(*)",
+            unit: "ratio",
+          }),
+          metric("zero_result_rate", ratio("countIf(hits=0)"), {
+            from: "a",
+            where: "action='search' AND hits IS NOT NULL",
+            numerator: "countIf(hits=0)",
+            denominator: "count(*)",
+            unit: "ratio",
+          }),
+          metric("cross_user_hit_rate", ratio("countIf(cross_user_hit)"), {
+            from: "a",
+            where: "action='search' AND hits>0",
+            numerator: "countIf(cross_user_hit)",
+            denominator: "count(*)",
+            unit: "ratio",
+          }),
+          metric("dashboard_weekly_actives", "count(DISTINCT d.user_id)", {
             from: "d",
-            date: "date_trunc('week',ts AT TIME ZONE 'UTC')::date",
+            date: "toMonday(ts)",
             group: "2",
           }),
           metric("dashboard_searches", "count(*)", {
             from: "d",
             where: "action='search'",
-            date: "(ts AT TIME ZONE 'UTC')::date",
+            date: "toDate(ts)",
             group: "2",
           }),
           metric("dashboard_session_views", "count(*)", {
             from: "d",
             where: "action='get'",
-            date: "(ts AT TIME ZONE 'UTC')::date",
+            date: "toDate(ts)",
             group: "2",
           }),
         ],
       };
     case "outcomes":
       return {
-        cte: `s AS (SELECT * FROM api_ro.metrics_outcomes WHERE ${filter("started_at")})`,
+        cte: `s AS MATERIALIZED (SELECT * FROM api_ro.metrics_outcomes WHERE ${filter("started_at")})`,
         selects: [
           ...(
             [
@@ -193,7 +199,7 @@ function statements(group: z.infer<typeof metricsGroupSchema>) {
               ["duration_seconds_per_session", "duration_seconds", "seconds"],
             ] as const
           ).map(([name, column, unit]) =>
-            metric(name, `avg(${column})`, {
+            metric(name, `avgOrNull(${column})`, {
               from: "s",
               repo: "repo_name",
               enabled: "tools_enabled",
@@ -210,11 +216,11 @@ function statements(group: z.infer<typeof metricsGroupSchema>) {
               ["observed_commit_rate", "observed_commit"],
             ] as const
           ).map(([name, column]) =>
-            metric(name, ratio(`count(*) FILTER(WHERE ${column})`), {
+            metric(name, ratio(`countIf(${column})`), {
               from: "s",
               repo: "repo_name",
               enabled: "tools_enabled",
-              numerator: `count(*) FILTER(WHERE ${column})`,
+              numerator: `countIf(${column})`,
               denominator: "count(*)",
               unit: "ratio",
               group: "3,8",
@@ -250,23 +256,26 @@ export class MetricsService {
           ? this.dependencies.cursors.decode(cursor, binding, offsetSchema)
               .offset
           : 0;
-        const definition = statements(group);
         const rows = await this.dependencies.readers.read(
           caller,
           async (client) => {
-            const values: unknown[] = [
-              request.filters.date_from,
-              request.filters.date_to,
+            const values = new Parameters();
+            const from = `parseDateTime64BestEffort(${values.add(request.filters.date_from)},6,'UTC')`;
+            const to = `parseDateTime64BestEffort(${values.add(request.filters.date_to)},6,'UTC')`;
+            const repo = values.add(
               request.filters.repo_name ?? null,
+              "Nullable(String)",
+            );
+            const selectedMetric = values.add(
               request.filters.metric ?? null,
-              request.limit + 1,
-            ];
-            const offsetParameter = values.push(offset);
+              "Nullable(String)",
+            );
+            const definition = statements(group, { from, to, repo });
             const result = await client.query(
               `WITH ${definition.cte}, rows AS (${definition.selects.join(" UNION ALL ")}) SELECT * FROM rows
-          WHERE ($4::text IS NULL OR metric=$4) ORDER BY ${request.sort ?? "date"} ${request.order} NULLS LAST,metric,date,repo_name,harness,user_id,tool,policy_id,tools_enabled
-          LIMIT $5 OFFSET $${String(offsetParameter)}`,
-              values,
+          WHERE (${selectedMetric} IS NULL OR metric=${selectedMetric}) ORDER BY ${request.sort ?? "date"} ${request.order} NULLS LAST,metric,date,repo_name,harness,user_id,tool,policy_id,tools_enabled
+          LIMIT ${values.add(request.limit + 1)} OFFSET ${values.add(offset)}`,
+              values.values,
             );
             return z
               .array(metricRowSchema)

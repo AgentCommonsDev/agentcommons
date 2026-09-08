@@ -13,3 +13,5 @@ packages/db/prisma/auth.prisma
 apps/dashboard/src/lib/api/generated.ts
 apps/api/openapi.json
 apps/api/public/hook/
+
+apps/api/public/reference-config.js

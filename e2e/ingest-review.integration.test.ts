@@ -2,18 +2,16 @@ import { cleanup as cleanupAll } from "../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Harness, IngestEnvelope } from "../packages/core/src/index.js";
-import { IngestService } from "../apps/api/src/services/ingest.js";
+import { traceServices } from "../apps/api/test/trace-services.js";
+import { startTraceDatabase } from "../packages/traces/test/support.js";
 import { PolicyService } from "../apps/api/src/services/policies.js";
 import { CursorCodec } from "../apps/api/src/services/cursor.js";
-import {
-  startDatabase,
-  provisionOrganization,
-} from "../apps/api/test/support.js";
+import { provisionOrganization } from "../apps/api/test/support.js";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let primary: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
-let ingest: IngestService;
+let services: ReturnType<typeof traceServices>;
 let policies: PolicyService;
 function envelope(
   harness: Harness = "CLAUDE_CODE",
@@ -71,22 +69,19 @@ function next(
   };
 }
 function upload(input: IngestEnvelope, organization = primary) {
-  return ingest.execute(
+  return services.publish(
     { ...organization.context, requestId: randomUUID(), startedAt: Date.now() },
     input,
   );
 }
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
   primary = await provisionOrganization(database, "review-primary");
   other = await provisionOrganization(database, "review-other");
-  ingest = new IngestService({
-    prisma: database.prisma,
-    audit: database.audit,
-    policies: database.policies,
-  });
+  services = traceServices(database);
+  release.unshift(() => services.close());
   policies = new PolicyService({
     prisma: database.prisma,
     audit: database.audit,
@@ -126,7 +121,7 @@ describe("independent ingestion adversarial review", () => {
       }),
     );
     expect(
-      await database.prisma.agentSession.findUnique({
+      await database.prisma.traceSessionControl.findFirst({
         where: { id: created.result.sessionId },
       }),
     ).toMatchObject({ status: "ACTIVE", endedAt: null, lifecyclePos: 10n });
@@ -146,7 +141,7 @@ describe("independent ingestion adversarial review", () => {
       }),
     );
     expect(
-      await database.prisma.agentSession.findUnique({
+      await database.prisma.traceSessionControl.findFirst({
         where: { id: created.result.sessionId },
       }),
     ).toMatchObject({ status: "ACTIVE", endedAt: null, lifecyclePos: 10n });
@@ -196,12 +191,14 @@ describe("independent ingestion adversarial review", () => {
       await upload(
         next(initial, { behavior: "sync", sourcePos: 10, records: [result] }),
       );
-      const raw = await database.prisma.rawRecord.findMany({
-        where: { sessionId: first.result.sessionId },
-      });
-      const messages = await database.prisma.message.findMany({
-        where: { sessionId: first.result.sessionId },
-      });
+      const raw = await services.raw(
+        primary.context.caller?.organizationId ?? "",
+        first.result.sessionId,
+      );
+      const messages = await services.messages(
+        primary.context.caller?.organizationId ?? "",
+        first.result.sessionId,
+      );
       expect(JSON.stringify(raw.map((row) => row.payload))).not.toContain(
         privateText,
       );
@@ -254,13 +251,14 @@ describe("independent ingestion adversarial review", () => {
         ],
       }),
     );
-    const messages = await database.prisma.message.findMany({
-      where: { sessionId: first.result.sessionId },
-      orderBy: { seq: "asc" },
-    });
+    const messages = await services.messages(
+      primary.context.caller?.organizationId ?? "",
+      first.result.sessionId,
+    );
     expect(messages).toHaveLength(2);
-    expect(messages[0]?.toolUseId).toBe(messages[1]?.toolUseId);
-    expect(messages[1]?.toolName).toBe("Read");
+    expect(messages[0]?.tool_use_id).toMatch(/^redacted-[a-f0-9]{64}$/);
+    expect(messages[0]?.tool_use_id).toBe(messages[1]?.tool_use_id);
+    expect(messages[1]?.tool_name).toBe("Read");
     expect(JSON.stringify(messages)).not.toContain(nativeId);
   });
 
@@ -273,7 +271,7 @@ describe("independent ingestion adversarial review", () => {
     expect(second.result.sessionId).not.toBe(first.result.sessionId);
     expect(second.result.accepted).toBe(1);
     expect(
-      await database.prisma.ingestBatch.count({
+      await database.prisma.traceReceipt.count({
         where: { id: request.batchId },
       }),
     ).toBe(2);
@@ -293,12 +291,12 @@ describe("independent ingestion adversarial review", () => {
       detail: { records: [{ pos: 10, key: "invalid" }] },
     });
     expect(
-      await database.prisma.agentSession.count({
+      await database.prisma.traceSessionControl.count({
         where: { harnessSessionId: initial.harnessSessionId },
       }),
     ).toBe(0);
     expect(
-      await database.prisma.ingestBatch.count({
+      await database.prisma.traceReceipt.count({
         where: { id: initial.batchId },
       }),
     ).toBe(0);
@@ -318,16 +316,17 @@ describe("independent ingestion adversarial review", () => {
       const result = await upload(request);
       expect(result.result.accepted).toBe(1);
       expect(
-        await database.prisma.agentSession.findUnique({
+        await database.prisma.traceSessionControl.findFirst({
           where: { id: result.result.sessionId },
         }),
       ).toMatchObject({ harness: "CLAUDE_CODE" });
       expect(
         (
-          await database.prisma.message.findFirst({
-            where: { sessionId: result.result.sessionId },
-          })
-        )?.content,
+          await services.messages(
+            primary.context.caller?.organizationId ?? "",
+            result.result.sessionId,
+          )
+        )[0]?.content,
       ).not.toContain("CLAUDE_CODE");
     } finally {
       await policies.remove(primary.owner, saved.result.id, {
@@ -394,7 +393,7 @@ describe("independent ingestion adversarial review", () => {
           }),
         ),
       ]);
-      const rows = await database.prisma.agentSession.findMany({
+      const rows = await database.prisma.traceSessionControl.findMany({
         where: { id: { in: [a.result.sessionId, b.result.sessionId] } },
         select: { id: true, parentSessionId: true },
       });
@@ -432,19 +431,24 @@ it("resolves redacted parent identities from both hook hints and native records,
     }
     const first = await upload(child);
     const arrival = await upload(parent);
-    const row = await database.prisma.agentSession.findUniqueOrThrow({
+    const row = await database.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: first.result.sessionId },
     });
-    const parentRow = await database.prisma.agentSession.findUniqueOrThrow({
-      where: { id: arrival.result.sessionId },
-    });
+    const parentRow =
+      await database.prisma.traceSessionControl.findFirstOrThrow({
+        where: { id: arrival.result.sessionId },
+      });
     expect(row.parentSessionId).toBe(parentRow.id);
     expect(row.parentNativeRef).toBe(parentRow.harnessSessionId);
     expect(row.parentNativeRef).toMatch(/^redacted-[a-f0-9]{64}$/);
-    if (mode === "native") expect(row.branch).toBe("native-branch");
-    const raw = await database.prisma.rawRecord.findMany({
-      where: { sessionId: row.id },
-    });
+    if (mode === "native")
+      expect((await services.header(row.organizationId, row.id)).branch).toBe(
+        "native-branch",
+      );
+    const raw = await services.raw(
+      primary.context.caller?.organizationId ?? "",
+      row.id,
+    );
     expect(JSON.stringify(raw.map((item) => item.payload))).not.toContain(
       parent.harnessSessionId,
     );
@@ -452,7 +456,7 @@ it("resolves redacted parent identities from both hook hints and native records,
 });
 
 // @req R-RED-02
-it("accepts an upload using a stale process policy cache after that policy and its counters are deleted", async () => {
+it("uses current transaction policies for an upload even when the shared process cache still contains a deleted rule", async () => {
   const saved = await policies.save(primary.owner, null, {
     name: "stale-process",
     kind: "REGEX",
@@ -478,10 +482,15 @@ it("accepts an upload using a stale process policy cache after that policy and i
         where: { policyId: saved.result.id },
       }),
     ).toBe(0);
-    const messages = await database.prisma.message.findMany({
-      where: { sessionId: result.result.sessionId },
-    });
-    expect(messages[0]?.content).toBe("[REDACTED:stale-process]");
+    const messages = await services.messages(
+      primary.context.caller?.organizationId ?? "",
+      result.result.sessionId,
+    );
+    expect((await cached.text("private-cache-marker")).value).toBe(
+      "[REDACTED:stale-process]",
+    );
+    expect(staleProcess).not.toHaveBeenCalled();
+    expect(messages[0]?.content).toBe("private-cache-marker");
   } finally {
     staleProcess.mockRestore();
   }

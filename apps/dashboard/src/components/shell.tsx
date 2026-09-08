@@ -1,6 +1,8 @@
 import { ArrowUpRight, Menu, Moon, Sun, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { usePublicAccount } from "../lib/public-account";
+import { useBillingConfig } from "../lib/billing-config";
 import { copy, links } from "../copy";
 import { Button } from "./ui/button";
 
@@ -63,6 +65,8 @@ export function ThemeToggle() {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const billing = useBillingConfig();
+  const account = usePublicAccount();
   const [menuOpen, setMenuOpen] = useState(false);
   return (
     <>
@@ -92,6 +96,20 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               {copy.navigation.principles}
             </a>
+            {billing.enabled && (
+              <a
+                href="/#pricing"
+                onClick={() => {
+                  setMenuOpen(false);
+                }}
+              >
+                {copy.saas.pricing}
+              </a>
+            )}
+            {billing.enabled && <a href="/login">{copy.navigation.login}</a>}
+            {billing.mode !== "customer" && (
+              <a href="/blog">{copy.blog.navigation}</a>
+            )}
             <a href={links.documentation}>
               {copy.navigation.docs}
               <ArrowUpRight size={13} aria-hidden />
@@ -100,8 +118,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="header-actions">
             <ThemeToggle />
             <Button variant="secondary" size="small" asChild>
-              <a href="/login">
-                {copy.navigation.login}
+              <a href={account.href}>
+                {account.shortLabel}
                 <ArrowUpRight size={14} aria-hidden />
               </a>
             </Button>
@@ -144,10 +162,14 @@ export function AppShell({ children }: { children: ReactNode }) {
             </nav>
           </div>
           <div className="footer-bottom">
-            <span>{copy.footer.source}</span>
+            <span>
+              {copy.footer.source}
+              {copy.workspace.common.separator}
+              {copy.saas.madeIn}
+            </span>
             <span>
               <span className="status-dot" />
-              {copy.footer.status}
+              {billing.enabled ? copy.saas.footerStatus : copy.footer.status}
             </span>
           </div>
         </div>

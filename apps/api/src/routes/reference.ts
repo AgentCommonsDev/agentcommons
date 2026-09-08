@@ -1,0 +1,72 @@
+import { readFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import scalar from "@scalar/fastify-api-reference";
+import type { FastifyInstance } from "fastify";
+import { withScriptNonce } from "@agentcommons/core/format/public-config";
+
+/** Native Scalar owns its renderer and bundle; route schemas remain the only API source. */
+export async function registerApiReference(
+  app: FastifyInstance,
+): Promise<void> {
+  await app.register(async (scope) => {
+    // HTML receives a response nonce before transmission; keep this small document
+    // uncompressed so a parent compression hook cannot turn it into a stream first.
+    scope.addHook("onRoute", (route) => {
+      if (route.url === "/api/docs/")
+        route.config = { ...route.config, compress: false };
+    });
+    scope.addHook("onSend", async (_request, reply, payload) => {
+      reply.header("X-Robots-Tag", "noindex, nofollow, noarchive");
+      if (
+        typeof payload !== "string" ||
+        !String(reply.getHeader("content-type")).startsWith("text/html")
+      )
+        return payload;
+      const nonce = randomBytes(18).toString("base64");
+      reply.header("Cache-Control", "no-store");
+      reply.header(
+        "Content-Security-Policy",
+        `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+      );
+      return withScriptNonce(
+        payload.replace(
+          "</head>",
+          '<script src="js/config.js"></script></head>',
+        ),
+        nonce,
+      );
+    });
+    scope.get(
+      "/api/docs/js/config.js",
+      { schema: { hide: true } },
+      async (_request, reply) =>
+        reply
+          .type("application/javascript; charset=utf-8")
+          .send(
+            await readFile(
+              new URL("../../public/reference-config.js", import.meta.url),
+              "utf8",
+            ),
+          ),
+    );
+    scope.get("/api/docs/json", { schema: { hide: true } }, () =>
+      app.swagger(),
+    );
+    await scope.register(scalar, {
+      routePrefix: "/api/docs",
+      configuration: {
+        url: "/api/docs/json",
+        pageTitle: "AgentCommons API reference",
+        theme: "default",
+        withDefaultFonts: false,
+        telemetry: false,
+        agent: { disabled: true },
+        mcp: { disabled: true },
+        persistAuth: false,
+        proxyUrl: "",
+        hideClientButton: true,
+        showDeveloperTools: "never",
+      },
+    });
+  });
+}

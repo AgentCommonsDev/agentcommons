@@ -4,22 +4,21 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import type { IngestEnvelope } from "@agentcommons/core";
-import { IngestService } from "../src/services/ingest.js";
-import { startDatabase, provisionOrganization } from "./support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { traceServices } from "./trace-services.js";
+import { requireCaller } from "../src/services/context.js";
+import { provisionOrganization } from "./support.js";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
-let ingest: IngestService;
+let services: ReturnType<typeof traceServices>;
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
   organization = await provisionOrganization(database, "lifecycle-clock");
-  ingest = new IngestService({
-    prisma: database.prisma,
-    audit: database.audit,
-    policies: database.policies,
-  });
+  services = traceServices(database);
+  release.unshift(() => services.close());
 });
 afterAll(async () => {
   expect(await cleanupAll(release.splice(0))).toEqual([]);
@@ -62,7 +61,7 @@ it("a final source flush cannot suppress its earlier-captured end at the same so
     },
     records: [],
   };
-  const first = await ingest.execute(organization.context, base);
+  const first = await services.publish(organization.context, base);
   const flush: IngestEnvelope = {
     ...base,
     batchId: randomUUID(),
@@ -78,7 +77,7 @@ it("a final source flush cannot suppress its earlier-captured end at the same so
       line: JSON.stringify(payload),
     })),
   };
-  await ingest.execute(organization.context, flush);
+  await services.publish(organization.context, flush);
   const end: IngestEnvelope = {
     ...flush,
     batchId: randomUUID(),
@@ -87,17 +86,16 @@ it("a final source flush cannot suppress its earlier-captured end at the same so
     sentAt: "2026-09-08T01:47:31.000Z",
     records: [],
   };
-  await ingest.execute(organization.context, end);
-  const session = await database.prisma.agentSession.findUniqueOrThrow({
+  await services.publish(organization.context, end);
+  const session = await database.prisma.traceSessionControl.findFirstOrThrow({
     where: { id: first.result.sessionId },
-    include: { messages: true },
   });
-  expect(session.messages.some((message) => message.role === "USER")).toBe(
-    true,
+  const messages = await services.messages(
+    requireCaller(organization.context).organizationId,
+    session.id,
   );
-  expect(
-    session.messages.some((message) => message.kind === "TOOL_RESULT"),
-  ).toBe(true);
+  expect(messages.some((message) => message.role === "USER")).toBe(true);
+  expect(messages.some((message) => message.kind === "TOOL_RESULT")).toBe(true);
   expect(session).toMatchObject({
     status: "ENDED",
     endedAt: new Date(end.sentAt),
@@ -111,9 +109,9 @@ it("a final source flush cannot suppress its earlier-captured end at the same so
     sentAt: "2026-09-08T01:47:34.000Z",
     records: [],
   };
-  await ingest.execute(organization.context, laterFlush);
+  await services.publish(organization.context, laterFlush);
   expect(
-    await database.prisma.agentSession.findUniqueOrThrow({
+    await database.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: session.id },
     }),
   ).toMatchObject({
@@ -128,14 +126,14 @@ it("a final source flush cannot suppress its earlier-captured end at the same so
     start: { resume: true },
     sentAt: "2026-09-08T01:47:33.000Z",
   };
-  await ingest.execute(organization.context, resume);
-  await ingest.execute(organization.context, {
+  await services.publish(organization.context, resume);
+  await services.publish(organization.context, {
     ...end,
     batchId: randomUUID(),
     sentAt: "2026-09-08T01:47:35.000Z",
   });
   expect(
-    await database.prisma.agentSession.findUniqueOrThrow({
+    await database.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: session.id },
     }),
   ).toMatchObject({

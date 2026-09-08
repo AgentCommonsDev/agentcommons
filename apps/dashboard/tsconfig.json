@@ -14,6 +14,7 @@
     "vite.config.ts",
     "playwright.config.ts",
     "playwright.workspace.config.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "playwright.saas.config.ts"
   ]
 }

@@ -1,6 +1,9 @@
 import { z } from "zod";
+import { v7 as uuidv7 } from "uuid";
+import type { TraceReaders } from "@agentcommons/traces";
 import { MetricsService } from "./metrics.js";
-import { Prisma, type PrismaClient, type ReaderPools } from "@agentcommons/db";
+import type { Prisma } from "@agentcommons/db";
+import { lockTracePublication, type PrismaClient } from "@agentcommons/db";
 import {
   visibilityInputSchema,
   installationToolsInputSchema,
@@ -14,7 +17,6 @@ import {
   redactionRescanInputSchema,
   jobOutputSchema,
   jsonValueSchema,
-  type PolicyCache,
 } from "@agentcommons/core";
 import type { AuditService } from "./audit.js";
 import type { CursorCodec } from "./cursor.js";
@@ -24,6 +26,10 @@ import { readOperation } from "./read-operation.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 
 export interface AdminJobs {
+  enqueue(
+    tx: Prisma.TransactionClient,
+    data: { organizationId: string; sessionId: string; outboxId: string },
+  ): Promise<void>;
   rescan(
     tx: Prisma.TransactionClient,
     context: ServiceContext,
@@ -43,10 +49,12 @@ async function session(
 ) {
   const locked = await tx.$queryRaw<
     { id: string }[]
-  >`SELECT id FROM agent_session WHERE organization_id=${organizationId} AND id=${id}::uuid FOR UPDATE`;
+  >`SELECT id FROM trace_session_control WHERE organization_id=${organizationId} AND id=${id}::uuid FOR UPDATE`;
   if (locked.length === 0)
     throw new ServiceError(404, "NOT_FOUND", "Session not found.");
-  return tx.agentSession.findUniqueOrThrow({ where: { id } });
+  return tx.traceSessionControl.findUniqueOrThrow({
+    where: { organizationId_id: { organizationId, id } },
+  });
 }
 const auditSort = {
   ts: "ts",
@@ -61,10 +69,9 @@ export class AdminService {
   constructor(
     private readonly dependencies: {
       prisma: PrismaClient;
-      readers: ReaderPools;
+      readers: TraceReaders;
       audit: AuditService;
       cursors: CursorCodec;
-      policies: PolicyCache;
       jobs: AdminJobs;
     },
   ) {}
@@ -125,6 +132,7 @@ export class AdminService {
       async (tx, caller) => {
         const request = visibilityInputSchema.parse(input);
         await lockOrganization(tx, caller);
+        await lockTracePublication(tx, caller.organizationId, "write");
         const current = await session(
           tx,
           caller.organizationId,
@@ -138,8 +146,13 @@ export class AdminService {
           );
         const updated = current.visibility !== request.visibility;
         if (updated)
-          await tx.agentSession.update({
-            where: { id: current.id },
+          await tx.traceSessionControl.update({
+            where: {
+              organizationId_id: {
+                organizationId: caller.organizationId,
+                id: current.id,
+              },
+            },
             data: { visibility: request.visibility },
           });
         return {
@@ -159,6 +172,7 @@ export class AdminService {
       async (tx, caller) => {
         const request = purgeInputSchema.parse(input);
         await lockOrganization(tx, caller);
+        await lockTracePublication(tx, caller.organizationId, "write");
         const current = await session(
           tx,
           caller.organizationId,
@@ -168,47 +182,23 @@ export class AdminService {
           organizationId: caller.organizationId,
           sessionId: current.id,
         };
-        const chunks = await tx.messageChunk.deleteMany({ where });
-        const embeddings = await tx.sessionEmbedding.deleteMany({ where });
-        const redactions = await tx.redactionEvent.deleteMany({ where });
-        const files = await tx.sessionFile.deleteMany({ where });
-        const messages = await tx.message.deleteMany({ where });
-        const records = await tx.rawRecord.deleteMany({ where });
         const reason = await this.dependencies.audit.redactText(
           context,
           request.reason,
+          tx,
         );
-        if (!current.purgedAt)
-          await tx.agentSession.update({
-            where: { id: current.id },
-            data: {
-              title: null,
-              firstPrompt: null,
-              observedCommits: Prisma.DbNull,
-              observedDiffStat: Prisma.DbNull,
-              branch: null,
-              normalizerContext: {},
-              projectedContext: {},
-              messageCount: 0,
-              toolCallCount: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              toolsUsed: [],
-              purgedAt: new Date(),
-              purgedByUserId: caller.userId,
-              purgeReason: reason,
-            },
-          });
-        const result = purgeOutputSchema.parse({
-          id: current.id,
-          updated: current.purgedAt === null,
-          manifest: {
+        let manifest = current.purgeManifest;
+        if (!current.purgedAt) {
+          const redactions = await tx.redactionEvent.deleteMany({ where });
+          await tx.traceOutbox.deleteMany({ where });
+          const revision = current.acceptedRevision + 1n;
+          manifest = {
             deleted: {
-              raw_records: records.count,
-              messages: messages.count,
-              session_files: files.count,
-              message_chunks: chunks.count,
-              session_embeddings: embeddings.count,
+              raw_records: null,
+              messages: null,
+              session_files: null,
+              message_chunks: null,
+              session_embeddings: null,
               redaction_events: redactions.count,
             },
             nulled_fields: [
@@ -229,11 +219,48 @@ export class AdminService {
             ],
             retained: [
               "session_identity",
-              "ingest_batches",
+              "ingest_receipts",
               "audit_events",
               "installation",
             ],
-          },
+          };
+          await tx.traceSessionControl.update({
+            where: {
+              organizationId_id: {
+                organizationId: caller.organizationId,
+                id: current.id,
+              },
+            },
+            data: {
+              purgedAt: new Date(),
+              purgedByUserId: caller.userId,
+              purgeReason: reason,
+              purgeManifest: manifest,
+              normalizerContext: {},
+              projectedContext: {},
+              projectionError: null,
+              projectionState: "queued",
+              embeddingRevision: null,
+              acceptedRevision: revision,
+            },
+          });
+          const outboxId = uuidv7();
+          await tx.traceOutbox.create({
+            data: {
+              id: outboxId,
+              ...where,
+              revision,
+              kind: "purge",
+              payload: {},
+            },
+          });
+          await this.dependencies.jobs.enqueue(tx, { ...where, outboxId });
+        }
+        const result = purgeOutputSchema.parse({
+          id: current.id,
+          updated: current.purgedAt === null,
+          cleanup: current.purgeCompletedAt ? "completed" : "queued",
+          manifest,
         });
         return {
           result,
@@ -357,21 +384,41 @@ export class AdminService {
       context,
       { action: "status", resourceType: "organization" },
       async (caller) => {
-        const [ingest, failures, redactions, jobs] = await Promise.all([
-          this.dependencies.prisma.$queryRaw<
-            { date: string; count: number }[]
-          >`SELECT to_char(received_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS date, count(*)::int AS count FROM ingest_batch WHERE organization_id=${caller.organizationId} GROUP BY 1 ORDER BY 1`,
-          this.dependencies.prisma.$queryRaw<
-            { date: string; count: number }[]
-          >`SELECT to_char(ts AT TIME ZONE 'UTC','YYYY-MM-DD') AS date, count(*)::int AS count FROM audit_event WHERE organization_id=${caller.organizationId} AND status_code>=400 GROUP BY 1 ORDER BY 1`,
-          this.dependencies.prisma.redactionEvent.groupBy({
-            by: ["policyId"],
-            where: { organizationId: caller.organizationId },
-            _sum: { count: true },
-            orderBy: { policyId: "asc" },
-          }),
-          this.dependencies.jobs.status(caller.organizationId),
-        ]);
+        const [ingest, failures, redactions, jobs, projection] =
+          await Promise.all([
+            this.dependencies.prisma.$queryRaw<
+              { date: string; count: number }[]
+            >`SELECT to_char(received_at AT TIME ZONE 'UTC','YYYY-MM-DD') AS date, count(*)::int AS count FROM trace_receipt WHERE organization_id=${caller.organizationId} GROUP BY 1 ORDER BY 1`,
+            this.dependencies.prisma.$queryRaw<
+              { date: string; count: number }[]
+            >`SELECT to_char(ts AT TIME ZONE 'UTC','YYYY-MM-DD') AS date, count(*)::int AS count FROM audit_event WHERE organization_id=${caller.organizationId} AND status_code>=400 GROUP BY 1 ORDER BY 1`,
+            this.dependencies.prisma.redactionEvent.groupBy({
+              by: ["policyId"],
+              where: { organizationId: caller.organizationId },
+              _sum: { count: true },
+              orderBy: { policyId: "asc" },
+            }),
+            this.dependencies.jobs.status(caller.organizationId),
+            this.dependencies.prisma.$queryRaw<
+              {
+                queued_sessions: number;
+                outbox_batches: number;
+                oldest_accepted_at: Date | null;
+                failed_sessions: number;
+                waiting_source_sessions: number;
+                pending_audit_events: number;
+              }[]
+            >`
+            SELECT
+              (SELECT count(*)::int FROM trace_session_control WHERE organization_id=${caller.organizationId} AND projection_state IN ('queued','waiting_source','failed')) AS queued_sessions,
+              (SELECT count(*)::int FROM trace_outbox WHERE organization_id=${caller.organizationId}) AS outbox_batches,
+              (SELECT min(created_at) FROM trace_outbox WHERE organization_id=${caller.organizationId}) AS oldest_accepted_at,
+              (SELECT count(*)::int FROM trace_session_control WHERE organization_id=${caller.organizationId} AND projection_state='failed') AS failed_sessions,
+              (SELECT count(*)::int FROM trace_session_control WHERE organization_id=${caller.organizationId} AND projection_state='waiting_source') AS waiting_source_sessions,
+              (SELECT count(*)::int FROM trace_audit_outbox o JOIN audit_event a ON a.id=o.audit_id WHERE a.organization_id=${caller.organizationId}) AS pending_audit_events`,
+          ]);
+        const state = projection[0];
+        if (!state) throw new Error("The projection status is unavailable.");
         return statusOutputSchema.parse({
           ingest_per_day: ingest,
           failures,
@@ -380,6 +427,10 @@ export class AdminService {
             count: row._sum.count ?? 0,
           })),
           ...jobs,
+          projection: {
+            ...state,
+            oldest_accepted_at: state.oldest_accepted_at?.toISOString() ?? null,
+          },
         });
       },
       undefined,
@@ -413,6 +464,7 @@ export class AdminService {
           reason: await this.dependencies.audit.redactText(
             context,
             request.reason,
+            tx,
           ),
         };
         const jobId = await this.dependencies.jobs.rescan(

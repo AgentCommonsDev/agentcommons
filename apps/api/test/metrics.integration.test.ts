@@ -1,22 +1,140 @@
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { Prisma, ReaderPools, type AgentSession } from "@agentcommons/db";
+import { Prisma } from "@agentcommons/db";
+import {
+  TraceReaders,
+  traceTables,
+  type TraceTable,
+} from "@agentcommons/traces";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
+import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 import { metricRowSchema, type MetricRow } from "@agentcommons/core";
 import { z } from "zod";
 import { MetricsService } from "../src/services/metrics.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
-import {
-  startDatabase,
-  provisionOrganization,
-  provisionMember,
-} from "./support.js";
-let db: Awaited<ReturnType<typeof startDatabase>>;
+import { provisionOrganization, provisionMember } from "./support.js";
+let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let org: Awaited<ReturnType<typeof provisionOrganization>>;
 let member: Awaited<ReturnType<typeof provisionMember>>;
 let foreign: Awaited<ReturnType<typeof provisionOrganization>>;
 let service: MetricsService;
+let fixtures: TraceFixtures;
+let auditProjection: TraceAuditProjectionService;
+const nativeJson = new Set([
+  "payload",
+  "redaction_context",
+  "tool_input",
+  "observed_commits",
+  "observed_diff_stat",
+]);
+
+const identityColumns: Partial<Record<TraceTable, string>> = {
+  sessions: "session_id",
+  messages: "message_id",
+  raw_records: "raw_record_id",
+  ingest_receipts: "receipt_id",
+  receipt_redactions: "redaction_id",
+};
+function storageFields(table: TraceTable, data: Record<string, unknown>) {
+  const columns: Record<string, string> = traceTables[table].columns;
+  return Object.fromEntries(
+    Object.entries(data).flatMap(([name, value]) => {
+      const column =
+        name === "id"
+          ? (identityColumns[table] ?? name)
+          : name === "ingestBatchId" && table === "receipt_redactions"
+            ? "receipt_id"
+            : name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+      const type = columns[column];
+      if (!type) return [];
+      return [
+        [
+          column,
+          nativeJson.has(column)
+            ? JSON.stringify(
+                value === Prisma.DbNull || value === Prisma.JsonNull
+                  ? null
+                  : value,
+              )
+            : type === "Int64"
+              ? String(value)
+              : value,
+        ],
+      ];
+    }),
+  );
+}
+async function insertTrace<T extends Record<string, unknown>>(
+  table: TraceTable,
+  input: { data: T },
+) {
+  const data = { id: randomUUID(), ...input.data };
+  await fixtures.insert(table, z.string().parse(data.sessionId), {
+    ...(table === "messages" ? { tool_input: "null" } : {}),
+    ...storageFields(table, data),
+  });
+  return data;
+}
+async function createSession<
+  T extends {
+    id: string;
+    organizationId: string;
+    userId: string;
+    ingestApiKeyId: string;
+    installationId: string;
+    startedAt: Date;
+    lastActivityAt: Date;
+    visibility: "PUBLIC" | "PRIVATE";
+    endedAt: Date;
+    status: "ENDED";
+  },
+>(input: { data: T }) {
+  const data = input.data;
+  await fixtures.session({
+    id: data.id,
+    organizationId: data.organizationId,
+    userId: data.userId,
+    keyId: data.ingestApiKeyId,
+    installationId: data.installationId,
+    visibility: data.visibility,
+    fields: storageFields("sessions", data),
+  });
+  await db.prisma.traceSessionControl.update({
+    where: {
+      organizationId_id: { organizationId: data.organizationId, id: data.id },
+    },
+    data: {
+      startedAt: data.startedAt,
+      lastActivityAt: data.lastActivityAt,
+      endedAt: data.endedAt,
+      status: data.status,
+    },
+  });
+  return data;
+}
+async function vectorFixture(row: { id: string }, vector: string) {
+  await fixtures.insert("session_embeddings", row.id, {
+    model: "text-embedding-3-small",
+    token_count: 1,
+    updated_at: new Date(),
+    embedding: z.array(z.number()).parse(JSON.parse(vector)),
+  });
+  const control = await db.prisma.traceSessionControl.findFirstOrThrow({
+    where: { id: row.id },
+  });
+  await db.prisma.traceSessionControl.update({
+    where: {
+      organizationId_id: { organizationId: control.organizationId, id: row.id },
+    },
+    data: {
+      embeddingRevision: control.publishedRevision,
+      embeddingSourceRevision: control.publishedRevision,
+    },
+  });
+}
 const filters = {
   date_from: "2026-09-07T00:00:00Z",
   date_to: "2026-09-14T00:00:00Z",
@@ -59,7 +177,7 @@ async function session(
     },
     update: {},
   });
-  const row = await db.prisma.agentSession.create({
+  const row = await createSession({
     data: {
       id: randomUUID(),
       organizationId: caller.organizationId,
@@ -98,13 +216,14 @@ async function session(
   return row;
 }
 async function receipt(
-  row: AgentSession,
+  row: Awaited<ReturnType<typeof session>>,
   behavior: string,
   sentAt: Date,
   sourcePos: number,
   receivedAt = sentAt,
+  lifecycleApplied = true,
 ) {
-  return db.prisma.ingestBatch.create({
+  const recorded = await insertTrace("ingest_receipts", {
     data: {
       organizationId: row.organizationId,
       id: randomUUID(),
@@ -112,7 +231,6 @@ async function receipt(
       apiKeyId: row.ingestApiKeyId,
       userId: row.userId,
       installationId: row.installationId,
-      ip: "fixture",
       cursor: randomUUID(),
       acceptedCount: 0,
       sourcePos,
@@ -120,6 +238,7 @@ async function receipt(
       behavior,
       startResume: behavior === "start" && sourcePos > 0,
       nativeEvent: behavior,
+      lifecycleApplied,
       receivedAt,
       recordCount: 0,
       duplicateCount: 0,
@@ -128,6 +247,19 @@ async function receipt(
       durationMs: 0,
     },
   });
+  const control = await db.prisma.traceSessionControl.findFirstOrThrow({
+    where: { id: row.id },
+  });
+  await db.prisma.traceReceipt.create({
+    data: {
+      ...recorded,
+      revision: control.publishedRevision,
+      sourcePos: BigInt(sourcePos),
+      byteCount: 0n,
+      publishedAt: receivedAt,
+    },
+  });
+  return recorded;
 }
 async function audit(
   context: ServiceContext,
@@ -143,7 +275,7 @@ async function audit(
   },
 ) {
   const caller = requireCaller(context);
-  return db.prisma.auditEvent.create({
+  const row = await db.prisma.auditEvent.create({
     data: {
       organizationId: caller.organizationId,
       id: randomUUID(),
@@ -158,6 +290,12 @@ async function audit(
       action: options.action ?? "get",
       statusCode: 200,
       durationMs: 1,
+      resourceIds:
+        options.action === "search"
+          ? (options.results ?? [])
+          : options.target
+            ? [options.target]
+            : [],
       detail: {
         input: { query: "fixture searchable question" },
         result:
@@ -171,6 +309,9 @@ async function audit(
       },
     },
   });
+  await db.prisma.traceAuditOutbox.create({ data: { auditId: row.id } });
+  await auditProjection.flush();
+  return row;
 }
 async function metrics(group: string, extra: Record<string, unknown> = {}) {
   return (
@@ -188,13 +329,21 @@ function find(rows: MetricRow[], metric: string, enabled?: boolean) {
 }
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  db = await startDatabase();
+  db = await startTraceDatabase();
   release.unshift(() => db.close());
+  fixtures = new TraceFixtures(db);
+  release.unshift(() => fixtures.close());
+  auditProjection = new TraceAuditProjectionService({
+    prisma: db.prisma,
+    audit: db.audit,
+    traces: db.traces,
+  });
   org = await provisionOrganization(db, "metrics");
   member = await provisionMember(db, org.owner, "metrics-member@example.com");
   foreign = await provisionOrganization(db, "metrics-foreign");
   service = new MetricsService({
     ...db,
+    readers: db.traceReaders,
     cursors: new CursorCodec("metrics-test-secret"),
   });
 }, 120_000);
@@ -265,7 +414,7 @@ it("counts weekly reuse once per active reading session, respects event boundari
     target: target.id,
   });
   // Delivered after resume, this lower-position end cannot close the resumed window.
-  await receipt(source, "end", at(12, 1), 15, at(12, 2));
+  await receipt(source, "end", at(12, 1), 15, at(12, 2), false);
   const long = await session(org.context, {
     repo: "long-gap",
     start: at(0),
@@ -278,21 +427,16 @@ it("counts weekly reuse once per active reading session, respects event boundari
     target: target.id,
   });
   const query = (ctx: ServiceContext) =>
-    db.readers.read(requireCaller(ctx), async (client) => ({
+    db.traceReaders.read(requireCaller(ctx), async (client) => ({
       edges: (
-        await client.query<Record<string, unknown>>(
-          "SELECT * FROM api_ro.reuse_edges ORDER BY read_at",
-        )
+        await client.query("SELECT * FROM api_ro.reuse_edges ORDER BY read_at")
       ).rows,
-      weekly: (
-        await client.query<Record<string, unknown>>(
-          "SELECT * FROM api_ro.metrics_reuse_weekly",
-        )
-      ).rows,
+      weekly: (await client.query("SELECT * FROM api_ro.metrics_reuse_weekly"))
+        .rows,
       counts: (
-        await client.query<Record<string, unknown>>(
-          "SELECT * FROM api_ro.session_reuse WHERE session_id=$1",
-          [target.id],
+        await client.query(
+          "SELECT * FROM api_ro.session_reuse WHERE session_id={id:UUID}",
+          { id: target.id },
         )
       ).rows,
     }));
@@ -323,11 +467,11 @@ it("counts weekly reuse once per active reading session, respects event boundari
     target: hidden.id,
   });
   const memberData = await query(member.context);
-  const assisted = await db.readers.read(
+  const assisted = await db.traceReaders.read(
     requireCaller(member.context),
     async (client) =>
       (
-        await client.query<Record<string, unknown>>(
+        await client.query(
           "SELECT memory_assisted FROM api_ro.metrics_reuse_sessions",
         )
       ).rows,
@@ -375,7 +519,7 @@ it("computes filtered capture, redaction, search precision, cross-user and dashb
   });
   const batch = await receipt(source, "sync", at(9, 1), 2);
   for (const [index, latency] of [2, 4, -1].entries()) {
-    const raw = await db.prisma.rawRecord.create({
+    const raw = await insertTrace("raw_records", {
       data: {
         organizationId: source.organizationId,
         id: randomUUID(),
@@ -388,7 +532,7 @@ it("computes filtered capture, redaction, search precision, cross-user and dashb
       },
     });
     for (let block = 0; block < 2; block++)
-      await db.prisma.message.create({
+      await insertTrace("messages", {
         data: {
           organizationId: source.organizationId,
           id: randomUUID(),
@@ -409,7 +553,7 @@ it("computes filtered capture, redaction, search precision, cross-user and dashb
   const policy = await db.prisma.redactionPolicy.findFirstOrThrow({
     where: { organizationId: source.organizationId },
   });
-  await db.prisma.redactionEvent.create({
+  await insertTrace("receipt_redactions", {
     data: {
       organizationId: source.organizationId,
       ingestBatchId: batch.id,
@@ -575,7 +719,7 @@ it("compares current rollout cohorts, requires paired failed reruns, and gates v
   });
   const batch = await receipt(enabled, "sync", at(9, 1), 2);
   for (let index = 0; index < 4; index++) {
-    const raw = await db.prisma.rawRecord.create({
+    const raw = await insertTrace("raw_records", {
       data: {
         organizationId: enabled.organizationId,
         id: randomUUID(),
@@ -587,7 +731,7 @@ it("compares current rollout cohorts, requires paired failed reruns, and gates v
         ingestBatchId: batch.id,
       },
     });
-    await db.prisma.message.create({
+    await insertTrace("messages", {
       data: {
         organizationId: enabled.organizationId,
         id: randomUUID(),
@@ -645,9 +789,7 @@ it("compares current rollout cohorts, requires paired failed reruns, and gates v
   });
   const vector =
     "[" + [1, ...Array.from({ length: 1023 }, () => 0)].join(",") + "]";
-  for (const s of [one, two])
-    await db.prisma
-      .$executeRaw`INSERT INTO session_embedding(organization_id,session_id,embedding,model,token_count,updated_at) VALUES(${s.organizationId},${s.id}::uuid,${vector}::vector,'text-embedding-3-small',1,now())`;
+  for (const s of [one, two]) await vectorFixture(s, vector);
   expect(
     find(
       await metrics("outcomes", {
@@ -656,7 +798,20 @@ it("compares current rollout cohorts, requires paired failed reruns, and gates v
       "near_duplicate_rate",
     ).value,
   ).toBe(0);
-  const readers = new ReaderPools(db.urls, {}, { embeddings: true });
+  const embeddingOrganizationId = z
+    .string()
+    .parse(org.context.caller?.organizationId);
+  await db.prisma.organizationSettings.upsert({
+    where: { organizationId: embeddingOrganizationId },
+    create: {
+      organizationId: embeddingOrganizationId,
+      embeddingsEnabled: true,
+    },
+    update: { embeddingsEnabled: true },
+  });
+  const readers = new TraceReaders(db.traceConfig, db.prisma, {
+    embeddings: true,
+  });
   try {
     const on = new MetricsService({
       ...db,
@@ -737,7 +892,7 @@ it("retains authoritative read resource IDs and numeric search results under UUI
     end: new Date(now + 600_000),
   });
   const batch = await receipt(target, "sync", target.startedAt, 1);
-  const raw = await db.prisma.rawRecord.create({
+  const raw = await insertTrace("raw_records", {
     data: {
       id: randomUUID(),
       organizationId: target.organizationId,
@@ -749,7 +904,7 @@ it("retains authoritative read resource IDs and numeric search results under UUI
       ingestBatchId: batch.id,
     },
   });
-  await db.prisma.message.create({
+  await insertTrace("messages", {
     data: {
       id: randomUUID(),
       organizationId: target.organizationId,
@@ -781,6 +936,7 @@ it("retains authoritative read resource IDs and numeric search results under UUI
   try {
     const dependencies = {
       ...db,
+      readers: db.traceReaders,
       cursors: new CursorCodec("metrics-authoritative-audit"),
     };
     const search = new SearchService(dependencies);
@@ -809,30 +965,33 @@ it("retains authoritative read resource IDs and numeric search results under UUI
       "not_a_real_secret123456789",
     );
     const read = await get.get(org.context, { session_id: target.id });
+    while (await auditProjection.flush()) {
+      /* Publish real read audit evidence. */
+    }
     expect(read.audit.resourceIds).toEqual([target.id]);
     expect(JSON.stringify(read.audit.detail)).not.toContain(target.id);
-    const edges = await db.readers.read(
+    const edges = await db.traceReaders.read(
       requireCaller(org.context),
       async (client) =>
         (
-          await client.query<Record<string, unknown>>(
-            "SELECT * FROM api_ro.reuse_edges WHERE source_session_id=$1 AND target_session_id=$2",
-            [source.id, target.id],
+          await client.query(
+            "SELECT * FROM api_ro.reuse_edges WHERE source_session_id={source:UUID} AND target_session_id={target:UUID}",
+            { source: source.id, target: target.id },
           )
         ).rows,
     );
     expect(edges).toHaveLength(1);
-    const events = await db.readers.read(
+    const events = await db.traceReaders.read(
       requireCaller(org.context),
       async (client) =>
         (
-          await client.query<Record<string, unknown>>(
-            "SELECT hits,followed_through FROM api_ro.metrics_usage WHERE id=$1",
-            [result.audit.id],
+          await client.query(
+            "SELECT hits,followed_through FROM api_ro.metrics_usage WHERE id={id:UUID}",
+            { id: result.audit.id },
           )
         ).rows,
     );
-    expect(events[0]).toMatchObject({ hits: "1", followed_through: true });
+    expect(events[0]).toMatchObject({ hits: "1", followed_through: 1 });
     const structural = await db.audit.write(org.context, {
       action: "search",
       detail: {
@@ -871,13 +1030,16 @@ it("retains authoritative read resource IDs and numeric search results under UUI
     expect(empty.audit.detail).toMatchObject({
       result: { hits: 0, truncated_response: false },
     });
-    const own = await db.readers.read(
+    while (await auditProjection.flush()) {
+      /* Publish actual zero-result query. */
+    }
+    const own = await db.traceReaders.read(
       requireCaller(org.context),
       async (client) =>
         (
-          await client.query<Record<string, unknown>>(
-            "SELECT search_id,query FROM api_ro.metrics_own_zero_results WHERE search_id=$1",
-            [empty.audit.id],
+          await client.query(
+            "SELECT search_id,query FROM api_ro.metrics_own_zero_results WHERE search_id={id:UUID}",
+            { id: empty.audit.id },
           )
         ).rows,
     );
@@ -901,31 +1063,37 @@ it("retains authoritative read resource IDs and numeric search results under UUI
 // @req R-DASH-13
 it("uses strict similarity thresholds and does not turn one failed attempt with a reused tool ID into a rerun loop", async () => {
   const low = await session(org.context, {
-    repo: "trigram-boundary",
+    repo: "ngram-boundary",
     prompt: "abcdefg",
   });
   await session(member.context, {
-    repo: "trigram-boundary",
-    prompt: "abcdefh",
+    repo: "ngram-boundary",
+    prompt: "abcdhij",
   });
   expect(
     (
-      await db.prisma.$queryRaw<
-        { value: number }[]
-      >`SELECT similarity('abcdefg','abcdefh') AS value`
+      await db.traceReaders.read(
+        requireCaller(org.context),
+        async (client) =>
+          (
+            await client.query(
+              "SELECT 1-ngramDistanceUTF8('abcdefg','abcdhij') AS value",
+            )
+          ).rows,
+      )
     )[0]?.value,
-  ).toBeCloseTo(0.6);
+  ).toBeCloseTo(0.4);
   expect(
     find(
       await metrics("outcomes", {
-        filters: { ...filters, repo_name: "trigram-boundary" },
+        filters: { ...filters, repo_name: "ngram-boundary" },
       }),
       "near_duplicate_rate",
     ).value,
   ).toBe(0);
   const batch = await receipt(low, "sync", at(9, 1), 2);
   for (let index = 0; index < 4; index++) {
-    const raw = await db.prisma.rawRecord.create({
+    const raw = await insertTrace("raw_records", {
       data: {
         organizationId: low.organizationId,
         id: randomUUID(),
@@ -937,7 +1105,7 @@ it("uses strict similarity thresholds and does not turn one failed attempt with 
         ingestBatchId: batch.id,
       },
     });
-    await db.prisma.message.create({
+    await insertTrace("messages", {
       data: {
         organizationId: low.organizationId,
         id: randomUUID(),
@@ -960,12 +1128,25 @@ it("uses strict similarity thresholds and does not turn one failed attempt with 
   expect(
     find(
       await metrics("outcomes", {
-        filters: { ...filters, repo_name: "trigram-boundary" },
+        filters: { ...filters, repo_name: "ngram-boundary" },
       }),
       "rerun_loop_rate",
     ).value,
   ).toBe(0);
-  const readers = new ReaderPools(db.urls, {}, { embeddings: true });
+  const embeddingOrganizationId = z
+    .string()
+    .parse(org.context.caller?.organizationId);
+  await db.prisma.organizationSettings.upsert({
+    where: { organizationId: embeddingOrganizationId },
+    create: {
+      organizationId: embeddingOrganizationId,
+      embeddingsEnabled: true,
+    },
+    update: { embeddingsEnabled: true },
+  });
+  const readers = new TraceReaders(db.traceConfig, db.prisma, {
+    embeddings: true,
+  });
   try {
     const on = new MetricsService({
       ...db,
@@ -988,8 +1169,7 @@ it("uses strict similarity thresholds and does not turn one failed attempt with 
           y,
           ...Array.from({ length: 1022 }, () => 0),
         ]);
-        await db.prisma
-          .$executeRaw`INSERT INTO session_embedding(organization_id,session_id,embedding,model,token_count,updated_at) VALUES(${row.organizationId},${row.id}::uuid,${vector}::vector,'text-embedding-3-small',1,now())`;
+        await vectorFixture(row, vector);
       }
       expect(
         find(
@@ -1032,7 +1212,17 @@ it("returns complete eight-week empty trends and bounds displayed metadata witho
     expect(item.repo_name).toMatch(/…$/u);
   }
   expect(
-    (await db.prisma.agentSession.findUniqueOrThrow({ where: { id: row.id } }))
-      .repoName,
+    (
+      await db.traceReaders.read(
+        requireCaller(org.context),
+        async (client) =>
+          (
+            await client.query(
+              "SELECT repo_name FROM api_ro.sessions WHERE session_id={id:UUID}",
+              { id: row.id },
+            )
+          ).rows,
+      )
+    )[0]?.repo_name,
   ).toBe(name);
 });

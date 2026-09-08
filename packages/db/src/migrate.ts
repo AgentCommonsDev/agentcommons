@@ -7,16 +7,14 @@ import { JOB_QUEUES } from "./jobs.js";
 const env = z
   .object({
     DATABASE_MIGRATION_URL: z.url(),
+    DATABASE_TRACE_CONTROL_URL: z.url(),
     DATABASE_URL: z.url(),
-    DATABASE_READER_USER_URL: z.url(),
-    DATABASE_READER_ADMIN_URL: z.url(),
   })
   .parse(process.env);
 
 const roles = [
   ["ac_app", env.DATABASE_URL],
-  ["ac_reader_user", env.DATABASE_READER_USER_URL],
-  ["ac_reader_admin", env.DATABASE_READER_ADMIN_URL],
+  ["ac_trace_control", env.DATABASE_TRACE_CONTROL_URL],
 ] as const;
 const migrationUrl = new URL(env.DATABASE_MIGRATION_URL);
 for (const [role, connection] of roles) {

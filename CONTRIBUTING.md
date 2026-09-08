@@ -39,3 +39,21 @@ redact anything sensitive.
 ## Security issues
 
 See `SECURITY.md`: use GitHub private vulnerability reporting, not public issues.
+
+## Blog posts
+
+Add a Markdown file under `apps/dashboard/content/blog/`. Its filename must match
+its slug. Include this frontmatter, then write the article below it:
+
+```yaml
+---
+slug: your-post-title
+title: Your post title
+summary: One sentence describing the article.
+date: "2026-09-08"
+---
+```
+
+The dashboard build validates posts and generates their pages, metadata, sitemap,
+and LLM discovery files. Customer instances do not serve the blog. Review public
+copy with the repo's `no-ai-slop` skill and test the post on a phone-width viewport.

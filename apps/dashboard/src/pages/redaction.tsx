@@ -28,6 +28,20 @@ type PolicyFilters = NonNullable<
   >["filters"]
 >;
 const ruleSchema = z.enum(redactionRuleIds);
+function RuleLink({ id }: { id: string | null }) {
+  const known = ruleSchema.safeParse(id);
+  if (!known.success) return <>{id ?? copy.workspace.common.unavailable}</>;
+  const path = known.data.split("/").map(encodeURIComponent).join("/");
+  return (
+    <a
+      href={`https://github.com/secretlint/secretlint/blob/master/packages/${path}/README.md`}
+      target="_blank"
+      rel="noreferrer"
+    >
+      {known.data}
+    </a>
+  );
+}
 const allowedPatterns = (options: unknown) => {
   if (
     typeof options !== "object" ||
@@ -183,6 +197,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
         accessorKey: "rule_id",
         header: copy.workspace.fields.rule_id,
         enableSorting: false,
+        cell: ({ row }) => <RuleLink id={row.original.rule_id} />,
       },
       {
         accessorKey: "enabled",
@@ -409,6 +424,9 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
                     </select>
                   )}
                 </Field>
+                <p className="policy-rule-source">
+                  <RuleLink id={ruleId} />
+                </p>
                 <Field
                   label={copy.workspace.redaction.allows}
                   hint={copy.workspace.redaction.allowsHint}

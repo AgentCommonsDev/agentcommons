@@ -27,10 +27,19 @@ export const memberImpactSchema = z.strictObject({
   distinct_readers: nonnegativeIntegerSchema,
   reuses_made: nonnegativeIntegerSchema,
 });
+export const searchAdoptionSchema = z.strictObject({
+  sessions: nonnegativeIntegerSchema,
+  agentcommons_search_sessions: nonnegativeIntegerSchema,
+  agentcommons_search_rate: z.number().min(0).max(1).nullable(),
+  agentcommons_search_calls: nonnegativeIntegerSchema,
+  repeat_agentcommons_search_calls: nonnegativeIntegerSchema,
+  subsequent_other_search_calls: nonnegativeIntegerSchema,
+});
 export const homeSummarySchema = z.strictObject({
   week: z.iso.date(),
   weekly: z.array(reuseWeekSchema).length(8),
   impact: memberImpactSchema,
+  search_adoption: searchAdoptionSchema,
 });
 export const homeSectionSchema = z.enum([
   "reused",

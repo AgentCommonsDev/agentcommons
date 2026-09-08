@@ -89,6 +89,12 @@ function ReusePanel({
         />
       ) : (
         <DataTable
+          summaryColumnIds={[
+            "target_title",
+            "source_title",
+            "reader_email",
+            "read_at",
+          ]}
           data={query.data?.items ?? []}
           columns={reuseColumns<ReuseEdge>((row) => row)}
           sorting={pagination.sorting}

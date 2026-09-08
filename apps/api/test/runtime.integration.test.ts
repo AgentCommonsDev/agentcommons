@@ -1,17 +1,17 @@
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { AuditService } from "../src/services/audit.js";
 import { createRuntime } from "../src/main.js";
 import { environment } from "../src/env.js";
-import {
-  startDatabase,
-  provisionOrganization,
-  testAuthConfiguration,
-} from "./support.js";
-let database: Awaited<ReturnType<typeof startDatabase>>;
+import { provisionOrganization, testAuthConfiguration } from "./support.js";
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
 }, 120_000);
 afterAll(async () => {
@@ -25,8 +25,7 @@ it("seeds validated extra policies for every organization at boot, preserves the
   const options = {
     PUBLIC_URL: testAuthConfiguration.publicUrl,
     DATABASE_URL: database.urls.app,
-    DATABASE_READER_USER_URL: database.urls.user,
-    DATABASE_READER_ADMIN_URL: database.urls.admin,
+    ...traceEnvironment(database.traceConfig),
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     LOG_LEVEL: "silent",
     REDACTION_EXTRA_PATTERNS: JSON.stringify([
@@ -90,8 +89,7 @@ it("rolls boot policy seeding back if audit fails and concurrent restarts audit 
   const options = environment({
     PUBLIC_URL: testAuthConfiguration.publicUrl,
     DATABASE_URL: database.urls.app,
-    DATABASE_READER_USER_URL: database.urls.user,
-    DATABASE_READER_ADMIN_URL: database.urls.admin,
+    ...traceEnvironment(database.traceConfig),
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     REDACTION_EXTRA_PATTERNS: JSON.stringify([
       { name: "rollback_pattern", kind: "REGEX", pattern: "boot-private-text" },

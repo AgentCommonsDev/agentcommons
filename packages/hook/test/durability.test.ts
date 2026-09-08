@@ -347,7 +347,10 @@ describe("source readers and installer", () => {
     expect(changed.records.map((record) => record.sourceVersion)).toEqual([
       1, 0,
     ]);
-    expect(changed.transcriptMetadata).toEqual({ sessionId: "native" });
+    expect(changed.transcriptMetadata).toEqual({
+      sessionId: "native",
+      sourceRecordCount: 2,
+    });
   });
   // @req R-INST-02 @req R-INST-04
   it("preserves settings, replaces exact markers, and keeps installation identity through reinstall and uninstall", () => {

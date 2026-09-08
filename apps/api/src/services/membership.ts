@@ -19,6 +19,7 @@ import {
   PASSWORD_SETUP_SECONDS,
 } from "../auth/config.js";
 import { membershipTransaction } from "../auth/transaction.js";
+import { invalidateSetupTokens } from "../auth/setup-tokens.js";
 import type { AuditService } from "./audit.js";
 import { lockOrganization, requireCookie } from "./auth.js";
 import { CursorCodec } from "./cursor.js";
@@ -40,7 +41,7 @@ async function editableMember(
   relinquishesOwner: boolean,
 ): Promise<Member> {
   const target = await tx.member.findFirst({
-    where: { id, organizationId: caller.organizationId },
+    where: { id, organizationId: caller.organizationId, removedAt: null },
   });
   if (!target) throw new ServiceError(404, "NOT_FOUND", "Member not found.");
   await tx.$queryRaw`SELECT id FROM "user" WHERE id=${target.userId} FOR UPDATE`;
@@ -56,6 +57,7 @@ async function editableMember(
         organizationId: caller.organizationId,
         role: "owner",
         suspended: false,
+        removedAt: null,
       },
     });
     if (owners <= 1)
@@ -116,6 +118,7 @@ export class MembershipService {
         const rows = await this.prisma.member.findMany({
           where: {
             organizationId: caller.organizationId,
+            removedAt: null,
             ...(parsed.filters.email
               ? { user: { email: parsed.filters.email.toLowerCase() } }
               : {}),
@@ -195,7 +198,7 @@ export class MembershipService {
                   },
                 })
               : null;
-            if (current) {
+            if (current && !current.removedAt) {
               results.push({
                 email,
                 status: "existing",
@@ -213,6 +216,7 @@ export class MembershipService {
                 where: {
                   userId: existing.id,
                   organizationId: { not: caller.organizationId },
+                  removedAt: null,
                 },
               })) > 0
             ) {
@@ -226,13 +230,28 @@ export class MembershipService {
               existing ??
               (await auth.api.createUser({ body: { email, name: email } }))
                 .user;
-            const member = await auth.api.addMember({
-              body: {
-                organizationId: caller.organizationId,
-                userId: user.id,
-                role: parsed.role,
-              },
-            });
+            let member: { id: string };
+            if (current) {
+              const native = await auth.$context;
+              await native.adapter.update({
+                model: "member",
+                where: [{ field: "id", value: current.id }],
+                update: {
+                  role: parsed.role,
+                  suspended: false,
+                  removedAt: null,
+                },
+              });
+              member = current;
+            } else {
+              member = await auth.api.addMember({
+                body: {
+                  organizationId: caller.organizationId,
+                  userId: user.id,
+                  role: parsed.role,
+                },
+              });
+            }
             memberIds.push(member.id);
             if (!existing && this.config.emailPasswordEnabled)
               await auth.api.requestPasswordReset({
@@ -287,7 +306,11 @@ export class MembershipService {
           await lockOrganization(tx, caller);
           await tx.$queryRaw`SELECT id FROM "user" WHERE id=${userId} FOR UPDATE`;
           const target = await tx.member.findFirst({
-            where: { userId, organizationId: caller.organizationId },
+            where: {
+              userId,
+              organizationId: caller.organizationId,
+              removedAt: null,
+            },
             include: { user: true },
           });
           if (!target)
@@ -295,7 +318,11 @@ export class MembershipService {
           if (
             (await tx.account.count({ where: { userId } })) !== 0 ||
             (await tx.member.count({
-              where: { userId, organizationId: { not: caller.organizationId } },
+              where: {
+                userId,
+                organizationId: { not: caller.organizationId },
+                removedAt: null,
+              },
             })) !== 0
           ) {
             throw new ServiceError(
@@ -449,13 +476,19 @@ export class MembershipService {
         const parsed = reasonInputSchema.parse(input);
         return membershipTransaction(this.prisma, async (tx) => {
           await lockOrganization(tx, caller);
-          await editableMember(tx, caller, id, true);
-          await createAuth(tx, this.config).api.removeMember({
-            headers: context.headers,
-            body: {
-              organizationId: caller.organizationId,
-              memberIdOrEmail: id,
-            },
+          const target = await editableMember(tx, caller, id, true);
+          if (
+            (await tx.account.count({ where: { userId: target.userId } })) === 0
+          )
+            await invalidateSetupTokens(tx, target.userId);
+          const native = await createAuth(tx, this.config).$context;
+          await native.adapter.update({
+            model: "member",
+            where: [
+              { field: "id", value: id },
+              { field: "organizationId", value: caller.organizationId },
+            ],
+            update: { suspended: true, removedAt: new Date() },
           });
           const audit = await this.audit.write(
             context,

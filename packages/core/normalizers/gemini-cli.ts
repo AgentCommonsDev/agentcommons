@@ -102,8 +102,13 @@ export const geminiCli = createNormalizer({
       ];
     });
   },
-  toMessages(records) {
-    return records.flatMap((record) => {
+  toMessages(records, context) {
+    const length = context?.transcriptMetadata?.sourceRecordCount;
+    const current =
+      typeof length === "number" && Number.isSafeInteger(length) && length >= 0
+        ? records.filter((record) => record.pos < BigInt(length))
+        : records;
+    return current.flatMap((record) => {
       const data = object(record.payload);
       if (data.type !== "user" && data.type !== "gemini") return [];
       const model = string(data.model);

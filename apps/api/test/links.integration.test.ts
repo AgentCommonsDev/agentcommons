@@ -9,14 +9,17 @@ import {
   type IngestEnvelope,
   type SourceRecord,
 } from "@agentcommons/core";
-import { IngestService } from "../src/services/ingest.js";
+import type { IngestService } from "../src/services/ingest.js";
 import { SessionService } from "../src/services/session.js";
 import { CursorCodec } from "../src/services/cursor.js";
-import { startDatabase, provisionOrganization } from "./support.js";
-let db: Awaited<ReturnType<typeof startDatabase>>;
+import { provisionOrganization } from "./support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { traceServices } from "./trace-services.js";
+let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let first: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
-let ingest: IngestService;
+let ingest: Pick<IngestService, "execute">;
+let native: ReturnType<typeof traceServices>;
 const installationId = uuidv7();
 function fixture(path: string) {
   return readFileSync(
@@ -75,11 +78,13 @@ function request(
 }
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  db = await startDatabase();
+  db = await startTraceDatabase();
   release.unshift(() => db.close());
   first = await provisionOrganization(db, "link-first");
   other = await provisionOrganization(db, "link-other");
-  ingest = new IngestService(db);
+  native = traceServices(db);
+  release.unshift(() => native.close());
+  ingest = { execute: native.publish };
 });
 afterAll(async () => {
   expect(await cleanupAll(release.splice(0))).toEqual([]);
@@ -109,16 +114,17 @@ describe("persisted explicit harness relationships", () => {
       agentType: "Explore",
     };
     const created = await ingest.execute(first.context, start);
-    const initial = await db.prisma.agentSession.findUniqueOrThrow({
+    const initial = await db.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: created.result.sessionId },
     });
     expect(initial).toMatchObject({
       parentSessionId: parent.result.sessionId,
       parentRelation: "SUBAGENT",
       parentNativeRef: parentRef,
-      agentType: "Explore",
-      messageCount: 0,
     });
+    expect(
+      await native.header(initial.organizationId, initial.id),
+    ).toMatchObject({ agent_type: "Explore", message_count: 0 });
     const stop = {
       ...request("CLAUDE_CODE", nativeId, lines),
       behavior: "end" as const,
@@ -134,7 +140,7 @@ describe("persisted explicit harness relationships", () => {
     const confirmed = await ingest.execute(first.context, stop);
     expect(confirmed.result.sessionId).toBe(created.result.sessionId);
     expect(
-      await db.prisma.agentSession.count({
+      await db.prisma.traceSessionControl.count({
         where: {
           organizationId: initial.organizationId,
           harnessSessionId: nativeId,
@@ -142,7 +148,7 @@ describe("persisted explicit harness relationships", () => {
       }),
     ).toBe(1);
     expect(
-      await db.prisma.agentSession.findUniqueOrThrow({
+      await db.prisma.traceSessionControl.findFirstOrThrow({
         where: { id: initial.id },
       }),
     ).toMatchObject({
@@ -151,10 +157,13 @@ describe("persisted explicit harness relationships", () => {
       status: "ENDED",
     });
     expect(
-      await db.prisma.message.count({ where: { sessionId: initial.id } }),
+      (await native.messages(initial.organizationId, initial.id)).length,
     ).toBeGreaterThan(0);
     const replay = await ingest.execute(first.context, stop);
-    expect(replay.result).toEqual(confirmed.result);
+    expect(replay.result).toEqual({
+      ...confirmed.result,
+      publication: "published",
+    });
   });
   it("links the live Codex thread_spawn parent in its own organization even when the parent arrives later @req R-LNK-02", async () => {
     const lines = fixture("codex/subagent.jsonl");
@@ -195,7 +204,7 @@ describe("persisted explicit harness relationships", () => {
       request("CODEX", nativeId, lines),
     );
     expect(
-      await db.prisma.agentSession.findUniqueOrThrow({
+      await db.prisma.traceSessionControl.findFirstOrThrow({
         where: { id: child.result.sessionId },
       }),
     ).toMatchObject({
@@ -207,13 +216,14 @@ describe("persisted explicit harness relationships", () => {
       first.context,
       request("CODEX", parentRef),
     );
-    const linked = await db.prisma.agentSession.findUniqueOrThrow({
+    const linked = await db.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: child.result.sessionId },
     });
     expect(linked.parentSessionId).toBe(parent.result.sessionId);
     expect(linked.parentSessionId).not.toBe(foreign.result.sessionId);
     const reader = new SessionService({
       ...db,
+      readers: db.traceReaders,
       cursors: new CursorCodec("link-cursor-secret"),
     });
     const tree = await reader.tree(first.context, parent.result.sessionId, {});
@@ -236,7 +246,7 @@ describe("persisted explicit harness relationships", () => {
     );
     const hinted = await ingest.execute(first.context, request("PI", uuidv7()));
     const hintRef = (
-      await db.prisma.agentSession.findUniqueOrThrow({
+      await db.prisma.traceSessionControl.findFirstOrThrow({
         where: { id: hinted.result.sessionId },
       })
     ).harnessSessionId;
@@ -247,7 +257,7 @@ describe("persisted explicit harness relationships", () => {
     };
     const child = await ingest.execute(first.context, body);
     expect(
-      await db.prisma.agentSession.findUniqueOrThrow({
+      await db.prisma.traceSessionControl.findFirstOrThrow({
         where: { id: child.result.sessionId },
       }),
     ).toMatchObject({
@@ -267,7 +277,7 @@ describe("persisted explicit harness relationships", () => {
     });
     expect(JSON.stringify(later.audit.detail)).toContain("parent_conflicts");
     expect(
-      await db.prisma.agentSession.findUniqueOrThrow({
+      await db.prisma.traceSessionControl.findFirstOrThrow({
         where: { id: child.result.sessionId },
       }),
     ).toMatchObject({
@@ -297,7 +307,7 @@ describe("persisted explicit harness relationships", () => {
         ]),
       );
       expect(
-        await db.prisma.agentSession.findUniqueOrThrow({
+        await db.prisma.traceSessionControl.findFirstOrThrow({
           where: { id: independent.result.sessionId },
         }),
       ).toMatchObject({ parentSessionId: null, parentRelation: null });
@@ -308,7 +318,7 @@ describe("persisted explicit harness relationships", () => {
       };
       const linked = await ingest.execute(first.context, spawned);
       expect(
-        await db.prisma.agentSession.findUniqueOrThrow({
+        await db.prisma.traceSessionControl.findFirstOrThrow({
           where: { id: linked.result.sessionId },
         }),
       ).toMatchObject({

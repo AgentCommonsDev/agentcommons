@@ -1,0 +1,10 @@
+<clickhouse>
+  <!-- Query exceptions may contain user SQL or inserted values. Audited API errors
+       are the supported diagnostic path; database text/query logs are disabled. -->
+  <logger replace="replace"><level>none</level><console>0</console></logger>
+  <query_log remove="1" />
+  <query_thread_log remove="1" />
+  <query_views_log remove="1" />
+  <text_log remove="1" />
+  <trace_log remove="1" />
+</clickhouse>

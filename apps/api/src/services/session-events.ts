@@ -1,6 +1,6 @@
 import { setTimeout } from "node:timers/promises";
 import { sessionEventSchema, sessionIdSchema } from "@agentcommons/core";
-import type { ReaderPools } from "@agentcommons/db";
+import type { TraceReaders } from "@agentcommons/traces";
 import type { AuthService } from "./auth.js";
 import type { AuditService } from "./audit.js";
 import { readOperation } from "./read-operation.js";
@@ -15,7 +15,7 @@ import { wireRow } from "./read-budget.js";
 export class SessionEventsService {
   constructor(
     private readonly dependencies: {
-      readers: ReaderPools;
+      readers: TraceReaders;
       auth: AuthService;
       audit: AuditService;
       intervalMs?: number;

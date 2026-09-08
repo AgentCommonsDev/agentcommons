@@ -1,20 +1,20 @@
 import { Client } from "pg";
 import { expect, it, vi } from "vitest";
 import { cleanup } from "../../../scripts/cleanup.js";
-import { startDatabase } from "./support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 
 it("disconnects Prisma and stops the actual database after reader cleanup reports a failure", async () => {
-  const database = await startDatabase();
+  const database = await startTraceDatabase();
   const probe = new Client({
     connectionString: database.urls.app,
     connectionTimeoutMillis: 1000,
   });
   const failure = new Error("Injected reader cleanup failure");
-  const closeReaders = database.readers.close.bind(database.readers);
+  const closeReaders = database.traceReaders.close.bind(database.traceReaders);
   const disconnect = database.prisma.$disconnect.bind(database.prisma);
   const disconnected = vi.fn(async () => disconnect());
   vi.spyOn(database.prisma, "$disconnect").mockImplementation(disconnected);
-  vi.spyOn(database.readers, "close").mockImplementation(async () => {
+  vi.spyOn(database.traceReaders, "close").mockImplementation(async () => {
     await closeReaders();
     throw failure;
   });

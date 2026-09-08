@@ -6,13 +6,33 @@ Use the `dev` and `prod` stacks. The stack files contain only public defaults. S
 `certificateArn` (manage DNS outside Route53). Region is `aws:region`.
 
 Set each password with `pulumi config set --secret`: `databaseMigrationPassword`,
-`databaseAppPassword`, `databaseReaderUserPassword`, `databaseReaderAdminPassword`
+`databaseAppPassword`, `databaseTraceControlPassword`
 (at least 16 characters), and `betterAuthSecret` (at least 32 characters).
-`applicationSecrets` is a secret JSON object for IdP and embedding credentials.
+`applicationSecrets` is a secret JSON object for IdP and embedding credentials,
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and credential-bearing `SMTP_URL`.
+These values must not be placed in the plain `environment` object.
 `environment` is a plain JSON object for non-secret Appendix B configuration.
 Application database URLs are generated and held in Secrets Manager. The migration
-credential is available only to the migration task. Migrations create the extensions
-and application/reader roles. Do not use production credentials for local tests.
+credential is available only to the migration task. Migrations create the control-plane tables and application/control-reader roles.
+ClickHouse credentials are `clickhouseAdminPassword`, `clickhouseWriterPassword`,
+`clickhouseAccessPassword` (at least 16 characters), and `clickhouseReaderSecret`
+(at least 32 characters). Trace data is stored on the private ClickHouse host; PostgreSQL
+16 stores auth, organization, billing and job controls. Do not use production credentials for local tests.
+
+For SaaS, set `environment.INSTANCE_MODE=saas`, the Free and included Pro record allowances, the native Pro/enhanced
+primary prices and both metered prices/rates listed in Appendix B, and an optional HTTPS `CAL_COM_URL`. SMTP delivery uses
+`EMAIL_TRANSPORT=smtp`, `EMAIL_FROM`, and the secret `SMTP_URL`. SES delivery uses
+`EMAIL_TRANSPORT=ses`, `EMAIL_FROM`, and an explicit `sesIdentityArn` for an already
+verified SES email or domain identity in the sending region. The API task gets only
+`ses:SendEmail` on that identity, restricted to the configured From address. The migration
+task has a separate role without mail permission; no mail policy is attached when SES
+is disabled. This follows [AWS SES identity and sender policy controls](https://docs.aws.amazon.com/ses/latest/dg/control-user-access.html). Configuring SES does not verify a sender or remove the account's sandbox
+restrictions. Complete those provider prerequisites before enabling public signup.
+
+The image retains the dashboard's SSR renderer and template. SaaS public HTML is rendered
+at API startup from the same validated runtime plan configuration used for admission;
+changing allowances does not require rebuilding the image. Native Stripe dependency
+patches are installed from the tracked `patches/` directory during the frozen image build.
 
 The first update uses the operator's AWS credentials and creates the GitHub deployment
 role. The account must already have GitHub's OIDC provider. Configure GitHub environments

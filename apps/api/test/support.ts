@@ -2,12 +2,12 @@ import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
-import { PrismaClient, ReaderPools } from "@agentcommons/db";
+import { PrismaClient } from "@agentcommons/db";
 import { z } from "zod";
 import { AuthService } from "../src/services/auth.js";
 import { MembershipService } from "../src/services/membership.js";
 import { AuditService } from "../src/services/audit.js";
-import { createPolicyCache } from "../src/services/policies.js";
+import { createPolicyCache } from "../src/services/policy-cache.js";
 import { bootstrap, operatorContext } from "../src/auth/bootstrap.js";
 import type { AuthConfiguration } from "../src/auth/config.js";
 import type { ServiceContext } from "../src/services/context.js";
@@ -25,9 +25,7 @@ export const testAuthConfiguration: AuthConfiguration = {
 export async function startDatabase(
   authConfiguration: AuthConfiguration = testAuthConfiguration,
 ) {
-  const container = await new PostgreSqlContainer(
-    "pgvector/pgvector:pg16",
-  ).start();
+  const container = await new PostgreSqlContainer("postgres:16").start();
   const release: Array<() => Promise<unknown>> = [() => container.stop()];
   try {
     const url = (role: string) => {
@@ -38,30 +36,25 @@ export async function startDatabase(
     };
     const urls = {
       app: url("ac_app"),
-      user: url("ac_reader_user"),
-      admin: url("ac_reader_admin"),
       migration: container.getConnectionUri(),
+      traceControl: url("ac_trace_control"),
     };
     await promisify(execFile)("pnpm", ["migrate"], {
       cwd: new URL("../../../packages/db/", import.meta.url),
       env: {
         ...process.env,
         DATABASE_MIGRATION_URL: urls.migration,
+        DATABASE_TRACE_CONTROL_URL: urls.traceControl,
         DATABASE_URL: urls.app,
-        DATABASE_READER_USER_URL: urls.user,
-        DATABASE_READER_ADMIN_URL: urls.admin,
       },
     });
     const prisma = new PrismaClient({ datasources: { db: { url: urls.app } } });
     release.unshift(() => prisma.$disconnect());
-    const readers = new ReaderPools(urls);
-    release.unshift(() => readers.close());
     const policies = createPolicyCache(prisma);
     const audit = new AuditService(prisma, policies);
     const auth = new AuthService(prisma, authConfiguration, audit);
     return {
       prisma,
-      readers,
       policies,
       audit,
       auth,

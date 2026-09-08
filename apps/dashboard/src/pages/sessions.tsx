@@ -2,7 +2,10 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Search, X } from "lucide-react";
-import { searchFiltersSchema } from "@agentcommons/core/schemas/search";
+import {
+  searchFiltersSchema,
+  type SearchCondition,
+} from "@agentcommons/core/schemas/search";
 import { formatSearch } from "@agentcommons/core/format";
 import { copy } from "../copy";
 import { api, unwrap, defined } from "../lib/api/client";
@@ -22,6 +25,7 @@ import {
   ShortenedFields,
 } from "../components/workspace/primitives";
 import { Button } from "../components/ui/button";
+import { SearchConditions } from "../components/workspace/search-conditions";
 
 export function sessionColumns(): ColumnDef<SessionItem>[] {
   return [
@@ -199,6 +203,11 @@ export function SessionsPage() {
   const { organization } = useWorkspace();
   const pagination = usePagination("started_at", sessionSortKeys);
   const [filters, setFilters] = useState<Record<string, string | string[]>>({});
+  const [conditions, setConditions] = useState<SearchCondition[]>([]);
+  const requestFilters = {
+    ...filters,
+    ...(conditions.length ? { where: conditions } : {}),
+  };
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [searchCursors, setSearchCursors] = useState<(string | null)[]>([null]);
@@ -207,7 +216,7 @@ export function SessionsPage() {
     queryKey: [
       organization.id,
       "sessions",
-      filters,
+      requestFilters,
       pagination.cursor,
       pagination.sort,
       pagination.direction,
@@ -217,7 +226,7 @@ export function SessionsPage() {
         await api.GET("/api/v1/sessions", {
           params: {
             query: {
-              filters: defined(searchFiltersSchema.parse(filters)),
+              filters: defined(searchFiltersSchema.parse(requestFilters)),
               cursor: pagination.cursor,
               sort: pagination.sort,
               order: pagination.direction,
@@ -235,7 +244,7 @@ export function SessionsPage() {
       organization.id,
       "search",
       submitted,
-      filters,
+      requestFilters,
       searchCursors.at(-1),
     ],
     queryFn: async ({ signal }) =>
@@ -243,7 +252,7 @@ export function SessionsPage() {
         await api.POST("/api/v1/search", {
           body: {
             query: submitted,
-            filters: defined(searchFiltersSchema.parse(filters)),
+            filters: defined(searchFiltersSchema.parse(requestFilters)),
             cursor: searchCursors.at(-1) ?? null,
             context: 1,
             limit: 5,
@@ -299,6 +308,14 @@ export function SessionsPage() {
         )}
       </form>
       <FilterChips filters={filters} onChange={changeFilters} />
+      <SearchConditions
+        conditions={conditions}
+        onChange={(next) => {
+          setConditions(next);
+          pagination.reset();
+          setSearchCursors([null]);
+        }}
+      />
       {submitted ? (
         <>
           {search.isPending && <LoadingState />}
@@ -416,6 +433,7 @@ export function SessionsPage() {
           )}
           {!list.error && (
             <DataTable
+              summaryColumnIds={["title", "repo_name", "harness", "status"]}
               data={list.data?.items ?? []}
               columns={columns}
               sorting={pagination.sorting}
@@ -434,7 +452,9 @@ export function SessionsPage() {
                   await api.GET("/api/v1/sessions", {
                     params: {
                       query: {
-                        filters: defined(searchFiltersSchema.parse(filters)),
+                        filters: defined(
+                          searchFiltersSchema.parse(requestFilters),
+                        ),
                         cursor,
                         sort: pagination.sort,
                         order: pagination.direction,

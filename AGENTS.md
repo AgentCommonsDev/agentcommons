@@ -30,7 +30,7 @@ rules are, and how to make a change that will be accepted.
 
 ## Source of truth
 
-- `docs/SPEC.md` is v4. `docs/reviews/` holds the external review, v2, and pre-organization v3;
+- `docs/SPEC.md` is v5. `docs/reviews/` holds the external review, v2, and pre-organization v3;
   ADR 0010 lists what was dropped and why. Do not reintroduce a dropped feature without a
   new ADR.
 - `docs/SPEC.md` is the specification and is implementation-ready. If code and spec
@@ -54,8 +54,8 @@ apps/api          Fastify server: REST (/api/v1), MCP (/mcp), Better Auth (/auth
   src/mcp/        tools registered explicitly with the SDK from the same schemas
   public/         install.sh, hook manifest
 apps/dashboard    Vite + React + shadcn/ui; talks to the API via an OpenAPI-generated client
-packages/db       Prisma schema + migrations; hand-written SQL lives next to them
-                  (api_ro views, search_messages(), reader roles)
+packages/db       Native Better Auth/Prisma identity and compact control migrations
+packages/traces   ClickHouse corpus, native policies, canonical views/indexes and migrations
 packages/core     zod schemas, normalizers (claude-code, codex), redaction, link detection
 packages/hook     zero-dependency client shim, bundled to a single dist/hook.js
 packages/pi-extension  pi extension package (git-installable) emitting canonical events
@@ -69,13 +69,14 @@ docs              SPEC.md, adr/, reviews/
 - Organizations scope every caller, key, query, mutation, policy, audit, and background
   job. Membership roles, not global user roles, grant organization authority. Use Better
   Auth's organization, membership, API-key, SSO, and credential APIs; no custom identity
-  or invitation system. Admins add email addresses as members; no outbound email or CSV.
+  or invitation system. Admins add email addresses as members; no CSV or invitation email. SaaS mode uses native
+  verification and welcome email, organization onboarding and Stripe billing (§9.6).
 - Core tenet: one implementation per concept. Differences between harnesses, transports,
   and feature flags are data a single implementation reads (the shim's `HARNESSES`
   table, shared zod schemas, the tool registry), never parallel code paths. `if (harness
 === …)` outside an adapter is a defect. Duplicate logic in two adapters is a defect.
 - Use libraries, do not hand-roll: Better Auth (users, keys, roles, SSO), secretlint
-  (redaction), pg-boss (jobs), pgsql-ast-parser (SQL guard), the official MCP SDK,
+  (redaction), pg-boss (jobs), the official ClickHouse client and parser (trace storage/SQL guard), the official MCP SDK,
   @pulumi/awsx. If you think you need custom code for one of these, write an ADR first.
 - TypeScript strict everywhere. No `any`, no non-null assertions. `pnpm typecheck` and
   `pnpm lint` must pass; CI enforces them.
@@ -87,11 +88,12 @@ docs              SPEC.md, adr/, reviews/
   child running the durability state machine in spec §6.2 (persisted intent, one pending
   batch, lock with liveness, `ackedCursor` advanced only on `202`). Adding a harness is one
   `HARNESSES` entry plus a normalizer.
-- Organization scope and visibility (private/purged) are enforced in `security_barrier`
-  views in `api_ro` via trusted transaction-local organization context and `current_user`,
-  with `SECURITY INVOKER` functions, and in the repository layer; never
-  in route handlers or MCP tools. Derived columns (parent title, child counts, repo
-  counts) are computed from the caller-visible set only.
+- Organization, visibility, redaction generation, purge, publication and embedding
+  entitlement are enforced by native ClickHouse row policies on underlying tables and
+  fresh direct PostgreSQL control dictionaries (ADR0047). A shared publication fence
+  covers each bounded read callback; mutations use its exclusive counterpart. DEFINER
+  views alone are not isolation. Derived fields use only caller-visible data. PostgreSQL
+  holds identity/control, never a permanent trace or vector corpus.
 - Every operation writes one AuditEvent: inside the transaction for mutations, before the
   response for reads. Services return `{ result, audit }`; adapters never write audit rows.
 - Redaction runs on every persisted free-text path (records, git fields, titles, audit
@@ -104,7 +106,7 @@ docs              SPEC.md, adr/, reviews/
 - Every application route under `/api` declares zod schemas for params, query, response, and body when
   its HTTP method supports one
   plus a `summary`; the server refuses to boot otherwise, and OpenAPI is generated from
-  them. The reserved `/api/docs` namespace is served by the native Swagger UI plugin
+  them. The reserved `/api/docs` namespace is served by the native Scalar plugin
   using its own schemas. Never write OpenAPI by hand.
 - Exposing a capability to agents = registering a tool explicitly in `src/mcp/` with the
   shared zod schema, a permission, the service call, and the shared formatter (or
@@ -117,7 +119,7 @@ docs              SPEC.md, adr/, reviews/
   thing in two adapters, stop and move it down.
 - Git hooks run on every commit and push (lint-staged, typecheck, unit tests, OpenAPI
   check). Do not bypass them with `--no-verify`; fix the failure.
-- Tests are part of the change: unit for core/hook, integration on real Postgres via
+- Tests are part of the change: unit for core/hook, integration on real PostgreSQL and ClickHouse via
   testcontainers for the API, e2e for shim, MCP, and dashboard flows.
 - No secrets in the repo. Fixtures pass through the redactor in CI.
 
@@ -135,7 +137,7 @@ fragments; no puffery; concrete nouns and numbers; short sentences; active voice
 
 ```
 pnpm install
-docker compose -f docker-compose.dev.yml up -d   # local Postgres with pgvector
+docker compose -f docker-compose.dev.yml up -d   # local PostgreSQL control + ClickHouse traces
 pnpm db:migrate && pnpm db:seed --admin you@example.com
 pnpm dev                       # api :3000, dashboard :5173
 pnpm test | pnpm test:e2e | pnpm lint | pnpm typecheck

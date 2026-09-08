@@ -1,10 +1,15 @@
+import { Redactor } from "@agentcommons/core/redaction";
 import { betterAuth, type Auth, type BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-import { authPlugins } from "@agentcommons/db/auth-plugins";
+import { authPlugins, authUserFields } from "@agentcommons/db/auth-plugins";
 import type { Prisma, PrismaClient } from "@agentcommons/db";
+import { invalidateSetupTokens } from "./setup-tokens.js";
+import type Stripe from "stripe";
+import type { AuthMail } from "./mail.js";
 
 export interface AuthConfiguration {
+  instanceMode?: "customer" | "public" | "saas";
   publicUrl: string;
   secret: string;
   emailPasswordEnabled: boolean;
@@ -12,6 +17,22 @@ export interface AuthConfiguration {
   allowedEmailDomains: readonly string[];
   socialProviders?: BetterAuthOptions["socialProviders"];
   oauthProviders?: Parameters<typeof authPlugins>[0];
+  mail?: AuthMail;
+  stripe?: {
+    client: Stripe;
+    webhookSecret: string;
+    priceId: string;
+    embeddingsPriceId: string;
+    capturePriceId: string;
+    embeddingUsagePriceId: string;
+    captureMeterId: string;
+    embeddingMeterId: string;
+    captureEventName: string;
+    embeddingEventName: string;
+    captureCentsPer1000: number;
+    embeddingCentsPer1000: number;
+    includedRecords: number;
+  };
 }
 export interface PasswordDelivery {
   userId: string;
@@ -20,6 +41,19 @@ export interface PasswordDelivery {
   url: string;
 }
 export const PASSWORD_SETUP_SECONDS = 3600;
+const identityRedactor = new Redactor();
+async function redactUserName<T extends { name?: string }>(
+  user: T,
+): Promise<{ data: T }> {
+  return {
+    data: {
+      ...user,
+      ...(typeof user.name === "string"
+        ? { name: (await identityRedactor.text(user.name)).value }
+        : {}),
+    },
+  };
+}
 
 export function emailDomainAllowed(
   email: string,
@@ -29,6 +63,15 @@ export function emailDomainAllowed(
   return (
     allowedDomains.length === 0 ||
     (domain !== undefined && allowedDomains.includes(domain))
+  );
+}
+
+export function domainEnrollmentEnabled(config: AuthConfiguration): boolean {
+  return (
+    config.signupMode !== "closed" &&
+    Object.keys(config.socialProviders ?? {}).length === 1 &&
+    Boolean(config.socialProviders?.google) &&
+    !config.oauthProviders?.length
   );
 }
 
@@ -44,18 +87,56 @@ export function createAuth(
   ) {
     throw new Error("Configure at least one login method.");
   }
-  const invalidateSetupTokens = async (userId: string) => {
-    await db.verification.deleteMany({
-      where: { value: userId, identifier: { startsWith: "reset-password:" } },
-    });
-  };
   return betterAuth<NativeOptions>({
     baseURL: config.publicUrl,
     basePath: "/auth",
     logger: { disabled: true },
     secret: config.secret,
     database: prismaAdapter(db, { provider: "postgresql" }),
-    plugins: authPlugins(config.oauthProviders),
+    plugins: authPlugins(
+      config.oauthProviders,
+      domainEnrollmentEnabled(config),
+      config.instanceMode === "saas" && config.stripe
+        ? {
+            stripeClient: config.stripe.client,
+            stripeWebhookSecret: config.stripe.webhookSecret,
+            createCustomerOnSignUp: false,
+            organization: { enabled: true },
+            subscription: {
+              enabled: true,
+              requireEmailVerification: true,
+              plans: [
+                {
+                  name: "pro",
+                  priceId: config.stripe.priceId,
+                  lineItems: [{ price: config.stripe.capturePriceId }],
+                },
+                {
+                  name: "pro_embeddings",
+                  priceId: config.stripe.embeddingsPriceId,
+                  lineItems: [
+                    { price: config.stripe.capturePriceId },
+                    { price: config.stripe.embeddingUsagePriceId },
+                  ],
+                },
+              ],
+              authorizeReference: async ({ user, referenceId }) => {
+                return (
+                  (await db.member.count({
+                    where: {
+                      userId: user.id,
+                      organizationId: referenceId,
+                      role: "owner",
+                      suspended: false,
+                      removedAt: null,
+                    },
+                  })) === 1
+                );
+              },
+            },
+          }
+        : undefined,
+    ),
     ...(config.socialProviders
       ? { socialProviders: config.socialProviders }
       : {}),
@@ -65,12 +146,13 @@ export function createAuth(
     account: {
       accountLinking: {
         enabled: true,
-        requireLocalEmailVerified: false,
+        requireLocalEmailVerified: config.instanceMode === "saas",
         trustedProviders: [],
       },
     },
     user: {
-      validateUserInfo: ({ user, source }) => {
+      additionalFields: authUserFields,
+      validateUserInfo: async ({ user, source }) => {
         if (
           typeof user.email !== "string" ||
           !emailDomainAllowed(user.email, config.allowedEmailDomains)
@@ -79,12 +161,33 @@ export function createAuth(
         if (source.method === "oauth") {
           if (user.emailVerified !== true)
             return { error: "provider_email_unverified" };
-          if (source.action === "create-user" && config.signupMode !== "open")
-            return { error: "account_not_provisioned" };
+          if (source.action === "create-user" && config.signupMode !== "open") {
+            const domain = user.email.toLowerCase().split("@").at(-1);
+            const providers =
+              domain &&
+              config.signupMode === "invite" &&
+              domainEnrollmentEnabled(config)
+                ? await db.ssoProvider.findMany({
+                    where: {
+                      domain,
+                      domainVerified: true,
+                      organizationId: { not: null },
+                      issuer: "https://accounts.google.com",
+                    },
+                    take: 2,
+                  })
+                : [];
+            if (providers.length !== 1)
+              return { error: "account_not_provisioned" };
+          }
         }
       },
     },
     databaseHooks: {
+      user: {
+        create: { before: redactUserName },
+        update: { before: redactUserName },
+      },
       session: {
         create: {
           before: async (session) => {
@@ -104,20 +207,51 @@ export function createAuth(
       account: {
         create: {
           after: async (account) => {
-            await invalidateSetupTokens(account.userId);
+            await invalidateSetupTokens(db, account.userId);
           },
         },
       },
     },
+    ...(config.instanceMode === "saas"
+      ? {
+          emailVerification: {
+            sendOnSignUp: true,
+            sendOnSignIn: true,
+            autoSignInAfterVerification: true,
+            sendVerificationEmail: async ({
+              user,
+              url,
+            }: {
+              user: { email: string };
+              url: string;
+            }) => {
+              if (!config.mail)
+                throw new APIError("SERVICE_UNAVAILABLE", {
+                  message: "Email delivery is not configured.",
+                });
+              await config.mail.send({
+                to: user.email,
+                kind: "verification",
+                url,
+              });
+            },
+          },
+        }
+      : {}),
     emailAndPassword: {
       enabled: config.emailPasswordEnabled,
-      disableSignUp: true,
+      disableSignUp: config.instanceMode !== "saas",
+      requireEmailVerification: config.instanceMode === "saas",
       resetPasswordTokenExpiresIn: PASSWORD_SETUP_SECONDS,
       revokeSessionsOnPasswordReset: true,
       onPasswordReset: async ({ user }) => {
-        await invalidateSetupTokens(user.id);
+        await invalidateSetupTokens(db, user.id);
       },
-      sendResetPassword: ({ user, token, url }) => {
+      sendResetPassword: async ({ user, token, url }) => {
+        if (!deliver && config.instanceMode === "saas" && config.mail) {
+          await config.mail.send({ to: user.email, kind: "reset", url });
+          return;
+        }
         if (!deliver)
           throw new Error(
             "Password setup must be requested by an administrator.",

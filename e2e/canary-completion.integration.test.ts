@@ -5,16 +5,14 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import type { IngestEnvelope } from "../packages/core/schemas/ingest.js";
 import { completedNativeSessions } from "../scripts/canary-completion.js";
-import { IngestService } from "../apps/api/src/services/ingest.js";
-import {
-  provisionOrganization,
-  startDatabase,
-} from "../apps/api/test/support.js";
+import { traceServices } from "../apps/api/test/trace-services.js";
+import { startTraceDatabase } from "../packages/traces/test/support.js";
+import { provisionOrganization } from "../apps/api/test/support.js";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
 });
 afterAll(async () => {
@@ -30,11 +28,9 @@ it("waits past a valid earlier end and the final source sync until both native s
   const organizationId = z
     .string()
     .parse(organization.context.caller?.organizationId);
-  const ingest = new IngestService({
-    prisma: database.prisma,
-    audit: database.audit,
-    policies: database.policies,
-  });
+  const native = traceServices(database);
+  release.unshift(() => native.close());
+  const ingest = { execute: native.publish };
   const source = await readFile(
     "fixtures/transcripts/pi/tree-and-resume.jsonl",
     "utf8",
@@ -91,21 +87,24 @@ it("waits past a valid earlier end and the final source sync until both native s
   earlier.sourcePos = records.at(-2)?.pos ?? 0;
   earlier.context.activeLeafId = "a2bc6577";
   await ingest.execute(organization.context, earlier);
-  const old = await database.prisma.agentSession.findFirstOrThrow({
+  const old = await database.prisma.traceSessionControl.findFirstOrThrow({
     where: { harnessSessionId: parent },
   });
   expect(old.status).toBe("ENDED");
+  const oldCount = (await native.messages(organizationId, old.id)).length;
   expect(await ready()).toBe(false);
 
   const finalSource = envelope(parent);
   finalSource.behavior = "sync";
   finalSource.nativeEvent = "agent_end";
   await ingest.execute(organization.context, finalSource);
-  const synced = await database.prisma.agentSession.findUniqueOrThrow({
+  const synced = await database.prisma.traceSessionControl.findFirstOrThrow({
     where: { id: old.id },
   });
   expect(synced.status).toBe("ENDED");
-  expect(synced.messageCount).toBeGreaterThan(old.messageCount);
+  expect(
+    (await native.messages(organizationId, synced.id)).length,
+  ).toBeGreaterThan(oldCount);
   expect(await ready()).toBe(false);
 
   await ingest.execute(organization.context, envelope(parent));
@@ -121,7 +120,11 @@ it("waits past a valid earlier end and the final source sync until both native s
 
   const missingLeaf = envelope(fork);
   missingLeaf.context.activeLeafId = "not-arrived";
-  await ingest.execute(organization.context, missingLeaf);
+  const waiting = await native.ingest.execute(
+    organization.context,
+    missingLeaf,
+  );
+  await native.projection.process(organizationId, waiting.result.sessionId);
   expect(await ready()).toBe(false); // An end receipt alone does not prove projection.
   await ingest.execute(organization.context, envelope(fork));
   expect(await ready()).toBe(true);

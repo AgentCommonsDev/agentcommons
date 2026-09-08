@@ -1,3 +1,4 @@
 export * from "@prisma/client";
-export * from "./readers.js";
+export * from "./authority.js";
 export * from "./jobs.js";
+export { lockTracePublication, lockTraceSink } from "./trace-publication.js";

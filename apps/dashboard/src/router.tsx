@@ -17,6 +17,7 @@ const WorkspaceLayout = lazyRouteComponent(
   () => import("./components/workspace/context"),
   "WorkspaceLayout",
 );
+import { BlogPage } from "./pages/blog";
 import { DocsPage } from "./pages/docs";
 import { LandingPage } from "./pages/landing";
 import { NotFoundPage } from "./pages/login";
@@ -34,6 +35,10 @@ const SessionPage = lazyRouteComponent(
   "SessionPage",
 );
 const SqlPage = lazyRouteComponent(() => import("./pages/sql"), "SqlPage");
+const InstallationPage = lazyRouteComponent(
+  () => import("./pages/installation"),
+  "InstallationPage",
+);
 const KeysPage = lazyRouteComponent(() => import("./pages/keys"), "KeysPage");
 const UsersPage = lazyRouteComponent(
   () => import("./pages/users"),
@@ -90,6 +95,16 @@ const docsRoute = createRoute({
   path: "/docs",
   component: DocsPage,
 });
+const blogRoute = createRoute({
+  getParentRoute: () => publicRoute,
+  path: "/blog",
+  component: BlogPage,
+});
+const blogPostRoute = createRoute({
+  getParentRoute: () => publicRoute,
+  path: "/blog/$slug",
+  component: () => <BlogPage slug={blogPostRoute.useParams().slug} />,
+});
 const loginRoute = createRoute({
   getParentRoute: () => publicRoute,
   path: "/login",
@@ -103,10 +118,47 @@ const setupRoute = createRoute({
   }),
   component: () => <PasswordSetup token={setupRoute.useSearch().token} />,
 });
+const signupRoute = createRoute({
+  getParentRoute: () => publicRoute,
+  path: "/signup",
+  component: lazyRouteComponent(() => import("./pages/signup"), "SignupPage"),
+});
+const forgotRoute = createRoute({
+  getParentRoute: () => publicRoute,
+  path: "/forgot-password",
+  component: lazyRouteComponent(
+    () => import("./pages/signup"),
+    "ForgotPasswordPage",
+  ),
+});
+const verifyEmailRoute = createRoute({
+  getParentRoute: () => publicRoute,
+  path: "/verify-email",
+  component: lazyRouteComponent(
+    () => import("./pages/signup"),
+    "VerifyEmailPage",
+  ),
+});
+const onboardingRoute = createRoute({
+  getParentRoute: () => publicRoute,
+  path: "/onboarding",
+  component: lazyRouteComponent(
+    () => import("./pages/onboarding"),
+    "OnboardingPage",
+  ),
+});
 const workspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "workspace",
   component: WorkspaceLayout,
+});
+const newOrganizationRoute = createRoute({
+  getParentRoute: () => workspaceRoute,
+  path: "/organizations/new",
+  component: lazyRouteComponent(
+    () => import("./pages/organization-new"),
+    "NewOrganizationPage",
+  ),
 });
 const sessionsRoute = createRoute({
   getParentRoute: () => workspaceRoute,
@@ -131,6 +183,11 @@ const sqlRoute = createRoute({
   getParentRoute: () => workspaceRoute,
   path: "/sql",
   component: SqlPage,
+});
+const installationRoute = createRoute({
+  getParentRoute: () => workspaceRoute,
+  path: "/installation",
+  component: InstallationPage,
 });
 const keysRoute = createRoute({
   getParentRoute: () => workspaceRoute,
@@ -170,14 +227,33 @@ const statusRoute = createRoute({
   path: "/admin/status",
   component: StatusPage,
 });
+const usageRoute = createRoute({
+  getParentRoute: () => workspaceRoute,
+  path: "/usage",
+  component: lazyRouteComponent(() => import("./pages/usage"), "UsagePage"),
+});
 const routeTree = rootRoute.addChildren([
-  publicRoute.addChildren([indexRoute, docsRoute, loginRoute, setupRoute]),
+  publicRoute.addChildren([
+    blogRoute,
+    blogPostRoute,
+    indexRoute,
+    docsRoute,
+    loginRoute,
+    setupRoute,
+    signupRoute,
+    verifyEmailRoute,
+    forgotRoute,
+    onboardingRoute,
+  ]),
   workspaceRoute.addChildren([
+    newOrganizationRoute,
     homeRoute,
+    usageRoute,
     sessionsRoute,
     sessionRoute,
     sqlRoute,
     keysRoute,
+    installationRoute,
     usersRoute,
     adminKeysRoute,
     auditRoute,

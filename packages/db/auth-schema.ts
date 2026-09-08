@@ -1,7 +1,15 @@
 import { betterAuth } from "better-auth";
-import { authPlugins } from "./src/auth-plugins.js";
+import { authPlugins, authUserFields } from "./src/auth-plugins.js";
+import Stripe from "stripe";
 
 export const auth = betterAuth({
-  plugins: authPlugins(),
+  plugins: authPlugins([], false, {
+    stripeClient: new Stripe("schema-generation-only"),
+    stripeWebhookSecret: "schema-generation-only",
+    createCustomerOnSignUp: false,
+    organization: { enabled: true },
+    subscription: { enabled: true, plans: [] },
+  }),
+  user: { additionalFields: authUserFields },
   emailAndPassword: { enabled: true },
 });

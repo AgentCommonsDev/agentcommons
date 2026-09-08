@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { copy } from "../../copy";
 import { csvBlob, downloadBlob } from "../../lib/csv";
 import type { Page } from "../../lib/types";
@@ -41,6 +42,7 @@ export function DataTable<T>({
   label,
   csvName,
   fetchExportPage,
+  summaryColumnIds,
 }: {
   data: T[];
   columns: ColumnDef<T>[];
@@ -57,25 +59,33 @@ export function DataTable<T>({
     cursor: string | null,
     signal: AbortSignal,
   ) => Promise<Page<T>>;
+  summaryColumnIds?: readonly string[];
 }) {
   const parent = useRef<HTMLDivElement>(null);
-  const [overflow, setOverflow] = useState(false);
+  const defaults = Object.fromEntries(
+    columns.map((column, index) => {
+      const id =
+        column.id ??
+        ("accessorKey" in column ? String(column.accessorKey) : String(index));
+      const dataColumn = "accessorKey" in column || "accessorFn" in column;
+      return [
+        id,
+        !dataColumn ||
+          (summaryColumnIds ? summaryColumnIds.includes(id) : index < 4),
+      ];
+    }),
+  );
+  const [columnVisibility, setColumnVisibility] =
+    useState<VisibilityState>(defaults);
   useEffect(() => {
-    const element = parent.current;
-    if (!element) return;
-    const measure = () => {
-      setOverflow(element.scrollWidth > element.clientWidth + 1);
-    };
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    const grid = element.querySelector("table");
-    if (grid) observer.observe(grid);
-    measure();
-    return () => {
-      observer.disconnect();
-    };
-  }, []);
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+    setColumnVisibility((prior) => {
+      const missing = Object.entries(defaults).filter(([id]) => !(id in prior));
+      return missing.length
+        ? { ...prior, ...Object.fromEntries(missing) }
+        : prior;
+    });
+  }, [defaults]);
+  const [dialog, setDialog] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const exportController = useRef<AbortController | null>(null);
@@ -112,7 +122,7 @@ export function DataTable<T>({
     setExportError(null);
     try {
       const visible = table
-        .getVisibleLeafColumns()
+        .getAllLeafColumns()
         .filter((column) => column.accessorFn !== undefined);
       const source: T[] = [];
       let cursor: string | null = null;
@@ -147,29 +157,16 @@ export function DataTable<T>({
       <div className="table-toolbar">
         <span>{label}</span>
         <div>
-          <details className="column-chooser">
-            <summary>
-              <Columns3 size={15} aria-hidden />
-              {copy.workspace.common.columns}
-            </summary>
-            <div>
-              {table
-                .getAllLeafColumns()
-                .filter((column) => column.getCanHide())
-                .map((column) => (
-                  <label key={column.id}>
-                    <input
-                      type="checkbox"
-                      checked={column.getIsVisible()}
-                      onChange={column.getToggleVisibilityHandler()}
-                    />
-                    {typeof column.columnDef.header === "string"
-                      ? column.columnDef.header
-                      : column.id}
-                  </label>
-                ))}
-            </div>
-          </details>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => {
+              setDialog("columns");
+            }}
+          >
+            <Columns3 size={15} aria-hidden />
+            {copy.workspace.common.columns}
+          </Button>
           <Button
             variant="secondary"
             size="small"
@@ -202,10 +199,48 @@ export function DataTable<T>({
           {exportError}
         </p>
       )}
-      {overflow && (
-        <p className="table-scroll-hint">
-          {copy.workspace.common.tableScrollHint}
-        </p>
+      <p className="table-summary-hint">
+        {copy.workspace.common.summaryColumns}
+      </p>
+      {table.getAllLeafColumns().some((column) => column.getCanSort()) && (
+        <div className="table-sort-control">
+          <label>
+            <span>{copy.workspace.common.sortBy}</span>
+            <select
+              value={sorting[0]?.id ?? ""}
+              onChange={(event) => {
+                onSortingChange([
+                  { id: event.target.value, desc: sorting[0]?.desc ?? false },
+                ]);
+              }}
+            >
+              {table
+                .getAllLeafColumns()
+                .filter((column) => column.getCanSort())
+                .map((column) => (
+                  <option key={column.id} value={column.id}>
+                    {typeof column.columnDef.header === "string"
+                      ? column.columnDef.header
+                      : column.id}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <Button
+            variant="ghost"
+            size="small"
+            disabled={!sorting[0]}
+            onClick={() => {
+              const current = sorting[0];
+              if (current)
+                onSortingChange([{ ...current, desc: !current.desc }]);
+            }}
+          >
+            {sorting[0]?.desc
+              ? copy.workspace.common.sortDescending
+              : copy.workspace.common.sortAscending}
+          </Button>
+        </div>
       )}
       <div
         ref={parent}
@@ -253,6 +288,7 @@ export function DataTable<T>({
                     )}
                   </th>
                 ))}
+                <th scope="col">{copy.workspace.common.details}</th>
               </tr>
             ))}
           </thead>
@@ -260,7 +296,7 @@ export function DataTable<T>({
             {top > 0 && (
               <tr aria-hidden>
                 <td
-                  colSpan={table.getVisibleLeafColumns().length}
+                  colSpan={table.getVisibleLeafColumns().length + 1}
                   style={{ height: top, padding: 0, border: 0 }}
                 />
               </tr>
@@ -274,20 +310,41 @@ export function DataTable<T>({
                   ref={virtual.measureElement}
                 >
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id}>
+                    <td
+                      key={cell.id}
+                      data-label={
+                        typeof cell.column.columnDef.header === "string"
+                          ? cell.column.columnDef.header
+                          : cell.column.id
+                      }
+                      data-actions={
+                        cell.column.accessorFn === undefined || undefined
+                      }
+                    >
                       {flexRender(
                         cell.column.columnDef.cell,
                         cell.getContext(),
                       )}
                     </td>
                   ))}
+                  <td className="record-details-cell">
+                    <Button
+                      variant="ghost"
+                      size="small"
+                      onClick={() => {
+                        setDialog(row.id);
+                      }}
+                    >
+                      {copy.workspace.common.viewDetails}
+                    </Button>
+                  </td>
                 </tr>
               ) : null;
             })}
             {bottom > 0 && (
               <tr aria-hidden>
                 <td
-                  colSpan={table.getVisibleLeafColumns().length}
+                  colSpan={table.getVisibleLeafColumns().length + 1}
                   style={{ height: bottom, padding: 0, border: 0 }}
                 />
               </tr>
@@ -302,6 +359,85 @@ export function DataTable<T>({
           />
         )}
       </div>
+      <Dialog.Root
+        open={dialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setDialog(null);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-overlay" />
+          <Dialog.Content className="dialog-content table-detail-dialog">
+            <div className="dialog-heading">
+              <Dialog.Title>
+                {dialog === "columns"
+                  ? copy.workspace.common.columns
+                  : copy.workspace.common.details}
+              </Dialog.Title>
+              <Dialog.Close asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={copy.workspace.common.close}
+                >
+                  <X size={18} aria-hidden />
+                </Button>
+              </Dialog.Close>
+            </div>
+            <Dialog.Description>
+              {dialog === "columns" ? copy.workspace.common.columnsHint : label}
+            </Dialog.Description>
+            {dialog === "columns" ? (
+              <div className="column-options">
+                {table
+                  .getAllLeafColumns()
+                  .filter((column) => column.accessorFn !== undefined)
+                  .map((column) => (
+                    <label key={column.id}>
+                      <input
+                        type="checkbox"
+                        checked={column.getIsVisible()}
+                        disabled={
+                          !column.getIsVisible() &&
+                          table
+                            .getVisibleLeafColumns()
+                            .filter((item) => item.accessorFn !== undefined)
+                            .length >= 5
+                        }
+                        onChange={column.getToggleVisibilityHandler()}
+                      />
+                      {typeof column.columnDef.header === "string"
+                        ? column.columnDef.header
+                        : column.id}
+                    </label>
+                  ))}
+              </div>
+            ) : (
+              <dl className="record-fields">
+                {rows
+                  .find((row) => row.id === dialog)
+                  ?.getAllCells()
+                  .filter((cell) => cell.column.accessorFn !== undefined)
+                  .map((cell) => (
+                    <div key={cell.id}>
+                      <dt>
+                        {typeof cell.column.columnDef.header === "string"
+                          ? cell.column.columnDef.header
+                          : cell.column.id}
+                      </dt>
+                      <dd>
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext(),
+                        )}
+                      </dd>
+                    </div>
+                  ))}
+              </dl>
+            )}
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
       <div className="table-pagination">
         <span>
           {copy.workspace.common.page} {pageIndex + 1}

@@ -21,7 +21,13 @@ import {
   SENSITIVE_FILE_MARKER,
 } from "./shared.js";
 import type { BlockDialect } from "./shared.js";
-import type { JsonValue, NativeLink, SessionDelta } from "./types.js";
+import type {
+  JsonValue,
+  NativeLink,
+  NormalizedMessage,
+  SessionDelta,
+  SourceRecord,
+} from "./types.js";
 
 const dialect: BlockDialect = {
   textTypes: ["input_text", "output_text", "text"],
@@ -38,6 +44,47 @@ function argumentsValue(value: unknown): JsonValue {
   } catch {
     return value;
   }
+}
+function nativeCompletion(record: SourceRecord) {
+  const payload = object(record.payload.payload);
+  const item = object(payload.item);
+  const id = string(item.id);
+  if (
+    record.payload.type !== "event_msg" ||
+    payload.type !== "item_completed" ||
+    !id
+  )
+    return null;
+  if (
+    item.type === "McpToolCall" &&
+    ["completed", "failed"].includes(string(item.status) ?? "") &&
+    typeof item.server === "string" &&
+    item.server.length > 0 &&
+    typeof item.tool === "string" &&
+    item.tool.length > 0
+  )
+    return {
+      id,
+      payload,
+      item,
+      toolName: `mcp__${item.server}__${item.tool}`,
+      input: json(item.arguments),
+      result: item.result ?? item.error,
+    };
+  if (
+    item.type === "Extension" &&
+    item.kind === "web.search" &&
+    object(item.action).type === "search"
+  )
+    return {
+      id,
+      payload,
+      item,
+      toolName: "web.search",
+      input: json(item.action),
+      result: item.results,
+    };
+  return null;
 }
 function patchFiles(
   toolName: string | null,
@@ -99,6 +146,8 @@ export const codex = createNormalizer({
         "action",
         "output",
         "parent_thread_id",
+        "started_at_ms",
+        "completed_at_ms",
       ],
       {
         timestamp: protocolTimestamp,
@@ -111,6 +160,29 @@ export const codex = createNormalizer({
           "function_call_output",
           "custom_tool_call_output",
           "reasoning",
+          "item_completed",
+        ),
+        item: protocolObject(
+          [
+            "id",
+            "server",
+            "tool",
+            "arguments",
+            "result",
+            "error",
+            "duration",
+            "readOnlyHint",
+            "query",
+            "results",
+          ],
+          {
+            type: protocolLiterals("McpToolCall", "Extension"),
+            kind: protocolLiterals("web.search"),
+            status: protocolLiterals("completed", "failed"),
+            action: protocolObject(["query", "queries"], {
+              type: protocolLiterals("search"),
+            }),
+          },
         ),
         role: protocolLiterals("user", "assistant", "developer", "system"),
         content: protocolArray(
@@ -149,6 +221,9 @@ export const codex = createNormalizer({
       ["payload", "forked_from", "id"],
     ]),
   toolIdentities(record) {
+    const completion = nativeCompletion(record);
+    if (completion)
+      return [{ id: completion.id, path: ["payload", "item", "id"] }];
     const payload = object(record.payload.payload);
     if (
       record.payload.type !== "response_item" ||
@@ -166,6 +241,25 @@ export const codex = createNormalizer({
     return id ? [{ id, path: ["payload", field] }] : [];
   },
   toolResults(record) {
+    const completion = nativeCompletion(record);
+    if (completion)
+      return [
+        {
+          rawRecordId: record.id,
+          toolUseId: completion.id,
+          locations: ["result", "error", "results"].flatMap((field) =>
+            completion.item[field] !== undefined &&
+            completion.item[field] !== null
+              ? [
+                  {
+                    path: ["payload", "item", field],
+                    replacement: SENSITIVE_FILE_MARKER,
+                  },
+                ]
+              : [],
+          ),
+        },
+      ];
     const payload = object(record.payload.payload);
     if (
       record.payload.type !== "response_item" ||
@@ -193,6 +287,34 @@ export const codex = createNormalizer({
     ];
   },
   toMessages(records) {
+    const ordinaryCalls = new Set<string>();
+    const ordinaryResults = new Set<string>();
+    const firstCompletion = new Map<string, string>();
+    const lastResult = new Map<string, string>();
+    for (const record of records) {
+      const payload = object(record.payload.payload);
+      if (record.payload.type === "response_item") {
+        const target = [
+          "function_call",
+          "custom_tool_call",
+          "local_shell_call",
+        ].includes(string(payload.type) ?? "")
+          ? ordinaryCalls
+          : ["function_call_output", "custom_tool_call_output"].includes(
+                string(payload.type) ?? "",
+              )
+            ? ordinaryResults
+            : null;
+        for (const id of [string(payload.call_id), string(payload.id)])
+          if (id) target?.add(id);
+      }
+      const completion = nativeCompletion(record);
+      if (!completion) continue;
+      if (!firstCompletion.has(completion.id))
+        firstCompletion.set(completion.id, record.id);
+      if (completion.result !== undefined && completion.result !== null)
+        lastResult.set(completion.id, record.id);
+    }
     let model: string | null = null;
     let cumulativeInput = 0n;
     let cumulativeOutput = 0n;
@@ -203,6 +325,45 @@ export const codex = createNormalizer({
       if (!parsed.success) return [];
       const data = parsed.data;
       const payload = object(data.payload);
+      const completion = nativeCompletion(record);
+      if (completion) {
+        const result: NormalizedMessage[] = [];
+        const fields = {
+          model,
+          toolName: completion.toolName,
+          toolUseId: completion.id,
+          nativeId: completion.id,
+        };
+        if (
+          firstCompletion.get(completion.id) === record.id &&
+          !ordinaryCalls.has(completion.id)
+        )
+          result.push(
+            message(record, 0, {
+              ...fields,
+              role: "ASSISTANT",
+              kind: "TOOL_USE",
+              toolInput: completion.input,
+              timestamp:
+                timestamp(payload.started_at_ms) ?? timestamp(data.timestamp),
+            }),
+          );
+        if (
+          lastResult.get(completion.id) === record.id &&
+          !ordinaryResults.has(completion.id)
+        )
+          result.push(
+            message(record, 1, {
+              ...fields,
+              role: "TOOL_RESULT",
+              kind: "TOOL_RESULT",
+              content: text(completion.result),
+              timestamp:
+                timestamp(payload.completed_at_ms) ?? timestamp(data.timestamp),
+            }),
+          );
+        return result;
+      }
       if (data.type === "session_meta") {
         if (recordedInstructions) {
           resumeMayResetUsage = true;

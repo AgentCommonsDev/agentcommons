@@ -16,25 +16,37 @@ export async function completedNativeSessions(
   checkpoints: z.infer<typeof nativeCompletionSchema>[],
 ): Promise<boolean> {
   for (const checkpoint of checkpoints) {
-    const session = await prisma.agentSession.findFirst({
+    const session = await prisma.traceSessionControl.findFirst({
       where: {
         organizationId,
         harness,
         harnessSessionId: checkpoint.sessionId,
         status: "ENDED",
         lifecyclePos: BigInt(checkpoint.sourcePos),
-        batches: {
-          some: {
-            behavior: "end",
-            lifecycleApplied: true,
-            nativeEvent: checkpoint.nativeEvent,
-            sourcePos: BigInt(checkpoint.sourcePos),
-          },
-        },
       },
-      select: { projectedContext: true },
+      select: {
+        id: true,
+        projectedContext: true,
+        acceptedRevision: true,
+        publishedRevision: true,
+      },
     });
-    if (!session) return false;
+    if (!session || session.acceptedRevision !== session.publishedRevision)
+      return false;
+    const receipt = await prisma.traceReceipt.findFirst({
+      where: {
+        organizationId,
+        sessionId: session.id,
+        behavior: "end",
+        lifecycleApplied: true,
+        nativeEvent: checkpoint.nativeEvent,
+        sourcePos: BigInt(checkpoint.sourcePos),
+        publishedAt: { not: null },
+        revision: { lte: session.publishedRevision },
+      },
+      select: { id: true },
+    });
+    if (!receipt) return false;
     const projected = z
       .object({ activeLeafId: z.string().nullable().optional() })
       .parse(session.projectedContext);

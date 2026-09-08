@@ -42,13 +42,14 @@ export const mutationOutputSchema = z.strictObject({
   updated: z.boolean(),
 });
 export const purgeOutputSchema = mutationOutputSchema.extend({
+  cleanup: z.enum(["queued", "completed"]),
   manifest: z.strictObject({
     deleted: z.strictObject({
-      raw_records: nonnegativeIntegerSchema,
-      messages: nonnegativeIntegerSchema,
-      session_files: nonnegativeIntegerSchema,
-      message_chunks: nonnegativeIntegerSchema,
-      session_embeddings: nonnegativeIntegerSchema,
+      raw_records: nonnegativeIntegerSchema.nullable(),
+      messages: nonnegativeIntegerSchema.nullable(),
+      session_files: nonnegativeIntegerSchema.nullable(),
+      message_chunks: nonnegativeIntegerSchema.nullable(),
+      session_embeddings: nonnegativeIntegerSchema.nullable(),
       redaction_events: nonnegativeIntegerSchema,
     }),
     nulled_fields: z.array(z.string()),
@@ -186,6 +187,8 @@ export const keySchema = z.strictObject({
   id: identityIdSchema,
   organization_id: identityIdSchema,
   user_id: identityIdSchema,
+  user_email: emailSchema.nullable(),
+  user_name: z.string().nullable(),
   name: z.string().nullable(),
   prefix: z.string().nullable(),
   permissions: keyPermissionsSchema,
@@ -199,6 +202,14 @@ export const keyCreateOutputSchema = z.strictObject({
   metadata: keySchema,
 });
 export const statusOutputSchema = z.strictObject({
+  projection: z.strictObject({
+    queued_sessions: nonnegativeIntegerSchema,
+    outbox_batches: nonnegativeIntegerSchema,
+    oldest_accepted_at: utcDateTimeSchema.nullable(),
+    failed_sessions: nonnegativeIntegerSchema,
+    waiting_source_sessions: nonnegativeIntegerSchema,
+    pending_audit_events: nonnegativeIntegerSchema,
+  }),
   ingest_per_day: z.array(
     z.strictObject({ date: z.iso.date(), count: nonnegativeIntegerSchema }),
   ),

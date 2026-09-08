@@ -55,6 +55,12 @@ export function MetricsPanel({ group, filters }: MetricsProps) {
           {copy.workspace.systemStatus.comparisons}
         </p>
       )}
+      {group === "usage" && (
+        <p className="metric-guidance">
+          {copy.workspace.searchAdoption.source}{" "}
+          {copy.workspace.searchAdoption.audit}
+        </p>
+      )}
       <Field label={copy.workspace.systemStatus.metric}>
         {(props) => (
           <select
@@ -177,22 +183,28 @@ function MetricObservations({
             rows={query.data?.items ?? []}
           />
           <p className="field-hint">{copy.workspace.systemStatus.chartPage}</p>
-          <DataTable
-            data={query.data?.items ?? []}
-            columns={columns}
-            sorting={pagination.sorting}
-            onSortingChange={pagination.onSortingChange}
-            loading={query.isPending}
-            nextCursor={query.data?.cursor ?? null}
-            pageIndex={pagination.pageIndex}
-            onNext={() => {
-              pagination.next(query.data?.cursor ?? null);
-            }}
-            onPrevious={pagination.previous}
-            label={`${copy.workspace.systemStatus.groups[group]} · ${copy.workspace.systemStatus.table}`}
-            csvName={`${group}-${copy.workspace.systemStatus.csvName}`}
-            fetchExportPage={(cursor, signal) => fetchPage(cursor, signal, 100)}
-          />
+          <details className="metric-data">
+            <summary>{copy.workspace.systemStatus.table}</summary>
+            <DataTable
+              summaryColumnIds={["date", "value", "repo_name", "harness"]}
+              data={query.data?.items ?? []}
+              columns={columns}
+              sorting={pagination.sorting}
+              onSortingChange={pagination.onSortingChange}
+              loading={query.isPending}
+              nextCursor={query.data?.cursor ?? null}
+              pageIndex={pagination.pageIndex}
+              onNext={() => {
+                pagination.next(query.data?.cursor ?? null);
+              }}
+              onPrevious={pagination.previous}
+              label={`${copy.workspace.systemStatus.groups[group]} · ${copy.workspace.systemStatus.table}`}
+              csvName={`${group}-${copy.workspace.systemStatus.csvName}`}
+              fetchExportPage={(cursor, signal) =>
+                fetchPage(cursor, signal, 100)
+              }
+            />
+          </details>
         </>
       )}
     </>

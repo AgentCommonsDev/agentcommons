@@ -42,6 +42,8 @@ const header: SessionHeader = {
   observed_commit_count: 2,
   reuse_count: 2,
   agent_type: null,
+  parent_session_id: null,
+  parent_relation: null,
   parent: null,
   children: [],
   child_count: 0,

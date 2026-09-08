@@ -1,3 +1,9 @@
+import { TraceAuditProjectionService } from "./services/trace-audit-projection.js";
+import { TraceReaders, TraceRepository } from "@agentcommons/traces";
+import { TraceProjectionService } from "./services/trace-projection.js";
+import { BillingMeterService } from "./services/billing-meter.js";
+import { OrganizationEmbeddingsService } from "./services/organization-embeddings.js";
+import { createPolicyCache } from "./services/policy-cache.js";
 import { EmbeddingService } from "./embeddings/service.js";
 import {
   FakeEmbeddingProvider,
@@ -5,7 +11,7 @@ import {
 } from "./embeddings/provider.js";
 import { SimilarService } from "./services/similar.js";
 import { pathToFileURL } from "node:url";
-import { PrismaClient, ReaderPools } from "@agentcommons/db";
+import { PrismaClient } from "@agentcommons/db";
 import { z } from "zod";
 import { policyDefinitionSchema } from "@agentcommons/core";
 import { createApp } from "./app.js";
@@ -14,11 +20,7 @@ import { AuthService } from "./services/auth.js";
 import { AuditService } from "./services/audit.js";
 import { MembershipService } from "./services/membership.js";
 import { CursorCodec } from "./services/cursor.js";
-import {
-  createPolicyCache,
-  PolicyService,
-  seedPolicies,
-} from "./services/policies.js";
+import { PolicyService, seedPolicies } from "./services/policies.js";
 import { SearchService } from "./services/search.js";
 import { QueryService } from "./services/query.js";
 import { SessionService } from "./services/session.js";
@@ -28,6 +30,7 @@ import { AdminService } from "./services/admin.js";
 import { JobService } from "./services/jobs.js";
 import { HealthService } from "./services/health.js";
 import { HomeService } from "./services/home.js";
+import { BillingService } from "./services/billing.js";
 import { operatorContext } from "./auth/bootstrap.js";
 import type { Services } from "./routes/services.js";
 
@@ -37,14 +40,11 @@ export async function createRuntime(env: Env) {
     .array(policyDefinitionSchema)
     .parse(JSON.parse(env.REDACTION_EXTRA_PATTERNS));
   const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
-  const readers = new ReaderPools(
-    {
-      user: env.DATABASE_READER_USER_URL,
-      admin: env.DATABASE_READER_ADMIN_URL,
-    },
-    {},
-    { embeddings: env.EMBEDDINGS_ENABLED },
-  );
+  const readers = new TraceReaders(env.clickhouse, prisma, {
+    embeddings: env.EMBEDDINGS_ENABLED,
+    saas: env.INSTANCE_MODE === "saas",
+  });
+  const traces = new TraceRepository(env.clickhouse);
   try {
     const policies = createPolicyCache(prisma);
     const audit = new AuditService(prisma, policies);
@@ -78,6 +78,8 @@ export async function createRuntime(env: Env) {
           prisma,
           audit,
           policies,
+          traces,
+          billing: env.billing,
           dailyTokenBudget: env.EMBEDDINGS_DAILY_TOKEN_BUDGET,
           provider:
             env.EMBEDDINGS_PROVIDER === "fake"
@@ -87,17 +89,36 @@ export async function createRuntime(env: Env) {
                 }),
         })
       : undefined;
-    const auth = new AuthService(
+    const dependencies = {
       prisma,
-      env.auth,
+      readers,
       audit,
-      embeddings ? ["similar_sessions"] : [],
-    );
-    const dependencies = { prisma, readers, audit, cursors };
-    const jobs = new JobService({
+      cursors,
+      saas: env.INSTANCE_MODE === "saas",
+    };
+    const billingMeter =
+      env.INSTANCE_MODE === "saas" && env.auth.stripe
+        ? new BillingMeterService({
+            prisma,
+            audit,
+            stripe: env.auth.stripe.client,
+          })
+        : undefined;
+    const projection: TraceProjectionService = new TraceProjectionService({
       prisma,
       audit,
-      policies,
+      repository: traces,
+      scheduleEmbeddings: (tx, data) => jobs.schedule(tx, data),
+      allowedEmailDomains: env.auth.allowedEmailDomains,
+      saas: env.INSTANCE_MODE === "saas",
+    });
+    const jobs: JobService = new JobService({
+      traces: projection,
+      traceAudit: new TraceAuditProjectionService({ prisma, audit, traces }),
+      ...(billingMeter ? { billingMeter } : {}),
+      authConfiguration: env.auth,
+      prisma,
+      audit,
       ...(embeddings ? { embeddings } : {}),
       connectionString: env.DATABASE_URL,
       allowedEmailDomains: env.auth.allowedEmailDomains,
@@ -106,13 +127,47 @@ export async function createRuntime(env: Env) {
         process.stderr.write(`${error.message}\n`);
       },
     });
+    const organizationEmbeddings = new OrganizationEmbeddingsService({
+      saas: env.INSTANCE_MODE === "saas",
+      prisma,
+      audit,
+      jobs,
+      ...(embeddings
+        ? {
+            provider: {
+              name: env.EMBEDDINGS_PROVIDER,
+              model: env.EMBEDDINGS_MODEL,
+            },
+          }
+        : {}),
+    });
+    const auth = new AuthService(
+      prisma,
+      env.auth,
+      audit,
+      embeddings ? ["similar_sessions"] : [],
+      jobs,
+    );
     const services: Services = {
+      dashboards: new DashboardService({
+        prisma,
+        audit,
+        embeddings: env.EMBEDDINGS_ENABLED,
+        saas: env.INSTANCE_MODE === "saas",
+      }),
+      organizationEmbeddings,
+      billing: new BillingService({
+        prisma,
+        audit,
+        configuration: env.billing,
+        auth: env.auth,
+      }),
       home: new HomeService(dependencies),
       auth,
       audit,
       ...(embeddings ? { similar: new SimilarService(dependencies) } : {}),
       jobs,
-      health: new HealthService(prisma),
+      health: new HealthService(prisma, traces),
       members: new MembershipService(prisma, env.auth, audit),
       search: new SearchService(
         dependencies,
@@ -128,8 +183,8 @@ export async function createRuntime(env: Env) {
       ingest: new IngestService({
         prisma,
         audit,
-        policies,
-        ...(embeddings ? { embeddings: jobs } : {}),
+        billing: env.billing,
+        traces: jobs,
       }),
       policies: new PolicyService({ prisma, audit, cursors, cache: policies }),
       admin: new AdminService({
@@ -137,7 +192,6 @@ export async function createRuntime(env: Env) {
         readers,
         audit,
         cursors,
-        policies,
         jobs,
       }),
     };
@@ -147,11 +201,13 @@ export async function createRuntime(env: Env) {
       async close() {
         await jobs.stop();
         await readers.close();
+        await traces.close();
         await prisma.$disconnect();
       },
     };
   } catch (error) {
     await readers.close();
+    await traces.close();
     await prisma.$disconnect();
     throw error;
   }
@@ -190,3 +246,4 @@ if (
     process.exitCode = 1;
   }
 }
+import { DashboardService } from "./services/dashboards.js";

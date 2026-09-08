@@ -12,6 +12,82 @@ import {
   utcDateTimeSchema,
 } from "./common.js";
 
+/** Field scope is shared by schema consumers and the session-list planner. */
+export const searchConditionFields = {
+  tool_name: "message",
+  tool_use_id: "message",
+  content: "message",
+  role: "message",
+  kind: "message",
+  model: "message",
+  harness: "session",
+  title: "session",
+  repo_name: "session",
+  branch: "session",
+  user_email: "session",
+  status: "session",
+  tool_input: "message",
+} as const;
+const conditionFieldSchema = z.enum(
+  Object.keys(searchConditionFields) as (keyof typeof searchConditionFields)[],
+);
+const conditionText = z
+  .string()
+  .max(4096)
+  .refine((value) => !value.includes("\0"));
+const conditionTarget = {
+  field: conditionFieldSchema,
+  path: z
+    .array(
+      z
+        .string()
+        .max(256)
+        .refine((value) => !value.includes("\0")),
+    )
+    .min(1)
+    .max(8)
+    .optional(),
+};
+export const searchConditionSchema = z
+  .discriminatedUnion("op", [
+    z.strictObject({
+      ...conditionTarget,
+      op: z.literal("eq"),
+      value: z.union([conditionText, z.number(), z.boolean(), z.null()]),
+    }),
+    z.strictObject({
+      ...conditionTarget,
+      op: z.literal("contains"),
+      value: conditionText.refine((value) => value.length > 0),
+    }),
+    z.strictObject({
+      ...conditionTarget,
+      op: z.literal("starts_with"),
+      value: conditionText.refine((value) => value.length > 0),
+    }),
+    z.strictObject({ ...conditionTarget, op: z.literal("exists") }),
+  ])
+  .superRefine((condition, context) => {
+    if ((condition.field === "tool_input") !== (condition.path !== undefined))
+      context.addIssue({
+        code: "custom",
+        path: ["path"],
+        message: "Choose a JSON path only for tool_input.",
+      });
+    if (
+      condition.field !== "tool_input" &&
+      condition.op === "eq" &&
+      condition.value !== null &&
+      typeof condition.value !== "string"
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["value"],
+        message: "Use text or null for a text field.",
+      });
+  });
+export type SearchCondition = z.infer<typeof searchConditionSchema>;
+
 function filter<T extends z.ZodType>(
   schema: T,
 ): ReturnType<typeof scalarOrArray<T>> {
@@ -31,6 +107,7 @@ const filterShape = {
   session_id: filter(sessionIdSchema).optional(),
   since: filter(utcDateTimeSchema).optional(),
   until: filter(utcDateTimeSchema).optional(),
+  where: z.array(searchConditionSchema).min(1).max(10).optional(),
 };
 export const searchFilterKeys: string[] = Object.keys(filterShape);
 export const searchFiltersSchema = z.strictObject(filterShape, {

@@ -6,23 +6,30 @@ import {
   homeSummarySchema,
   ingestOutputSchema,
 } from "@agentcommons/core";
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
+import { TraceProjectionService } from "../src/services/trace-projection.js";
+import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 import { createRuntime } from "../src/main.js";
 import { createApp } from "../src/app.js";
 import { environment } from "../src/env.js";
 import { requireCaller } from "../src/services/context.js";
 import {
-  startDatabase,
   provisionOrganization,
   provisionMember,
   testAuthConfiguration,
 } from "./support.js";
 
-let db: Awaited<ReturnType<typeof startDatabase>>;
+let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let runtime: Awaited<ReturnType<typeof createRuntime>>;
 let app: Awaited<ReturnType<typeof createApp>>;
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
 let member: Awaited<ReturnType<typeof provisionMember>>;
 let foreign: Awaited<ReturnType<typeof provisionOrganization>>;
+let projection: TraceProjectionService;
+let auditProjection: TraceAuditProjectionService;
 let target: string;
 let second: string;
 let source: string;
@@ -76,7 +83,14 @@ async function capture(key: string, title: string, repo = "shared") {
     },
   });
   expect(response.statusCode, response.body).toBe(202);
-  return ingestOutputSchema.parse(response.json()).sessionId;
+  const sessionId = ingestOutputSchema.parse(response.json()).sessionId;
+  const organizationId = (
+    await db.prisma.traceSessionControl.findFirstOrThrow({
+      where: { id: sessionId },
+    })
+  ).organizationId;
+  await projection.process(organizationId, sessionId);
+  return sessionId;
 }
 async function get(key: string, id: string) {
   const response = await app.inject({
@@ -85,6 +99,9 @@ async function get(key: string, id: string) {
     headers: auth(key),
   });
   expect(response.statusCode, response.body).toBe(200);
+  while (await auditProjection.flush()) {
+    /* Drain committed native read evidence. */
+  }
 }
 async function search(key: string, query: string) {
   const response = await app.inject({
@@ -94,6 +111,9 @@ async function search(key: string, query: string) {
     payload: { query },
   });
   expect(response.statusCode, response.body).toBe(200);
+  while (await auditProjection.flush()) {
+    /* Drain committed native read evidence. */
+  }
 }
 async function page(key: string, section: string, query = "") {
   const response = await app.inject({
@@ -105,29 +125,38 @@ async function page(key: string, section: string, query = "") {
   return homeOutputSchema.parse(response.json());
 }
 beforeAll(async () => {
-  db = await startDatabase();
+  db = await startTraceDatabase();
   cleanup.push(() => db.close());
   owner = await provisionOrganization(db, "home-primary");
   member = await provisionMember(db, owner.owner, "home-member@example.com");
   foreign = await provisionOrganization(db, "home-foreign");
   runtime = await createRuntime(
     environment({
+      ...traceEnvironment(db.traceConfig),
       PUBLIC_URL: testAuthConfiguration.publicUrl,
       DATABASE_URL: db.urls.app,
-      DATABASE_READER_USER_URL: db.urls.user,
-      DATABASE_READER_ADMIN_URL: db.urls.admin,
       BETTER_AUTH_SECRET: testAuthConfiguration.secret,
       LOG_LEVEL: "silent",
       EMBEDDINGS_ENABLED: "false",
     }),
   );
   cleanup.unshift(() => runtime.close());
+  projection = new TraceProjectionService({
+    prisma: db.prisma,
+    audit: runtime.services.audit,
+    repository: db.traces,
+  });
+  auditProjection = new TraceAuditProjectionService({
+    prisma: db.prisma,
+    audit: runtime.services.audit,
+    traces: db.traces,
+  });
   app = await createApp({
+    static: false,
     env: environment({
+      ...traceEnvironment(db.traceConfig),
       PUBLIC_URL: testAuthConfiguration.publicUrl,
       DATABASE_URL: db.urls.app,
-      DATABASE_READER_USER_URL: db.urls.user,
-      DATABASE_READER_ADMIN_URL: db.urls.admin,
       BETTER_AUTH_SECRET: testAuthConfiguration.secret,
       LOG_LEVEL: "silent",
     }),
@@ -277,16 +306,17 @@ it("shows gaps and only the author's redacted zero-result searches, including th
     );
   }
   const caller = requireCaller(member.context);
-  const anonymous = await db.readers.read(
-    {
-      organizationId: caller.organizationId,
-      role: caller.role,
-      permissions: caller.permissions,
-      authMethod: caller.authMethod,
-    },
-    (client) => client.query("SELECT * FROM api_ro.metrics_own_zero_results"),
-  );
-  expect(anonymous.rows).toEqual([]);
+  await expect(
+    db.traceReaders.read(
+      {
+        organizationId: caller.organizationId,
+        role: caller.role,
+        permissions: caller.permissions,
+        authMethod: caller.authMethod,
+      },
+      (client) => client.query("SELECT * FROM api_ro.metrics_own_zero_results"),
+    ),
+  ).rejects.toThrow("Trace readers require an authenticated issuing user.");
   await expect(
     runtime.services.query.execute(member.context, {
       sql: "SELECT set_config('agentcommons.user_id','someone-else',true)",

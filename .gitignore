@@ -15,3 +15,5 @@ apps/api/public/hook/
 infra/Pulumi.*.yaml.bak
 test-results/
 playwright-report/
+
+apps/api/public/reference-config.js

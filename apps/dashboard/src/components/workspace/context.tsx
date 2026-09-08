@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { Outlet, useRouterState } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, unwrap } from "../../lib/api/client";
+import { useBillingConfig } from "../../lib/billing-config";
 import { authClient } from "../../lib/auth-client";
 import { useAuthConfig } from "../../lib/use-auth-config";
 import { closeStreams } from "../../lib/streams";
@@ -44,6 +45,7 @@ export function ConnectedLogin() {
   return <NativeLogin config={query.data} />;
 }
 export function WorkspaceLayout() {
+  const billing = useBillingConfig();
   const client = useQueryClient();
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
@@ -66,7 +68,15 @@ export function WorkspaceLayout() {
   useEffect(() => {
     if (me.error instanceof ApiError && me.error.status === 401)
       window.location.assign("/login");
-  }, [me.error]);
+    if (
+      billing.enabled &&
+      me.data &&
+      ["verify_email", "create_organization", "contact_admin"].includes(
+        me.data.onboarding,
+      )
+    )
+      window.location.assign("/onboarding");
+  }, [me.error, me.data, billing.enabled]);
   const changeOrganization = async (id: string) => {
     setSwitching(true);
     setOperationError(null);

@@ -1,11 +1,16 @@
+import { createPolicyCache } from "./policy-cache.js";
+import {
+  admitUsage,
+  type BillingConfiguration,
+} from "../repositories/billing.js";
 import { createHash } from "node:crypto";
-import { posix } from "node:path";
 import { v7 as uuidv7 } from "uuid";
 import {
-  Prisma,
+  type Prisma,
   hasAdminAuthority,
+  lockTracePublication,
   type PrismaClient,
-  type AgentSession,
+  type TraceSessionControl,
 } from "@agentcommons/db";
 import {
   canonicalIdentity,
@@ -26,22 +31,19 @@ import {
   resolveLink,
   sanitizeSourceRecord,
   UnpairedToolResultError,
+  SourceNotReadyError,
+  identityDigest,
   type SourceRecord,
   type JsonValue,
   type IngestOutput,
   type RedactionCount,
-  type PolicyCache,
 } from "@agentcommons/core";
 import type { AuditService } from "./audit.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import { lockOrganization } from "./auth.js";
 import { persistRedactionCounts } from "./policies.js";
 import { mutationOperation } from "./mutation.js";
-import { projectSession, sourceRecord } from "./projection.js";
-import {
-  nativeSession,
-  waitingNativeChildren,
-} from "../repositories/native-identity.js";
+import { outboxRecord, traceOutboxPayloadSchema } from "./trace-outbox.js";
 
 const parentHintStructure = protocolObject(
   ["harnessSessionId", "agentId", "agentType"],
@@ -62,11 +64,11 @@ export class IngestService {
     private readonly dependencies: {
       prisma: PrismaClient;
       audit: AuditService;
-      policies: PolicyCache;
-      embeddings?: {
-        schedule(
+      billing?: BillingConfiguration;
+      traces: {
+        enqueue(
           tx: Prisma.TransactionClient,
-          data: { organizationId: string; sessionId: string },
+          data: { organizationId: string; sessionId: string; outboxId: string },
         ): Promise<void>;
       };
     },
@@ -87,9 +89,7 @@ export class IngestService {
             "Use an organization API key to upload sessions.",
           );
         await lockOrganization(tx, caller);
-        const redactor = await this.dependencies.policies.get(
-          caller.organizationId,
-        );
+        const redactor = await createPolicyCache(tx).get(caller.organizationId);
         const counts = new Map<string, RedactionCount>();
         function count(matches: RedactionCount[]) {
           for (const match of matches) {
@@ -182,39 +182,39 @@ export class IngestService {
             );
           }
         }
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`session-graph:${caller.organizationId}`},0))`;
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${caller.organizationId}:${request.harness}:${projectionIdentity(nativeId)}`},0))`;
-        let session = await nativeSession(
-          tx,
-          caller.organizationId,
-          request.harness,
-          nativeId,
-        );
-        if (session) {
-          await tx.$queryRaw`SELECT id FROM agent_session WHERE organization_id=${caller.organizationId} AND id=${session.id}::uuid FOR UPDATE`;
-          session = await tx.agentSession.findUniqueOrThrow({
-            where: {
-              organizationId_id: {
-                organizationId: caller.organizationId,
-                id: session.id,
-              },
+        const nativeIdentity = projectionIdentity(nativeId);
+        let session = await tx.traceSessionControl.findUnique({
+          where: {
+            organizationId_harness_nativeIdentity: {
+              organizationId: caller.organizationId,
+              harness: request.harness,
+              nativeIdentity,
             },
-          });
-          if (session.purgedAt)
-            throw new ServiceError(
-              409,
-              "SESSION_PURGED",
-              "This session was purged and cannot accept more records.",
-            );
-          if (session.userId !== caller.userId && !hasAdminAuthority(caller))
-            throw new ServiceError(
-              409,
-              "SESSION_OWNED",
-              "This session belongs to another member.",
-            );
-        }
-        const prior = await tx.ingestBatch.findFirst({
-          where: { organizationId: caller.organizationId, id: request.batchId },
+          },
+        });
+        if (session?.purgedAt)
+          throw new ServiceError(
+            409,
+            "SESSION_PURGED",
+            "This session was purged and cannot accept more records.",
+          );
+        if (
+          session &&
+          session.userId !== caller.userId &&
+          !hasAdminAuthority(caller)
+        )
+          throw new ServiceError(
+            409,
+            "SESSION_OWNED",
+            "This session belongs to another member.",
+          );
+        const prior = await tx.traceReceipt.findUnique({
+          where: {
+            organizationId_id: {
+              organizationId: caller.organizationId,
+              id: request.batchId,
+            },
+          },
         });
         if (prior) {
           if (
@@ -229,6 +229,7 @@ export class IngestService {
             );
           return {
             result: ingestOutputSchema.parse({
+              publication: prior.publishedAt ? "published" : "queued",
               sessionId: session.id,
               accepted: prior.acceptedCount,
               duplicates: prior.duplicateCount,
@@ -247,134 +248,134 @@ export class IngestService {
             },
           },
           create: {
-            ...installation,
             organizationId: caller.organizationId,
             id: request.installationId,
+            ...installation,
             firstSeenAt: receivedAt,
             lastSeenAt: receivedAt,
           },
           update: { ...installation, lastSeenAt: receivedAt },
         });
         if (!session)
-          session = await tx.agentSession.create({
+          session = await tx.traceSessionControl.create({
             data: {
               id: uuidv7(),
               organizationId: caller.organizationId,
               harness: request.harness,
+              nativeIdentity,
               harnessSessionId: nativeId,
               userId: caller.userId,
               ingestApiKeyId: caller.apiKeyId,
               installationId: request.installationId,
-              cwd: safe.context.cwd,
-              repoRoot: safe.context.git?.root ?? null,
-              cwdRelative: safe.context.git
-                ? posix.relative(safe.context.git.root, safe.context.cwd)
-                : null,
-              repoName: safe.context.git?.remoteUrl ?? null,
-              repoUrl: safe.context.git?.remoteUrl ?? null,
-              branch: safe.context.git?.branch ?? null,
-              startCommit: safe.context.git?.head ?? null,
               startedAt: receivedAt,
               lastActivityAt: receivedAt,
             },
           });
-        const existingRows = await tx.rawRecord.findMany({
+        const sourceIdentity = (record: SourceRecord) =>
+          digest(
+            record.key === null
+              ? `position:${String(record.pos)}:${String(record.sourceVersion)}`
+              : `key:${projectionIdentity(record.key)}`,
+          );
+        const priorSources = await tx.traceSourceAdmission.findMany({
           where: {
             organizationId: caller.organizationId,
             sessionId: session.id,
+            sourceIdentity: { in: parsed.map(sourceIdentity) },
           },
-          orderBy: [{ pos: "asc" }, { sourceVersion: "asc" }],
+          select: { sourceIdentity: true },
         });
-        const existing = existingRows.map(sourceRecord);
-        const seenKeys = new Set(
-          existing.flatMap((record) =>
-            record.key === null ? [] : [projectionIdentity(record.key)],
-          ),
-        );
-        const seenPositions = new Set(
-          existing.flatMap((record) =>
-            record.key === null
-              ? [`${String(record.pos)}:${String(record.sourceVersion)}`]
-              : [],
-          ),
-        );
+        const seen = new Set(priorSources.map((row) => row.sourceIdentity));
         const accepted = parsed.filter((record) => {
-          const position = `${String(record.pos)}:${String(record.sourceVersion)}`;
-          if (record.key !== null) {
-            const identity = projectionIdentity(record.key);
-            if (seenKeys.has(identity)) return false;
-            seenKeys.add(identity);
-          } else {
-            if (seenPositions.has(position)) return false;
-            seenPositions.add(position);
-          }
+          const key = sourceIdentity(record);
+          if (seen.has(key)) return false;
+          seen.add(key);
           return true;
         });
+        const adapter = NORMALIZERS[request.harness];
         let masked: SourceRecord[];
         try {
-          masked = maskToolResults(
-            NORMALIZERS[request.harness],
-            accepted,
-            existing,
+          const hashes = new Set(
+            accepted.flatMap((record) =>
+              adapter
+                .toolResults(record)
+                .flatMap((result) =>
+                  result.toolUseId ? [identityDigest(result.toolUseId)] : [],
+                ),
+            ),
           );
+          for (const call of adapter.toolUses(accepted))
+            if (call.toolUseId) hashes.add(identityDigest(call.toolUseId));
+          const previousCalls = await tx.traceToolCallControl.findMany({
+            where: {
+              organizationId: caller.organizationId,
+              sessionId: session.id,
+              idHash: { in: [...hashes] },
+            },
+          });
+          const classification: SourceRecord[] = previousCalls.map((call) => ({
+            id: call.idHash,
+            pos: 0n,
+            sourceVersion: 0,
+            key: null,
+            receivedAt,
+            payload: {},
+            redactionContext: {
+              toolCalls: [{ idHash: call.idHash, sensitive: call.sensitive }],
+              identities: [],
+            },
+          }));
+          masked = maskToolResults(adapter, accepted, classification);
+          // Validate known record shapes before committing a durable receipt. A missing
+          // tree leaf is a projection dependency and is retained for the next upload.
+          try {
+            adapter.toMessages(accepted, normalizerContext.value);
+            adapter.sessionDelta(accepted, normalizerContext.value);
+          } catch (error) {
+            if (!(error instanceof SourceNotReadyError)) throw error;
+          }
         } catch (error) {
           if (error instanceof UnpairedToolResultError)
             throw new ServiceError(422, "UNPAIRED_TOOL_RESULT", error.message, {
               records: error.records,
             });
-          throw error;
+          throw new ServiceError(
+            422,
+            "INVALID_RECORD",
+            "The transcript records could not form a valid session.",
+            {
+              records: accepted.map((record) => ({
+                pos: Number(record.pos),
+                key: record.key,
+              })),
+            },
+          );
         }
         const sanitized: SourceRecord[] = [];
         for (const record of masked) {
-          const redacted = await redactSourceRecord(
-            NORMALIZERS[request.harness],
-            record,
-            redactor,
-          );
+          const redacted = await redactSourceRecord(adapter, record, redactor);
           count(redacted.counts);
           sanitized.push(sanitizeSourceRecord(redacted.value));
         }
-        const all = [...existing, ...sanitized];
         const position = BigInt(request.sourcePos);
         const sentAt = new Date(request.sentAt);
         const newerLifecycle =
           request.behavior !== "sync" &&
-          (position > session.lifecyclePos ||
+          (session.lifecyclePos === null ||
+            position > session.lifecyclePos ||
             (position === session.lifecyclePos &&
               (!session.lifecycleAt || sentAt > session.lifecycleAt)));
-        // Source drains have upload timestamps; lifecycle receipts retain native
-        // event timestamps. A later drain must not suppress an earlier-captured end.
-        const observed = await tx.ingestBatch.findFirst({
-          where: {
-            organizationId: caller.organizationId,
-            sessionId: session.id,
-            sourcePos: { not: null },
-          },
-          orderBy: [{ sourcePos: "desc" }, { sentAt: "desc" }],
-          select: { sourcePos: true, sentAt: true },
-        });
         const newerObservation =
-          !observed ||
-          observed.sourcePos === null ||
-          position > observed.sourcePos ||
-          (position === observed.sourcePos && sentAt > observed.sentAt);
+          session.contextPos === null ||
+          position > session.contextPos ||
+          (position === session.contextPos &&
+            (!session.contextAt || sentAt > session.contextAt));
         const contextData = normalizerContextSchema.parse({
           ...normalizerContextSchema.parse(session.normalizerContext),
-          ...(newerObservation
-            ? {
-                ...(safe.context.activeLeafId === undefined
-                  ? {}
-                  : { activeLeafId: safe.context.activeLeafId }),
-                ...(safe.context.transcriptMetadata === undefined
-                  ? {}
-                  : { transcriptMetadata: safe.context.transcriptMetadata }),
-              }
-            : {}),
+          ...(newerObservation ? normalizerContext.value : {}),
         });
-        const contextChanged =
-          JSON.stringify(contextData) !==
-          JSON.stringify(session.normalizerContext);
-        session = await tx.agentSession.update({
+        const revision = session.acceptedRevision + 1n;
+        session = await tx.traceSessionControl.update({
           where: {
             organizationId_id: {
               organizationId: caller.organizationId,
@@ -382,31 +383,67 @@ export class IngestService {
             },
           },
           data: {
-            lastActivityAt: receivedAt,
+            acceptedRevision: revision,
+            projectionState: "queued",
             normalizerContext: contextData,
+            lastActivityAt: receivedAt,
+            ...(newerObservation
+              ? { contextPos: position, contextAt: sentAt }
+              : {}),
             ...(newerLifecycle
               ? {
                   lifecyclePos: position,
                   lifecycleAt: sentAt,
-                  ...(request.behavior === "end"
-                    ? {
-                        status: "ENDED",
-                        endedAt: sentAt,
-                        endReason: safe.end?.reason ?? null,
-                        endCommit: safe.end?.head ?? null,
-                        observedCommits:
-                          safe.end?.observedCommits ?? Prisma.DbNull,
-                        observedDiffStat:
-                          safe.end?.observedDiffStat ?? Prisma.DbNull,
-                        dirtyFileCount: safe.end?.dirtyFileCount ?? null,
-                      }
-                    : request.behavior === "start"
-                      ? { status: "ACTIVE", endedAt: null, endReason: null }
-                      : {}),
+                  status: request.behavior === "end" ? "ENDED" : "ACTIVE",
+                  endedAt: request.behavior === "end" ? sentAt : null,
                 }
               : {}),
           },
         });
+        if (this.dependencies.billing)
+          await admitUsage(tx, this.dependencies.billing, {
+            organizationId: caller.organizationId,
+            kind: "capture",
+            resourceIds: sanitized.map((record) => record.id),
+            receivedAt,
+          });
+        for (const record of sanitized) {
+          await tx.traceSourceAdmission.create({
+            data: {
+              organizationId: caller.organizationId,
+              sessionId: session.id,
+              sourceIdentity: sourceIdentity(record),
+              rawRecordId: record.id,
+              pos: record.pos,
+              sourceVersion: record.sourceVersion,
+              introducedRevision: revision,
+              receivedAt,
+            },
+          });
+          for (const call of record.redactionContext?.toolCalls ?? [])
+            await tx.traceToolCallControl.upsert({
+              where: {
+                organizationId_sessionId_idHash: {
+                  organizationId: caller.organizationId,
+                  sessionId: session.id,
+                  idHash: call.idHash,
+                },
+              },
+              create: {
+                organizationId: caller.organizationId,
+                sessionId: session.id,
+                ...call,
+              },
+              update: call.sensitive ? { sensitive: true } : {},
+            });
+        }
+        await lockTracePublication(tx, caller.organizationId, "write");
+        const conflicts = await this.link(
+          tx,
+          session,
+          sanitized,
+          safe.context.parentHint,
+        );
         const byteCount = incoming.reduce(
           (sum, record) => sum + Buffer.byteLength(record.line),
           0,
@@ -415,83 +452,52 @@ export class IngestService {
           (sum, item) => sum + item.count,
           0,
         );
-        await tx.ingestBatch.create({
+        await tx.traceReceipt.create({
           data: {
             id: request.batchId,
             organizationId: caller.organizationId,
             sessionId: session.id,
+            installationId: request.installationId,
             apiKeyId: caller.apiKeyId,
             userId: caller.userId,
-            installationId: request.installationId,
-            ip: context.ip ?? "unknown",
-            userAgent:
-              context.userAgent === null
-                ? null
-                : (await redactor.text(context.userAgent)).value,
-            cursor: digest(cursor),
-            acceptedCount: sanitized.length,
+            revision,
             sourcePos: position,
             sentAt,
+            receivedAt,
             behavior: request.behavior,
+            nativeEvent: safe.nativeEvent,
             startResume: request.start?.resume ?? false,
             lifecycleApplied: newerLifecycle,
-            nativeEvent: safe.nativeEvent,
-            receivedAt,
-            recordCount: incoming.length,
+            acceptedCount: sanitized.length,
             duplicateCount: incoming.length - sanitized.length,
+            recordCount: incoming.length,
             byteCount,
             redactionCount,
             durationMs: Math.max(0, Date.now() - context.startedAt),
+            cursor: digest(cursor),
           },
         });
-        for (const record of sanitized)
-          await tx.rawRecord.create({
-            data: {
-              organizationId: caller.organizationId,
-              id: record.id,
-              sessionId: session.id,
-              pos: record.pos,
-              sourceVersion: record.sourceVersion,
-              key: record.key,
-              recordType:
-                typeof record.payload.type === "string"
-                  ? record.payload.type
-                  : "unknown",
-              payload: jsonObjectSchema.parse(record.payload),
-              redactionContext: record.redactionContext ?? {},
-              ingestBatchId: request.batchId,
-              receivedAt,
-            },
-          });
-        let projectionReady = true;
-        if (sanitized.length || contextChanged || request.start?.resume) {
-          try {
-            projectionReady = (
-              await projectSession(tx, session, all, {
-                lifecycle: request.start?.resume ?? false,
-              })
-            ).ready;
-            await this.dependencies.embeddings?.schedule(tx, {
-              organizationId: caller.organizationId,
-              sessionId: session.id,
-            });
-          } catch (error) {
-            if (error instanceof ServiceError && error.statusCode === 422)
-              throw new ServiceError(422, error.code, error.message, {
-                records: incoming.map((record) => ({
-                  pos: record.pos,
-                  key: record.key ?? null,
-                })),
-              });
-            throw error;
-          }
-        }
-        const conflicts = await this.link(
-          tx,
-          session,
-          all,
-          safe.context.parentHint,
-        );
+        const outbox = await tx.traceOutbox.create({
+          data: {
+            id: uuidv7(),
+            organizationId: caller.organizationId,
+            sessionId: session.id,
+            revision,
+            kind: "ingest",
+            payload: traceOutboxPayloadSchema.parse({
+              envelope: safe,
+              records: sanitized.map(outboxRecord),
+              normalizerContext: contextData,
+              lifecycleApplied: newerLifecycle,
+              contextApplied: newerObservation,
+            }),
+          },
+        });
+        await this.dependencies.traces.enqueue(tx, {
+          organizationId: caller.organizationId,
+          sessionId: session.id,
+          outboxId: outbox.id,
+        });
         await persistRedactionCounts(
           tx,
           caller.organizationId,
@@ -501,6 +507,7 @@ export class IngestService {
         );
         return {
           result: ingestOutputSchema.parse({
+            publication: "queued",
             sessionId: session.id,
             accepted: sanitized.length,
             duplicates: incoming.length - sanitized.length,
@@ -512,7 +519,7 @@ export class IngestService {
             accepted: sanitized.length,
             duplicates: incoming.length - sanitized.length,
             redactions: redactionCount,
-            projection_ready: projectionReady,
+            publication: "queued",
             parent_conflicts: conflicts,
             owner_override: session.userId !== caller.userId,
           },
@@ -520,10 +527,9 @@ export class IngestService {
       },
     );
   }
-
   private async link(
     tx: Prisma.TransactionClient,
-    session: AgentSession,
+    session: TraceSessionControl,
     records: readonly SourceRecord[],
     hint: Parameters<typeof resolveLink>[1],
   ): Promise<JsonValue[]> {
@@ -546,21 +552,24 @@ export class IngestService {
         projectionIdentity(link.parentNativeRef) !==
         projectionIdentity(session.harnessSessionId)
       ) {
-        const parent = await nativeSession(
-          tx,
-          session.organizationId,
-          session.harness,
-          link.parentNativeRef,
-        );
+        const parent = await tx.traceSessionControl.findUnique({
+          where: {
+            organizationId_harness_nativeIdentity: {
+              organizationId: session.organizationId,
+              harness: session.harness,
+              nativeIdentity: projectionIdentity(link.parentNativeRef),
+            },
+          },
+        });
         let cycle = false;
         if (parent) {
           const ancestors = await tx.$queryRaw<
             { id: string }[]
-          >`WITH RECURSIVE ancestors(id,parent_session_id) AS (SELECT id,parent_session_id FROM agent_session WHERE organization_id=${session.organizationId} AND id=${parent.id}::uuid UNION SELECT s.id,s.parent_session_id FROM agent_session s JOIN ancestors a ON s.id=a.parent_session_id WHERE s.organization_id=${session.organizationId}) SELECT id FROM ancestors WHERE id=${session.id}::uuid`;
+          >`WITH RECURSIVE ancestors(id,parent_session_id) AS (SELECT id,parent_session_id FROM trace_session_control WHERE organization_id=${session.organizationId} AND id=${parent.id}::uuid UNION SELECT s.id,s.parent_session_id FROM trace_session_control s JOIN ancestors a ON s.id=a.parent_session_id WHERE s.organization_id=${session.organizationId}) SELECT id FROM ancestors WHERE id=${session.id}::uuid`;
           cycle = ancestors.length > 0;
         }
         if (!cycle)
-          await tx.agentSession.update({
+          await tx.traceSessionControl.update({
             where: {
               organizationId_id: {
                 organizationId: session.organizationId,
@@ -571,7 +580,6 @@ export class IngestService {
               parentNativeRef: link.parentNativeRef,
               parentRelation: link.relation,
               parentSessionId: parent?.id ?? null,
-              ...(link.agentType ? { agentType: link.agentType } : {}),
             },
           });
         else
@@ -589,14 +597,11 @@ export class IngestService {
     // a private parent never needs to be copied into a child's public fields.
     const ancestors = await tx.$queryRaw<
       { id: string }[]
-    >`WITH RECURSIVE ancestors(id,parent_session_id) AS (SELECT id,parent_session_id FROM agent_session WHERE organization_id=${session.organizationId} AND id=${session.id}::uuid UNION SELECT s.id,s.parent_session_id FROM agent_session s JOIN ancestors a ON s.id=a.parent_session_id WHERE s.organization_id=${session.organizationId}) SELECT id FROM ancestors`;
-    const waiting = await waitingNativeChildren(
-      tx,
-      session.organizationId,
-      session.harness,
-      session.harnessSessionId,
-    );
-    await tx.agentSession.updateMany({
+    >`WITH RECURSIVE ancestors(id,parent_session_id) AS (SELECT id,parent_session_id FROM trace_session_control WHERE organization_id=${session.organizationId} AND id=${session.id}::uuid UNION SELECT s.id,s.parent_session_id FROM trace_session_control s JOIN ancestors a ON s.id=a.parent_session_id WHERE s.organization_id=${session.organizationId}) SELECT id FROM ancestors`;
+    const waiting = await tx.$queryRaw<
+      { id: string }[]
+    >`SELECT id FROM trace_session_control WHERE organization_id=${session.organizationId} AND harness=${session.harness}::"Harness" AND parent_session_id IS NULL AND public.native_identity(parent_native_ref)=${projectionIdentity(session.harnessSessionId)}`;
+    await tx.traceSessionControl.updateMany({
       where: {
         organizationId: session.organizationId,
         harness: session.harness,

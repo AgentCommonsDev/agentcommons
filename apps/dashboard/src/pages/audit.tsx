@@ -239,6 +239,7 @@ export function AuditPage() {
       )}
       {!query.error && (
         <DataTable
+          summaryColumnIds={["ts", "action", "user_id", "status_code"]}
           data={query.data?.items ?? []}
           columns={columns}
           sorting={pagination.sorting}

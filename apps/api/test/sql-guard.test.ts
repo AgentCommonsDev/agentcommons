@@ -1,21 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { parse } from "pgsql-ast-parser";
-import { guardSql, validateSqlAst } from "../src/repositories/sql-guard.js";
+import { guardSql } from "../src/repositories/sql-guard.js";
+import { ServiceError } from "../src/services/context.js";
+import { z } from "zod";
 
-describe("read SQL guard", () => {
+describe("native read SQL guard", () => {
   // @req R-SQL-01 @req R-SQL-02
   it.each([
-    "SELECT count(*) FROM api_ro.sessions",
+    "SELECT count() FROM api_ro.sessions",
+    "SELECT sum(agentcommons_search_calls) FROM metrics_search_sessions WHERE repeat_agentcommons_search_calls > 0",
     "WITH x AS (SELECT session_id FROM sessions) SELECT * FROM x",
-    "WITH RECURSIVE tree(session_id,parent_session_id) AS (SELECT session_id,parent_session_id FROM sessions WHERE parent_session_id IS NULL UNION ALL SELECT s.session_id,s.parent_session_id FROM sessions s JOIN tree t ON s.parent_session_id=t.session_id) SELECT * FROM tree",
     "SELECT s.session_id FROM sessions s WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id=s.session_id AND m.content ILIKE '%failure%')",
-    "SELECT date_trunc('day', started_at), count(*) FROM sessions GROUP BY 1 ORDER BY 1",
-    "SELECT * FROM search_messages('circuit breaker') WHERE session_id IN (SELECT session_id FROM sessions)",
-    "SELECT 'bash' = ANY(tools_used), now() - INTERVAL '7 days' FROM sessions",
-    "SELECT jsonb_extract_path_text(tool_input, 'command') FROM messages",
-    "SELECT * FROM generate_series(1,10000,2)",
-    "SELECT 1 UNION SELECT 2",
-  ])("accepts a composable read: %s", (sql) => {
+    "SELECT dateTrunc('day', started_at), count() FROM sessions GROUP BY 1 ORDER BY 1",
+    "SELECT * FROM search_messages(q='circuit breaker') WHERE session_id IN (SELECT session_id FROM sessions)",
+    "SELECT has(tools_used,'Bash'), now() - INTERVAL 7 DAY FROM sessions",
+    "SELECT JSONExtractString(tool_input, 'command') FROM messages",
+    "SELECT 1 UNION ALL SELECT 2",
+  ])("accepts a composable native read: %s", (sql) => {
     expect(guardSql(sql)).toContain("SELECT");
   });
 
@@ -23,63 +23,47 @@ describe("read SQL guard", () => {
   it.each([
     "SELECT 1; SELECT 2",
     "SET ROLE ac_reader_admin",
-    "COPY sessions TO PROGRAM 'id'",
     "DELETE FROM sessions",
-    "WITH x AS (DELETE FROM sessions RETURNING *) SELECT * FROM x",
     "SELECT * FROM sessions FOR UPDATE",
-    "SELECT * INTO tmp FROM sessions",
-    "SELECT * FROM pg_catalog.pg_class",
+    "SELECT * FROM system.tables",
     "SELECT * FROM information_schema.tables",
-    'SELECT * FROM public."AgentSession"',
-    "SELECT set_config('agentcommons.organization_id','other',true)",
-    "SELECT native_identity('native')",
-    "SELECT public.native_identity('native')",
-    "SELECT lower(set_config('role','ac_reader_admin',true))",
-    "SELECT pg_catalog.count(*) FROM sessions",
-    "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_class)",
-    "SELECT ARRAY(SELECT oid FROM pg_catalog.pg_class)",
-    "SELECT CASE WHEN true THEN (SELECT current_setting('role')) ELSE '' END",
-    "SELECT count(*) FILTER (WHERE set_config('role','x',true) IS NOT NULL) FROM sessions",
-    "SELECT 'public.AgentSession'::regclass",
-    "SELECT 'pg_read_file'::regproc",
-    "SELECT * FROM generate_series(1,10001)",
-    "SELECT * FROM generate_series(1,(SELECT count(*) FROM sessions))",
-    "SELECT similar_sessions('x')",
-    "SELECT 1 OPERATOR(pg_catalog.+) 2",
-    "SELECT 1 OPERATOR(public.+) 2",
-    "SELECT 1 === 2",
-    'SELECT title COLLATE "C" FROM sessions',
-    "WITH safe AS (WITH leaked AS (SELECT 1) SELECT * FROM leaked) SELECT * FROM leaked",
-  ])("rejects the injection or unsupported relation: %s", (sql) => {
+    "SELECT * FROM ac_trace.messages",
+    "SELECT getSetting('custom_organization')",
+    "SELECT * FROM remote('localhost','system','users')",
+    "SELECT * FROM file('/etc/passwd')",
+    "SELECT * FROM url('https://example.com','JSONEachRow')",
+    "SELECT dictGet('session_scope','visible',1)",
+    "SELECT * FROM sessions SETTINGS max_execution_time=100",
+    "SELECT 1 INTO OUTFILE '/tmp/leak'",
+    "SELECT 1 FORMAT CSV",
+    "SELECT {user:String}",
+    "SELECT * FROM similar_sessions(source='00000000-0000-0000-0000-000000000000',max_rows=5)",
+    "SELECT * FROM search_messages(secret='q')",
+    "SELECT * FROM search_messages(q='x',q='y')",
+    "SELECT * FROM search_messages(q=(SELECT password FROM system.users))",
+    "SELECT * FROM search_messages('legacy positional query')",
+    "SELECT search_messages(q='x')",
+    "SELECT * FROM message_chunks",
+  ])("rejects the injection or unavailable capability: %s", (sql) => {
     expect(() => guardSql(sql)).toThrow();
   });
 
-  it("fails closed on parser extensions at any depth", () => {
-    const ast = parse("SELECT lower(title) FROM sessions")[0];
-    if (!ast || ast.type !== "select" || !ast.columns?.[0])
-      throw new Error("missing parsed column");
-    Object.assign(ast.columns[0].expr, {
-      newParserOption: { type: "select", from: [] },
-    });
-    expect(() => {
-      validateSqlAst(ast);
-    }).toThrow("Unsupported SQL syntax");
-  });
-  it("preserves numeric literals and string content while stripping terminal comments and semicolons", () => {
-    expect(
-      guardSql(
-        "/* lead */ SELECT 1.234567890123456789,9007199254740993,'; DROP TABLE x'; -- tail",
-      ),
-    ).toBe("SELECT 1.234567890123456789,9007199254740993,'; DROP TABLE x'");
-    expect(guardSql("SELECT 1 -- comment\n")).toBe("SELECT 1");
-  });
-  it("rejects unknown operator values even when the AST has otherwise known fields", () => {
-    const ast = parse("SELECT 1 + 2")[0];
-    if (!ast || ast.type !== "select" || !ast.columns?.[0])
-      throw new Error("missing expression");
-    Object.assign(ast.columns[0].expr, { op: "custom_operator" });
-    expect(() => {
-      validateSqlAst(ast);
-    }).toThrow("operator");
+  it("preserves literal precision and reports parse positions through the service error boundary", () => {
+    const sql = guardSql(
+      "SELECT toDecimal128('1.234567890123456789',18),9007199254740993,'; DROP TABLE x'; -- tail",
+    );
+    expect(sql).toContain("1.234567890123456789");
+    expect(sql).toContain("9007199254740993");
+    expect(sql).toContain("'; DROP TABLE x'");
+    try {
+      guardSql("SELECT\n ???");
+      throw new Error("Expected syntax rejection");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "SQL_REJECTED" });
+      if (!(error instanceof ServiceError)) throw error;
+      expect(
+        z.object({ position: z.number() }).parse(error.detail).position,
+      ).toBeGreaterThan(7);
+    }
   });
 });

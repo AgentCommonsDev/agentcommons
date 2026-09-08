@@ -1,3 +1,10 @@
+import { createTraceClient, queryTrace } from "@agentcommons/traces";
+import { z } from "zod";
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
+import { requireCaller } from "../src/services/context.js";
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, copyFile, appendFile, rm } from "node:fs/promises";
@@ -16,28 +23,26 @@ import { configSchema } from "../../../packages/hook/src/config.js";
 import { recordHook } from "../../../packages/hook/src/hook.js";
 import { upload } from "../../../packages/hook/src/upload.js";
 import { loadState } from "../../../packages/hook/src/state.js";
-import {
-  provisionOrganization,
-  startDatabase,
-  testAuthConfiguration,
-} from "./support.js";
+import { provisionOrganization, testAuthConfiguration } from "./support.js";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let runtime: Awaited<ReturnType<typeof createRuntime>>;
 let app: Awaited<ReturnType<typeof createApp>>;
 let baseUrl: string;
+let native: ReturnType<typeof createTraceClient>;
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
+  native = createTraceClient(database.traceConfig);
+  release.unshift(() => native.close());
   organization = await provisionOrganization(database, "identity-reset-review");
   const env = environment({
+    ...traceEnvironment(database.traceConfig),
     PUBLIC_URL: testAuthConfiguration.publicUrl,
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     DATABASE_URL: database.urls.app,
-    DATABASE_READER_USER_URL: database.urls.user,
-    DATABASE_READER_ADMIN_URL: database.urls.admin,
     LOG_LEVEL: "silent",
   });
   runtime = await createRuntime(env);
@@ -50,6 +55,30 @@ beforeAll(async () => {
 afterAll(async () => {
   expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
+
+async function waitPublished(id: string) {
+  await expect
+    .poll(
+      async () => {
+        const state =
+          await database.prisma.traceSessionControl.findUniqueOrThrow({
+            where: {
+              organizationId_id: {
+                organizationId: requireCaller(organization.context)
+                  .organizationId,
+                id,
+              },
+            },
+          });
+        return (
+          state.projectionState === "published" &&
+          state.publishedRevision === state.acceptedRevision
+        );
+      },
+      { timeout: 30_000 },
+    )
+    .toBe(true);
+}
 
 // @req R-HRN-06 @req R-ING-08
 it.each([false, true])(
@@ -88,15 +117,23 @@ it.each([false, true])(
       );
       if (!state) throw new Error("Expected a durable hook intent.");
       await upload(directory, "/nonexistent-review-hook.js", state, config);
-      const session = await database.prisma.agentSession.findFirstOrThrow({
-        where: { harnessSessionId: nativeId },
-      });
-      const messages = () =>
-        database.prisma.message.findMany({
-          where: { sessionId: session.id },
-          orderBy: { seq: "asc" },
-          select: { content: true },
+      const session =
+        await database.prisma.traceSessionControl.findFirstOrThrow({
+          where: { harnessSessionId: nativeId },
         });
+      const messages = async () => {
+        await waitPublished(session.id);
+        return database.traceReaders.read(
+          requireCaller(organization.context),
+          async (client) =>
+            (
+              await client.query(
+                "SELECT content FROM api_ro.messages WHERE session_id={id:UUID} ORDER BY seq",
+                { id: session.id },
+              )
+            ).rows,
+        );
+      };
       expect(await messages()).toContainEqual({ content: "resume confirmed." });
       const initialState = loadState(state);
       if (grows)
@@ -142,12 +179,19 @@ it.each([false, true])(
         expect(finalState.source.watermark).toBeGreaterThan(
           initialState.source.watermark,
         );
-      const receipts = await database.prisma.ingestBatch.findMany({
-        where: { sessionId: session.id },
-      });
+      await waitPublished(session.id);
+      const receipts = (
+        await queryTrace(
+          native,
+          "SELECT sent_at FROM ingest_receipts WHERE session_id={id:UUID}",
+          { id: session.id },
+        )
+      ).rows;
       expect(
         receipts.every(
-          (receipt) => receipt.sentAt.toISOString() === event.timestamp,
+          (receipt) =>
+            z.coerce.date().parse(receipt.sent_at).toISOString() ===
+            event.timestamp,
         ),
       ).toBe(true);
       expect(await messages()).toContainEqual({ content: "resume confirmed." });
@@ -208,11 +252,19 @@ it("a rescan invalidates an in-flight raw fragment without changing reset-record
     start: null,
     sentAt: "2026-09-08T02:00:01.000Z",
   });
-  const messagesBefore = await database.prisma.message.findMany({
-    where: { sessionId: id },
-    orderBy: { seq: "asc" },
-    select: { id: true, seq: true, rawRecordId: true, ingestBatchId: true },
-  });
+  await waitPublished(id);
+  const identities = () =>
+    database.traceReaders.read(
+      requireCaller(organization.context),
+      async (client) =>
+        (
+          await client.query(
+            "SELECT message_id,seq,raw_record_id,ingest_batch_id FROM api_ro.messages WHERE session_id={id:UUID} ORDER BY seq",
+            { id },
+          )
+        ).rows,
+    );
+  const messagesBefore = await identities();
   const rawBefore = await services.sessions.raw(organization.owner, id, {
     limit: 1,
   });
@@ -246,13 +298,7 @@ it("a rescan invalidates an in-flight raw fragment without changing reset-record
   await expect(
     services.sessions.raw(organization.owner, id, { limit: 1, cursor }),
   ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
-  expect(
-    await database.prisma.message.findMany({
-      where: { sessionId: id },
-      orderBy: { seq: "asc" },
-      select: { id: true, seq: true, rawRecordId: true, ingestBatchId: true },
-    }),
-  ).toEqual(messagesBefore);
+  expect(await identities()).toEqual(messagesBefore);
   const rawIds = new Set<string>();
   let nextCursor: string | null = null;
   do {
@@ -285,7 +331,14 @@ it("a rescan invalidates an in-flight raw fragment without changing reset-record
     ).result,
   ).toMatchObject({ sessionId: id, accepted: 0, duplicates: 2 });
   expect(
-    await database.prisma.agentSession.findUniqueOrThrow({ where: { id } }),
+    await database.prisma.traceSessionControl.findUniqueOrThrow({
+      where: {
+        organizationId_id: {
+          organizationId: requireCaller(organization.context).organizationId,
+          id,
+        },
+      },
+    }),
   ).toMatchObject({ status: "ENDED", lifecyclePos: 1n });
   await services.admin.purge(organization.owner, {
     session_id: id,

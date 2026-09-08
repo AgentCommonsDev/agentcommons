@@ -1,0 +1,19 @@
+{
+  "sessionId": "0956cff8-7436-4168-9e96-faadff21341c",
+  "projectHash": "7e263d5362cbef625d0d0f3f85fa23155a5466767e8ffc822930c88a2b693e69",
+  "startTime": "2026-09-08T10:45:40.020Z",
+  "lastUpdated": "2026-09-08T10:45:40.021Z",
+  "messages": [
+    {
+      "id": "302e1427-f05a-488e-bdcd-8992113c36bf",
+      "timestamp": "2026-09-08T10:45:40.021Z",
+      "type": "user",
+      "content": [
+        {
+          "text": "Call the native generalist tool exactly once. Give it this task: use read_file to read probe.txt, then use complete_task to return the exact file content. After the generalist returns, independently use read_file to read probe.txt yourself. Reply with the two observed values. Do not change files or use shell commands."
+        }
+      ]
+    }
+  ],
+  "kind": "main"
+}

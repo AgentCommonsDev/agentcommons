@@ -10,3 +10,5 @@ infra
 fixtures
 **/playwright-report
 **/test-results
+
+apps/api/public/reference-config.js

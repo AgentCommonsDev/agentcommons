@@ -10,12 +10,14 @@ import {
   homeZeroResultSchema,
   reuseWeekSchema,
   memberImpactSchema,
+  searchAdoptionSchema,
   type HomeItem,
   homeListPositionSchema,
   reusePagePositionSchema,
   reuseListInputSchema,
 } from "@agentcommons/core";
-import { reuseEdgePage } from "../repositories/read-model.js";
+import { Parameters, reuseEdgePage } from "../repositories/read-model.js";
+import { searchAdoptionSelect } from "../repositories/search-adoption.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import {
@@ -36,22 +38,27 @@ export class HomeService {
       async (caller) => {
         return this.dependencies.readers.read(caller, async (client) => {
           const weekly = await client.query(`WITH weeks AS (
-          SELECT generate_series(date_trunc('week',now() AT TIME ZONE 'UTC')-interval '7 weeks',
-            date_trunc('week',now() AT TIME ZONE 'UTC'),interval '1 week')::date AS week)
-          SELECT w.week::text,coalesce(r.sessions,0)::float8 AS sessions,
-            coalesce(r.reuse_sessions,0)::float8 AS reuse_sessions,
-            coalesce(r.cross_user_reuse_sessions,0)::float8 AS cross_user_reuse_sessions,
-            r.reuse_rate::float8,r.cross_user_reuse_rate::float8
+          SELECT addWeeks(subtractWeeks(toMonday(now('UTC')),7),arrayJoin(range(8))) AS week)
+          SELECT toString(w.week) AS week,toFloat64(coalesce(r.sessions,0)) AS sessions,
+            toFloat64(coalesce(r.reuse_sessions,0)) AS reuse_sessions,
+            toFloat64(coalesce(r.cross_user_reuse_sessions,0)) AS cross_user_reuse_sessions,
+            toFloat64(r.reuse_rate) AS reuse_rate,toFloat64(r.cross_user_reuse_rate) AS cross_user_reuse_rate
           FROM weeks w LEFT JOIN api_ro.metrics_reuse_weekly r USING(week) ORDER BY w.week`);
           const trend = z.array(reuseWeekSchema).length(8).parse(weekly.rows);
           const impact = await client.query(
-            `SELECT user_id,sessions_reused_by_others::float8,
-          distinct_readers::float8,reuses_made::float8 FROM api_ro.member_impact WHERE user_id=$1`,
-            [caller.userId],
+            `SELECT user_id,toFloat64(sessions_reused_by_others) AS sessions_reused_by_others,
+          toFloat64(distinct_readers) AS distinct_readers,toFloat64(reuses_made) AS reuses_made
+          FROM api_ro.member_impact WHERE user_id={user:String}`,
+            { user: caller.userId },
           );
+          const adoption = await client.query(`SELECT ${searchAdoptionSelect}
+            FROM api_ro.metrics_search_sessions t
+            WHERE started_at>=toMonday(now('UTC'))
+              AND started_at<addWeeks(toMonday(now('UTC')),1)`);
           return homeSummarySchema.parse({
             week: trend.at(-1)?.week,
             weekly: trend,
+            search_adoption: searchAdoptionSchema.parse(adoption.rows[0]),
             impact: memberImpactSchema.parse(
               impact.rows[0] ?? {
                 user_id: caller.userId,
@@ -137,42 +144,41 @@ export class HomeService {
                 ? null
                 : homeListPositionSchema.parse(checkpoint.after);
             const numeric = sort === "sessions";
+            const values = new Parameters();
+            const cutoff = `parseDateTime64BestEffort(${values.add(checkpoint.at)},6,'UTC')`;
+            const limit = values.add(request.limit + 1);
+            const afterValue = values.add(
+              after?.value ?? null,
+              numeric ? "Nullable(Float64)" : "Nullable(String)",
+            );
+            const afterId = values.add(after?.id ?? null, "Nullable(String)");
+            const query = values.add(request.query ?? null, "Nullable(String)");
             const source =
               section === "gap_repos"
-                ? `SELECT repo_name,count(*)::float8 AS sessions
-            FROM api_ro.metrics_reuse_sessions WHERE started_at<=$1::timestamptz AND repo_name IS NOT NULL
-            GROUP BY repo_name HAVING NOT bool_or(reused)`
+                ? `SELECT repo_name,toFloat64(count(*)) AS sessions
+            FROM api_ro.metrics_reuse_sessions WHERE started_at<=${cutoff} AND repo_name IS NOT NULL
+            GROUP BY repo_name HAVING countIf(reused)=0`
                 : `SELECT search_id,searched_at,query FROM api_ro.metrics_own_zero_results
-            WHERE searched_at>=date_trunc('week',$1::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND searched_at<=$1::timestamptz`;
+            WHERE searched_at>=toMonday(${cutoff}) AND searched_at<=${cutoff}`;
             const value =
               sort === "searched_at"
-                ? `to_char(searched_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
+                ? "formatDateTime(searched_at,'%Y-%m-%dT%H:%i:%S.%fZ','UTC')"
                 : numeric
                   ? "sessions"
-                  : `left(${sort},256)`;
+                  : `substringUTF8(${sort},1,256)`;
             const identity =
               section === "gap_repos"
-                ? "encode(sha256(convert_to(repo_name,'UTF8')),'hex')"
-                : "search_id::text";
-            const compare = numeric
-              ? "position_value"
-              : 'position_value COLLATE "C"';
-            const parameter = numeric ? "$3::float8" : '$3::text COLLATE "C"';
-            const seek = `(${compare} ${request.order === "asc" ? ">" : "<"} ${parameter} OR (${compare}=${parameter} AND position_id>$4))`;
+                ? "lower(hex(SHA256(repo_name)))"
+                : "toString(search_id)";
+            const seek = `(position_value ${request.order === "asc" ? ">" : "<"} ${afterValue} OR (position_value=${afterValue} AND position_id>${afterId}))`;
             const filterField = section === "gap_repos" ? "repo_name" : "query";
-            const result = await client.query<Record<string, unknown>>(
+            const result = await client.query(
               `WITH source AS (${source}), positioned AS (
             SELECT *,${value} AS position_value,${identity} AS position_id FROM source)
-            SELECT * FROM positioned WHERE ($4::text IS NULL OR (${seek}))
-              AND ($5::text IS NULL OR strpos(lower(${filterField}),lower($5))>0)
-            ORDER BY ${compare} ${request.order} NULLS LAST,position_id LIMIT $2`,
-              [
-                checkpoint.at,
-                request.limit + 1,
-                after?.value ?? null,
-                after?.id ?? null,
-                request.query ?? null,
-              ],
+            SELECT * FROM positioned WHERE (${afterId} IS NULL OR (${seek}))
+              AND (${query} IS NULL OR positionCaseInsensitiveUTF8(${filterField},${query})>0)
+            ORDER BY position_value ${request.order} NULLS LAST,position_id LIMIT ${limit}`,
+              values.values,
             );
             return result.rows.map((row) => {
               const { position_value, position_id, ...item } = wireRow(row);

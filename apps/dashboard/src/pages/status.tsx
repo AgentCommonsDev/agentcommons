@@ -17,7 +17,8 @@ import {
   type MetricsFilters,
 } from "../components/workspace/metrics-panel";
 import { InstallationRollout } from "../components/workspace/installation-rollout";
-import { WeeklyReuse } from "../components/workspace/weekly-reuse";
+import { metricValue } from "../components/workspace/metric-chart";
+import { OrganizationEmbeddings } from "../components/workspace/organization-embeddings";
 import { Button } from "../components/ui/button";
 function defaultDates() {
   const end = new Date();
@@ -39,7 +40,6 @@ export function StatusPage() {
     config.data?.features.includes("similar_sessions") ?? false;
   const [draft, setDraft] = useState(defaultDates);
   const [applied, setApplied] = useState(draft);
-  const [group, setGroup] = useState<"health" | "usage" | "outcomes">("health");
   const filters: MetricsFilters = {
     date_from: `${applied.from}T00:00:00.000Z`,
     date_to: `${applied.to}T00:00:00.000Z`,
@@ -80,7 +80,6 @@ export function StatusPage() {
           }}
         />
       )}
-      <WeeklyReuse repo={applied.repo.trim()} />
       <form
         className="metrics-filters"
         aria-label={copy.workspace.systemStatus.dateFilters}
@@ -138,31 +137,7 @@ export function StatusPage() {
           {copy.workspace.common.apply}
         </Button>
       </form>
-      <MetricsPanel key="reuse" group="reuse" filters={filters} />
-      <Field label={copy.workspace.systemStatus.group}>
-        {(props) => (
-          <select
-            {...props}
-            value={group}
-            onChange={(event) => {
-              const selected = event.target.value;
-              if (
-                selected === "health" ||
-                selected === "usage" ||
-                selected === "outcomes"
-              )
-                setGroup(selected);
-            }}
-          >
-            {(["health", "usage", "outcomes"] as const).map((value) => (
-              <option value={value} key={value}>
-                {copy.workspace.systemStatus.groups[value]}
-              </option>
-            ))}
-          </select>
-        )}
-      </Field>
-      <MetricsPanel key={group} group={group} filters={filters} />
+      <MetricsPanel group="health" filters={filters} />
       <section className="metric-section">
         <h2>{copy.workspace.systemStatus.snapshot}</h2>
         <p className="field-hint">{copy.workspace.systemStatus.snapshotHint}</p>
@@ -191,7 +166,7 @@ export function StatusPage() {
                     ],
                     [
                       copy.workspace.systemStatus.cost,
-                      data.embedding_daily_cost,
+                      metricValue(Number(data.embedding_daily_cost), "usd"),
                     ],
                   ]
                 : []),
@@ -204,6 +179,7 @@ export function StatusPage() {
           </dl>
         )}
       </section>
+      <OrganizationEmbeddings />
       <InstallationRollout />
     </>
   );

@@ -3,27 +3,26 @@ import { setTimeout as delay } from "node:timers/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { JOB_QUEUES, Prisma } from "@agentcommons/db";
-import { IngestService } from "../src/services/ingest.js";
-import { JobService } from "../src/services/jobs.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { traceServices } from "./trace-services.js";
+import { requireCaller } from "../src/services/context.js";
+import type { JobService } from "../src/services/jobs.js";
 import { AdminService } from "../src/services/admin.js";
 import { PolicyService } from "../src/services/policies.js";
 import { CursorCodec } from "../src/services/cursor.js";
-import {
-  startDatabase,
-  provisionOrganization,
-  provisionMember,
-} from "./support.js";
+import { provisionOrganization, provisionMember } from "./support.js";
+import { wireValue } from "../src/services/read-budget.js";
 import type { Harness, IngestEnvelope } from "@agentcommons/core";
 import type { ServiceContext } from "../src/services/context.js";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let first: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let jobs: JobService;
 let admin: AdminService;
-let ingest: IngestService;
+let services: ReturnType<typeof traceServices>;
 let policies: PolicyService;
-const workerErrors: Error[] = [];
+let workerErrors: Error[];
 function request(
   records: unknown[],
   harness: Harness = "CLAUDE_CODE",
@@ -65,6 +64,32 @@ function request(
     end: null,
   };
 }
+async function scope(sessionId: string) {
+  const control = await database.prisma.traceSessionControl.findFirstOrThrow({
+    where: { id: sessionId },
+  });
+  return services.scope(control.organizationId, sessionId);
+}
+async function rawRecords(sessionId: string) {
+  const current = await scope(sessionId);
+  return services.raw(current.organizationId, sessionId);
+}
+async function publishedMessages(sessionId: string) {
+  const current = await scope(sessionId);
+  return services.messages(current.organizationId, sessionId);
+}
+async function header(sessionId: string) {
+  const current = await scope(sessionId);
+  return services.header(current.organizationId, sessionId);
+}
+async function files(sessionId: string) {
+  return (
+    await database.traces.projectionManifest(await scope(sessionId), "files", {
+      after: null,
+      limit: 1000,
+    })
+  ).items;
+}
 const textRecord = (text: string) => ({
   type: "user",
   message: { content: [{ type: "text", text }] },
@@ -87,21 +112,21 @@ async function waitFor(
 }
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
   first = await provisionOrganization(database, "jobs-first");
   other = await provisionOrganization(database, "jobs-other");
   const cursors = new CursorCodec("jobs-cursor-secret");
-  jobs = new JobService({
-    ...database,
-    connectionString: database.urls.app,
-    allowedEmailDomains: [],
-    auditRetentionDays: 30,
-    onError: (error) => workerErrors.push(error),
-  });
+  services = traceServices(database, undefined, { auditRetentionDays: 30 });
+  jobs = services.jobs;
+  workerErrors = services.errors;
   release.unshift(() => jobs.stop());
-  admin = new AdminService({ ...database, cursors, jobs });
-  ingest = new IngestService({ ...database });
+  admin = new AdminService({
+    ...database,
+    readers: database.traceReaders,
+    cursors,
+    jobs,
+  });
   policies = new PolicyService({
     ...database,
     cursors,
@@ -128,8 +153,8 @@ describe("native pg-boss rescan and maintenance", () => {
       ...row,
       key: `identity-policy-key-${uuidv7()}`,
     }));
-    const parent = await ingest.execute(org.context, body);
-    await database.prisma.agentSession.update({
+    const parent = await services.publish(org.context, body);
+    await database.prisma.traceSessionControl.updateMany({
       where: { id: parent.result.sessionId },
       data: { visibility: "PRIVATE" },
     });
@@ -138,7 +163,7 @@ describe("native pg-boss rescan and maintenance", () => {
       relation: "SPAWNED",
       harnessSessionId: body.harnessSessionId,
     };
-    const child = await ingest.execute(org.context, childBody);
+    const child = await services.publish(org.context, childBody);
     const laterParentBody = request([]);
     laterParentBody.harnessSessionId = `identity-policy-later-${uuidv7()}`;
     const pendingBody = request([]);
@@ -146,8 +171,8 @@ describe("native pg-boss rescan and maintenance", () => {
       relation: "SPAWNED",
       harnessSessionId: laterParentBody.harnessSessionId,
     };
-    const pending = await ingest.execute(org.context, pendingBody);
-    const foreign = await ingest.execute(other.context, {
+    const pending = await services.publish(org.context, pendingBody);
+    const foreign = await services.publish(other.context, {
       ...body,
       batchId: uuidv7(),
     });
@@ -158,39 +183,36 @@ describe("native pg-boss rescan and maintenance", () => {
       flags: "g",
       enabled: true,
     });
-    expect((await ingest.execute(org.context, body)).result).toEqual(
-      parent.result,
-    );
+    expect((await services.publish(org.context, body)).result).toEqual({
+      ...parent.result,
+      publication: "published",
+    });
     expect(
-      (await ingest.execute(org.context, { ...body, batchId: uuidv7() }))
+      (await services.publish(org.context, { ...body, batchId: uuidv7() }))
         .result,
     ).toMatchObject({
       sessionId: parent.result.sessionId,
       accepted: 0,
       duplicates: 1,
     });
-    await ingest.execute(org.context, { ...childBody, batchId: uuidv7() });
+    await services.publish(org.context, { ...childBody, batchId: uuidv7() });
     const scan = await admin.rescan(org.owner, {
       reason: "Native identifier policy review",
     });
     await waitFor(org.owner, scan.result.job_id, "completed");
-    const stored = await database.prisma.agentSession.findUniqueOrThrow({
+    const stored = await database.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: parent.result.sessionId },
     });
     expect(stored.visibility).toBe("PRIVATE");
     expect(stored.harnessSessionId).toMatch(/^redacted-[a-f0-9]{64}$/);
     expect(
-      JSON.stringify(
-        await database.prisma.rawRecord.findMany({
-          where: { sessionId: stored.id },
-          select: { key: true, payload: true, redactionContext: true },
-        }),
-      ),
+      JSON.stringify(wireValue(await rawRecords(stored.id))),
     ).not.toContain("identity-policy-");
-    expect((await ingest.execute(org.context, body)).result).toEqual(
-      parent.result,
-    );
-    const appended = await ingest.execute(org.context, {
+    expect((await services.publish(org.context, body)).result).toEqual({
+      ...parent.result,
+      publication: "published",
+    });
+    const appended = await services.publish(org.context, {
       ...body,
       batchId: uuidv7(),
       sourcePos: 10,
@@ -210,27 +232,27 @@ describe("native pg-boss rescan and maintenance", () => {
       duplicates: 1,
     });
     await expect(
-      ingest.execute(member.context, { ...body, batchId: uuidv7() }),
+      services.publish(member.context, { ...body, batchId: uuidv7() }),
     ).rejects.toMatchObject({ code: "SESSION_OWNED" });
-    await ingest.execute(org.context, { ...childBody, batchId: uuidv7() });
+    await services.publish(org.context, { ...childBody, batchId: uuidv7() });
     expect(
       (
-        await database.prisma.agentSession.findUniqueOrThrow({
+        await database.prisma.traceSessionControl.findFirstOrThrow({
           where: { id: child.result.sessionId },
         })
       ).parentSessionId,
     ).toBe(stored.id);
-    const laterParent = await ingest.execute(org.context, laterParentBody);
+    const laterParent = await services.publish(org.context, laterParentBody);
     expect(
       (
-        await database.prisma.agentSession.findUniqueOrThrow({
+        await database.prisma.traceSessionControl.findFirstOrThrow({
           where: { id: pending.result.sessionId },
         })
       ).parentSessionId,
     ).toBe(laterParent.result.sessionId);
     expect(
       (
-        await database.prisma.agentSession.findUniqueOrThrow({
+        await database.prisma.traceSessionControl.findFirstOrThrow({
           where: { id: foreign.result.sessionId },
         })
       ).harnessSessionId,
@@ -240,10 +262,10 @@ describe("native pg-boss rescan and maintenance", () => {
       reason: "Identity tombstone review",
     });
     await expect(
-      ingest.execute(org.context, { ...body, batchId: uuidv7() }),
+      services.publish(org.context, { ...body, batchId: uuidv7() }),
     ).rejects.toMatchObject({ code: "SESSION_PURGED" });
     expect(
-      await database.prisma.agentSession.count({
+      await database.prisma.traceSessionControl.count({
         where: { organizationId: stored.organizationId, userId: stored.userId },
       }),
     ).toBe(4);
@@ -269,8 +291,8 @@ describe("native pg-boss rescan and maintenance", () => {
     ]);
     body.context.installation.hostname = "host-private-phrase";
     body.context.cwd = "/repo/private-phrase";
-    const accepted = await ingest.execute(first.context, body);
-    const foreign = await ingest.execute(other.context, {
+    const accepted = await services.publish(first.context, body);
+    const foreign = await services.publish(other.context, {
       ...body,
       batchId: uuidv7(),
     });
@@ -325,7 +347,7 @@ describe("native pg-boss rescan and maintenance", () => {
       processed_sessions: 1,
     });
     expect(completed.redaction_count).toBeGreaterThanOrEqual(5);
-    const session = await database.prisma.agentSession.findUniqueOrThrow({
+    const session = await database.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: accepted.result.sessionId },
     });
     expect(
@@ -340,41 +362,24 @@ describe("native pg-boss rescan and maintenance", () => {
         })
       ).hostname,
     ).toBe("host-[REDACTED:classified]");
-    expect(session.cwd).toBe("/repo/[REDACTED:classified]");
-    expect(session).toMatchObject({
+    const presentation = await header(session.id);
+    expect(presentation.cwd).toBe("/repo/[REDACTED:classified]");
+    expect(presentation).toMatchObject({
       title: "The [REDACTED:classified] is searchable",
-      firstPrompt: "The [REDACTED:classified] is searchable",
+      first_prompt: "The [REDACTED:classified] is searchable",
       branch: "[REDACTED:classified]",
     });
     expect(
-      JSON.stringify(
-        await database.prisma.rawRecord.findMany({
-          where: { sessionId: session.id },
-          select: { payload: true, redactionContext: true },
-        }),
-      ),
+      JSON.stringify(wireValue(await rawRecords(session.id))),
     ).not.toContain("private-phrase");
     expect(
-      (
-        await database.prisma.message.findFirst({
-          where: { sessionId: session.id, role: "USER" },
-        })
-      )?.searchText,
-    ).toBe(session.firstPrompt);
-    expect(
-      (
-        await database.prisma.sessionFile.findFirst({
-          where: { sessionId: session.id },
-        })
-      )?.path,
-    ).toBe("[REDACTED:classified].ts");
-    expect(
-      (
-        await database.prisma.agentSession.findUniqueOrThrow({
-          where: { id: foreign.result.sessionId },
-        })
-      ).title,
-    ).toContain("private-phrase");
+      (await publishedMessages(session.id)).find((row) => row.role === "USER")
+        ?.search_text,
+    ).toBe(presentation.first_prompt);
+    expect((await files(session.id))[0]?.id).toBe("[REDACTED:classified].ts");
+    expect((await header(foreign.result.sessionId)).title).toContain(
+      "private-phrase",
+    );
     expect(
       await database.prisma.auditEvent.count({
         where: {
@@ -405,15 +410,30 @@ describe("native pg-boss rescan and maintenance", () => {
       "PI",
     );
     body.context.activeLeafId = "a";
-    const accepted = await ingest.execute(organization.context, body);
-    await ingest.execute(organization.context, {
+    const accepted = await services.publish(organization.context, body);
+    const pending = await services.ingest.execute(organization.context, {
       ...body,
       batchId: uuidv7(),
       records: [],
       sentAt: new Date(Date.parse(body.sentAt) + 1000).toISOString(),
       context: { ...body.context, activeLeafId: "not-arrived" },
     });
-    const tombstone = await ingest.execute(
+    expect(pending.result.publication).toBe("queued");
+    await services.projection.process(
+      requireCaller(organization.context).organizationId,
+      pending.result.sessionId,
+    );
+    await expect
+      .poll(
+        async () =>
+          (
+            await database.prisma.traceSessionControl.findFirstOrThrow({
+              where: { id: pending.result.sessionId },
+            })
+          ).projectionState,
+      )
+      .toBe("waiting_source");
+    const tombstone = await services.publish(
       organization.context,
       request([textRecord("purged target")]),
     );
@@ -440,20 +460,23 @@ describe("native pg-boss rescan and maintenance", () => {
       processed_sessions: 2,
     });
     expect(
-      (
-        await database.prisma.message.findFirst({
-          where: { sessionId: accepted.result.sessionId },
-        })
-      )?.content,
+      (await publishedMessages(accepted.result.sessionId))[0]?.content,
     ).toBe("[REDACTED:pending]");
     expect(
-      await database.prisma.message.count({
-        where: { sessionId: tombstone.result.sessionId },
-      }),
+      (
+        await database.traceReaders.read(
+          requireCaller(organization.context),
+          (client) =>
+            client.query(
+              "SELECT message_id FROM messages WHERE session_id={id:UUID}",
+              { id: tombstone.result.sessionId },
+            ),
+        )
+      ).rows.length,
     ).toBe(0);
     expect(
       (
-        await database.prisma.agentSession.findUniqueOrThrow({
+        await database.prisma.traceSessionControl.findFirstOrThrow({
           where: { id: accepted.result.sessionId },
         })
       ).normalizerContext,
@@ -463,7 +486,7 @@ describe("native pg-boss rescan and maintenance", () => {
   // @req R-RED-06 @req R-AUD-01
   it("retries an interrupted session transaction without duplicate successful audits", async () => {
     const organization = await provisionOrganization(database, "jobs-retry");
-    const accepted = await ingest.execute(
+    const accepted = await services.publish(
       organization.context,
       request([textRecord("retry-test")]),
     );
@@ -511,7 +534,7 @@ describe("native pg-boss rescan and maintenance", () => {
       database,
       "jobs-failure-audit",
     );
-    const accepted = await ingest.execute(
+    const accepted = await services.publish(
       organization.context,
       request([textRecord("failure audit retry")]),
     );
@@ -594,7 +617,7 @@ describe("native pg-boss rescan and maintenance", () => {
   // @req R-ORG-04 @req R-ORG-09
   it("stops a queued job after its initiating API key is revoked", async () => {
     const organization = await provisionOrganization(database, "jobs-revoked");
-    const accepted = await ingest.execute(
+    const accepted = await services.publish(
       organization.context,
       request([textRecord("revoked actor contents")]),
     );
@@ -623,7 +646,7 @@ describe("native pg-boss rescan and maintenance", () => {
 
   // @req R-AUD-03 @req R-EMB-01
   it("enforces audit retention and six-hour inactivity without generating disabled embedding jobs", async () => {
-    const accepted = await ingest.execute(
+    const accepted = await services.publish(
       first.context,
       request([textRecord("idle session")]),
     );
@@ -641,7 +664,7 @@ describe("native pg-boss rescan and maintenance", () => {
         detail: staleAudit.detail ?? Prisma.JsonNull,
       },
     });
-    await database.prisma.agentSession.update({
+    await database.prisma.traceSessionControl.updateMany({
       where: { id: accepted.result.sessionId },
       data: { lastActivityAt: new Date(Date.now() - 7 * 3_600_000) },
     });
@@ -652,7 +675,7 @@ describe("native pg-boss rescan and maintenance", () => {
       }),
     ).toBeNull();
     expect(
-      await database.prisma.agentSession.findUnique({
+      await database.prisma.traceSessionControl.findFirst({
         where: { id: accepted.result.sessionId },
       }),
     ).toMatchObject({ status: "INACTIVE" });
@@ -662,4 +685,69 @@ describe("native pg-boss rescan and maintenance", () => {
     expect(embeddings).toEqual([{ count: 0 }]);
     expect(workerErrors).toEqual([]);
   });
+});
+
+// @req R-RED-01 @req R-RED-02 @req R-RED-06 @req R-AUD-03
+it("applies anchored policies to stored JSON values during ingestion, rescan and audited reads", async () => {
+  const org = await provisionOrganization(database, "anchored-policy-values");
+  const records = [
+    textRecord("needle"),
+    {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "anchored-call",
+            name: "Search",
+            input: { query: "needle" },
+          },
+        ],
+      },
+    },
+  ];
+  const prior = await services.publish(org.context, request(records));
+  const foreign = await services.publish(other.context, request(records));
+  const saved = await policies.save(org.owner, null, {
+    name: "anchored-value",
+    kind: "REGEX",
+    pattern: "^needle$",
+    flags: "g",
+    enabled: true,
+  });
+  const scan = await admin.rescan(org.owner, {
+    reason: "Apply anchored value policy",
+    policyIds: [saved.result.id],
+  });
+  const progress = await waitFor(org.owner, scan.result.job_id, "completed");
+  expect(progress.processed_sessions).toBe(1);
+  const later = request(records);
+  later.context.installation.hostname = "needle";
+  if (later.context.git) later.context.git.branch = "needle";
+  const accepted = await services.publish(org.context, later);
+  for (const sessionId of [prior.result.sessionId, accepted.result.sessionId]) {
+    const raw = await rawRecords(sessionId);
+    expect(JSON.stringify(wireValue(raw))).not.toContain('"needle"');
+    expect(JSON.stringify(wireValue(raw))).toContain(
+      "[REDACTED:anchored-value]",
+    );
+    const messages = await publishedMessages(sessionId);
+    expect(JSON.stringify(wireValue(messages))).not.toContain('"needle"');
+    const presentation = await header(sessionId);
+    expect(presentation.first_prompt).toBe("[REDACTED:anchored-value]");
+    expect(presentation.title).toBe("[REDACTED:anchored-value]");
+  }
+  const foreignRaw = await rawRecords(foreign.result.sessionId);
+  expect(JSON.stringify(wireValue(foreignRaw))).toContain('"needle"');
+  const audit = await database.audit.write(org.owner, {
+    action: "search",
+    detail: { input: { query: "needle" } },
+  });
+  const row = await database.prisma.auditEvent.findUniqueOrThrow({
+    where: { id: audit.id },
+  });
+  expect(row.detail).toMatchObject({
+    input: { query: "[REDACTED:anchored-value]" },
+  });
+  expect(workerErrors).toEqual([]);
 });

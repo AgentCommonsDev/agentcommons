@@ -8,7 +8,8 @@ import { requestContext } from "./context.js";
 import type { Services } from "./services.js";
 
 const empty = z.strictObject({});
-const noBody = z.strictObject({}).optional();
+// Fastify represents an omitted DELETE body as null; GET arrives as undefined.
+const noBody = z.strictObject({}).nullish();
 export function registerApiRoutes(
   app: FastifyInstance,
   services?: Services,
@@ -94,6 +95,85 @@ export function registerApiRoutes(
     });
   }
   const read = { body: noBody, query: empty, params: empty };
+  route(
+    "GET",
+    "/me/dashboards",
+    "List personal dashboards and their declaration schema",
+    { ...read, output: schema.dashboardListOutputSchema },
+    (ctx) => runtime().dashboards.list(ctx),
+  );
+  route(
+    "POST",
+    "/me/dashboards",
+    "Create or update a personal dashboard",
+    {
+      ...read,
+      body: schema.dashboardSaveInputSchema,
+      output: schema.dashboardProfileSchema,
+    },
+    (ctx, input) => runtime().dashboards.save(ctx, input.body),
+  );
+  route(
+    "DELETE",
+    "/me/dashboards/:id",
+    "Delete a personal dashboard",
+    {
+      ...read,
+      params: schema.dashboardIdInputSchema,
+      output: schema.dashboardDeleteOutputSchema,
+    },
+    (ctx, input) => runtime().dashboards.delete(ctx, input.params),
+  );
+  route(
+    "GET",
+    "/organization/embeddings",
+    "Read organization embedding configuration and progress",
+    { ...read, output: schema.organizationEmbeddingsOutputSchema },
+    (ctx) => runtime().organizationEmbeddings.get(ctx),
+  );
+  route(
+    "PATCH",
+    "/organization/embeddings",
+    "Enable or disable embeddings for this organization",
+    {
+      ...read,
+      body: schema.organizationEmbeddingsInputSchema,
+      output: schema.organizationEmbeddingsOutputSchema,
+    },
+    (ctx, input) => runtime().organizationEmbeddings.set(ctx, input.body),
+  );
+  route(
+    "GET",
+    "/billing",
+    "Read the organization's monthly session usage",
+    {
+      ...read,
+      output: schema.billingUsageSchema,
+    },
+    (ctx) => runtime().billing.usage(ctx),
+  );
+  route(
+    "POST",
+    "/billing/checkout",
+    "Open Pro checkout for the current organization",
+    {
+      ...read,
+      body: schema.billingCheckoutSchema,
+      output: schema.billingRedirectSchema,
+    },
+    (ctx, request) => runtime().billing.checkout(ctx, request.body),
+  );
+  route(
+    "POST",
+    "/billing/portal",
+    "Open the current organization's billing portal",
+    {
+      ...read,
+      body: empty,
+      output: schema.billingRedirectSchema,
+    },
+    (ctx) => runtime().billing.portal(ctx),
+  );
   route(
     "GET",
     "/home",
@@ -308,6 +388,61 @@ export function registerApiRoutes(
       output: schema.sessionReuseOutputSchema,
     },
     (ctx, input) => runtime().sessions.reuse(ctx, input.params.id, input.query),
+  );
+  route(
+    "GET",
+    "/admin/domains",
+    "List Google SSO domain access",
+    {
+      ...read,
+      query: schema.domainsInputSchema,
+      output: schema.domainsOutputSchema,
+    },
+    (ctx, input) => runtime().auth.domains(ctx, input.query),
+  );
+  route(
+    "POST",
+    "/admin/domains",
+    "Register a Google SSO domain and return its DNS proof",
+    {
+      ...read,
+      body: schema.domainInputSchema,
+      output: schema.domainOutputSchema,
+    },
+    (ctx, input) => runtime().auth.domain(ctx, "register", input.body),
+  );
+  route(
+    "POST",
+    "/admin/domains/verify",
+    "Verify Google SSO domain DNS ownership",
+    {
+      ...read,
+      body: schema.domainInputSchema,
+      output: schema.domainOutputSchema,
+    },
+    (ctx, input) => runtime().auth.domain(ctx, "verify", input.body),
+  );
+  route(
+    "POST",
+    "/me/organizations",
+    "Create another organization with a verified SaaS identity",
+    {
+      ...read,
+      body: schema.onboardingInputSchema,
+      output: schema.onboardingOutputSchema,
+    },
+    (ctx, input) => runtime().auth.createOrganization(ctx, input.body),
+  );
+  route(
+    "POST",
+    "/onboarding",
+    "Create the verified identity's first organization",
+    {
+      ...read,
+      body: schema.onboardingInputSchema,
+      output: schema.onboardingOutputSchema,
+    },
+    (ctx, input) => runtime().auth.onboard(ctx, input.body),
   );
   route(
     "GET",

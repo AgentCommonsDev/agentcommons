@@ -105,9 +105,11 @@ export function Field({
 export function CopyButton({
   value,
   label = copy.workspace.common.copy,
+  showLabel = false,
 }: {
   value: string;
   label?: string;
+  showLabel?: boolean;
 }) {
   const [state, setState] = useState<"idle" | "copied" | "error">("idle");
   const perform = async () => {
@@ -122,7 +124,7 @@ export function CopyButton({
     <span className="copy-control">
       <Button
         variant="ghost"
-        size="icon"
+        size={showLabel ? "small" : "icon"}
         aria-label={state === "copied" ? copy.workspace.common.copied : label}
         onClick={() => {
           void perform();
@@ -133,6 +135,8 @@ export function CopyButton({
         ) : (
           <Copy size={14} aria-hidden />
         )}
+        {showLabel &&
+          (state === "copied" ? copy.workspace.common.copied : label)}
       </Button>
       <span
         className={state === "error" ? "copy-error" : "sr-only"}

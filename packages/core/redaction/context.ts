@@ -7,7 +7,7 @@ import { protocolObject, protocolTimestamp } from "./structure.js";
 import type { Redactor, RedactionResult } from "./index.js";
 
 export const normalizerContextStructure = protocolObject(["activeLeafId"], {
-  transcriptMetadata: protocolObject(["sessionId"], {
+  transcriptMetadata: protocolObject(["sessionId", "sourceRecordCount"], {
     startTime: protocolTimestamp,
   }),
 });

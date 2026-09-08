@@ -9,7 +9,7 @@ import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
 import swagger from "@fastify/swagger";
-import swaggerUi from "@fastify/swagger-ui";
+import { registerApiReference } from "./routes/reference.js";
 import {
   serializerCompiler,
   hasZodFastifySchemaValidationErrors,
@@ -52,7 +52,7 @@ export function assertRouteContract(route: {
   schema?: FastifySchema;
 }): void {
   if (route.url !== "/api" && !route.url.startsWith("/api/")) return;
-  // This namespace belongs to the native Swagger UI plugin, including its assets.
+  // This namespace belongs to the native Scalar reference plugin, including its assets.
   if (route.url === "/api/docs" || route.url.startsWith("/api/docs/")) return;
   const contract = route.schema;
   const methods = Array.isArray(route.method) ? route.method : [route.method];
@@ -87,7 +87,9 @@ const responseContract = z
 function protectedPath(path: string): boolean {
   return (
     path.startsWith("/api/v1/") &&
-    !["/api/v1/health", "/api/v1/ready"].includes(path)
+    !["/api/v1/health", "/api/v1/ready", "/api/v1/billing/config"].includes(
+      path,
+    )
   );
 }
 function nativePath(request: FastifyRequest): string {
@@ -139,7 +141,7 @@ export async function createApp(options: {
     transform: openApiTransform,
     transformObject: openApiTransformObject,
   });
-  await app.register(swaggerUi, { routePrefix: "/api/docs" });
+  await registerApiReference(app);
   const limit = await createRateLimiter(app);
   app.addHook("onRequest", async (request, reply) => {
     const path = nativePath(request);
@@ -200,7 +202,8 @@ export async function createApp(options: {
       const origin = context.headers.get("origin");
       if (
         origin !== new URL(env.PUBLIC_URL).origin &&
-        !/^\/auth\/callback\//.test(path)
+        !/^\/auth\/callback\//.test(path) &&
+        !(path === "/auth/stripe/webhook" && request.method === "POST")
       )
         throw new ServiceError(
           403,
@@ -284,6 +287,7 @@ export async function createApp(options: {
     await registerStaticRoutes(app, {
       publicUrl: env.PUBLIC_URL,
       mode: env.INSTANCE_MODE,
+      billingConfig: services.billing.publicConfig(),
       dashboardDirectory:
         options.dashboardDirectory ??
         fileURLToPath(new URL("../../dashboard/dist", import.meta.url)),

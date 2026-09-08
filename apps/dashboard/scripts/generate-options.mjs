@@ -17,7 +17,9 @@ const options = {
       .enum,
   ),
   searchFilterKeys: strings.parse(
-    Object.keys(search.properties.filters.properties),
+    Object.keys(search.properties.filters.properties).filter(
+      (key) => key !== "where",
+    ),
   ),
 };
 for (const [name, path] of Object.entries({

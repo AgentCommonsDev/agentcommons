@@ -1,3 +1,8 @@
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../packages/traces/test/support.js";
+import type { Harness } from "../packages/core/schemas/common.js";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import {
@@ -6,6 +11,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,7 +29,6 @@ import { createRuntime } from "../apps/api/src/main.js";
 import {
   provisionMember,
   provisionOrganization,
-  startDatabase,
   testAuthConfiguration,
 } from "../apps/api/test/support.js";
 import { Redactor } from "../packages/core/redaction/index.js";
@@ -33,6 +38,9 @@ import { liveHarnesses, runNative } from "./live-harnesses.js";
 import { nativeAgentEvidence } from "./browser-review-contract.js";
 import { cleanup } from "./cleanup.js";
 import { completedNativeSessions } from "./canary-completion.js";
+import { startMailpit } from "../apps/api/test/mailpit.js";
+import { verifyCanaryEmail } from "./canary-auth.js";
+import { verifyNativeTree } from "./canary-tree.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const settings = z
@@ -42,6 +50,11 @@ const settings = z
       .string()
       .default(resolve(root, "test-results/live-canary")),
     GEMINI_API_KEY: z.string().min(1),
+    CANARY_INSTANCE_MODE: z.enum(["customer", "saas"]).default("customer"),
+    CANARY_KEEP_RUNNING: z
+      .enum(["false", "true"])
+      .default("false")
+      .transform((value) => value === "true"),
   })
   .parse(process.env);
 const runId = randomBytes(8).toString("hex");
@@ -51,10 +64,80 @@ await mkdir(settings.CANARY_OUTPUT, { recursive: true });
 const publicUrl = `http://localhost:${String(settings.CANARY_PORT)}`;
 const assets = join(directory, "dashboard");
 await cp(join(root, "apps/dashboard/dist"), assets, { recursive: true });
-const database = await startDatabase({ ...testAuthConfiguration, publicUrl });
+// Preserve the built renderer's workspace module scope in its private asset snapshot.
+await writeFile(
+  join(assets, "package.json"),
+  JSON.stringify({ type: "module" }) + "\n",
+);
+await symlink(
+  join(root, "apps/dashboard/node_modules"),
+  join(assets, "node_modules"),
+  "dir",
+);
+const database = await startTraceDatabase({
+  ...testAuthConfiguration,
+  publicUrl,
+});
+async function nativeSessions(organizationId: string, harness: Harness) {
+  const controls = await database.prisma.traceSessionControl.findMany({
+    where: {
+      organizationId,
+      harness,
+      purgedAt: null,
+      publishedRevision: { gt: 0 },
+    },
+  });
+  const result = [];
+  for (const control of controls) {
+    if (control.acceptedRevision !== control.publishedRevision) continue;
+    const scope = {
+      organizationId,
+      sessionId: control.id,
+      revision: control.publishedRevision,
+      generation: control.redactionGeneration,
+    };
+    const header = await database.traces.readSession(
+      organizationId,
+      control.id,
+      scope.revision,
+      scope.generation,
+    );
+    if (!header) continue;
+    const messages = [];
+    let after: string | null = null;
+    do {
+      const page = await database.traces.messagesPage(scope, {
+        after,
+        limit: 1000,
+      });
+      messages.push(...page.items);
+      after = page.after;
+    } while (after);
+    result.push({
+      ...control,
+      messages,
+      children: controls.filter(
+        (child) =>
+          child.parentSessionId === control.id &&
+          child.acceptedRevision === child.publishedRevision,
+      ),
+      startCommit: header.start_commit,
+      endCommit: header.end_commit,
+      branch: header.branch,
+      repoName: header.repo_name,
+      dirtyFileCount: header.dirty_file_count,
+      observedDiffStat: header.observed_diff_stat,
+      observedCommits: header.observed_commits,
+      messageCount: header.message_count,
+      toolCallCount: header.tool_call_count,
+    });
+  }
+  return result;
+}
 let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
 let app: Awaited<ReturnType<typeof createApp>> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+let mail: Awaited<ReturnType<typeof startMailpit>> | undefined;
 const clients: Client[] = [];
 const evidence: Array<Record<string, unknown>> = [];
 try {
@@ -67,15 +150,23 @@ try {
   const organizationId = z
     .string()
     .parse(member.context.caller?.organizationId);
+  if (settings.CANARY_INSTANCE_MODE === "saas") mail = await startMailpit();
   const env = environment({
+    ...traceEnvironment(database.traceConfig),
     PUBLIC_URL: publicUrl,
     DATABASE_URL: database.urls.app,
-    DATABASE_READER_USER_URL: database.urls.user,
-    DATABASE_READER_ADMIN_URL: database.urls.admin,
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     LOG_LEVEL: "silent",
     TRUST_PROXY: "loopback",
     EMBEDDINGS_ENABLED: "false",
+    INSTANCE_MODE: settings.CANARY_INSTANCE_MODE,
+    ...(mail
+      ? {
+          EMAIL_TRANSPORT: "smtp",
+          EMAIL_FROM: "no-reply@agentcommons.test",
+          SMTP_URL: mail.smtpUrl,
+        }
+      : {}),
   });
   runtime = await createRuntime(env);
   await runtime.jobs.start();
@@ -85,6 +176,19 @@ try {
     dashboardDirectory: assets,
   });
   await app.listen({ host: "127.0.0.1", port: settings.CANARY_PORT });
+  if (mail) {
+    for (const principal of [administrator, member])
+      await verifyCanaryEmail(publicUrl, principal.email, mail);
+    assert.equal(
+      await database.prisma.user.count({
+        where: {
+          email: { in: [administrator.email, member.email] },
+          emailVerified: true,
+        },
+      }),
+      2,
+    );
+  }
   const read = await runtime.services.auth.createKey(member.owner, {
     name: "Live canary MCP reader",
     permissions: { sessions: ["read"] },
@@ -103,16 +207,36 @@ try {
   const adminClient = await connect(administrator.key);
   assert.deepEqual(
     (await userClient.listTools()).tools.map((tool) => tool.name),
-    ["search", "get", "sql"],
+    [
+      "dashboard_list",
+      "dashboard_save",
+      "dashboard_delete",
+      "search",
+      "get",
+      "sql",
+    ],
   );
   assert.deepEqual(
     (await adminClient.listTools()).tools.map((tool) => tool.name),
-    ["search", "get", "sql", "set_visibility", "purge", "audit", "status"],
+    [
+      "dashboard_list",
+      "dashboard_save",
+      "dashboard_delete",
+      "search",
+      "get",
+      "sql",
+      "set_visibility",
+      "purge",
+      "audit",
+      "status",
+    ],
   );
   browser = await chromium.launch();
   const cookie = z.string().parse(member.owner.headers.get("cookie"));
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
   });
   await context.addCookies(
     cookie.split("; ").map((entry) => {
@@ -243,20 +367,16 @@ try {
         definition.harness,
         completion,
       );
-      const candidates = await database.prisma.agentSession.findMany({
-        where: {
-          organizationId,
-          harness: definition.harness,
-          parentSessionId: null,
-          messages: { some: { role: "USER", content: { contains: marker } } },
-        },
-        include: {
-          messages: {
-            select: { seq: true, role: true, kind: true, content: true },
-          },
-          children: true,
-        },
-      });
+      const candidates = (
+        await nativeSessions(organizationId, definition.harness)
+      ).filter(
+        (candidate) =>
+          candidate.parentSessionId === null &&
+          candidate.messages.some(
+            (message) =>
+              message.role === "USER" && message.content.includes(marker),
+          ),
+      );
       assert.ok(
         candidates.length <= 1,
         `${definition.cli} created duplicate root sessions.`,
@@ -273,6 +393,18 @@ try {
           )) &&
         candidate.messages.some((message) => message.kind === "TOOL_RESULT") &&
         candidate.messages.some((message) => message.kind === "TOOL_USE") &&
+        (!("delegationTool" in definition) ||
+          (candidate.messages.some(
+            (message) =>
+              message.kind === "TOOL_USE" &&
+              message.tool_name === definition.delegationTool,
+          ) &&
+            candidate.messages.some(
+              (message) =>
+                message.kind === "TOOL_RESULT" &&
+                message.tool_name === definition.delegationTool &&
+                message.content.includes("Termination Reason: GOAL"),
+            ))) &&
         candidate.messages.some(
           (message) => message.role === "ASSISTANT" && message.kind === "TEXT",
         ) &&
@@ -286,19 +418,8 @@ try {
         break;
       }
       if (Date.now() >= deadline) {
-        const incomplete = await database.prisma.agentSession.findMany({
+        const incomplete = await database.prisma.traceSessionControl.findMany({
           where: { organizationId, harness: definition.harness },
-          include: {
-            messages: { select: { role: true, kind: true } },
-            batches: {
-              select: {
-                behavior: true,
-                nativeEvent: true,
-                sourcePos: true,
-                sentAt: true,
-              },
-            },
-          },
         });
         evidence.push({
           harness: definition.harness,
@@ -310,11 +431,10 @@ try {
             status: value.status,
             parent_session_id: value.parentSessionId,
             lifecycle_pos: String(value.lifecyclePos),
-            messages: value.messages,
-            batches: value.batches.map((batch) => ({
-              ...batch,
-              sourcePos: String(batch.sourcePos),
-            })),
+            publication: value.projectionState,
+            accepted_revision: String(value.acceptedRevision),
+            published_revision: String(value.publishedRevision),
+            projection_error: value.projectionError,
           })),
         });
         throw new Error(
@@ -422,6 +542,24 @@ try {
       path: join(settings.CANARY_OUTPUT, `${definition.cli}-mobile.png`),
       fullPage: true,
     });
+    const childTree = definition.links
+      ? await verifyNativeTree({
+          publicUrl,
+          apiKey: read.result.key,
+          client: userClient,
+          page,
+          parentId: session.id,
+          relation: definition.links,
+          childIds: session.children
+            .filter((child) => child.parentRelation === definition.links)
+            .map((child) => child.id),
+          probe: `AgentCommons observed git state ${definition.cli}.`,
+          screenshotPath: join(
+            settings.CANARY_OUTPUT,
+            `${definition.cli}-tree-mobile.png`,
+          ),
+        })
+      : [];
     assert.deepEqual(browserErrors, []);
     expected.push({
       marker,
@@ -433,12 +571,16 @@ try {
       version: version.trim(),
       session_id: session.id,
       native_session_id: session.harnessSessionId,
+      ...("delegationTool" in definition
+        ? { native_delegation_tool: definition.delegationTool }
+        : {}),
       message_count: session.messageCount,
       tool_call_count: session.toolCallCount,
       links: session.children.map((child) => ({
         session_id: child.id,
         relation: child.parentRelation,
       })),
+      child_tree: childTree,
       start_commit: session.startCommit,
       end_commit: session.endCommit,
       dirty_file_count: session.dirtyFileCount,
@@ -523,8 +665,25 @@ try {
   );
   assert.ok(observed.tools.filter((name) => name === "search").length >= 4);
   assert.ok(observed.tools.filter((name) => name === "get").length >= 4);
+  const billing = (await runtime.services.billing.usage(administrator.owner))
+    .result;
+  if (settings.CANARY_INSTANCE_MODE === "saas") {
+    const admitted = await database.prisma.usageAdmission.count({
+      where: { organizationId, kind: "capture" },
+    });
+    const nativeRecords = await database.prisma.traceSourceAdmission.count({
+      where: { organizationId },
+    });
+    assert.equal(billing.plan, "free");
+    assert.equal(billing.included_records, 1000);
+    assert.ok(admitted > 0);
+    assert.equal(billing.records_used, admitted);
+    assert.equal(admitted, nativeRecords);
+  }
   const report = {
     passed: true,
+    instance_mode: settings.CANARY_INSTANCE_MODE,
+    billing: { plan: billing.plan, records_used: billing.records_used },
     captured_at: new Date().toISOString(),
     harnesses: evidence,
     agent_mcp: {
@@ -540,7 +699,94 @@ try {
   console.log(
     `All four live canaries passed. Report: ${join(settings.CANARY_OUTPUT, "report.json")}`,
   );
+  if (settings.CANARY_KEEP_RUNNING) {
+    const access = join(directory, "preview-access.json");
+    await writeFile(
+      access,
+      JSON.stringify(
+        {
+          pid: process.pid,
+          public_url: publicUrl,
+          database_urls: database.urls,
+          trace_config: database.traceConfig,
+          trace_migration: database.traceMigration,
+          auth_secret: testAuthConfiguration.secret,
+          organization_id: organizationId,
+          administrator_email: administrator.email,
+          member_email: member.email,
+          instance_mode: settings.CANARY_INSTANCE_MODE,
+          smtp_url: mail?.smtpUrl ?? null,
+          mailpit_url: mail?.url ?? null,
+        },
+        null,
+        2,
+      ) + "\n",
+      { mode: 0o600 },
+    );
+    await browser.close();
+    browser = undefined;
+    for (const client of clients.splice(0)) await client.close();
+    console.log(
+      `Native corpus retained at ${publicUrl}; private runtime access: ${access}`,
+    );
+    // Local handoff may stop this API while another runtime keeps the same native stores.
+    let detached: Promise<void> | undefined;
+    const detach = () => {
+      if (detached) return;
+      const currentApp = app;
+      const currentRuntime = runtime;
+      app = undefined;
+      runtime = undefined;
+      detached = cleanup([
+        async () => currentApp?.close(),
+        async () => currentRuntime?.close(),
+      ]).then((errors) => {
+        if (errors.length) {
+          process.stderr.write("Local canary API handoff cleanup failed.\n");
+          process.exitCode = 1;
+        }
+      });
+    };
+    process.on("SIGUSR2", detach);
+    const keepAlive = setInterval(() => {}, 60_000);
+    try {
+      await new Promise<void>((resolve) => {
+        const stop = () => {
+          process.off("SIGINT", stop);
+          process.off("SIGTERM", stop);
+          resolve();
+        };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+      });
+    } finally {
+      clearInterval(keepAlive);
+      process.off("SIGUSR2", detach);
+      await detached;
+    }
+  }
 } catch (error) {
+  try {
+    const failures = await database.prisma.auditEvent.findMany({
+      where: { statusCode: { gte: 400 } },
+      orderBy: { ts: "desc" },
+      take: 20,
+      select: {
+        ts: true,
+        action: true,
+        resourceIds: true,
+        statusCode: true,
+        detail: true,
+      },
+    });
+    await writeFile(
+      join(directory, "failure-audits.json"),
+      JSON.stringify(failures, null, 2) + "\n",
+      { mode: 0o600 },
+    );
+  } catch {
+    // Database diagnostics must never replace the original failed canary assertion.
+  }
   const report = {
     passed: false,
     harnesses: evidence,
@@ -564,6 +810,7 @@ try {
     ...clients.map((client) => () => client.close()),
     async () => app?.close(),
     async () => runtime?.close(),
+    async () => mail?.close(),
     () => database.close(),
   ]);
   if (errors.length) {

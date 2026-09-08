@@ -12,6 +12,8 @@ import {
   ownerAc,
 } from "better-auth/plugins/organization/access";
 import { apiKey } from "@better-auth/api-key";
+import { sso } from "@better-auth/sso";
+import { stripe } from "@better-auth/stripe";
 
 const keyActions = ["create", "read", "update", "delete"] as const;
 const organizationAccess = createAccessControl({
@@ -34,13 +36,29 @@ const organizationRoles = {
 };
 
 type OAuthProviders = Parameters<typeof genericOAuth>[0]["config"];
+type StripeOptions = Parameters<typeof stripe>[0];
+export type NativeStripeOptions = StripeOptions & {
+  subscription: Extract<
+    NonNullable<StripeOptions["subscription"]>,
+    { enabled: true }
+  >;
+};
+export const authUserFields = {
+  onboardingOrganizationId: { type: "string", required: false, input: false },
+  welcomeQueuedAt: { type: "date", required: false, input: false },
+} as const;
 
 // Native endpoints remain behind services, which enforce issuer ownership and
 // organization scope before using these library-defined role permissions.
-export const authPlugins = (oauthProviders: OAuthProviders = []) => [
+export const authPlugins = (
+  oauthProviders: OAuthProviders = [],
+  domainProvisioning = false,
+  billing?: NativeStripeOptions,
+) => [
   admin(),
   organization({
     allowUserToCreateOrganization: false,
+    disableOrganizationDeletion: true,
     membershipLimit: Number.MAX_SAFE_INTEGER,
     ac: organizationAccess,
     roles: organizationRoles,
@@ -51,6 +69,11 @@ export const authPlugins = (oauthProviders: OAuthProviders = []) => [
             type: "boolean",
             required: false,
             defaultValue: false,
+            input: false,
+          },
+          removedAt: {
+            type: "date",
+            required: false,
             input: false,
           },
         },
@@ -65,5 +88,13 @@ export const authPlugins = (oauthProviders: OAuthProviders = []) => [
     rateLimit: { enabled: false },
   }),
   genericOAuth({ config: oauthProviders }),
+  sso({
+    domainVerification: { enabled: true },
+    organizationProvisioning: {
+      disabled: !domainProvisioning,
+      defaultRole: "member",
+    },
+  }),
+  ...(billing ? [stripe(billing)] : []),
   openAPI(),
 ];

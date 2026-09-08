@@ -1,9 +1,12 @@
+import { organizationEmbeddingSetting } from "../embeddings/settings.js";
+import { canonicalSessionColumns, sqlIdentifier } from "@agentcommons/traces";
+import { ServiceError } from "./context.js";
 import {
   similarInputSchema,
   similarOutputSchema,
   sessionIdSchema,
 } from "@agentcommons/core";
-import { sessionHeader, visibleSession } from "../repositories/read-model.js";
+import { sessionHeaders, visibleSession } from "../repositories/read-model.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 import type { ServiceContext } from "./context.js";
 export class SimilarService {
@@ -19,17 +22,30 @@ export class SimilarService {
         detail: input,
       },
       async (caller) => {
+        if (
+          !(
+            await organizationEmbeddingSetting(
+              this.dependencies.prisma,
+              caller.organizationId,
+              false,
+              Boolean(this.dependencies.saas),
+            )
+          ).enabled
+        )
+          throw new ServiceError(
+            404,
+            "EMBEDDINGS_DISABLED",
+            "Similar sessions are disabled for this organization.",
+          );
         sessionIdSchema.parse(id);
         const request = similarInputSchema.parse(input);
         return this.dependencies.readers.read(caller, async (client) => {
           await visibleSession(client, id);
-          const rows = await client.query<Record<string, unknown>>(
-            "SELECT s.* FROM api_ro.similar_sessions($1::uuid,$2::integer) WITH ORDINALITY nearest(session_id,ordinal) JOIN api_ro.sessions s USING(session_id) ORDER BY nearest.ordinal",
-            [id, request.max_rows],
+          const rows = await client.query(
+            `SELECT ${canonicalSessionColumns.map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")} FROM api_ro.similar_sessions(source={source:UUID},max_rows={max_rows:UInt32}) nearest JOIN api_ro.sessions s USING(session_id) ORDER BY nearest.distance,nearest.session_id`,
+            { source: id, max_rows: request.max_rows },
           );
-          const sessions = [];
-          for (const row of rows.rows)
-            sessions.push(await sessionHeader(client, row));
+          const sessions = await sessionHeaders(client, rows.rows);
           return similarOutputSchema.parse({ sessions });
         });
       },

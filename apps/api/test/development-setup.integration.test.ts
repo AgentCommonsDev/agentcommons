@@ -12,7 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
 import { PrismaClient } from "@agentcommons/db";
 import { expect, it } from "vitest";
 
@@ -24,15 +27,13 @@ it("runs documented migration and bootstrap commands using only an unexported ro
   ];
   const errors: unknown[] = [];
   try {
-    const container = await new PostgreSqlContainer(
-      "pgvector/pgvector:pg16",
-    ).start();
-    cleanup.push(() => container.stop());
+    const database = await startTraceDatabase();
+    cleanup.push(() => database.close());
     for (const file of ["package.json", "pnpm-workspace.yaml"]) {
       await copyFile(join(root, file), join(workspace, file));
     }
     await symlink(join(root, "node_modules"), join(workspace, "node_modules"));
-    for (const directory of ["packages/db", "apps/api"]) {
+    for (const directory of ["packages/db", "packages/traces", "apps/api"]) {
       await mkdir(join(workspace, directory), { recursive: true });
       await copyFile(
         join(root, directory, "package.json"),
@@ -45,17 +46,16 @@ it("runs documented migration and bootstrap commands using only an unexported ro
         );
       }
     }
-    const roleUrl = (role: string) => {
-      const url = new URL(container.getConnectionUri());
-      url.username = role;
-      url.password = "local-setup-test-password";
-      return url.toString();
-    };
     const values = {
-      DATABASE_MIGRATION_URL: container.getConnectionUri(),
-      DATABASE_URL: roleUrl("ac_app"),
-      DATABASE_READER_USER_URL: roleUrl("ac_reader_user"),
-      DATABASE_READER_ADMIN_URL: roleUrl("ac_reader_admin"),
+      DATABASE_MIGRATION_URL: database.urls.migration,
+      DATABASE_URL: database.urls.app,
+      DATABASE_TRACE_CONTROL_URL: database.urls.traceControl,
+      ...traceEnvironment(database.traceConfig),
+      CLICKHOUSE_MIGRATION_USER: database.traceMigration.username,
+      CLICKHOUSE_MIGRATION_PASSWORD: database.traceMigration.password,
+      CLICKHOUSE_POSTGRES_HOST: new URL(
+        database.traceMigration.postgresControlUrl,
+      ).hostname,
       PUBLIC_URL: "http://localhost:5173",
       BETTER_AUTH_SECRET:
         "local-development-setup-secret-at-least-32-characters",
@@ -73,6 +73,7 @@ it("runs documented migration and bootstrap commands using only an unexported ro
       Object.entries(process.env).filter(
         ([name]) =>
           !name.startsWith("DATABASE_") &&
+          !name.startsWith("CLICKHOUSE_") &&
           !name.startsWith("AUTH_") &&
           name !== "PUBLIC_URL" &&
           name !== "BETTER_AUTH_SECRET",

@@ -2,26 +2,26 @@ import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { readFile } from "node:fs/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { IngestService } from "../src/services/ingest.js";
+import type { IngestService } from "../src/services/ingest.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { PolicyService } from "../src/services/policies.js";
 import { SessionService } from "../src/services/session.js";
-import { projectSession, sourceRecord } from "../src/services/projection.js";
-import {
-  startDatabase,
-  provisionOrganization,
-  provisionMember,
-} from "./support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { traceServices } from "./trace-services.js";
+import { requireCaller } from "../src/services/context.js";
+import { provisionOrganization, provisionMember } from "./support.js";
 import {
   projectionIdentity,
   type IngestEnvelope,
   type Harness,
 } from "@agentcommons/core";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let ingest: IngestService;
+let services: ReturnType<typeof traceServices>;
+let organizationId: string;
 let policy: PolicyService;
 function envelope(
   harness: Harness = "CLAUDE_CODE",
@@ -87,15 +87,14 @@ function next(value: IngestEnvelope, records = value.records): IngestEnvelope {
 
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
   organization = await provisionOrganization(database, "ingest-primary");
   other = await provisionOrganization(database, "ingest-other");
-  ingest = new IngestService({
-    prisma: database.prisma,
-    audit: database.audit,
-    policies: database.policies,
-  });
+  organizationId = requireCaller(organization.context).organizationId;
+  services = traceServices(database);
+  release.unshift(() => services.close());
+  ingest = services.ingest;
   policy = new PolicyService({
     prisma: database.prisma,
     audit: database.audit,
@@ -138,19 +137,19 @@ describe("transactional ingest", () => {
       message(100, "Still present"),
     ];
     request.sourcePos = 100;
-    const accepted = await ingest.execute(organization.context, request);
+    const accepted = await services.publish(organization.context, request);
     expect(accepted.result).toMatchObject({ accepted: 2, duplicates: 0 });
-    const messages = await database.prisma.message.findMany({
-      where: { sessionId: accepted.result.sessionId },
-      orderBy: { seq: "asc" },
-    });
+    const messages = await services.messages(
+      organizationId,
+      accepted.result.sessionId,
+    );
     expect(messages.map((row) => row.content)).toEqual([
       "Before\\u0000after�tail� emoji😀",
       "Still present",
     ]);
     expect(
-      (await ingest.execute(organization.context, request)).result,
-    ).toEqual(accepted.result);
+      (await services.publish(organization.context, request)).result,
+    ).toEqual({ ...accepted.result, publication: "published" });
     const metadata = envelope();
     metadata.harnessSessionId = "native\u0000\ud800";
     metadata.context.cwd = "/repo/\u0000\ud800";
@@ -168,22 +167,19 @@ describe("transactional ingest", () => {
         }),
       },
     ];
-    const stored = await ingest.execute(organization.context, metadata);
+    const stored = await services.publish(organization.context, metadata);
     expect(
-      (await ingest.execute(organization.context, next(metadata))).result,
+      (await services.publish(organization.context, next(metadata))).result,
     ).toMatchObject({
       sessionId: stored.result.sessionId,
       accepted: 0,
       duplicates: 1,
     });
-    const row = await database.prisma.agentSession.findUniqueOrThrow({
-      where: { id: stored.result.sessionId },
-    });
-    expect(row.harnessSessionId).toMatch(/^redacted-[a-f0-9]{64}$/);
+    const row = await services.header(organizationId, stored.result.sessionId);
+    expect(row.harness_session_id).toMatch(/^redacted-[a-f0-9]{64}$/);
     expect(row.cwd).toBe("/repo/\\u0000�");
-    const record = await database.prisma.rawRecord.findFirstOrThrow({
-      where: { sessionId: row.id },
-    });
+    const record = (await services.raw(organizationId, row.session_id))[0];
+    if (!record) throw new Error("Missing native raw record");
     expect(record.payload).toMatchObject({
       "\\u0000": "value",
       "\\u0000#1": "other",
@@ -204,33 +200,33 @@ describe("transactional ingest", () => {
       key: "native-before",
     };
     request.records = [firstRecord];
-    const initial = await ingest.execute(organization.context, request);
+    const initial = await services.publish(organization.context, request);
     const replacement = {
       ...message(0, "After truncation"),
       key: "native-after",
     };
-    const reset = await ingest.execute(
+    const reset = await services.publish(
       organization.context,
       next(request, [replacement]),
     );
     expect(reset.result).toMatchObject({ accepted: 1, duplicates: 0 });
     const keyless = { ...message(0, "Keyless source"), key: null };
     expect(
-      (await ingest.execute(organization.context, next(request, [keyless])))
+      (await services.publish(organization.context, next(request, [keyless])))
         .result,
     ).toMatchObject({ accepted: 1, duplicates: 0 });
     expect(
       (
-        await ingest.execute(
+        await services.publish(
           organization.context,
           next(request, [replacement, keyless, { ...firstRecord, pos: 500 }]),
         )
       ).result,
     ).toMatchObject({ accepted: 0, duplicates: 3 });
-    const rows = await database.prisma.message.findMany({
-      where: { sessionId: initial.result.sessionId },
-      orderBy: { seq: "asc" },
-    });
+    const rows = await services.messages(
+      organizationId,
+      initial.result.sessionId,
+    );
     expect(rows).toHaveLength(3);
     expect(new Set(rows.map((row) => row.content))).toEqual(
       new Set(["Before truncation", "After truncation", "Keyless source"]),
@@ -239,17 +235,18 @@ describe("transactional ingest", () => {
       ...envelope(),
       records: [keyless, replacement, firstRecord],
     };
-    const reverseResult = await ingest.execute(organization.context, reversed);
+    const reverseResult = await services.publish(
+      organization.context,
+      reversed,
+    );
     expect(
       (
-        await database.prisma.message.findMany({
-          where: { sessionId: reverseResult.result.sessionId },
-          orderBy: { seq: "asc" },
-        })
+        await services.messages(organizationId, reverseResult.result.sessionId)
       ).map((row) => row.content),
     ).toEqual(rows.map((row) => row.content));
     const sessions = new SessionService({
       ...database,
+      readers: database.traceReaders,
       cursors: new CursorCodec("reset-cursor-secret"),
     });
     const rawIds = [];
@@ -265,38 +262,34 @@ describe("transactional ingest", () => {
     } while (cursor);
     expect(rawIds).toHaveLength(3);
     expect(new Set(rawIds).size).toBe(3);
-    await ingest.execute(organization.context, next(request, []));
-    await database.prisma.$transaction(async (tx) => {
-      const session = await tx.agentSession.findUniqueOrThrow({
-        where: { id: initial.result.sessionId },
-      });
-      const stored = await tx.rawRecord.findMany({
-        where: { sessionId: session.id },
-        orderBy: { id: "desc" },
-      });
-      await projectSession(tx, session, stored.map(sourceRecord), {
-        rescan: true,
-      });
-    });
+    await services.publish(organization.context, next(request, []));
     expect(
-      await database.prisma.message.findMany({
-        where: { sessionId: initial.result.sessionId },
-        orderBy: { seq: "asc" },
-      }),
+      await services.messages(organizationId, initial.result.sessionId),
     ).toEqual(rows);
-    const fragmentedId = rawIds[0];
-    if (!fragmentedId) throw new Error("Expected a raw record.");
     const largePayload = { text: "α".repeat(40_000) };
-    await database.prisma.rawRecord.update({
-      where: { id: fragmentedId },
-      data: { payload: largePayload },
-    });
+    const fragmented = envelope();
+    fragmented.records = [
+      {
+        pos: 0,
+        key: "large",
+        sourceVersion: 0,
+        line: JSON.stringify(largePayload),
+      },
+    ];
+    const fragmentSession = await services.publish(
+      organization.context,
+      fragmented,
+    );
+    const fragmentedId = (
+      await services.raw(organizationId, fragmentSession.result.sessionId)
+    )[0]?.id;
+    if (!fragmentedId) throw new Error("Expected an accepted raw record");
     const fragmentIds: string[] = [];
     let fragments = "";
     do {
       const page = await sessions.raw(
         organization.context,
-        initial.result.sessionId,
+        fragmentSession.result.sessionId,
         {
           limit: 1,
           ...(cursor ? { cursor } : {}),
@@ -313,55 +306,56 @@ describe("transactional ingest", () => {
       cursor = page.result.cursor ?? undefined;
     } while (cursor);
     expect(fragmentIds.filter((id) => id === fragmentedId)).toHaveLength(2);
-    expect(new Set(fragmentIds)).toEqual(new Set(rawIds));
+    expect(new Set(fragmentIds)).toEqual(new Set([fragmentedId]));
     expect(JSON.parse(fragments)).toEqual(largePayload);
   });
 
   // @req R-ING-01 @req R-ING-02 @req R-ING-04 @req R-ING-06 @req R-ING-08 @req R-AUD-01 @req R-ARCH-04
-  it("commits raw, projections, counters, receipt, and audit atomically; replays preserve identities", async () => {
+  it("atomically admits raw identities, receipt, outbox, and audit, then publishes native counters without changing replay identities", async () => {
     const request = envelope();
     request.records = [message(0, "Build the transactional session index")];
-    const accepted = await ingest.execute(organization.context, request);
+    const accepted = await services.publish(organization.context, request);
     expect(accepted.result.sessionId).toEqual(expect.any(String));
     expect(accepted.result).toEqual({
       sessionId: accepted.result.sessionId,
       accepted: 1,
       duplicates: 0,
       cursor: request.cursor,
+      publication: "queued",
     });
-    const first = await database.prisma.message.findMany({
-      where: { sessionId: accepted.result.sessionId },
-    });
+    const first = await services.messages(
+      organizationId,
+      accepted.result.sessionId,
+    );
     expect(first).toHaveLength(1);
-    expect(first[0]?.searchText).toBe("Build the transactional session index");
+    expect(first[0]?.search_text).toBe("Build the transactional session index");
     expect(
       await database.prisma.auditEvent.findUnique({
         where: { id: accepted.audit.id },
       }),
     ).not.toBeNull();
     expect(
-      (await ingest.execute(organization.context, request)).result,
-    ).toEqual(accepted.result);
-    const overlapping = await ingest.execute(
+      (await services.publish(organization.context, request)).result,
+    ).toEqual({ ...accepted.result, publication: "published" });
+    const overlapping = await services.publish(
       organization.context,
       next(request),
     );
     expect(overlapping.result).toMatchObject({ accepted: 0, duplicates: 1 });
-    const second = await database.prisma.message.findMany({
-      where: { sessionId: accepted.result.sessionId },
-    });
+    const second = await services.messages(
+      organizationId,
+      accepted.result.sessionId,
+    );
     expect(second).toEqual(first);
     expect(
-      await database.prisma.agentSession.findUnique({
-        where: { id: accepted.result.sessionId },
-      }),
-    ).toMatchObject({ messageCount: 1, toolCallCount: 0 });
+      await services.header(organizationId, accepted.result.sessionId),
+    ).toMatchObject({ message_count: 1, tool_call_count: 0 });
 
     const failed = envelope();
     failed.records = [message(0, "Must roll back")];
-    const write = database.audit.write.bind(database.audit);
+    const write = services.audit.write.bind(services.audit);
     const spy = vi
-      .spyOn(database.audit, "write")
+      .spyOn(services.audit, "write")
       .mockImplementation(async (context, description, tx) => {
         if (description.action === "ingest" && description.statusCode === 202)
           throw new Error("Injected before commit");
@@ -372,12 +366,12 @@ describe("transactional ingest", () => {
     ).rejects.toMatchObject({ statusCode: 500 });
     spy.mockRestore();
     expect(
-      await database.prisma.agentSession.count({
+      await database.prisma.traceSessionControl.count({
         where: { harnessSessionId: failed.harnessSessionId },
       }),
     ).toBe(0);
     expect(
-      await database.prisma.ingestBatch.count({
+      await database.prisma.traceReceipt.count({
         where: { id: failed.batchId },
       }),
     ).toBe(0);
@@ -387,13 +381,13 @@ describe("transactional ingest", () => {
   it("isolates identical native session ids across organizations and rejects different owners", async () => {
     const request = envelope();
     request.records = [message(0, "Primary tenant")];
-    const first = await ingest.execute(organization.context, request);
+    const first = await services.publish(organization.context, request);
     const foreign = {
       ...request,
       batchId: uuidv7(),
       records: [message(0, "Other tenant")],
     };
-    const second = await ingest.execute(other.context, foreign);
+    const second = await services.publish(other.context, foreign);
     expect(second.result.sessionId).not.toBe(first.result.sessionId);
     const member = await provisionMember(
       database,
@@ -410,37 +404,33 @@ describe("transactional ingest", () => {
     const request = envelope();
     request.records = [message(20, "Later source record")];
     request.sourcePos = 20;
-    const first = await ingest.execute(organization.context, request);
-    await ingest.execute(
+    const first = await services.publish(organization.context, request);
+    await services.publish(
       organization.context,
       next(request, [message(10, "Earlier source record")]),
     );
     expect(
-      (
-        await database.prisma.message.findMany({
-          where: { sessionId: first.result.sessionId },
-          orderBy: { seq: "asc" },
-        })
-      ).map((row) => row.content),
+      (await services.messages(organizationId, first.result.sessionId)).map(
+        (row) => row.content,
+      ),
     ).toEqual(["Earlier source record", "Later source record"]);
     const ended = next(request, []);
     ended.behavior = "end";
-    await ingest.execute(organization.context, ended);
-    await ingest.execute(organization.context, next(ended, []));
+    await services.publish(organization.context, ended);
+    await services.publish(organization.context, next(ended, []));
     expect(
-      await database.prisma.agentSession.findUnique({
-        where: { id: first.result.sessionId },
-      }),
+      await services.header(organizationId, first.result.sessionId),
     ).toMatchObject({ status: "ENDED" });
     const resumed = next(ended, [message(30, "Resumed source record")]);
     resumed.behavior = "start";
-    await ingest.execute(organization.context, resumed);
-    await ingest.execute(organization.context, { ...ended, batchId: uuidv7() });
+    await services.publish(organization.context, resumed);
+    await services.publish(organization.context, {
+      ...ended,
+      batchId: uuidv7(),
+    });
     expect(
-      await database.prisma.agentSession.findUnique({
-        where: { id: first.result.sessionId },
-      }),
-    ).toMatchObject({ status: "ACTIVE", messageCount: 3, endedAt: null });
+      await services.header(organizationId, first.result.sessionId),
+    ).toMatchObject({ status: "ACTIVE", message_count: 3, ended_at: null });
   });
 
   // @req R-RED-05 @req R-ING-10
@@ -476,7 +466,7 @@ describe("transactional ingest", () => {
       detail: { records: [{ pos: 10, key: "result" }] },
     });
     expect(
-      await database.prisma.agentSession.count({
+      await database.prisma.traceSessionControl.count({
         where: { harnessSessionId: request.harnessSessionId },
       }),
     ).toBe(0);
@@ -498,19 +488,21 @@ describe("transactional ingest", () => {
         },
       }),
     };
-    await ingest.execute(organization.context, next(request, [input]));
-    const accepted = await ingest.execute(organization.context, next(request));
-    const stored = await database.prisma.rawRecord.findMany({
-      where: { sessionId: accepted.result.sessionId },
-    });
+    await services.publish(organization.context, next(request, [input]));
+    const accepted = await services.publish(
+      organization.context,
+      next(request),
+    );
+    const stored = await services.raw(
+      organizationId,
+      accepted.result.sessionId,
+    );
     expect(JSON.stringify(stored.map((row) => row.payload))).not.toContain(
       privateText,
     );
     expect(
-      (
-        await database.prisma.message.findFirst({
-          where: { sessionId: accepted.result.sessionId, kind: "TOOL_RESULT" },
-        })
+      (await services.messages(organizationId, accepted.result.sessionId)).find(
+        (row) => row.kind === "TOOL_RESULT",
       )?.content,
     ).toContain("sensitive file output redacted");
   });
@@ -530,25 +522,26 @@ describe("transactional ingest", () => {
       }),
     });
     request.records = [record(0, "A")];
-    const accepted = await ingest.execute(organization.context, request);
-    await ingest.execute(organization.context, next(request, [record(1, "B")]));
-    await ingest.execute(organization.context, next(request, [record(2, "A")]));
+    const accepted = await services.publish(organization.context, request);
+    await services.publish(
+      organization.context,
+      next(request, [record(1, "B")]),
+    );
+    await services.publish(
+      organization.context,
+      next(request, [record(2, "A")]),
+    );
     expect(
-      await database.prisma.rawRecord.count({
+      await database.prisma.traceSourceAdmission.count({
         where: { sessionId: accepted.result.sessionId },
       }),
     ).toBe(3);
     expect(
-      await database.prisma.agentSession.findUnique({
-        where: { id: accepted.result.sessionId },
-      }),
-    ).toMatchObject({ messageCount: 1, inputTokens: 10n, outputTokens: 2n });
+      await services.header(organizationId, accepted.result.sessionId),
+    ).toMatchObject({ message_count: 1, input_tokens: 10n, output_tokens: 2n });
     expect(
-      (
-        await database.prisma.message.findFirst({
-          where: { sessionId: accepted.result.sessionId },
-        })
-      )?.content,
+      (await services.messages(organizationId, accepted.result.sessionId))[0]
+        ?.content,
     ).toBe("A");
   });
 
@@ -578,34 +571,36 @@ describe("transactional ingest", () => {
     ];
     request.sourcePos = 20;
     request.context.activeLeafId = "b";
-    const accepted = await ingest.execute(organization.context, request);
+    const accepted = await services.publish(organization.context, request);
     const changed = next(request, []);
     changed.context = { ...request.context, activeLeafId: "c" };
-    await ingest.execute(organization.context, changed);
+    await services.publish(organization.context, changed);
     expect(
-      (
-        await database.prisma.message.findMany({
-          where: { sessionId: accepted.result.sessionId },
-          orderBy: { seq: "asc" },
-        })
-      ).map((item) => item.content),
+      (await services.messages(organizationId, accepted.result.sessionId)).map(
+        (item) => item.content,
+      ),
     ).toEqual(["Root", "Other branch"]);
     const pending = next(changed, []);
     pending.context = { ...changed.context, activeLeafId: "d" };
-    await ingest.execute(organization.context, pending);
+    const queued = await services.ingest.execute(organization.context, pending);
+    expect(queued.result.publication).toBe("queued");
+    await services.projection.process(organizationId, queued.result.sessionId);
     expect(
-      await database.prisma.message.count({
-        where: { sessionId: accepted.result.sessionId },
+      await database.prisma.traceSessionControl.findFirstOrThrow({
+        where: { organizationId, id: queued.result.sessionId },
       }),
+    ).toMatchObject({ projectionState: "waiting_source" });
+    expect(
+      (await services.messages(organizationId, accepted.result.sessionId))
+        .length,
     ).toBe(2);
-    await ingest.execute(
+    await services.publish(
       organization.context,
       next(pending, [row(30, "d", "c", "Now received")]),
     );
     expect(
-      await database.prisma.message.count({
-        where: { sessionId: accepted.result.sessionId },
-      }),
+      (await services.messages(organizationId, accepted.result.sessionId))
+        .length,
     ).toBe(3);
   });
 
@@ -623,19 +618,20 @@ describe("transactional ingest", () => {
       head: "abc",
     };
     request.cursor = secret;
-    const value = await ingest.execute(
+    const value = await services.publish(
       { ...organization.context, userAgent: secret },
       request,
     );
     expect(value.result.cursor).toBe(secret);
-    const session = await database.prisma.agentSession.findUniqueOrThrow({
-      where: { id: value.result.sessionId },
-    });
-    expect(session.repoName).toBe("github.com/rek7/agentcommons");
+    const session = await services.header(
+      organizationId,
+      value.result.sessionId,
+    );
+    expect(session.repo_name).toBe("github.com/rek7/agentcommons");
     expect(session.cwd).not.toContain(secret);
     expect(session.title).not.toContain(secret);
     expect(session.branch).not.toContain(secret);
-    const batch = await database.prisma.ingestBatch.findUniqueOrThrow({
+    const batch = await database.prisma.traceReceipt.findUniqueOrThrow({
       where: {
         organizationId_id: {
           organizationId:
@@ -645,10 +641,10 @@ describe("transactional ingest", () => {
       },
     });
     expect(batch.cursor).not.toContain(secret);
-    expect(batch.userAgent).not.toContain(secret);
+    expect(value.audit.userAgent).not.toContain(secret);
     expect(
       await database.prisma.redactionEvent.count({
-        where: { sessionId: session.id },
+        where: { sessionId: session.session_id },
       }),
     ).toBeGreaterThan(0);
     expect(JSON.stringify(value.audit.detail)).not.toContain(secret);
@@ -677,15 +673,14 @@ describe("transactional ingest", () => {
           return record;
         });
       request.sourcePos = pos;
-      const result = await ingest.execute(organization.context, request);
+      const result = await services.publish(organization.context, request);
       expect(result.result.accepted).toBe(request.records.length);
       expect(
-        await database.prisma.message.count({
-          where: { sessionId: result.result.sessionId },
-        }),
+        (await services.messages(organizationId, result.result.sessionId))
+          .length,
       ).toBeGreaterThan(0);
       expect(
-        await database.prisma.rawRecord.count({
+        await database.prisma.traceSourceAdmission.count({
           where: { sessionId: result.result.sessionId },
         }),
       ).toBe(request.records.length);

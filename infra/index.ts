@@ -1,3 +1,4 @@
+import { clickHouseHost } from "./clickhouse.js";
 import * as aws from "@pulumi/aws";
 import * as awsx from "@pulumi/awsx";
 import * as command from "@pulumi/command";
@@ -50,6 +51,21 @@ const taskSecurity = new aws.ec2.SecurityGroup(`${name}-tasks`, {
   ],
   tags,
 });
+const traceSecurity = new aws.ec2.SecurityGroup(`${name}-traces`, {
+  vpcId: vpc.vpcId,
+  ingress: [
+    {
+      protocol: "tcp",
+      fromPort: 8123,
+      toPort: 8123,
+      securityGroups: [taskSecurity.id],
+    },
+  ],
+  egress: [
+    { protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] },
+  ],
+  tags,
+});
 const dbSecurity = new aws.ec2.SecurityGroup(`${name}-database`, {
   vpcId: vpc.vpcId,
   ingress: [
@@ -57,7 +73,7 @@ const dbSecurity = new aws.ec2.SecurityGroup(`${name}-database`, {
       protocol: "tcp",
       fromPort: 5432,
       toPort: 5432,
-      securityGroups: [taskSecurity.id],
+      securityGroups: [taskSecurity.id, traceSecurity.id],
     },
   ],
   egress: [],
@@ -98,6 +114,15 @@ const db = new aws.rds.Instance(
   { protect: production },
 );
 
+const clickhouse = clickHouseHost({
+  name,
+  securityId: traceSecurity.id,
+  subnetId: vpc.privateSubnetIds.apply((ids) => z.string().parse(ids[0])),
+  region,
+  password: secrets.clickhouseAdminPassword,
+  production,
+  tags,
+});
 function databaseUrl(user: string, password: pulumi.Output<string>) {
   return pulumi
     .all([db.address, password])
@@ -107,28 +132,24 @@ function databaseUrl(user: string, password: pulumi.Output<string>) {
     );
 }
 const runtimeValues = pulumi
-  .all([
-    databaseUrl("ac_app", secrets.appPassword),
-    databaseUrl("ac_reader_user", secrets.userPassword),
-    databaseUrl("ac_reader_admin", secrets.adminPassword),
-    secrets.authSecret.apply((value) => z.string().min(32).parse(value)),
-    secrets.additional,
-  ])
-  .apply(
-    ([
-      DATABASE_URL,
-      DATABASE_READER_USER_URL,
-      DATABASE_READER_ADMIN_URL,
-      BETTER_AUTH_SECRET,
-      additional,
-    ]) => ({
-      ...additional,
-      DATABASE_URL,
-      DATABASE_READER_USER_URL,
-      DATABASE_READER_ADMIN_URL,
-      BETTER_AUTH_SECRET,
-    }),
-  );
+  .output({
+    DATABASE_URL: databaseUrl("ac_app", secrets.appPassword),
+    BETTER_AUTH_SECRET: secrets.authSecret.apply((value) =>
+      z.string().min(32).parse(value),
+    ),
+    additional: secrets.additional,
+    CLICKHOUSE_WRITER_PASSWORD: secrets.clickhouseWriterPassword,
+    CLICKHOUSE_ACCESS_PASSWORD: secrets.clickhouseAccessPassword,
+    CLICKHOUSE_READER_SECRET: secrets.clickhouseReaderSecret,
+    CLICKHOUSE_URL: clickhouse.url,
+  })
+  .apply(({ additional, ...values }) => ({
+    ...additional,
+    ...values,
+    CLICKHOUSE_DATABASE: "ac_trace",
+    CLICKHOUSE_WRITER_USER: "ac_trace_writer",
+    CLICKHOUSE_ACCESS_USER: "ac_trace_access",
+  }));
 const runtimeSecret = new aws.secretsmanager.Secret(`${name}-application`, {
   recoveryWindowInDays: production ? 30 : 7,
   tags,
@@ -148,7 +169,14 @@ const migrationVersion = new aws.secretsmanager.SecretVersion(
   `${name}-migration`,
   {
     secretId: migrationSecret.id,
-    secretString: databaseUrl("agentcommons_migration", secrets.masterPassword),
+    secretString: pulumi
+      .all([
+        databaseUrl("agentcommons_migration", secrets.masterPassword),
+        databaseUrl("ac_trace_control", secrets.traceControlPassword),
+      ])
+      .apply(([DATABASE_MIGRATION_URL, DATABASE_TRACE_CONTROL_URL]) =>
+        JSON.stringify({ DATABASE_MIGRATION_URL, DATABASE_TRACE_CONTROL_URL }),
+      ),
   },
 );
 
@@ -159,6 +187,35 @@ const taskRole = new aws.iam.Role(`${name}-task`, {
   assumeRolePolicy: assumeTask,
   tags,
 });
+const migrationTaskRole = new aws.iam.Role(`${name}-migration-task`, {
+  assumeRolePolicy: assumeTask,
+  tags,
+});
+const mailPermissions: pulumi.Resource[] = [];
+if (settings.environment.EMAIL_TRANSPORT === "ses") {
+  mailPermissions.push(
+    new aws.iam.RolePolicy(`${name}-mail`, {
+      role: taskRole.id,
+      policy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["ses:SendEmail"],
+            Resource: z.string().parse(settings.sesIdentityArn),
+            Condition: {
+              StringEquals: {
+                "ses:FromAddress": z
+                  .email()
+                  .parse(settings.environment.EMAIL_FROM),
+              },
+            },
+          },
+        ],
+      }),
+    }),
+  );
+}
 function executionRole(suffix: string, secretArns: pulumi.Input<string>[]) {
   const role = new aws.iam.Role(`${name}-${suffix}-execution`, {
     assumeRolePolicy: assumeTask,
@@ -187,6 +244,7 @@ const apiExecution = executionRole("api", [runtimeSecret.arn]);
 const migrationExecution = executionRole("migration", [
   runtimeSecret.arn,
   migrationSecret.arn,
+  clickhouse.secret.arn,
 ]);
 const logs = new aws.cloudwatch.LogGroup(name, {
   retentionInDays: production ? 90 : 14,
@@ -231,16 +289,30 @@ const migration = new awsx.ecs.FargateTaskDefinition(
     cpu: "256",
     memory: "512",
     executionRole: { roleArn: migrationExecution.role.arn },
-    taskRole: { roleArn: taskRole.arn },
+    taskRole: { roleArn: migrationTaskRole.arn },
     container: {
       name: "migrate",
       image: image.imageUri,
       command: ["pnpm", "db:migrate"],
       essential: true,
-      environment,
+      environment: [
+        ...environment,
+        { name: "CLICKHOUSE_MIGRATION_USER", value: "default" },
+      ],
       secrets: containerSecrets.apply((values) => [
         ...values,
-        { name: "DATABASE_MIGRATION_URL", valueFrom: migrationSecret.arn },
+        {
+          name: "DATABASE_MIGRATION_URL",
+          valueFrom: pulumi.interpolate`${migrationSecret.arn}:DATABASE_MIGRATION_URL::`,
+        },
+        {
+          name: "DATABASE_TRACE_CONTROL_URL",
+          valueFrom: pulumi.interpolate`${migrationSecret.arn}:DATABASE_TRACE_CONTROL_URL::`,
+        },
+        {
+          name: "CLICKHOUSE_MIGRATION_PASSWORD",
+          valueFrom: pulumi.interpolate`${clickhouse.secret.arn}:CLICKHOUSE_PASSWORD::`,
+        },
       ]),
       logConfiguration: {
         ...logConfiguration,
@@ -276,9 +348,10 @@ const migrationGate = new command.local.Command(
       migration.taskDefinition.arn,
       runtimeVersion.versionId,
       migrationVersion.versionId,
+      clickhouse.bootstrapVersionId,
     ],
   },
-  { dependsOn: [db, migration] },
+  { dependsOn: [db, migration, clickhouse.attachment] },
 );
 
 let certificateArn: pulumi.Input<string>;
@@ -384,7 +457,14 @@ const service = new awsx.ecs.FargateService(
     },
     tags,
   },
-  { dependsOn: [migrationGate, runtimeVersion, ...apiExecution.dependencies] },
+  {
+    dependsOn: [
+      migrationGate,
+      runtimeVersion,
+      ...apiExecution.dependencies,
+      ...mailPermissions,
+    ],
+  },
 );
 if (settings.hostedZoneId !== undefined) {
   new aws.route53.Record(name, {
@@ -542,6 +622,7 @@ new aws.iam.RolePolicy(`${name}-github`, {
   }),
 });
 export const url = `https://${settings.hostname}`;
+export const loadBalancerDnsName = alb.loadBalancer.dnsName;
 export const repositoryUrl = repository.url;
 export const clusterArn = cluster.arn;
 export const serviceName = service.service.name;
@@ -573,3 +654,6 @@ if (!production) {
     policyArn: aws.iam.ManagedPolicy.ReadOnlyAccess,
   });
 }
+
+export const clickhouseInstanceId = clickhouse.instanceId;
+export const clickhouseVolumeId = clickhouse.volumeId;

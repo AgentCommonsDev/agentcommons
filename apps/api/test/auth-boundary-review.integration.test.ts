@@ -1,30 +1,29 @@
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import {
-  startDatabase,
-  provisionOrganization,
-  testAuthConfiguration,
-} from "./support.js";
+import { provisionOrganization, testAuthConfiguration } from "./support.js";
 import { createRuntime } from "../src/main.js";
 import { createApp } from "../src/app.js";
 import { environment } from "../src/env.js";
 import type { FastifyInstance } from "fastify";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let runtime: Awaited<ReturnType<typeof createRuntime>>;
 let app: FastifyInstance;
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
 const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   release.unshift(() => database.close());
   owner = await provisionOrganization(database, "boundary-review");
   const env = environment({
     PUBLIC_URL: testAuthConfiguration.publicUrl,
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     DATABASE_URL: database.urls.app,
-    DATABASE_READER_USER_URL: database.urls.user,
-    DATABASE_READER_ADMIN_URL: database.urls.admin,
+    ...traceEnvironment(database.traceConfig),
     LOG_LEVEL: "silent",
   });
   runtime = await createRuntime(env);

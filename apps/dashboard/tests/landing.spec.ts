@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect } from "@playwright/test";
+import { test } from "./browser-test";
 import AxeBuilder from "@axe-core/playwright";
 import { copy } from "../src/copy";
 
@@ -159,6 +160,7 @@ test("native hydration preserves the prerendered content and layout", async ({
     };
   });
   release();
+  await page.waitForLoadState("load");
   await page.getByRole("tab", { name: /get/ }).click();
   await expect(page.getByRole("tab", { name: /get/ })).toHaveAttribute(
     "aria-selected",
@@ -177,4 +179,117 @@ test("native hydration preserves the prerendered content and layout", async ({
     }),
   ).toEqual(before);
   await expect(page.locator("header")).toHaveCount(1);
+});
+
+// @req R-SAAS-07
+test("customer public pages hide hosted signup, pricing and email requests", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator("#pricing")).toHaveCount(0);
+  await expect(page.locator('a[href="/signup"]')).toHaveCount(0);
+  for (const path of [
+    "/signup",
+    "/forgot-password",
+    "/verify-email",
+    "/onboarding",
+  ]) {
+    await page.goto(path);
+    await expect(
+      page.getByText(copy.saas.unavailable, { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator("form")).toHaveCount(0);
+  }
+});
+
+// @req R-WEB-08 @req R-WEB-02
+for (const theme of ["dark", "light"] as const)
+  test(`Markdown blog navigation and article controls work in ${theme}`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    const { default: posts } = await import("../src/lib/blog.generated.json", {
+      with: { type: "json" },
+    });
+    const post = posts[0];
+    if (!post) throw new Error("Missing public article");
+    await page.addInitScript((value) => {
+      localStorage.setItem("agentcommons-theme", value);
+    }, theme);
+    const input = testInfo.project.use.hasTouch ? "tap" : "click";
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto("/blog");
+    await expect(
+      page.getByRole("heading", { name: copy.blog.title, exact: true }),
+    ).toBeVisible();
+    await expect(page).toHaveScreenshot(`blog-${theme}.png`, {
+      fullPage: true,
+    });
+    await page.getByRole("link", { name: post.title, exact: true })[input]();
+    await expect(page).toHaveURL(new RegExp(`/blog/${post.slug}$`));
+    await expect(
+      page.getByRole("heading", { name: post.title, exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
+      "href",
+      `__PUBLIC_URL__/blog/${post.slug}`,
+    );
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(testInfo.project.use.viewport?.width ?? 1440);
+    expect(
+      (await new AxeBuilder({ page }).analyze()).violations.filter((item) =>
+        ["serious", "critical"].includes(item.impact ?? ""),
+      ),
+    ).toEqual([]);
+    await expect(page).toHaveScreenshot(`blog-article-${theme}.png`, {
+      fullPage: true,
+    });
+    await page
+      .getByRole("link", { name: copy.blog.back, exact: true })
+      [input]();
+    await expect(page).toHaveURL(/\/blog$/);
+    const sitemap = await context.request.get("/sitemap.xml");
+    const llms = await context.request.get("/llms.txt");
+    const full = await context.request.get("/llms-full.txt");
+    for (const item of posts) {
+      expect(await sitemap.text()).toContain(`/blog/${item.slug}`);
+      expect(await llms.text()).toContain(item.title);
+      expect(await full.text()).toContain(item.body);
+    }
+    expect(errors).toEqual([]);
+  });
+
+// @req R-WEB-08
+test("Markdown blog article is complete without JavaScript", async ({
+  browser,
+}, testInfo) => {
+  const context = await browser.newContext({
+    javaScriptEnabled: false,
+    viewport: testInfo.project.use.viewport ?? { width: 1440, height: 1000 },
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto(
+      `${testInfo.project.use.baseURL ?? "http://127.0.0.1:4173"}/blog/shared-coding-history`,
+    );
+    await expect(
+      page.getByRole("heading", {
+        name: "Give the next agent the work you already did",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", {
+        name: "Keep durable instructions in version control",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Read the setup guide", exact: true }),
+    ).toHaveAttribute("href", "/docs");
+  } finally {
+    await context.close();
+  }
 });

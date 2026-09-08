@@ -21,7 +21,10 @@ export function loggerOptions(
     serializers: {
       req: (request: { method: string; url: string; ip: string }) => ({
         method: request.method,
-        url: request.url.split("?")[0] ?? "/",
+        url: (request.url.split("?")[0] ?? "/").replace(
+          /^\/auth\/reset-password\/[^/]+$/,
+          "/auth/reset-password/:token",
+        ),
         remoteAddress: request.ip,
       }),
       res: (response: { statusCode: number }) => ({

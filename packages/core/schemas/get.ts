@@ -90,6 +90,8 @@ export const sessionHeaderSchema = z.strictObject({
   observed_commit_count: nonnegativeIntegerSchema,
   reuse_count: nonnegativeIntegerSchema,
   agent_type: nullableTextSchema,
+  parent_session_id: sessionIdSchema.nullable(),
+  parent_relation: parentRelationSchema.nullable(),
   parent: sessionRefSchema.nullable(),
   children: z.array(sessionRefSchema),
   child_count: nonnegativeIntegerSchema,

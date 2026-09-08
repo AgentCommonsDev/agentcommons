@@ -29,6 +29,8 @@ interface Definition {
   input: z.ZodType;
   output: z.ZodType;
   destructive?: boolean;
+  readOnly?: boolean;
+  instruction?: string;
   execute(
     context: ServiceContext,
     input: unknown,
@@ -42,9 +44,49 @@ export class McpService {
   constructor(private readonly services: Services) {
     this.definitions = [
       {
+        name: "dashboard_list",
+        instruction:
+          "Use this when the user asks to view or manage their dashboard profiles.",
+        readOnly: true,
+        description:
+          "List your personal dashboard profiles in the current organization and the versioned declaration schema.",
+        permission: "read",
+        input: z.strictObject({}),
+        output: schema.dashboardListOutputSchema,
+        execute: (ctx) => services.dashboards.list(ctx),
+        format: json,
+      },
+      {
+        name: "dashboard_save",
+        instruction:
+          "Use this when the user asks to view or manage their dashboard profiles.",
+        readOnly: false,
+        description:
+          "Create or update your personal dashboard with number, line, bar or table widgets over guarded SELECT queries. Use id and revision to update an existing profile.",
+        permission: "read",
+        input: schema.dashboardSaveInputSchema,
+        output: schema.dashboardProfileSchema,
+        execute: (ctx, input) => services.dashboards.save(ctx, input),
+        format: json,
+      },
+      {
+        name: "dashboard_delete",
+        instruction:
+          "Use this when the user asks to view or manage their dashboard profiles.",
+        readOnly: false,
+        description:
+          "Delete one of your personal dashboards in the current organization.",
+        permission: "read",
+        input: schema.dashboardIdInputSchema,
+        output: schema.dashboardDeleteOutputSchema,
+        destructive: true,
+        execute: (ctx, input) => services.dashboards.delete(ctx, input),
+        format: json,
+      },
+      {
         name: "search",
         description:
-          "Search previous coding-agent messages using PostgreSQL websearch syntax and structured filters. Results contain message windows grouped by session; use session_id and seq with get or sql.",
+          "Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results contain message windows grouped by session; use session_id and seq with get or sql.",
         permission: "read",
         input: schema.searchInputSchema,
         output: schema.searchOutputSchema,
@@ -64,7 +106,7 @@ export class McpService {
       {
         name: "sql",
         description:
-          "Run one read-only PostgreSQL SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q) returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions'. Limits: 500 rows, 5 seconds.",
+          "Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions'. Limits: 500 rows, 5 seconds.",
         permission: "read",
         input: schema.sqlInputSchema,
         output: schema.sqlOutputSchema,
@@ -148,13 +190,14 @@ export class McpService {
           .map((definition) =>
             ToolSchema.parse({
               name: definition.name,
-              description: `${governingSentence} ${definition.description}`,
+              description: `${definition.instruction ?? governingSentence} ${definition.description}`,
               inputSchema: z.toJSONSchema(definition.input, { io: "input" }),
               outputSchema: z.toJSONSchema(definition.output, { io: "output" }),
               annotations: {
                 readOnlyHint:
-                  definition.permission === "read" ||
-                  ["audit", "status"].includes(definition.name),
+                  definition.readOnly ??
+                  (definition.permission === "read" ||
+                    ["audit", "status"].includes(definition.name)),
                 destructiveHint: definition.destructive ?? false,
                 openWorldHint: false,
               },

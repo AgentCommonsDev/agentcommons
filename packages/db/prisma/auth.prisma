@@ -25,6 +25,12 @@ model User {
   members     Member[]
   invitations Invitation[]
 
+  ssoproviders SsoProvider[]
+
+  stripeCustomerId         String?
+  onboardingOrganizationId String?
+  welcomeQueuedAt          DateTime?
+
   @@unique([email])
   @@map("user")
 }
@@ -120,6 +126,8 @@ model Organization {
   members     Member[]
   invitations Invitation[]
 
+  stripeCustomerId String?
+
   @@unique([slug])
   @@map("organization")
 }
@@ -133,6 +141,8 @@ model Member {
   role           String       @default("member")
   createdAt      DateTime
   suspended      Boolean?     @default(false)
+
+  removedAt DateTime?
 
   @@index([organizationId])
   @@index([userId])
@@ -154,4 +164,42 @@ model Invitation {
   @@index([organizationId])
   @@index([email])
   @@map("invitation")
+}
+
+model SsoProvider {
+  id             String   @id
+  issuer         String
+  oidcConfig     String?
+  samlConfig     String?
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  providerId     String
+  organizationId String?
+  domain         String
+  domainVerified Boolean?
+
+  @@unique([providerId])
+  @@map("ssoProvider")
+}
+
+model Subscription {
+  id                   String    @id
+  plan                 String
+  referenceId          String
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  status               String    @default("incomplete")
+  periodStart          DateTime?
+  periodEnd            DateTime?
+  trialStart           DateTime?
+  trialEnd             DateTime?
+  cancelAtPeriodEnd    Boolean?  @default(false)
+  cancelAt             DateTime?
+  canceledAt           DateTime?
+  endedAt              DateTime?
+  seats                Int?
+  billingInterval      String?
+  stripeScheduleId     String?
+
+  @@map("subscription")
 }

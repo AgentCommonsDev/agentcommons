@@ -1,9 +1,12 @@
+import { createPolicyCache } from "./policy-cache.js";
 import { Prisma, type PrismaClient, type AuditEvent } from "@agentcommons/db";
 import {
   Redactor,
   omission,
   sanitizeRecord,
   protocolObject,
+  protocolArray,
+  protocolLiterals,
   type PolicyCache,
 } from "@agentcommons/core/redaction";
 import { v7 as uuidv7 } from "uuid";
@@ -15,10 +18,31 @@ import { wireValue } from "./read-budget.js";
 import {
   searchInputSchema,
   searchFilterKeys,
+  searchConditionSchema,
+  searchConditionFields,
 } from "@agentcommons/core/schemas";
+const conditionStructure = protocolObject(
+  [
+    ...new Set(
+      searchConditionSchema.options.flatMap((option) =>
+        Object.keys(option.shape),
+      ),
+    ),
+  ],
+  {
+    field: protocolLiterals(...Object.keys(searchConditionFields)),
+    op: protocolLiterals(
+      ...searchConditionSchema.options.flatMap((option) => [
+        ...option.shape.op.values,
+      ]),
+    ),
+  },
+);
 const searchAuditStructure = protocolObject(["input", "result"], {
   input: protocolObject(Object.keys(searchInputSchema.shape), {
-    filters: protocolObject(searchFilterKeys),
+    filters: protocolObject(searchFilterKeys, {
+      where: protocolArray(conditionStructure),
+    }),
   }),
   result: protocolObject(["hits", "truncated_response"]),
 });
@@ -44,11 +68,26 @@ export class AuditService {
     private readonly policies?: PolicyCache,
   ) {}
 
-  async redactText(context: ServiceContext, value: string): Promise<string> {
-    const redactor =
-      context.caller && this.policies
-        ? await this.policies.get(context.caller.organizationId)
-        : this.fallback;
+  private redactor(
+    organizationId: string | null,
+    tx: Prisma.TransactionClient,
+  ) {
+    if (!organizationId || !this.policies)
+      return Promise.resolve(this.fallback);
+    return (tx === this.prisma ? this.policies : createPolicyCache(tx)).get(
+      organizationId,
+    );
+  }
+
+  async redactText(
+    context: ServiceContext,
+    value: string,
+    tx: Prisma.TransactionClient = this.prisma,
+  ): Promise<string> {
+    const redactor = await this.redactor(
+      context.caller?.organizationId ?? null,
+      tx,
+    );
     return (await redactor.text(value)).value;
   }
 
@@ -57,10 +96,9 @@ export class AuditService {
     operation: AuditDescription,
     tx: Prisma.TransactionClient = this.prisma,
   ): Promise<AuditEvent> {
-    const redactor =
-      context.caller && this.policies
-        ? await this.policies.get(context.caller.organizationId)
-        : this.fallback;
+    const organizationId =
+      context.caller?.organizationId ?? operation.actor?.organizationId ?? null;
+    const redactor = await this.redactor(organizationId, tx);
     const source = wireValue(operation.detail ?? {});
     // Numeric service metadata is structural, like resourceIds, not persisted free text.
     const readResult =
@@ -119,32 +157,37 @@ export class AuditService {
       context.userAgent === null
         ? null
         : (await redactor.text(context.userAgent)).value;
-    const organizationId =
-      context.caller?.organizationId ?? operation.actor?.organizationId ?? null;
     const apiKeyId =
       context.caller?.apiKeyId ?? operation.actor?.apiKeyId ?? null;
     const installation = await keyInstallation(tx, organizationId, apiKeyId);
-    return tx.auditEvent.create({
-      data: {
-        id: uuidv7(),
-        organizationId,
-        requestId: context.requestId,
-        userId: context.caller?.userId ?? operation.actor?.userId ?? null,
-        apiKeyId,
-        installationId: installation?.id ?? null,
-        authMethod:
-          context.caller?.authMethod ?? operation.actor?.authMethod ?? "none",
-        ip: context.ip ?? "unknown",
-        userAgent,
-        transport: context.transport,
-        action: operation.action,
-        resourceType: operation.resourceType ?? null,
-        resourceIds: [...(operation.resourceIds ?? [])],
-        statusCode: operation.statusCode ?? 200,
-        durationMs: Math.max(0, Math.round(Date.now() - context.startedAt)),
-        detail: detail === null ? Prisma.JsonNull : detail,
-      },
-    });
+    const data = {
+      id: uuidv7(),
+      organizationId,
+      requestId: context.requestId,
+      userId: context.caller?.userId ?? operation.actor?.userId ?? null,
+      apiKeyId,
+      installationId: installation?.id ?? null,
+      authMethod:
+        context.caller?.authMethod ?? operation.actor?.authMethod ?? "none",
+      ip: context.ip ?? "unknown",
+      userAgent,
+      transport: context.transport,
+      action: operation.action,
+      resourceType: operation.resourceType ?? null,
+      resourceIds: [...(operation.resourceIds ?? [])],
+      statusCode: operation.statusCode ?? 200,
+      durationMs: Math.max(0, Math.round(Date.now() - context.startedAt)),
+      detail: detail === null ? Prisma.JsonNull : detail,
+    };
+    const persist = async (transaction: Prisma.TransactionClient) => {
+      const row = await transaction.auditEvent.create({ data });
+      if (organizationId)
+        await transaction.traceAuditOutbox.create({
+          data: { auditId: row.id },
+        });
+      return row;
+    };
+    return tx === this.prisma ? this.prisma.$transaction(persist) : persist(tx);
   }
 }
 

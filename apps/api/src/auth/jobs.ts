@@ -11,6 +11,7 @@ export async function reauthorizeJob(
   prisma: PrismaClient | Prisma.TransactionClient,
   context: ServiceContext,
   allowedDomains: readonly string[] = [],
+  requireVerifiedEmail = false,
 ): Promise<ServiceContext> {
   const previous = context.caller;
   if (!previous)
@@ -21,11 +22,16 @@ export async function reauthorizeJob(
     );
   const user = await prisma.user.findUnique({ where: { id: previous.userId } });
   const member = await prisma.member.findFirst({
-    where: { userId: previous.userId, organizationId: previous.organizationId },
+    where: {
+      userId: previous.userId,
+      organizationId: previous.organizationId,
+      removedAt: null,
+    },
   });
   if (
     !user ||
     user.banned ||
+    (requireVerifiedEmail && !user.emailVerified) ||
     !member ||
     member.suspended ||
     !emailDomainAllowed(user.email, allowedDomains)

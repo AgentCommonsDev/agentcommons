@@ -169,3 +169,48 @@ describe("redaction before persistence", () => {
     });
   });
 });
+
+// @req R-RED-01 @req R-RED-02
+it("applies anchored regexes to object values without losing assignment context or counting overlaps twice", async () => {
+  const redactor = new Redactor([
+    { ...custom, pattern: "^needle🙂$", flags: "gu" },
+  ]);
+  const standalone = await redactor.text("needle🙂");
+  const nested = await redactor.json({
+    x: "needle🙂",
+    items: ["needle🙂"],
+    nested: { value: "needle🙂" },
+    near: "prefixneedle🙂",
+  });
+  expect(standalone.value).toBe("[REDACTED:internal]");
+  expect(nested.value).toEqual({
+    x: standalone.value,
+    items: [standalone.value],
+    nested: { value: standalone.value },
+    near: "prefixneedle🙂",
+  });
+  expect(nested.counts).toEqual([
+    { policyId: custom.id, name: custom.name, count: 3 },
+  ]);
+  expect(await redactor.json(nested.value)).toEqual({
+    value: nested.value,
+    counts: [],
+  });
+  const overlapping = await new Redactor([
+    { ...custom, pattern: "needle🙂", flags: "gu" },
+  ]).json({ x: "needle🙂" });
+  expect(overlapping.counts).toEqual([
+    { policyId: custom.id, name: custom.name, count: 1 },
+  ]);
+  const assignment = await redactor.json({
+    token: "a".repeat(30),
+    x: "unrelated",
+  });
+  expect(assignment.value).toEqual({
+    token: "[REDACTED:token]",
+    x: "unrelated",
+  });
+  expect(
+    assignment.counts.reduce((total, count) => total + count.count, 0),
+  ).toBe(1);
+});

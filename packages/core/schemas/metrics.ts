@@ -5,6 +5,14 @@ import {
   utcDateTimeSchema,
 } from "./common.js";
 
+export const searchAdoptionMetricNames = [
+  "agentcommons_search_sessions",
+  "agentcommons_search_rate",
+  "agentcommons_search_calls",
+  "repeat_agentcommons_search_calls",
+  "subsequent_other_search_calls",
+] as const;
+
 export const metricGroups = {
   reuse: ["reuse_rate", "cross_user_reuse_rate"],
   health: [
@@ -16,6 +24,7 @@ export const metricGroups = {
     "redaction_hits",
   ],
   usage: [
+    ...searchAdoptionMetricNames,
     "mcp_calls",
     "memory_assisted_rate",
     "follow_through_rate",

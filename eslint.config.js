@@ -19,6 +19,7 @@ export default tseslint.config(
       "fixtures/**",
       "apps/dashboard/src/lib/api/generated.ts",
       "apps/api/public/hook/**",
+      "apps/api/public/reference-config.js",
       "packages/db/generated/**",
     ],
   },

@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   healthOutputSchema,
   authConfigOutputSchema,
+  billingConfigSchema,
 } from "@agentcommons/core/schemas";
 import { requestContext } from "./context.js";
 import type { Services } from "./services.js";
@@ -45,6 +46,19 @@ export function registerPublicApiRoutes(
         return reply.code(result.status === "ok" ? 200 : 503).send(result);
       },
     );
+  app.get(
+    "/api/v1/billing/config",
+    {
+      schema: {
+        summary: "Read public plans and billing availability",
+        params: empty,
+        querystring: empty,
+        response: { 200: billingConfigSchema },
+      },
+    },
+    async (request) =>
+      (await runtime().billing.configuration(requestContext(request))).result,
+  );
   app.get(
     "/auth/config",
     {

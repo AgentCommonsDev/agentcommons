@@ -3,7 +3,13 @@ import { visualDefaults } from "./playwright.shared";
 export default defineConfig({
   ...visualDefaults,
   testDir: "./tests",
-  testMatch: "workspace.spec.ts",
+  testMatch: [
+    "workspace.spec.ts",
+    "usability.spec.ts",
+    "profiles.spec.ts",
+    "session-navigation.spec.ts",
+    "embeddings-settings.spec.ts",
+  ],
   outputDir: "./test-results/workspace",
   fullyParallel: false,
   workers: 1,
@@ -34,6 +40,7 @@ export default defineConfig({
   ],
   webServer: {
     command: "node --import tsx scripts/browser-server.mjs",
+    gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
     url: "http://localhost:3000/ready",
     reuseExistingServer:
       process.env.REUSE_BROWSER_SERVER === "1" && !process.env.CI,

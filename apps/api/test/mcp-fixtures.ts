@@ -57,7 +57,7 @@ function normalizeMcpFixture(value: unknown): z.infer<typeof mcpFixtureSchema> {
 export async function renderAppendix(
   fixture: z.infer<typeof mcpFixtureSchema>,
 ): Promise<string> {
-  const markdown = `${appendixMarker}\n\nGenerated from the real PostgreSQL and official MCP SDK contract fixture at\n\`fixtures/contracts/mcp.json\`. Regenerate with\n\`UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts\`.\nIdentifiers, receipt timestamps, and SQL timings are normalized for reproducibility.\n\nRead keys list \`search\`, \`get\`, and \`sql\`; effective admin keys also list\n\`set_visibility\`, \`purge\`, \`audit\`, and \`status\`.\n\n\`tools/list\` input contracts (output schemas are present in the fixture):\n\n\`\`\`json\n${JSON.stringify(
+  const markdown = `${appendixMarker}\n\nGenerated from the real PostgreSQL and ClickHouse and official MCP SDK contract fixture at\n\`fixtures/contracts/mcp.json\`. Regenerate with\n\`UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts\`.\nIdentifiers, receipt timestamps, and SQL timings are normalized for reproducibility.\n\nRead keys list \`search\`, \`get\`, \`sql\`, \`dashboard_list\`, \`dashboard_save\`, and\n\`dashboard_delete\`; effective admin keys also list\n\`set_visibility\`, \`purge\`, \`audit\`, and \`status\`.\n\n\`tools/list\` input contracts (output schemas are present in the fixture):\n\n\`\`\`json\n${JSON.stringify(
     fixture.tools.map(({ name, description, inputSchema, annotations }) => ({
       name,
       description,

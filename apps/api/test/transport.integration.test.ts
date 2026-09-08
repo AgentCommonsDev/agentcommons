@@ -1,3 +1,10 @@
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
+import { traceServices } from "./trace-services.js";
+import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
+import { OrganizationEmbeddingsService } from "../src/services/organization-embeddings.js";
 import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -8,6 +15,8 @@ import type { FastifyInstance } from "fastify";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import {
+  dashboardSaveInputSchema,
+  dashboardIdInputSchema,
   searchInputSchema,
   getInputSchema,
   sqlInputSchema,
@@ -21,23 +30,19 @@ import { MembershipService } from "../src/services/membership.js";
 import { SearchService } from "../src/services/search.js";
 import { SessionService } from "../src/services/session.js";
 import { HomeService } from "../src/services/home.js";
+import { BillingService } from "../src/services/billing.js";
 import { QueryService } from "../src/services/query.js";
-import { IngestService } from "../src/services/ingest.js";
 import { PolicyService } from "../src/services/policies.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { AdminService } from "../src/services/admin.js";
-import { JobService } from "../src/services/jobs.js";
 import { SessionEventsService } from "../src/services/session-events.js";
 import { HealthService } from "../src/services/health.js";
 import type { Services } from "../src/routes/services.js";
 import { checkMcpFixture } from "./mcp-fixtures.js";
-import {
-  startDatabase,
-  provisionOrganization,
-  testAuthConfiguration,
-} from "./support.js";
+import { provisionOrganization, testAuthConfiguration } from "./support.js";
 
-let database: Awaited<ReturnType<typeof startDatabase>>;
+let native: ReturnType<typeof traceServices>;
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let app: FastifyInstance;
@@ -94,29 +99,40 @@ function upload(text: string) {
   };
 }
 beforeAll(async () => {
-  database = await startDatabase();
+  database = await startTraceDatabase();
   close.push(() => database.close());
   organization = await provisionOrganization(database, "transport-primary");
   other = await provisionOrganization(database, "transport-other");
   const cursors = new CursorCodec(testAuthConfiguration.secret);
   const deps = {
     prisma: database.prisma,
-    readers: database.readers,
+    readers: database.traceReaders,
     audit: database.audit,
     cursors,
   };
-  const jobs = new JobService({
-    prisma: database.prisma,
-    audit: database.audit,
-    policies: database.policies,
-    connectionString: database.urls.app,
-    allowedEmailDomains: [],
-    auditRetentionDays: 365,
-    onError: (error) => {
-      throw error;
-    },
-  });
+  native = traceServices(database);
+  const jobs = native.jobs;
+  close.push(() => jobs.stop());
   const services: Services = {
+    dashboards: new DashboardService({ ...deps, embeddings: false }),
+    organizationEmbeddings: new OrganizationEmbeddingsService({
+      ...deps,
+      jobs,
+    }),
+    billing: new BillingService({
+      ...deps,
+      auth: testAuthConfiguration,
+      configuration: {
+        mode: "customer",
+        freeMonthlyRecords: 1000,
+        proIncludedRecords: 10000,
+        captureCentsPer1000: null,
+        embeddingCentsPer1000: null,
+        captureEventName: null,
+        embeddingEventName: null,
+        calComUrl: null,
+      },
+    }),
     home: new HomeService(deps),
     auth: database.auth,
     members: new MembershipService(
@@ -127,15 +143,11 @@ beforeAll(async () => {
     search: new SearchService(deps),
     sessions: new SessionService(deps),
     query: new QueryService(deps),
-    ingest: new IngestService({
-      prisma: database.prisma,
-      audit: database.audit,
-      policies: database.policies,
-    }),
+    ingest: native.ingest,
     policies: new PolicyService({ ...deps, cache: database.policies }),
-    health: new HealthService(database.prisma),
+    health: new HealthService(database.prisma, database.traces),
     audit: database.audit,
-    admin: new AdminService({ ...deps, policies: database.policies, jobs }),
+    admin: new AdminService({ ...deps, jobs }),
     jobs,
     events: new SessionEventsService({
       ...deps,
@@ -146,8 +158,7 @@ beforeAll(async () => {
   const env = environment({
     PUBLIC_URL: testAuthConfiguration.publicUrl,
     DATABASE_URL: database.urls.app,
-    DATABASE_READER_USER_URL: database.urls.user,
-    DATABASE_READER_ADMIN_URL: database.urls.admin,
+    ...traceEnvironment(database.traceConfig),
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     LOG_LEVEL: "info",
     TRUST_PROXY: "loopback",
@@ -184,6 +195,10 @@ beforeAll(async () => {
   });
   expect(accepted.statusCode, accepted.body).toBe(202);
   publicId = z.object({ sessionId: z.uuid() }).parse(accepted.json()).sessionId;
+  await native.projection.process(
+    z.string().parse(organization.context.caller?.organizationId),
+    publicId,
+  );
   const foreign = await app.inject({
     method: "POST",
     url: "/api/v1/ingest",
@@ -191,6 +206,10 @@ beforeAll(async () => {
     payload: upload("Foreign tenant secret"),
   });
   expect(foreign.statusCode, foreign.body).toBe(202);
+  await native.projection.process(
+    z.string().parse(other.context.caller?.organizationId),
+    z.object({ sessionId: z.uuid() }).parse(foreign.json()).sessionId,
+  );
 }, 120_000);
 afterAll(async () => {
   expect(await cleanupAll(close.splice(0).reverse())).toEqual([]);
@@ -367,9 +386,9 @@ it("audits authentication failures with trusted proxy identity and excludes heal
   expect((await app.inject({ url: "/ready" })).statusCode).toBe(200);
   expect((await app.inject({ url: "/api/v1/health" })).statusCode).toBe(200);
   expect((await app.inject({ url: "/api/v1/ready" })).statusCode).toBe(200);
-  expect(
-    (await app.inject({ url: "/api/docs/static/swagger-ui.css" })).statusCode,
-  ).toBe(200);
+  expect((await app.inject({ url: "/api/docs/js/scalar.js" })).statusCode).toBe(
+    200,
+  );
   expect(await database.prisma.auditEvent.count()).toBe(before);
   const response = await app.inject({
     url: "/api/v1/me",
@@ -431,8 +450,15 @@ it("streams initial and changed session snapshots, audits once, and closes after
   expect(initial).toContain("event: session");
   expect(initial).toContain(publicId);
   expect(initial).toContain('"message_count":1');
-  await database.prisma.agentSession.update({
-    where: { id: publicId },
+  await database.prisma.traceSessionControl.update({
+    where: {
+      organizationId_id: {
+        organizationId: z
+          .string()
+          .parse(organization.context.caller?.organizationId),
+        id: publicId,
+      },
+    },
     data: { status: "ENDED" },
   });
   const changed = new TextDecoder().decode(
@@ -559,8 +585,15 @@ it("enforces private visibility through REST, SQL, MCP and the uploader's read-o
 // @req R-MCP-05
 it("uses the official stateless MCP client with permission-filtered tools, structured results and immediate demotion", async () => {
   // This contract also runs alone; the SSE test changes this shared session status.
-  await database.prisma.agentSession.update({
-    where: { id: publicId },
+  await database.prisma.traceSessionControl.update({
+    where: {
+      organizationId_id: {
+        organizationId: z
+          .string()
+          .parse(organization.context.caller?.organizationId),
+        id: publicId,
+      },
+    },
     data: { status: "ACTIVE" },
   });
   const client = new Client({ name: "transport-test", version: "1" });
@@ -572,20 +605,30 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   close.push(() => client.close());
   const tools = await client.listTools();
   expect(tools.tools.map((tool) => tool.name)).toEqual([
+    "dashboard_list",
+    "dashboard_save",
+    "dashboard_delete",
     "search",
     "get",
     "sql",
   ]);
   expect(
-    tools.tools.every((tool) =>
-      tool.description?.startsWith("Only use this when the user asks"),
-    ),
+    tools.tools
+      .filter((tool) => ["search", "get", "sql"].includes(tool.name))
+      .every((tool) =>
+        tool.description?.startsWith("Only use this when the user asks"),
+      ),
   ).toBe(true);
   expect(transport.sessionId).toBeUndefined();
   expect(tools.tools.map((tool) => tool.inputSchema)).toEqual(
-    [searchInputSchema, getInputSchema, sqlInputSchema].map((input) =>
-      z.toJSONSchema(input, { io: "input" }),
-    ),
+    [
+      z.strictObject({}),
+      dashboardSaveInputSchema,
+      dashboardIdInputSchema,
+      searchInputSchema,
+      getInputSchema,
+      sqlInputSchema,
+    ].map((input) => z.toJSONSchema(input, { io: "input" })),
   );
   const result = await client.callTool({
     name: "search",
@@ -615,6 +658,9 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   close.push(() => adminClient.close());
   const adminTools = await adminClient.listTools();
   expect(adminTools.tools.map((tool) => tool.name)).toEqual([
+    "dashboard_list",
+    "dashboard_save",
+    "dashboard_delete",
     "search",
     "get",
     "sql",
@@ -653,7 +699,14 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   expect(cachedCall.isError).toBe(true);
   expect(
     (await adminClient.listTools()).tools.map((tool) => tool.name),
-  ).toEqual(["search", "get", "sql"]);
+  ).toEqual([
+    "dashboard_list",
+    "dashboard_save",
+    "dashboard_delete",
+    "search",
+    "get",
+    "sql",
+  ]);
   for (const method of ["GET", "DELETE"] as const)
     expect((await app.inject({ method, url: "/mcp" })).statusCode).toBe(405);
   expect(
@@ -691,6 +744,195 @@ it("omits request bodies, credentials and source record lines from captured API 
     ).not.toHaveProperty("body");
 });
 
+// @req R-SRCH-13
+it("applies the same typed live tool conditions through REST, MCP and session CSV", async () => {
+  const envelope = upload("Structured transport condition");
+  envelope.records = [
+    {
+      pos: 0,
+      sourceVersion: 0,
+      key: "condition-call",
+      line: JSON.stringify({
+        type: "assistant",
+        uuid: "condition-call",
+        timestamp: "2026-09-07T01:00:00Z",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "new-vendor-call",
+              name: "mcp__NewVendor__Search",
+              input: {
+                padding: "x".repeat(2048),
+                options: {
+                  limit: 2,
+                  active: true,
+                  missingValue: null,
+                  "dot.key": ["Auth%_literal"],
+                },
+              },
+            },
+          ],
+        },
+      }),
+    },
+  ];
+  const ingest = await app.inject({
+    method: "POST",
+    url: "/api/v1/ingest",
+    headers: headers(),
+    payload: envelope,
+  });
+  expect(ingest.statusCode, ingest.body).toBe(202);
+  const sessionId = z
+    .object({ sessionId: z.uuid() })
+    .parse(ingest.json()).sessionId;
+  await native.projection.process(
+    z.string().parse(organization.context.caller?.organizationId),
+    sessionId,
+  );
+  const filters = {
+    where: [
+      { field: "tool_name", op: "contains", value: "newvendor" },
+      { field: "tool_input", path: ["options", "limit"], op: "eq", value: 2 },
+      {
+        field: "tool_input",
+        path: ["options", "active"],
+        op: "eq",
+        value: true,
+      },
+      {
+        field: "tool_input",
+        path: ["options", "missingValue"],
+        op: "eq",
+        value: null,
+      },
+      {
+        field: "tool_input",
+        path: ["options", "dot.key", "0"],
+        op: "starts_with",
+        value: "auth%_",
+      },
+    ],
+  };
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/search",
+    headers: headers(readKey),
+    payload: { query: "", filters, context: 0 },
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  const result = searchOutputSchema.parse(response.json());
+  expect(result.blocks.map((block) => block.session_id)).toEqual([sessionId]);
+  const client = new Client({ name: "structured-search-test", version: "1" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
+      requestInit: { headers: headers(readKey) },
+    }) as Transport,
+  );
+  try {
+    const mcp = await client.callTool({
+      name: "search",
+      arguments: { query: "", filters, context: 0 },
+    });
+    expect(mcp.isError).not.toBe(true);
+    expect(mcp.structuredContent).toEqual(result);
+    const invalid = await client.callTool({
+      name: "search",
+      arguments: {
+        query: "",
+        filters: { where: [{ field: "organization_id", op: "exists" }] },
+      },
+    });
+    expect(invalid.isError).toBe(true);
+  } finally {
+    await client.close();
+  }
+  const encoded = encodeURIComponent(JSON.stringify(filters));
+  for (const format of ["json", "csv"]) {
+    const list = await app.inject({
+      method: "GET",
+      url: `/api/v1/sessions?filters=${encoded}&format=${format}`,
+      headers: headers(readKey),
+    });
+    expect(list.statusCode, list.body).toBe(200);
+    expect(list.body).toContain(sessionId);
+    expect(list.body).not.toContain(publicId);
+  }
+  const foreign = await app.inject({
+    method: "POST",
+    url: "/api/v1/search",
+    headers: headers(other.key),
+    payload: { query: "", filters },
+  });
+  expect(searchOutputSchema.parse(foreign.json()).blocks).toEqual([]);
+  for (const where of [
+    [{ field: "tool_input", op: "eq", value: 2 }],
+    [{ field: "tool_name", op: "regex", value: ".*" }],
+  ]) {
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/v1/search",
+      headers: headers(readKey),
+      payload: { query: "", filters: { where } },
+    });
+    expect(invalid.statusCode, invalid.body).toBe(400);
+  }
+});
+
+// @req R-GET-01 @req R-LNK-06 @req R-DASH-17 @req R-DASH-10
+it("serves concurrent dashboard detail requests over HTTP on a populated native corpus", async () => {
+  const source = await database.prisma.traceSessionControl.findFirstOrThrow({
+    where: { id: publicId },
+  });
+  const fixtures = new TraceFixtures(database);
+  try {
+    for (let index = 0; index < 55; index++)
+      await fixtures.session({
+        organizationId: source.organizationId,
+        userId: source.userId,
+        keyId: source.ingestApiKeyId,
+        installationId: source.installationId,
+        fields: { title: `Concurrent detail background ${String(index)}` },
+      });
+    const paths = [
+      "",
+      "/raw",
+      "/tree",
+      "/reuse?direction=by",
+      "/reuse?direction=from",
+    ];
+    for (const count of [5, 15]) {
+      const requestPaths = Array.from(
+        { length: count / paths.length },
+        () => paths,
+      ).flat();
+      const responses = await Promise.all(
+        requestPaths.map(async (path) => {
+          const response = await fetch(
+            `${address}/api/v1/sessions/${publicId}${path}`,
+            {
+              headers: { ...headers(), "x-forwarded-for": "2001:db8::cafe" },
+            },
+          );
+          return { path, status: response.status, body: await response.text() };
+        }),
+      );
+      expect(responses.map(({ path, status }) => ({ path, status }))).toEqual(
+        requestPaths.map((path) => ({ path, status: 200 })),
+      );
+      expect(responses[0]?.body).toContain(
+        "Investigate the transport session index",
+      );
+      expect(
+        responses.every(({ body }) => !body.includes("Foreign tenant secret")),
+      ).toBe(true);
+    }
+  } finally {
+    await fixtures.close();
+  }
+});
+
 it("closes active event streams during server shutdown", async () => {
   const response = await fetch(
     `${address}/api/v1/sessions/${publicId}/events`,
@@ -702,3 +944,4 @@ it("closes active event streams during server shutdown", async () => {
   await app.close();
   expect((await reader.read()).done).toBe(true);
 });
+import { DashboardService } from "../src/services/dashboards.js";

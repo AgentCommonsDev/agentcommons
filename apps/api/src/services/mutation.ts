@@ -14,7 +14,7 @@ import {
 export async function mutationOperation<T>(
   dependencies: { prisma: PrismaClient; audit: AuditService },
   context: ServiceContext,
-  permission: "ingest" | "admin",
+  permission: "read" | "ingest" | "admin",
   description: AuditDescription,
   execute: (
     tx: Prisma.TransactionClient,

@@ -2,15 +2,6 @@
 
 exports[`keeps Prisma-owned schema in sync with migrations 1`] = `
 "-- DropForeignKey
-ALTER TABLE "agent_session" DROP CONSTRAINT "agent_session_organization";
-
--- DropForeignKey
-ALTER TABLE "agent_session" DROP CONSTRAINT "session_ingest_owner";
-
--- DropForeignKey
-ALTER TABLE "agent_session" DROP CONSTRAINT "session_owner";
-
--- DropForeignKey
 ALTER TABLE "api_key_owner" DROP CONSTRAINT "api_key_owner_organization";
 
 -- DropForeignKey
@@ -20,31 +11,31 @@ ALTER TABLE "api_key_owner" DROP CONSTRAINT "key_owner";
 ALTER TABLE "audit_event" DROP CONSTRAINT "audit_event_organization";
 
 -- DropForeignKey
+ALTER TABLE "billing_meter_event" DROP CONSTRAINT "billing_meter_event_organization_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "dashboard_profile" DROP CONSTRAINT "dashboard_profile_organization_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "dashboard_profile" DROP CONSTRAINT "dashboard_profile_user_id_fkey";
+
+-- DropForeignKey
 ALTER TABLE "embedding_budget" DROP CONSTRAINT "embedding_budget_organization_id_fkey";
-
--- DropForeignKey
-ALTER TABLE "ingest_batch" DROP CONSTRAINT "batch_key_owner";
-
--- DropForeignKey
-ALTER TABLE "ingest_batch" DROP CONSTRAINT "batch_owner";
-
--- DropForeignKey
-ALTER TABLE "ingest_batch" DROP CONSTRAINT "ingest_batch_organization";
 
 -- DropForeignKey
 ALTER TABLE "installation" DROP CONSTRAINT "installation_organization";
 
 -- DropForeignKey
-ALTER TABLE "message" DROP CONSTRAINT "message_organization";
-
--- DropForeignKey
-ALTER TABLE "message_chunk" DROP CONSTRAINT "message_chunk_organization";
-
--- DropForeignKey
-ALTER TABLE "raw_record" DROP CONSTRAINT "raw_record_organization";
+ALTER TABLE "organization_settings" DROP CONSTRAINT "organization_settings_organization_id_fkey";
 
 -- DropForeignKey
 ALTER TABLE "redaction_event" DROP CONSTRAINT "redaction_event_organization";
+
+-- DropForeignKey
+ALTER TABLE "redaction_event" DROP CONSTRAINT "redaction_event_organization_id_session_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "redaction_event" DROP CONSTRAINT "redaction_event_organization_id_session_id_ingest_batch_id_fkey";
 
 -- DropForeignKey
 ALTER TABLE "redaction_policy" DROP CONSTRAINT "redaction_policy_organization";
@@ -53,22 +44,67 @@ ALTER TABLE "redaction_policy" DROP CONSTRAINT "redaction_policy_organization";
 ALTER TABLE "redaction_run" DROP CONSTRAINT "redaction_run_organization_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "session_embedding" DROP CONSTRAINT "session_embedding_organization";
+ALTER TABLE "trace_audit_outbox" DROP CONSTRAINT "trace_audit_outbox_audit_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "session_file" DROP CONSTRAINT "session_file_organization";
+ALTER TABLE "trace_outbox" DROP CONSTRAINT "trace_outbox_organization_id_session_id_fkey";
 
--- DropIndex
-DROP INDEX "session_title_trigram";
+-- DropForeignKey
+ALTER TABLE "trace_receipt" DROP CONSTRAINT "trace_receipt_api_key_id_fkey";
 
--- DropIndex
-DROP INDEX "message_chunk_cosine";
+-- DropForeignKey
+ALTER TABLE "trace_receipt" DROP CONSTRAINT "trace_receipt_key_owner";
 
--- DropIndex
-DROP INDEX "session_embedding_cosine";
+-- DropForeignKey
+ALTER TABLE "trace_receipt" DROP CONSTRAINT "trace_receipt_organization_id_installation_id_fkey";
 
--- DropIndex
-DROP INDEX "session_file_path_trigram";
+-- DropForeignKey
+ALTER TABLE "trace_receipt" DROP CONSTRAINT "trace_receipt_organization_id_session_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_receipt" DROP CONSTRAINT "trace_receipt_user_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_session_control" DROP CONSTRAINT "trace_session_control_ingest_api_key_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_session_control" DROP CONSTRAINT "trace_session_control_organization_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_session_control" DROP CONSTRAINT "trace_session_control_organization_id_installation_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_session_control" DROP CONSTRAINT "trace_session_control_organization_id_parent_session_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_session_control" DROP CONSTRAINT "trace_session_control_purged_by_user_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_session_control" DROP CONSTRAINT "trace_session_control_user_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_session_control" DROP CONSTRAINT "trace_session_ingest_owner";
+
+-- DropForeignKey
+ALTER TABLE "trace_source_admission" DROP CONSTRAINT "trace_source_admission_organization_id_session_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "trace_tool_call_control" DROP CONSTRAINT "trace_tool_call_control_organization_id_session_id_fkey";
+
+-- DropForeignKey
+ALTER TABLE "usage_admission" DROP CONSTRAINT "usage_admission_organization_id_fkey";
+
+-- AddForeignKey
+ALTER TABLE "redaction_event" ADD CONSTRAINT "redaction_event_organization_id_session_id_ingest_batch_id_fkey" FOREIGN KEY ("organization_id", "session_id", "ingest_batch_id") REFERENCES "trace_receipt"("organization_id", "session_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "redaction_event" ADD CONSTRAINT "redaction_event_organization_id_session_id_fkey" FOREIGN KEY ("organization_id", "session_id") REFERENCES "trace_session_control"("organization_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "trace_audit_outbox" ADD CONSTRAINT "trace_audit_outbox_audit_id_fkey" FOREIGN KEY ("audit_id") REFERENCES "audit_event"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- RenameIndex
+ALTER INDEX "trace_audit_outbox_created_at_idx" RENAME TO "trace_audit_outbox_created_at_audit_id_idx";
 
 "
 `;

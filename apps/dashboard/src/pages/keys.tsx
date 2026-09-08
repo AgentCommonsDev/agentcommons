@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import { formatInstallCommand } from "@agentcommons/core/format/install";
+import { createPersonalKey } from "../lib/api/keys";
 import { KeyRound, Plus } from "lucide-react";
 import type { KeyPermissions } from "@agentcommons/core/schemas/common";
 import { copy } from "../copy";
@@ -27,7 +29,6 @@ const endpoints = {
 type KeyFilters = NonNullable<
   NonNullable<paths["/api/v1/me/keys"]["get"]["parameters"]["query"]>["filters"]
 >;
-const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 export function KeysPage({ admin = false }: { admin?: boolean }) {
   const { organization, me } = useWorkspace();
   const client = useQueryClient();
@@ -80,17 +81,13 @@ export function KeysPage({ admin = false }: { admin?: boolean }) {
         sessions,
         ...(administrator ? { admin: ["*"] } : {}),
       };
-      const result = unwrap(
-        await api.POST("/api/v1/me/keys", {
-          body: {
-            name,
-            permissions: defined(permissions),
-            ...(days === ""
-              ? {}
-              : { expires_in: Math.floor(Number(days) * 86400) }),
-          },
-        }),
-      );
+      const result = await createPersonalKey({
+        name,
+        permissions: defined(permissions),
+        ...(days === ""
+          ? {}
+          : { expires_in: Math.floor(Number(days) * 86400) }),
+      });
       setSecret(result.key);
       return result.metadata;
     },
@@ -121,6 +118,16 @@ export function KeysPage({ admin = false }: { admin?: boolean }) {
       {
         accessorKey: "organization_id",
         header: copy.workspace.fields.organization_id,
+        enableSorting: false,
+      },
+      {
+        accessorKey: "user_email",
+        header: copy.workspace.fields.user_email,
+        enableSorting: false,
+      },
+      {
+        accessorKey: "user_name",
+        header: copy.workspace.fields.name,
         enableSorting: false,
       },
       { accessorKey: "user_id", header: copy.workspace.fields.user_id },
@@ -180,7 +187,7 @@ export function KeysPage({ admin = false }: { admin?: boolean }) {
     [],
   );
   const install = secret
-    ? `curl -fsSL ${quote(`${window.location.origin}/install.sh`)} | sh -s -- --key ${quote(secret)}`
+    ? formatInstallCommand(window.location.origin, secret)
     : "";
   return (
     <>
@@ -385,6 +392,11 @@ export function KeysPage({ admin = false }: { admin?: boolean }) {
       </form>
       {!query.error && (
         <DataTable
+          summaryColumnIds={
+            admin
+              ? ["name", "user_email", "permissions", "created_at"]
+              : ["name", "permissions", "created_at", "expires_at"]
+          }
           data={query.data?.items ?? []}
           columns={columns}
           sorting={pagination.sorting}

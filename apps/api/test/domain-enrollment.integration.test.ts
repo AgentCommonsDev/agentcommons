@@ -1,0 +1,1032 @@
+import {
+  startTraceDatabase,
+  traceEnvironment,
+} from "../../../packages/traces/test/support.js";
+import { createApp } from "../src/app.js";
+import { createRuntime } from "../src/main.js";
+import { environment } from "../src/env.js";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import * as dns from "node:dns/promises";
+import { createSocket } from "node:dgram";
+import { once } from "node:events";
+import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { syncBuiltinESMExports } from "node:module";
+import packet from "dns-packet";
+import { generateKeyPair, exportJWK, SignJWT } from "jose";
+import { z } from "zod";
+import { cleanup } from "../../../scripts/cleanup.js";
+import { provisionOrganization, testAuthConfiguration } from "./support.js";
+import { AuthService } from "../src/services/auth.js";
+import { MembershipService } from "../src/services/membership.js";
+import { enrollDomain } from "../src/auth/domain.js";
+import { bootstrap, operatorContext } from "../src/auth/bootstrap.js";
+import { reauthorizeJob } from "../src/auth/jobs.js";
+import { AuditService } from "../src/services/audit.js";
+import type { AuthConfiguration } from "../src/auth/config.js";
+import type { ServiceContext } from "../src/services/context.js";
+
+let database: Awaited<ReturnType<typeof startTraceDatabase>>;
+let owner: Awaited<ReturnType<typeof provisionOrganization>>;
+let foreign: Awaited<ReturnType<typeof provisionOrganization>>;
+let service: AuthService;
+let members: MembershipService;
+let signing: Awaited<ReturnType<typeof generateKeyPair>>;
+const configuration: AuthConfiguration = {
+  ...testAuthConfiguration,
+  signupMode: "open",
+  allowedEmailDomains: ["example.com"],
+  socialProviders: {
+    google: {
+      clientId: "google-test-client",
+      clientSecret: "google-test-secret",
+    },
+  },
+};
+const release: Array<() => Promise<unknown>> = [];
+const nativeFetch = globalThis.fetch;
+const tokens = new Map<string, string>();
+const txtRecords = new Map<string, string[]>();
+const dnsQueries: string[] = [];
+beforeAll(async () => {
+  database = await startTraceDatabase(configuration);
+  release.unshift(() => database.close());
+  owner = await provisionOrganization(database, "domain-primary");
+  foreign = await provisionOrganization(database, "domain-foreign");
+  service = database.auth;
+  members = new MembershipService(
+    database.prisma,
+    configuration,
+    database.audit,
+  );
+  signing = await generateKeyPair("RS256", { extractable: true });
+  const server = createSocket("udp4");
+  server.on("message", (bytes, remote) => {
+    const query = packet.decode(bytes);
+    const answers = (query.questions ?? []).flatMap((question) => {
+      dnsQueries.push(question.name);
+      const data = txtRecords.get(question.name);
+      return question.type === "TXT" && data
+        ? [{ type: "TXT" as const, name: question.name, ttl: 0, data }]
+        : [];
+    });
+    const response = packet.encode({
+      type: "response",
+      id: query.id ?? 0,
+      flags: packet.AUTHORITATIVE_ANSWER,
+      questions: query.questions ?? [],
+      answers,
+    });
+    server.send(response, remote.port, remote.address);
+  });
+  server.bind(0, "127.0.0.1");
+  await once(server, "listening");
+  release.unshift(() => new Promise<void>((resolve) => server.close(resolve)));
+  const previous = dns.getServers();
+  dns.setServers([`127.0.0.1:${String(server.address().port)}`]);
+  syncBuiltinESMExports();
+  release.unshift(() => {
+    dns.setServers(previous);
+    syncBuiltinESMExports();
+    return Promise.resolve();
+  });
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+afterAll(async () => {
+  expect(await cleanup(release.splice(0))).toEqual([]);
+});
+const input = { organization: "domain-primary", domain: "example.com" };
+
+async function google(
+  email: string,
+  verified = true,
+  beforeCallback?: () => void,
+  selectedService: AuthService = service,
+  displayName = email,
+) {
+  const started = await selectedService.handle(
+    new Request(`${configuration.publicUrl}/auth/sign-in/social`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: configuration.publicUrl,
+      },
+      body: JSON.stringify({
+        provider: "google",
+        callbackURL: configuration.publicUrl,
+      }),
+    }),
+    operatorContext(),
+  );
+  const start = z.object({ url: z.url() }).parse(await started.result.json());
+  const authorization = new URL(start.url);
+  const state = z.string().parse(authorization.searchParams.get("state"));
+  const code = crypto.randomUUID();
+  const nonce = authorization.searchParams.get("nonce");
+  const token = await new SignJWT({
+    email,
+    email_verified: verified,
+    name: displayName,
+    ...(nonce ? { nonce } : {}),
+  })
+    .setProtectedHeader({ alg: "RS256", kid: "domain-test-key" })
+    .setIssuer("https://accounts.google.com")
+    .setAudience("google-test-client")
+    .setSubject(email)
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(signing.privateKey);
+  tokens.set(code, token);
+  const publicKey = {
+    ...(await exportJWK(signing.publicKey)),
+    alg: "RS256",
+    use: "sig",
+    kid: "domain-test-key",
+  };
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (resource, init) => {
+    const url =
+      typeof resource === "string"
+        ? resource
+        : resource instanceof URL
+          ? resource.href
+          : resource.url;
+    if (url === "https://oauth2.googleapis.com/token") {
+      const body =
+        init?.body instanceof URLSearchParams
+          ? init.body
+          : new URLSearchParams(z.string().parse(init?.body));
+      const idToken = tokens.get(body.get("code") ?? "");
+      if (!idToken)
+        return Response.json({ error: "invalid_grant" }, { status: 400 });
+      tokens.delete(body.get("code") ?? "");
+      return Response.json({
+        access_token: "domain-token",
+        token_type: "Bearer",
+        expires_in: 300,
+        id_token: idToken,
+      });
+    }
+    if (url === "https://www.googleapis.com/oauth2/v3/certs")
+      return Response.json({ keys: [publicKey] });
+    return nativeFetch(resource, init);
+  });
+  beforeCallback?.();
+  const response = (
+    await selectedService.handle(
+      new Request(
+        `${configuration.publicUrl}/auth/callback/google?code=${code}&state=${encodeURIComponent(state)}`,
+        {
+          headers: {
+            cookie: started.result.headers
+              .getSetCookie()
+              .map((value) => value.split(";")[0])
+              .join("; "),
+          },
+        },
+      ),
+      operatorContext(),
+    )
+  ).result;
+  const headers = new Headers({
+    cookie: response.headers
+      .getSetCookie()
+      .map((value) => value.split(";")[0])
+      .join("; "),
+  });
+  return { response, headers };
+}
+
+// @req R-ORG-11 @req R-AUD-01
+it("registers only through native owner authentication, verifies actual TXT values, and retries idempotently", async () => {
+  await expect(
+    enrollDomain(database.prisma, configuration, operatorContext(), {
+      ...input,
+      operation: "register",
+    }),
+  ).rejects.toBeDefined();
+  await expect(
+    enrollDomain(
+      database.prisma,
+      configuration,
+      {
+        ...owner.context,
+        headers: new Headers({ authorization: `Bearer ${owner.key}` }),
+      },
+      { ...input, operation: "register" },
+    ),
+  ).rejects.toMatchObject({ code: "COOKIE_REQUIRED" });
+  await expect(
+    enrollDomain(database.prisma, configuration, foreign.owner, {
+      ...input,
+      operation: "register",
+    }),
+  ).rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
+  const first = await enrollDomain(
+    database.prisma,
+    configuration,
+    owner.owner,
+    { ...input, operation: "register" },
+  );
+  expect(first.result.verified).toBe(false);
+  const record = z
+    .object({ name: z.string(), value: z.string() })
+    .parse(first.result.dns_record);
+  const again = await enrollDomain(
+    database.prisma,
+    configuration,
+    owner.owner,
+    { ...input, operation: "register" },
+  );
+  expect(again.result).toEqual(first.result);
+  expect(await database.prisma.ssoProvider.count()).toBe(1);
+  expect(
+    await database.prisma.ssoProvider.findUnique({
+      where: { providerId: first.result.provider_id },
+    }),
+  ).toMatchObject({
+    oidcConfig: null,
+    samlConfig: null,
+    domainVerified: false,
+  });
+  const before = await google("before-verification@example.com");
+  expect(
+    (await service.authenticate(before.headers, operatorContext())).caller,
+  ).toBeNull();
+  txtRecords.set(record.name, ["incorrect-token"]);
+  await expect(
+    enrollDomain(database.prisma, configuration, owner.owner, {
+      ...input,
+      operation: "verify",
+    }),
+  ).rejects.toBeDefined();
+  expect(
+    (
+      await database.prisma.ssoProvider.findUniqueOrThrow({
+        where: { providerId: first.result.provider_id },
+      })
+    ).domainVerified,
+  ).toBe(false);
+  txtRecords.set(record.name, [
+    record.value.slice(0, 8),
+    record.value.slice(8),
+  ]);
+  expect(await dns.resolveTxt(record.name)).toEqual([
+    [record.value.slice(0, 8), record.value.slice(8)],
+  ]);
+  const verified = await enrollDomain(
+    database.prisma,
+    configuration,
+    owner.owner,
+    { ...input, operation: "verify" },
+  );
+  expect(verified.result).toMatchObject({ verified: true, dns_record: null });
+  expect(dnsQueries).toContain(record.name);
+  expect(
+    (
+      await enrollDomain(database.prisma, configuration, owner.owner, {
+        ...input,
+        operation: "verify",
+      })
+    ).result,
+  ).toEqual(verified.result);
+  expect(
+    (
+      await database.prisma.auditEvent.findFirstOrThrow({
+        where: { action: "operator.domain.verify", statusCode: 200 },
+        orderBy: { ts: "desc" },
+      })
+    ).organizationId,
+  ).toBe(owner.context.caller?.organizationId);
+});
+
+// @req R-ORG-11 @req R-ORG-04
+it("admits only verified Google identities and preserves durable removal, suspension, explicit restoration, and key/job boundaries", async () => {
+  const login = await google("enrolled@example.com");
+  const identity = await service.authenticate(login.headers, operatorContext());
+  expect(identity.caller).toMatchObject({
+    organizationId: owner.context.caller?.organizationId,
+    role: "member",
+  });
+  const context: ServiceContext = {
+    ...operatorContext(),
+    caller: identity.caller,
+    headers: login.headers,
+  };
+  const key = await service.createKey(context, {
+    name: "enrolled user",
+    permissions: { sessions: ["read"] },
+  });
+  const keyHeaders = new Headers({ authorization: `Bearer ${key.result.key}` });
+  const keyIdentity = await service.authenticate(keyHeaders, operatorContext());
+  const member = await database.prisma.member.findFirstOrThrow({
+    where: {
+      userId: identity.user.id,
+      organizationId: z.string().parse(owner.context.caller?.organizationId),
+    },
+  });
+  await members.remove(owner.owner, member.id, { reason: "Remove access" });
+  const removed = await database.prisma.member.findUniqueOrThrow({
+    where: { id: member.id },
+  });
+  expect(removed.suspended).toBe(true);
+  expect(removed.removedAt).toBeInstanceOf(Date);
+  expect(
+    (
+      await members.list(owner.owner, {
+        filters: { email: identity.user.email },
+      })
+    ).result.items,
+  ).toEqual([]);
+  expect((await service.organizations(context)).result.organizations).toEqual(
+    [],
+  );
+  await expect(
+    service.authenticate(keyHeaders, operatorContext()),
+  ).rejects.toMatchObject({ code: "MEMBERSHIP_REQUIRED" });
+  await expect(
+    reauthorizeJob(
+      database.prisma,
+      { ...context, caller: keyIdentity.caller },
+      configuration.allowedEmailDomains,
+    ),
+  ).rejects.toMatchObject({ code: "MEMBERSHIP_REQUIRED" });
+  const repeated = await google(identity.user.email);
+  expect(
+    (await service.authenticate(repeated.headers, operatorContext())).caller,
+  ).toBeNull();
+  await members.add(owner.owner, {
+    emails: [identity.user.email],
+    role: "member",
+  });
+  expect(
+    await database.prisma.member.findUnique({ where: { id: member.id } }),
+  ).toMatchObject({ suspended: false, removedAt: null, role: "member" });
+  expect(
+    (await service.authenticate(keyHeaders, operatorContext())).caller?.role,
+  ).toBe("member");
+  await members.suspend(owner.owner, member.id, {
+    suspended: true,
+    reason: "Suspend access",
+  });
+  const suspended = await google(identity.user.email);
+  expect(
+    (await service.authenticate(suspended.headers, operatorContext())).caller,
+  ).toBeNull();
+  expect(
+    (
+      await database.prisma.member.findUniqueOrThrow({
+        where: { id: member.id },
+      })
+    ).removedAt,
+  ).toBeNull();
+  for (const [email, verified] of [
+    ["unverified@example.com", false],
+    ["outsider@elsewhere.test", true],
+  ] as const) {
+    const rejected = await google(email, verified);
+    expect(rejected.response.headers.get("location")).toContain("error=");
+    expect(
+      await database.prisma.user.findUnique({ where: { email } }),
+    ).toBeNull();
+  }
+});
+
+// @req R-ORG-11 @req R-AUD-01
+it("rolls back native registration and callback membership when the audit fails", async () => {
+  const config = {
+    ...configuration,
+    allowedEmailDomains: ["example.com", "example.net"],
+  };
+  const before = await database.prisma.verification.count();
+  vi.spyOn(AuditService.prototype, "write").mockRejectedValueOnce(
+    new Error("injected domain audit failure"),
+  );
+  await expect(
+    enrollDomain(database.prisma, config, owner.owner, {
+      ...input,
+      domain: "example.net",
+      operation: "register",
+    }),
+  ).rejects.toBeDefined();
+  expect(
+    await database.prisma.ssoProvider.count({
+      where: { domain: "example.net" },
+    }),
+  ).toBe(0);
+  expect(await database.prisma.verification.count()).toBe(before);
+  await expect(
+    google("audit-rollback@example.com", true, () => {
+      vi.spyOn(AuditService.prototype, "write").mockRejectedValueOnce(
+        new Error("injected callback audit failure"),
+      );
+    }),
+  ).rejects.toBeDefined();
+  expect(
+    await database.prisma.user.findUnique({
+      where: { email: "audit-rollback@example.com" },
+    }),
+  ).toBeNull();
+  const existing = await google(owner.email);
+  expect(
+    (await service.authenticate(existing.headers, operatorContext())).caller
+      ?.role,
+  ).toBe("owner");
+});
+
+// @req R-ORG-11
+it("runs the operator CLI with a private real cookie file and rejects permissive file modes without exposing cookies", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "agentcommons-domain-cli-"));
+  release.unshift(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "owner.cookie");
+  const cookie = z.string().parse(owner.owner.headers.get("cookie"));
+  await writeFile(file, cookie, { mode: 0o600 });
+  const args = [
+    "db:domain",
+    "register",
+    "--organization",
+    input.organization,
+    "--domain",
+    input.domain,
+    "--cookie-file",
+    file,
+  ];
+  const env = {
+    ...process.env,
+    PUBLIC_URL: configuration.publicUrl,
+    DATABASE_URL: database.urls.app,
+    BETTER_AUTH_SECRET: configuration.secret,
+    AUTH_EMAIL_PASSWORD_ENABLED: "true",
+    AUTH_SIGNUP_MODE: "open",
+    AUTH_ALLOWED_EMAIL_DOMAINS: "example.com",
+    AUTH_SOCIAL_PROVIDER: "google",
+    AUTH_GOOGLE_CLIENT_ID: "google-test-client",
+    AUTH_GOOGLE_CLIENT_SECRET: "google-test-secret",
+    AUTH_OIDC_ISSUER: "",
+    AUTH_OIDC_CLIENT_ID: "",
+    AUTH_OIDC_CLIENT_SECRET: "",
+  };
+  const result = await promisify(execFile)("pnpm", args, {
+    cwd: new URL("../../../", import.meta.url),
+    env,
+  });
+  expect(result.stdout).toContain('"verified":true');
+  expect(result.stdout + result.stderr).not.toContain(cookie);
+  await chmod(file, 0o644);
+  await expect(
+    promisify(execFile)("pnpm", args, {
+      cwd: new URL("../../../", import.meta.url),
+      env,
+    }),
+  ).rejects.toThrow("private cookie file");
+});
+
+// @req R-ORG-11
+it("refuses ambiguous verified domains and non-Google configuration without changing existing roles", async () => {
+  const registered = await enrollDomain(
+    database.prisma,
+    configuration,
+    foreign.owner,
+    { ...input, organization: "domain-foreign", operation: "register" },
+  );
+  const record = z
+    .object({ name: z.string(), value: z.string() })
+    .parse(registered.result.dns_record);
+  txtRecords.set(record.name, [record.value]);
+  await enrollDomain(database.prisma, configuration, foreign.owner, {
+    ...input,
+    organization: "domain-foreign",
+    operation: "verify",
+  });
+  const ambiguous = await google("ambiguous@example.com");
+  expect(
+    (await service.authenticate(ambiguous.headers, operatorContext())).caller,
+  ).toBeNull();
+  const user = await database.prisma.user.findUniqueOrThrow({
+    where: { email: "ambiguous@example.com" },
+  });
+  expect(
+    await database.prisma.member.count({ where: { userId: user.id } }),
+  ).toBe(0);
+  await expect(
+    enrollDomain(
+      database.prisma,
+      {
+        ...configuration,
+        socialProviders: {
+          github: { clientId: "other", clientSecret: "other" },
+        },
+      },
+      owner.owner,
+      { ...input, operation: "register" },
+    ),
+  ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
+  const existing = await google(owner.email);
+  expect(
+    (await service.authenticate(existing.headers, operatorContext())).caller
+      ?.role,
+  ).toBe("owner");
+});
+
+// @req R-ORG-11 @req R-ORG-03
+it("invalidates initial setup on removal before an unclaimed identity joins another organization", async () => {
+  const created = await members.add(owner.owner, {
+    emails: ["removed-placeholder@example.com"],
+    role: "member",
+  });
+  const first = z
+    .object({ user_id: z.string(), setup_url: z.url() })
+    .parse(created.result.results[0]);
+  const row = await database.prisma.member.findFirstOrThrow({
+    where: { userId: first.user_id },
+  });
+  await members.remove(owner.owner, row.id, {
+    reason: "Remove unclaimed access",
+  });
+  await members.add(foreign.owner, {
+    emails: ["removed-placeholder@example.com"],
+    role: "member",
+  });
+  const oldToken = z
+    .string()
+    .parse(new URL(first.setup_url).pathname.split("/").at(-1));
+  await expect(
+    service.native.api.resetPassword({
+      body: {
+        token: oldToken,
+        newPassword: "Old administrator credential 1234!",
+      },
+    }),
+  ).rejects.toBeDefined();
+  expect(
+    await database.prisma.account.count({ where: { userId: first.user_id } }),
+  ).toBe(0);
+  const fresh = await members.passwordSetup(foreign.owner, first.user_id);
+  const freshToken = z
+    .string()
+    .parse(new URL(fresh.result.setup_url).pathname.split("/").at(-1));
+  await service.native.api.resetPassword({
+    body: {
+      token: freshToken,
+      newPassword: "Current administrator credential 1234!",
+    },
+  });
+  expect(
+    await database.prisma.account.count({ where: { userId: first.user_id } }),
+  ).toBe(1);
+});
+
+// @req R-SAAS-01 @req R-SAAS-02
+it("refuses Google implicit linking to an unverified public password preclaim and permits verified placeholder recovery", async () => {
+  const links = new Map<string, string>();
+  const saas = new AuthService(
+    database.prisma,
+    {
+      ...configuration,
+      instanceMode: "saas",
+      mail: {
+        send: (value) => {
+          links.set(`${value.kind}:${value.to}`, value.url);
+          return Promise.resolve();
+        },
+      },
+    },
+    database.audit,
+  );
+  const request = (path: string, body: object) =>
+    saas.handle(
+      new Request(`${configuration.publicUrl}/auth/${path}`, {
+        method: "POST",
+        headers: {
+          origin: configuration.publicUrl,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }),
+      operatorContext(),
+    );
+  const email = `preclaimed-${crypto.randomUUID()}@example.com`;
+  await request("sign-up/email", {
+    email,
+    name: "Unverified preclaim",
+    password: "Unverified claimant password 1234!",
+  });
+  const rejected = await google(email, true, undefined, saas);
+  expect(rejected.response.headers.get("location")).toContain(
+    "account_not_linked",
+  );
+  const user = await database.prisma.user.findUniqueOrThrow({
+    where: { email },
+  });
+  expect(user.emailVerified).toBe(false);
+  expect(
+    await database.prisma.account.count({
+      where: { userId: user.id, providerId: "google" },
+    }),
+  ).toBe(0);
+  expect(
+    await database.prisma.member.count({ where: { userId: user.id } }),
+  ).toBe(0);
+  const placeholderEmail = `placeholder-${crypto.randomUUID()}@example.com`;
+  const placeholder = await database.auth.native.api.createUser({
+    body: { email: placeholderEmail, name: "Invited placeholder" },
+  });
+  expect(
+    (
+      await google(placeholderEmail, true, undefined, saas)
+    ).response.headers.get("location"),
+  ).toContain("account_not_linked");
+  await request("send-verification-email", {
+    email: placeholderEmail,
+    callbackURL: configuration.publicUrl,
+  });
+  const url = z.string().parse(links.get(`verification:${placeholderEmail}`));
+  const verified = await saas.handle(new Request(url), operatorContext());
+  expect(verified.result.status).toBe(302);
+  expect(
+    (
+      await database.prisma.user.findUniqueOrThrow({
+        where: { id: placeholder.user.id },
+      })
+    ).emailVerified,
+  ).toBe(true);
+  const linked = await google(placeholderEmail, true, undefined, saas);
+  expect(linked.response.headers.get("location")).not.toContain("error=");
+  expect(
+    await database.prisma.account.count({
+      where: { userId: placeholder.user.id, providerId: "google" },
+    }),
+  ).toBe(1);
+});
+
+// @req R-RED-01 @req R-SAAS-01
+it("redacts native provider and profile names while preserving customer identity and bootstrap behavior", async () => {
+  const secret = "ghp_" + "a".repeat(36);
+  const email = `profile-${crypto.randomUUID()}@example.com`;
+  const signed = await google(
+    email,
+    true,
+    undefined,
+    service,
+    `Provider ${secret}`,
+  );
+  const user = await database.prisma.user.findUniqueOrThrow({
+    where: { email },
+  });
+  expect(user.email).toBe(email);
+  expect(user.name).not.toContain(secret);
+  expect(user.name).toContain("REDACTED");
+  const before = await database.prisma.account.findMany({
+    where: { userId: user.id },
+  });
+  await service.native.api.updateUser({
+    headers: signed.headers,
+    body: { name: `Updated ${secret}` },
+  });
+  expect(
+    (await database.prisma.user.findUniqueOrThrow({ where: { id: user.id } }))
+      .name,
+  ).not.toContain(secret);
+  expect(
+    await database.prisma.account.findMany({ where: { userId: user.id } }),
+  ).toEqual(before);
+  const customer = await bootstrap(database.prisma, configuration, {
+    email: `bootstrap-${crypto.randomUUID()}@example.com`,
+    organization: `profile-${crypto.randomUUID()}`,
+    name: `Customer ${secret}`,
+  });
+  expect(
+    (
+      await database.prisma.organization.findUniqueOrThrow({
+        where: { id: customer.result.organization_id },
+      })
+    ).name,
+  ).not.toContain(secret);
+  expect(customer.result.setup_url).toContain("/auth/reset-password/");
+});
+
+// @req R-ORG-11 @req R-AUD-01
+it("lets organization administrators manage native domain access under invite while closed and operator restrictions remain enforced", async () => {
+  const inviteConfiguration: AuthConfiguration = {
+    ...configuration,
+    signupMode: "invite",
+    allowedEmailDomains: [],
+  };
+  const invite = new AuthService(
+    database.prisma,
+    inviteConfiguration,
+    database.audit,
+  );
+  const domain = "invite-members.example.org";
+  const pending = await invite.domain(owner.owner, "register", { domain });
+  expect(pending.result.verified).toBe(false);
+  const proof = z
+    .object({ name: z.string(), value: z.string() })
+    .parse(pending.result.dns_record);
+  const denied = await google(`pending@${domain}`, true, undefined, invite);
+  expect(denied.response.headers.get("location")).toContain(
+    "account_not_provisioned",
+  );
+  expect(
+    await database.prisma.user.count({ where: { email: `pending@${domain}` } }),
+  ).toBe(0);
+  txtRecords.set(proof.name, [proof.value]);
+  const verified = await invite.domain(owner.owner, "verify", { domain });
+  expect(verified.result.verified).toBe(true);
+  const admitted = await google(`member@${domain}`, true, undefined, invite);
+  const identity = await invite.authenticate(
+    admitted.headers,
+    operatorContext(),
+  );
+  expect(
+    await database.prisma.member.findFirst({
+      where: {
+        userId: identity.user.id,
+        organizationId: z.string().parse(owner.owner.caller?.organizationId),
+      },
+    }),
+  ).toMatchObject({ role: "member", suspended: false, removedAt: null });
+  const listing = await invite.domains(owner.owner, { domain, limit: 1 });
+  expect(listing.result.items.map((row) => row.domain)).toEqual([domain]);
+  expect(listing.result.enabled).toBe(true);
+  expect(listing.audit.organizationId).toBe(owner.owner.caller?.organizationId);
+  expect(
+    (await invite.domains(foreign.owner, { domain })).result.items,
+  ).toEqual([]);
+  const keyContext = {
+    ...owner.context,
+    headers: new Headers({ authorization: `Bearer ${owner.key}` }),
+  };
+  await expect(
+    invite.domain(keyContext, "register", { domain }),
+  ).rejects.toMatchObject({ code: "COOKIE_REQUIRED" });
+  const unverified = await google(
+    `unverified@${domain}`,
+    false,
+    undefined,
+    invite,
+  );
+  expect(unverified.response.headers.get("location")).toContain(
+    "provider_email_unverified",
+  );
+  const subdomain = await google(
+    `member@sub.${domain}`,
+    true,
+    undefined,
+    invite,
+  );
+  expect(subdomain.response.headers.get("location")).toContain(
+    "account_not_provisioned",
+  );
+  const closed = new AuthService(
+    database.prisma,
+    { ...inviteConfiguration, signupMode: "closed" },
+    database.audit,
+  );
+  expect(
+    (
+      await google(`closed@${domain}`, true, undefined, closed)
+    ).response.headers.get("location"),
+  ).toContain("account_not_provisioned");
+  expect((await closed.domains(owner.owner, {})).result.enabled).toBe(false);
+  await expect(
+    closed.domain(owner.owner, "register", { domain }),
+  ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
+  const restricted = new AuthService(
+    database.prisma,
+    { ...inviteConfiguration, allowedEmailDomains: ["example.com"] },
+    database.audit,
+  );
+  expect(
+    (
+      await google(`restricted@${domain}`, true, undefined, restricted)
+    ).response.headers.get("location"),
+  ).toContain("email_domain_not_allowed");
+  await expect(
+    restricted.domain(owner.owner, "register", { domain }),
+  ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
+  expect(
+    await database.prisma.auditEvent.count({
+      where: {
+        action: "operator.domain.register",
+        statusCode: { gte: 400 },
+        organizationId: z.string().parse(owner.owner.caller?.organizationId),
+      },
+    }),
+  ).toBeGreaterThan(0);
+});
+
+// @req R-ORG-11 @req R-AUD-01
+it("serves scoped DNS registration and verification through generated REST routes with bounded domain pagination", async () => {
+  const env = environment({
+    PUBLIC_URL: configuration.publicUrl,
+    BETTER_AUTH_SECRET: configuration.secret,
+    DATABASE_URL: database.urls.app,
+    ...traceEnvironment(database.traceConfig),
+    AUTH_SOCIAL_PROVIDER: "google",
+    AUTH_GOOGLE_CLIENT_ID: "google-test-client",
+    AUTH_GOOGLE_CLIENT_SECRET: "google-test-secret",
+    AUTH_SIGNUP_MODE: "invite",
+    LOG_LEVEL: "silent",
+  });
+  const runtime = await createRuntime(env);
+  const close: Array<() => Promise<unknown>> = [() => runtime.close()];
+  try {
+    const app = await createApp({
+      env,
+      services: runtime.services,
+      static: false,
+    });
+    close.unshift(() => app.close());
+    const headers = {
+      cookie: z.string().parse(owner.owner.headers.get("cookie")),
+      origin: configuration.publicUrl,
+    };
+    const domain = "rest-domain.example.org";
+    const before = await database.prisma.auditEvent.count();
+    const registered = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/domains",
+      headers,
+      payload: { domain },
+    });
+    expect(registered.statusCode, registered.body).toBe(200);
+    expect(await database.prisma.auditEvent.count()).toBe(before + 1);
+    const proof = z
+      .object({ dns_record: z.object({ name: z.string(), value: z.string() }) })
+      .parse(registered.json<unknown>()).dns_record;
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/domains/verify",
+      headers,
+      payload: { domain },
+    });
+    expect(invalid.statusCode).toBeGreaterThanOrEqual(400);
+    txtRecords.set(proof.name, [proof.value]);
+    const verified = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/domains/verify",
+      headers,
+      payload: { domain },
+    });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect(verified.json<unknown>()).toMatchObject({ domain, verified: true });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/api/v1/admin/domains?limit=1&sort=domain&order=asc",
+      headers,
+    });
+    expect(listed.statusCode, listed.body).toBe(200);
+    const page = z
+      .object({
+        items: z.array(z.object({ domain: z.string() })),
+        cursor: z.string(),
+      })
+      .parse(listed.json<unknown>());
+    expect(page.items).toHaveLength(1);
+    const next = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/domains?limit=1&sort=domain&order=asc&cursor=${encodeURIComponent(page.cursor)}`,
+      headers,
+    });
+    expect(next.statusCode, next.body).toBe(200);
+    expect(
+      z
+        .object({ items: z.array(z.object({ domain: z.string() })) })
+        .parse(next.json<unknown>()).items[0]?.domain,
+    ).not.toBe(page.items[0]?.domain);
+    const foreignPage = await app.inject({
+      method: "GET",
+      url: `/api/v1/admin/domains?limit=1&sort=domain&order=asc&cursor=${encodeURIComponent(page.cursor)}`,
+      headers: {
+        cookie: z.string().parse(foreign.owner.headers.get("cookie")),
+      },
+    });
+    expect(foreignPage.statusCode).toBe(400);
+    const keyWrite = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/domains",
+      headers: { authorization: `Bearer ${owner.key}` },
+      payload: { domain },
+    });
+    expect(keyWrite.statusCode).toBe(403);
+    const invalidDomain = await app.inject({
+      method: "POST",
+      url: "/api/v1/admin/domains",
+      headers,
+      payload: { domain: "https://example.org" },
+    });
+    expect(invalidDomain.statusCode).toBe(400);
+  } finally {
+    expect(await cleanup(close)).toEqual([]);
+  }
+});
+
+// @req R-ORG-11
+it("fits the native TXT proof within DNS name limits and rejects the next character before writing", async () => {
+  const config: AuthConfiguration = {
+    ...configuration,
+    allowedEmailDomains: [],
+  };
+  const domains = new AuthService(database.prisma, config, database.audit);
+  const domain = [
+    "a".repeat(63),
+    "b".repeat(63),
+    "c".repeat(63),
+    "d".repeat(10),
+  ].join(".");
+  expect(domain).toHaveLength(202);
+  const registered = await domains.domain(owner.owner, "register", { domain });
+  const proof = z
+    .object({ name: z.string(), value: z.string() })
+    .parse(registered.result.dns_record);
+  expect(proof.name).toHaveLength(253);
+  txtRecords.set(proof.name, [proof.value]);
+  expect(
+    (await domains.domain(owner.owner, "verify", { domain })).result.verified,
+  ).toBe(true);
+  const count = await database.prisma.ssoProvider.count();
+  await expect(
+    domains.domain(owner.owner, "register", { domain: `${domain}d` }),
+  ).rejects.toBeDefined();
+  expect(await database.prisma.ssoProvider.count()).toBe(count);
+});
+
+// @req R-ORG-11
+it("filters domains literally and sorts verification state on the server", async () => {
+  const domains = new AuthService(
+    database.prisma,
+    { ...configuration, allowedEmailDomains: [] },
+    database.audit,
+  );
+  await domains.domain(owner.owner, "register", {
+    domain: "pending-filter.example.org",
+  });
+  const pending = await domains.domains(owner.owner, {
+    verified: "false",
+    domain: "pending-filter",
+    sort: "verified",
+    order: "asc",
+  });
+  expect(pending.result.items).toHaveLength(1);
+  expect(pending.result.items[0]).toMatchObject({
+    domain: "pending-filter.example.org",
+    verified: false,
+  });
+  expect(
+    (
+      await domains.domains(owner.owner, {
+        verified: "true",
+        domain: "pending-filter",
+      })
+    ).result.items,
+  ).toEqual([]);
+  for (const domain of ["%", "_", "\\"])
+    expect(
+      (await domains.domains(owner.owner, { domain })).result.items,
+    ).toEqual([]);
+  const ascending = (
+    await domains.domains(owner.owner, { sort: "verified", order: "asc" })
+  ).result.items;
+  const descending = (
+    await domains.domains(owner.owner, { sort: "verified", order: "desc" })
+  ).result.items;
+  expect(ascending[0]?.verified).toBe(false);
+  expect(descending[0]?.verified).toBe(true);
+});
+
+// @req R-ORG-11
+it("keeps the native Google-only eligibility predicate consistent for mixed provider configurations", async () => {
+  const config: AuthConfiguration = {
+    ...configuration,
+    signupMode: "invite",
+    allowedEmailDomains: [],
+    socialProviders: {
+      ...configuration.socialProviders,
+      github: { clientId: "mixed-fixture", clientSecret: "mixed-fixture" },
+    },
+  };
+  const mixed = new AuthService(database.prisma, config, database.audit);
+  expect((await mixed.domains(owner.owner, {})).result.enabled).toBe(false);
+  await expect(
+    mixed.domain(owner.owner, "register", { domain: "mixed.example.org" }),
+  ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
+  const signed = await google(
+    "mixed-provider@invite-members.example.org",
+    true,
+    undefined,
+    mixed,
+  );
+  expect(signed.response.headers.get("location")).toContain(
+    "account_not_provisioned",
+  );
+  expect(
+    await database.prisma.user.count({
+      where: { email: "mixed-provider@invite-members.example.org" },
+    }),
+  ).toBe(0);
+});

@@ -1,5 +1,7 @@
+import type { OrganizationEmbeddingsService } from "../services/organization-embeddings.js";
 import type { SimilarService } from "../services/similar.js";
 import type { HomeService } from "../services/home.js";
+import type { BillingService } from "../services/billing.js";
 import type { SessionEventsService } from "../services/session-events.js";
 import type { jobProgressSchema } from "@agentcommons/core";
 import type { z } from "zod";
@@ -44,6 +46,9 @@ export interface AdminOperations {
   ): Promise<ServiceResult<unknown>>;
 }
 export interface Services {
+  dashboards: DashboardService;
+  organizationEmbeddings: OrganizationEmbeddingsService;
+  billing: BillingService;
   home: HomeService;
   similar?: SimilarService;
   events: SessionEventsService;
@@ -64,3 +69,4 @@ export interface Services {
   audit: AuditService;
   admin: AdminOperations;
 }
+import type { DashboardService } from "../services/dashboards.js";

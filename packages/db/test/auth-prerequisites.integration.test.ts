@@ -68,11 +68,9 @@ function createAuth(
 }
 
 beforeAll(async () => {
-  const container = await new PostgreSqlContainer(
-    "pgvector/pgvector:pg16",
-  ).start();
+  const container = await new PostgreSqlContainer("postgres:16").start();
   cleanup.push(() => container.stop());
-  const urls = ["ac_app", "ac_reader_user", "ac_reader_admin"].map((role) => {
+  const urls = ["ac_app", "ac_trace_control"].map((role) => {
     const url = new URL(container.getConnectionUri());
     url.username = role;
     url.password = "test-password";
@@ -84,8 +82,7 @@ beforeAll(async () => {
       ...process.env,
       DATABASE_MIGRATION_URL: container.getConnectionUri(),
       DATABASE_URL: urls[0],
-      DATABASE_READER_USER_URL: urls[1],
-      DATABASE_READER_ADMIN_URL: urls[2],
+      DATABASE_TRACE_CONTROL_URL: urls[1],
     },
   });
   prisma = new PrismaClient({ datasourceUrl: container.getConnectionUri() });
