@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -9,8 +10,10 @@ import { startDatabase, provisionOrganization } from "./support.js";
 let database: Awaited<ReturnType<typeof startDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let ingest: IngestService;
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   organization = await provisionOrganization(database, "lifecycle-clock");
   ingest = new IngestService({
     prisma: database.prisma,
@@ -18,7 +21,9 @@ beforeAll(async () => {
     policies: database.policies,
   });
 });
-afterAll(async () => database.close());
+afterAll(async () => {
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
+});
 
 // @req R-ING-07 @req R-HRN-04
 it("a final source flush cannot suppress its earlier-captured end at the same source position", async () => {

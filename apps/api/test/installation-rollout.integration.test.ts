@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -118,15 +119,10 @@ beforeAll(async () => {
   address = await app.listen({ host: "127.0.0.1", port: 0 });
 });
 afterAll(async () => {
-  await Promise.allSettled(clients.map((value) => value.close()));
-  const errors: unknown[] = [];
-  for (const close of shutdown.reverse()) {
-    try {
-      await close();
-    } catch (error) {
-      errors.push(error);
-    }
-  }
+  const errors = await cleanupAll([
+    ...clients.map((value) => () => value.close()),
+    ...shutdown.splice(0).reverse(),
+  ]);
   if (errors.length)
     throw new AggregateError(errors, "Rollout test cleanup failed.");
 });

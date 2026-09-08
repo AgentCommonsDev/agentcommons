@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -84,8 +85,10 @@ async function waitFor(
     await delay(100);
   }
 }
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   first = await provisionOrganization(database, "jobs-first");
   other = await provisionOrganization(database, "jobs-other");
   const cursors = new CursorCodec("jobs-cursor-secret");
@@ -96,6 +99,7 @@ beforeAll(async () => {
     auditRetentionDays: 30,
     onError: (error) => workerErrors.push(error),
   });
+  release.unshift(() => jobs.stop());
   admin = new AdminService({ ...database, cursors, jobs });
   ingest = new IngestService({ ...database });
   policies = new PolicyService({
@@ -106,8 +110,7 @@ beforeAll(async () => {
   await jobs.start();
 });
 afterAll(async () => {
-  await jobs.stop();
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 describe("native pg-boss rescan and maintenance", () => {

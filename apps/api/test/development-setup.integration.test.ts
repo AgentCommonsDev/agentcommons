@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { execFile } from "node:child_process";
 import {
   mkdtemp,
@@ -102,13 +103,7 @@ it("runs documented migration and bootstrap commands using only an unexported ro
   } catch (error) {
     errors.push(error);
   } finally {
-    for (const close of cleanup.reverse()) {
-      try {
-        await close();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
+    errors.push(...(await cleanupAll(cleanup.splice(0).reverse())));
   }
   if (errors.length)
     throw new AggregateError(errors, "Development setup or cleanup failed");

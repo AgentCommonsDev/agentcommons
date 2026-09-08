@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, copyFile, appendFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -26,8 +27,10 @@ let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let runtime: Awaited<ReturnType<typeof createRuntime>>;
 let app: Awaited<ReturnType<typeof createApp>>;
 let baseUrl: string;
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   organization = await provisionOrganization(database, "identity-reset-review");
   const env = environment({
     PUBLIC_URL: testAuthConfiguration.publicUrl,
@@ -38,14 +41,14 @@ beforeAll(async () => {
     LOG_LEVEL: "silent",
   });
   runtime = await createRuntime(env);
+  release.unshift(() => runtime.close());
   app = await createApp({ env, services: runtime.services, static: false });
+  release.unshift(() => app.close());
   baseUrl = await app.listen({ host: "127.0.0.1", port: 0 });
   await runtime.jobs.start();
 });
 afterAll(async () => {
-  await app.close();
-  await runtime.close();
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 // @req R-HRN-06 @req R-ING-08

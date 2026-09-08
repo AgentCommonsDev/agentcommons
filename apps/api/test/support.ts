@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
@@ -27,19 +28,20 @@ export async function startDatabase(
   const container = await new PostgreSqlContainer(
     "pgvector/pgvector:pg16",
   ).start();
-  const url = (role: string) => {
-    const parsed = new URL(container.getConnectionUri());
-    parsed.username = role;
-    parsed.password = "test-database-password";
-    return parsed.toString();
-  };
-  const urls = {
-    app: url("ac_app"),
-    user: url("ac_reader_user"),
-    admin: url("ac_reader_admin"),
-    migration: container.getConnectionUri(),
-  };
+  const release: Array<() => Promise<unknown>> = [() => container.stop()];
   try {
+    const url = (role: string) => {
+      const parsed = new URL(container.getConnectionUri());
+      parsed.username = role;
+      parsed.password = "test-database-password";
+      return parsed.toString();
+    };
+    const urls = {
+      app: url("ac_app"),
+      user: url("ac_reader_user"),
+      admin: url("ac_reader_admin"),
+      migration: container.getConnectionUri(),
+    };
     await promisify(execFile)("pnpm", ["migrate"], {
       cwd: new URL("../../../packages/db/", import.meta.url),
       env: {
@@ -50,29 +52,40 @@ export async function startDatabase(
         DATABASE_READER_ADMIN_URL: urls.admin,
       },
     });
+    const prisma = new PrismaClient({ datasources: { db: { url: urls.app } } });
+    release.unshift(() => prisma.$disconnect());
+    const readers = new ReaderPools(urls);
+    release.unshift(() => readers.close());
+    const policies = createPolicyCache(prisma);
+    const audit = new AuditService(prisma, policies);
+    const auth = new AuthService(prisma, authConfiguration, audit);
+    return {
+      prisma,
+      readers,
+      policies,
+      audit,
+      auth,
+      authConfiguration,
+      urls,
+      async close() {
+        const errors = await cleanupAll(release.splice(0));
+        if (errors.length)
+          throw new AggregateError(
+            errors,
+            "Integration database cleanup failed.",
+          );
+      },
+    };
   } catch (error) {
-    await container.stop();
+    const errors = await cleanupAll(release.splice(0));
+    if (errors.length)
+      throw new AggregateError(
+        [error, ...errors],
+        "Integration database setup and cleanup failed.",
+        { cause: error },
+      );
     throw error;
   }
-  const prisma = new PrismaClient({ datasources: { db: { url: urls.app } } });
-  const readers = new ReaderPools(urls);
-  const policies = createPolicyCache(prisma);
-  const audit = new AuditService(prisma, policies);
-  const auth = new AuthService(prisma, authConfiguration, audit);
-  return {
-    prisma,
-    readers,
-    policies,
-    audit,
-    auth,
-    authConfiguration,
-    urls,
-    async close() {
-      await readers.close();
-      await prisma.$disconnect();
-      await container.stop();
-    },
-  };
 }
 
 export async function provisionOrganization(

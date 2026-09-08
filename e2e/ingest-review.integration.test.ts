@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Harness, IngestEnvelope } from "../packages/core/src/index.js";
@@ -75,8 +76,10 @@ function upload(input: IngestEnvelope, organization = primary) {
     input,
   );
 }
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   primary = await provisionOrganization(database, "review-primary");
   other = await provisionOrganization(database, "review-other");
   ingest = new IngestService({
@@ -92,7 +95,7 @@ beforeAll(async () => {
   });
 });
 afterAll(async () => {
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 describe("independent ingestion adversarial review", () => {

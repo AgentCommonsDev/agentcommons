@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
@@ -109,7 +110,7 @@ beforeAll(async () => {
   ownerB = await login("owner-b@example.test");
 }, 120_000);
 afterAll(async () => {
-  for (const close of cleanup.reverse()) await close();
+  expect(await cleanupAll(cleanup.splice(0).reverse())).toEqual([]);
 });
 
 it("bootstraps idempotently without public password signup or authentication management bypass", async () => {

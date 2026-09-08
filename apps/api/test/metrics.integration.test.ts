@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { Prisma, ReaderPools, type AgentSession } from "@agentcommons/db";
@@ -185,8 +186,10 @@ function find(rows: MetricRow[], metric: string, enabled?: boolean) {
     ),
   );
 }
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   db = await startDatabase();
+  release.unshift(() => db.close());
   org = await provisionOrganization(db, "metrics");
   member = await provisionMember(db, org.owner, "metrics-member@example.com");
   foreign = await provisionOrganization(db, "metrics-foreign");
@@ -196,7 +199,7 @@ beforeAll(async () => {
   });
 }, 120_000);
 afterAll(async () => {
-  await db.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 // @req R-DASH-13 @req R-DASH-15 @req R-ORG-07

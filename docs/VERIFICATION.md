@@ -11,6 +11,12 @@ redaction fixtures, generated OpenAPI, unused code, and requirement traceability
 The final `pnpm test:performance` runs the 150 ms hook contract by itself so other
 test processes do not compete with the measurement. It requires a fresh hook build.
 
+Integration and container E2E files run sequentially. Each owns real database or
+container processes, and the latency checks need CPU time for both the test client
+and server. Running four fixtures on a two-core runner caused validation and latency
+failures. CI gives the typed ESLint process a 4 GB heap; the measured peak was
+2.85 GiB. The safety and timing limits are unchanged.
+
 CI repeats verification with embeddings disabled and with the deterministic fake
 provider enabled. The installer also runs under Node 20 in a clean Debian container
 with bash, zsh, and fish, and in the `Installer platforms` macOS job. Local Linux

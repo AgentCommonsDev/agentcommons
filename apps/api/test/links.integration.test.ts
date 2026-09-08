@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { readFileSync } from "node:fs";
 import { v7 as uuidv7 } from "uuid";
 import { z } from "zod";
@@ -72,14 +73,16 @@ function request(
     end: null,
   };
 }
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   db = await startDatabase();
+  release.unshift(() => db.close());
   first = await provisionOrganization(db, "link-first");
   other = await provisionOrganization(db, "link-other");
   ingest = new IngestService(db);
 });
 afterAll(async () => {
-  await db.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 describe("persisted explicit harness relationships", () => {

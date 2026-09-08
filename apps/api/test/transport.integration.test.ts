@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
@@ -192,7 +193,7 @@ beforeAll(async () => {
   expect(foreign.statusCode, foreign.body).toBe(202);
 }, 120_000);
 afterAll(async () => {
-  for (const stop of close.reverse()) await stop();
+  expect(await cleanupAll(close.splice(0).reverse())).toEqual([]);
 });
 
 // @req R-ARCH-03

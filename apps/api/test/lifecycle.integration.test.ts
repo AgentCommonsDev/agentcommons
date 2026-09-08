@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@agentcommons/db";
@@ -47,14 +48,16 @@ function envelope() {
     end: null,
   });
 }
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   organization = await provisionOrganization(database, "lifecycle");
   other = await provisionOrganization(database, "lifecycle-other");
   ingest = new IngestService(database);
 }, 120_000);
 afterAll(async () => {
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 // @req R-LNK-05

@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -89,11 +90,14 @@ async function index(
   }
   throw new Error("Index did not finish");
 }
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   db = await startDatabase();
+  release.unshift(() => db.close());
   first = await provisionOrganization(db, "embedding-first");
   other = await provisionOrganization(db, "embedding-other");
   readers = new ReaderPools(db.urls, {}, { embeddings: true });
+  release.unshift(() => readers.close());
   embeddings = new EmbeddingService({
     ...db,
     provider,
@@ -103,8 +107,7 @@ beforeAll(async () => {
   ingest = new IngestService(db);
 });
 afterAll(async () => {
-  await readers.close();
-  await db.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 describe("durable organization embedding index", () => {

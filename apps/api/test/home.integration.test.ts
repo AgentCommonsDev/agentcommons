@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
@@ -147,7 +148,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   vi.restoreAllMocks();
-  for (const close of cleanup) await close();
+  expect(await cleanupAll(cleanup.splice(0))).toEqual([]);
 });
 
 // @req R-DASH-16 @req R-ORG-07 @req R-ORG-09

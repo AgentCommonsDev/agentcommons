@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -298,7 +299,7 @@ beforeAll(async () => {
   }
 });
 afterAll(async () => {
-  for (const close of cleanup.reverse()) await close();
+  expect(await cleanupAll(cleanup.splice(0).reverse())).toEqual([]);
 });
 
 describe("read services on PostgreSQL", () => {

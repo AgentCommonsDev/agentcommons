@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { z } from "zod";
 import { identityDigest } from "@agentcommons/core";
 import { randomUUID } from "node:crypto";
@@ -10,8 +11,10 @@ let org: Awaited<ReturnType<typeof provisionOrganization>>;
 let writer: PrismaClient;
 let service: IngestService;
 const errors: string[] = [];
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   db = await startDatabase();
+  release.unshift(() => db.close());
   org = await provisionOrganization(db, "storage-index");
   const observed = new PrismaClient({
     datasourceUrl: db.urls.app,
@@ -23,6 +26,7 @@ beforeAll(async () => {
     ),
   );
   writer = observed;
+  release.unshift(() => writer.$disconnect());
   service = new IngestService({
     prisma: writer,
     audit: db.audit,
@@ -30,8 +34,7 @@ beforeAll(async () => {
   });
 }, 120_000);
 afterAll(async () => {
-  await writer.$disconnect();
-  await db.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 function envelope(
   options: {

@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { beforeAll, afterAll, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { PrismaClient, type Prisma } from "@agentcommons/db";
@@ -78,8 +79,10 @@ async function keyContext(permissions: {
     caller: (await database.auth.authenticate(headers, base)).caller,
   };
 }
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   organization = await provisionOrganization(database, "admin-primary");
   other = await provisionOrganization(database, "admin-other");
   const migration = new PrismaClient({
@@ -133,7 +136,7 @@ beforeAll(async () => {
   adminOnly = await keyContext({ admin: ["*"] });
 }, 120_000);
 afterAll(async () => {
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 it("supports admin-only keys and applies visibility only to the authenticated organization", async () => {

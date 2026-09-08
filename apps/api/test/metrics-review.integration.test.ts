@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
@@ -91,7 +92,7 @@ beforeAll(async () => {
   });
 }, 120_000);
 afterAll(async () => {
-  for (const close of cleanup.reverse()) await close();
+  expect(await cleanupAll(cleanup.splice(0).reverse())).toEqual([]);
 });
 
 it("reports consistent persisted aggregate totals and denominators across sessions", async () => {

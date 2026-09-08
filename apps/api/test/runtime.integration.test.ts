@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { AuditService } from "../src/services/audit.js";
 import { createRuntime } from "../src/main.js";
@@ -8,11 +9,13 @@ import {
   testAuthConfiguration,
 } from "./support.js";
 let database: Awaited<ReturnType<typeof startDatabase>>;
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
 }, 120_000);
 afterAll(async () => {
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 // @req R-RED-07 @req R-AUD-01

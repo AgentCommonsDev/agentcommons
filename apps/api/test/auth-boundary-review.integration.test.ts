@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
   startDatabase,
@@ -13,8 +14,10 @@ let database: Awaited<ReturnType<typeof startDatabase>>;
 let runtime: Awaited<ReturnType<typeof createRuntime>>;
 let app: FastifyInstance;
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   owner = await provisionOrganization(database, "boundary-review");
   const env = environment({
     PUBLIC_URL: testAuthConfiguration.publicUrl,
@@ -25,12 +28,12 @@ beforeAll(async () => {
     LOG_LEVEL: "silent",
   });
   runtime = await createRuntime(env);
+  release.unshift(() => runtime.close());
   app = await createApp({ env, services: runtime.services, static: false });
+  release.unshift(() => app.close());
 });
 afterAll(async () => {
-  await app.close();
-  await runtime.close();
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 // @req R-ORG-10

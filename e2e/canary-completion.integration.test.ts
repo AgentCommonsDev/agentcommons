@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../scripts/cleanup.js";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -11,11 +12,13 @@ import {
 } from "../apps/api/test/support.js";
 
 let database: Awaited<ReturnType<typeof startDatabase>>;
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
 });
 afterAll(async () => {
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 // @req R-HRN-08

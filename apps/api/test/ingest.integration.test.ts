@@ -1,3 +1,4 @@
+import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { readFile } from "node:fs/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -84,8 +85,10 @@ function next(value: IngestEnvelope, records = value.records): IngestEnvelope {
   };
 }
 
+const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   database = await startDatabase();
+  release.unshift(() => database.close());
   organization = await provisionOrganization(database, "ingest-primary");
   other = await provisionOrganization(database, "ingest-other");
   ingest = new IngestService({
@@ -101,7 +104,7 @@ beforeAll(async () => {
   });
 }, 120_000);
 afterAll(async () => {
-  await database.close();
+  expect(await cleanupAll(release.splice(0))).toEqual([]);
 });
 
 describe("transactional ingest", () => {
