@@ -28,6 +28,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm lint
+        env:
+          # Typed lint retains all workspace TypeScript projects in one process.
+          NODE_OPTIONS: --max-old-space-size=4096
       - run: pnpm typecheck
       - run: pnpm db:validate
       - run: pnpm db:diff
