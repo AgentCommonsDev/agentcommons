@@ -1,0 +1,43 @@
+{
+  "name": "@agentcommons/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schemas": "./schemas/index.ts",
+    "./schemas/common": "./schemas/common.ts",
+    "./schemas/search": "./schemas/search.ts",
+    "./schemas/get": "./schemas/get.ts",
+    "./schemas/sql": "./schemas/sql.ts",
+    "./schemas/rest": "./schemas/rest.ts",
+    "./schemas/ingest-context": "./schemas/ingest-context.ts",
+    "./schemas/ingest": "./schemas/ingest.ts",
+    "./normalizers": "./normalizers/index.ts",
+    "./redaction": "./redaction/index.ts",
+    "./format": "./format/index.ts",
+    "./format/csv": "./format/csv.ts",
+    "./schemas/metrics": "./schemas/metrics.ts",
+    "./schemas/home": "./schemas/home.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@eslint-community/regexpp": "^4.12.2",
+    "@secretlint/core": "13.0.5",
+    "@secretlint/profiler": "13.0.5",
+    "@secretlint/secretlint-rule-pattern": "13.0.5",
+    "@secretlint/secretlint-rule-preset-recommend": "13.0.5",
+    "recheck": "^4.5.0",
+    "regexp-ast-analysis": "^0.7.1",
+    "uuid": "^11.1.0",
+    "zod": "4.5.4",
+    "papaparse": "^5.5.3"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.5.2"
+  }
+}

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.turbo/
+.pnpm-store/
+apps/dashboard/dist/
+packages/hook/dist/
+apps/api/public/hook/
+infra/Pulumi.*.yaml.bak
+test-results/
+playwright-report/

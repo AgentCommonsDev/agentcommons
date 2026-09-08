@@ -1,0 +1,9 @@
+name: agentcommons
+runtime:
+  name: nodejs
+  options:
+    packagemanager: pnpm
+    typescript: false
+    nodeargs: --import tsx
+main: index.ts
+description: AgentCommons VPC, Fargate, PostgreSQL, and deployment gates

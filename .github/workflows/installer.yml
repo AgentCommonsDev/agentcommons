@@ -1,0 +1,31 @@
+name: Installer platforms
+on:
+  pull_request:
+    paths:
+      - "packages/hook/**"
+      - "packages/pi-extension/**"
+      - "packages/core/schemas/**"
+      - "apps/api/public/install.sh"
+      - ".github/workflows/installer.yml"
+      - "pnpm-lock.yaml"
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @agentcommons/hook build
+      - run: brew install fish
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node packages/hook/test/installer-platform.mjs apps/api/public

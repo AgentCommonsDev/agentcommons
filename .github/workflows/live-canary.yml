@@ -1,0 +1,67 @@
+name: Live harness canary
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 3 * * *"
+  pull_request:
+    paths:
+      - "packages/hook/**"
+      - "packages/pi-extension/**"
+      - "packages/core/normalizers/**"
+      - "packages/core/redaction/**"
+      - "packages/core/schemas/**"
+      - "packages/core/format/**"
+      - "fixtures/hooks/**"
+      - "fixtures/transcripts/**"
+      - "scripts/live-*.ts"
+      - "scripts/live-*.mjs"
+      - "scripts/pi-lifecycle.mjs"
+      - "apps/api/src/services/ingest.ts"
+      - "apps/api/src/services/projection.ts"
+      - "apps/api/src/services/jobs.ts"
+      - "apps/api/src/routes/**"
+      - "apps/api/src/mcp/**"
+      - "apps/api/public/install.sh"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/live-canary.yml"
+permissions:
+  contents: read
+concurrency:
+  group: live-canary-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  canary:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: npm install --global @anthropic-ai/claude-code@2.1.263 @openai/codex@0.153.4 @google/gemini-cli@0.35.3
+      - name: Run all four native harnesses and retrieve their sessions through MCP
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ] || [ -z "$OPENAI_API_KEY" ] || [ -z "$GEMINI_API_KEY" ]; then
+            echo 'Set ANTHROPIC_API_KEY, OPENAI_API_KEY, and GEMINI_API_KEY repository secrets to run native canaries.' >&2
+            exit 1
+          fi
+          printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
+          pnpm test:canary
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-harness-evidence
+          path: |
+            test-results/live-canary/report.json
+            test-results/live-canary/*-mobile.png
+          if-no-files-found: warn

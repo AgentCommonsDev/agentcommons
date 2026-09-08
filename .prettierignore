@@ -1,0 +1,15 @@
+pnpm-lock.yaml
+fixtures/
+docs/reviews/
+.agents/
+.claude/
+.codex/
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+packages/db/prisma/auth.prisma
+apps/dashboard/src/lib/api/generated.ts
+apps/api/openapi.json
+apps/api/public/hook/

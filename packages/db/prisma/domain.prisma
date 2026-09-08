@@ -1,0 +1,425 @@
+enum Harness {
+  CLAUDE_CODE
+  CODEX
+  GEMINI_CLI
+  PI
+}
+
+enum SessionStatus {
+  ACTIVE
+  ENDED
+  INACTIVE
+}
+
+enum ParentRelation {
+  SUBAGENT
+  FORK
+  SPAWNED
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  TOOL_RESULT
+  SYSTEM
+}
+
+enum MessageKind {
+  TEXT
+  THINKING
+  TOOL_USE
+  TOOL_RESULT
+  META
+}
+
+enum PolicyKind {
+  REGEX
+  SECRETLINT_RULE
+}
+
+model Installation {
+  organizationId String         @map("organization_id")
+  id             String         @db.Uuid
+  hostname       String
+  osUser         String         @map("os_user")
+  platform       String
+  arch           String
+  toolsEnabled   Boolean        @default(true) @map("tools_enabled")
+  firstSeenAt    DateTime       @default(now()) @map("first_seen_at") @db.Timestamptz
+  lastSeenAt     DateTime       @default(now()) @map("last_seen_at") @db.Timestamptz
+  sessions       AgentSession[]
+  batches        IngestBatch[]
+  auditEvents    AuditEvent[]
+
+  @@id([organizationId, id])
+  @@map("installation")
+}
+
+model AgentSession {
+  organizationId    String                @map("organization_id")
+  id                String                @id @db.Uuid
+  harness           Harness
+  harnessSessionId  String                @map("harness_session_id")
+  harnessVersion    String?               @map("harness_version")
+  entrypoint        String?
+  userId            String                @map("user_id")
+  ingestApiKeyId    String                @map("ingest_api_key_id")
+  installationId    String                @map("installation_id") @db.Uuid
+  installation      Installation          @relation(fields: [organizationId, installationId], references: [organizationId, id])
+  cwd               String
+  repoRoot          String?               @map("repo_root")
+  cwdRelative       String?               @map("cwd_relative")
+  repoUrl           String?               @map("repo_url")
+  repoName          String?               @map("repo_name")
+  branch            String?
+  startCommit       String?               @map("start_commit")
+  endCommit         String?               @map("end_commit")
+  observedCommits   Json?                 @map("observed_commits")
+  observedDiffStat  Json?                 @map("observed_diff_stat")
+  dirtyFileCount    Int?                  @map("dirty_file_count")
+  model             String?
+  modelsUsed        String[]              @default([]) @map("models_used")
+  startedAt         DateTime              @map("started_at") @db.Timestamptz
+  endedAt           DateTime?             @map("ended_at") @db.Timestamptz
+  lastActivityAt    DateTime              @default(now()) @map("last_activity_at") @db.Timestamptz
+  normalizerContext Json                  @default("{}") @map("normalizer_context")
+  projectedContext  Json                  @default("{}") @map("projected_context")
+  lifecyclePos      BigInt                @default(-1) @map("lifecycle_pos")
+  lifecycleAt       DateTime?             @map("lifecycle_at") @db.Timestamptz
+  status            SessionStatus         @default(ACTIVE)
+  endReason         String?               @map("end_reason")
+  title             String?
+  firstPrompt       String?               @map("first_prompt")
+  parentSessionId   String?               @map("parent_session_id") @db.Uuid
+  parent            AgentSession?         @relation("SessionParent", fields: [organizationId, parentSessionId], references: [organizationId, id], onDelete: NoAction, onUpdate: NoAction)
+  children          AgentSession[]        @relation("SessionParent")
+  parentRelation    ParentRelation?       @map("parent_relation")
+  parentNativeRef   String?               @map("parent_native_ref")
+  agentType         String?               @map("agent_type")
+  visibility        Visibility            @default(PUBLIC)
+  purgedAt          DateTime?             @map("purged_at") @db.Timestamptz
+  purgedByUserId    String?               @map("purged_by_user_id")
+  purgeReason       String?               @map("purge_reason")
+  messageCount      Int                   @default(0) @map("message_count")
+  toolCallCount     Int                   @default(0) @map("tool_call_count")
+  inputTokens       BigInt                @default(0) @map("input_tokens")
+  outputTokens      BigInt                @default(0) @map("output_tokens")
+  toolsUsed         String[]              @default([]) @map("tools_used")
+  records           RawRecord[]
+  messages          Message[]
+  files             SessionFile[]
+  batches           IngestBatch[]
+  redactionEvents   RedactionEvent[]
+  chunks            MessageChunk[]
+  embedding         SessionEmbedding?
+  rescanTargets     RedactionRunSession[]
+  embeddingState    EmbeddingState?
+
+  @@unique([organizationId, id])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([installationId])
+  @@index([repoName], type: Hash)
+  @@index([branch], type: Hash)
+  @@index([startedAt(sort: Desc)])
+  @@index([lastActivityAt(sort: Desc)])
+  @@index([parentSessionId])
+  @@index([visibility])
+  @@index([status])
+  @@map("agent_session")
+}
+
+model SessionFile {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id")
+  sessionId      String       @map("session_id") @db.Uuid
+  session        AgentSession @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Cascade)
+  path           String
+  ops            String[]
+
+  @@index([sessionId])
+  @@map("session_file")
+}
+
+model RawRecord {
+  organizationId   String       @map("organization_id")
+  id               String       @id @db.Uuid
+  sessionId        String       @map("session_id") @db.Uuid
+  session          AgentSession @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Cascade)
+  sourceVersion    Int          @default(0) @map("source_version")
+  pos              BigInt
+  key              String?
+  recordType       String       @map("record_type")
+  payload          Json
+  redactionContext Json         @default("{}") @map("redaction_context")
+  ingestBatchId    String       @map("ingest_batch_id") @db.Uuid
+  ingestBatch      IngestBatch  @relation(fields: [organizationId, sessionId, ingestBatchId], references: [organizationId, sessionId, id])
+  receivedAt       DateTime     @default(now()) @map("received_at") @db.Timestamptz
+  messages         Message[]
+
+  @@unique([organizationId, sessionId, id])
+  @@index([sessionId, pos, sourceVersion, id])
+  @@map("raw_record")
+}
+
+model Message {
+  organizationId String                   @map("organization_id")
+  id             String                   @id @db.Uuid
+  sessionId      String                   @map("session_id") @db.Uuid
+  session        AgentSession             @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Cascade)
+  rawRecordId    String?                  @map("raw_record_id") @db.Uuid
+  rawRecord      RawRecord?               @relation(fields: [organizationId, sessionId, rawRecordId], references: [organizationId, sessionId, id], onDelete: Cascade)
+  ingestBatchId  String?                  @map("ingest_batch_id") @db.Uuid
+  ingestBatch    IngestBatch?             @relation(fields: [organizationId, sessionId, ingestBatchId], references: [organizationId, sessionId, id], onDelete: Cascade)
+  seq            Int
+  blockIndex     Int                      @map("block_index")
+  role           MessageRole
+  kind           MessageKind
+  content        String
+  toolName       String?                  @map("tool_name")
+  toolUseId      String?                  @map("tool_use_id")
+  toolInput      Json?                    @map("tool_input")
+  model          String?
+  timestamp      DateTime?                @db.Timestamptz
+  receivedAt     DateTime                 @default(now()) @map("received_at") @db.Timestamptz
+  inputTokens    BigInt?                  @map("input_tokens")
+  outputTokens   BigInt?                  @map("output_tokens")
+  agentId        String?                  @map("agent_id")
+  searchable     Boolean
+  searchText     String                   @map("search_text")
+  searchTsv      Unsupported("tsvector")? @default(dbgenerated()) @map("search_tsv")
+  chunks         MessageChunk[]
+
+  @@unique([rawRecordId, blockIndex])
+  @@unique([sessionId, ingestBatchId])
+  @@unique([organizationId, sessionId, id])
+  @@index([sessionId, seq])
+  @@index([sessionId, toolUseId])
+  @@map("message")
+}
+
+model IngestBatch {
+  organizationId   String           @map("organization_id")
+  id               String           @db.Uuid
+  sessionId        String           @map("session_id") @db.Uuid
+  session          AgentSession     @relation(fields: [organizationId, sessionId], references: [organizationId, id])
+  apiKeyId         String           @map("api_key_id")
+  userId           String           @map("user_id")
+  installationId   String           @map("installation_id") @db.Uuid
+  installation     Installation     @relation(fields: [organizationId, installationId], references: [organizationId, id])
+  ip               String
+  userAgent        String?          @map("user_agent")
+  cursor           String
+  acceptedCount    Int              @map("accepted_count")
+  sourcePos        BigInt?          @map("source_pos")
+  sentAt           DateTime         @map("sent_at") @db.Timestamptz
+  behavior         String
+  startResume      Boolean          @default(false) @map("start_resume")
+  lifecycleApplied Boolean?         @map("lifecycle_applied")
+  nativeEvent      String           @map("native_event")
+  receivedAt       DateTime         @default(now()) @map("received_at") @db.Timestamptz
+  recordCount      Int              @map("record_count")
+  duplicateCount   Int              @map("duplicate_count")
+  byteCount        Int              @map("byte_count")
+  redactionCount   Int              @map("redaction_count")
+  durationMs       Int              @map("duration_ms")
+  records          RawRecord[]
+  messages         Message[]
+  redactions       RedactionEvent[]
+
+  @@id([organizationId, id])
+  @@unique([organizationId, sessionId, id])
+  @@index([sessionId, receivedAt])
+  @@index([organizationId, apiKeyId, receivedAt(sort: Desc), id(sort: Desc)])
+  @@map("ingest_batch")
+}
+
+model RedactionEvent {
+  organizationId String          @map("organization_id")
+  ingestBatchId  String          @map("ingest_batch_id") @db.Uuid
+  ingestBatch    IngestBatch     @relation(fields: [organizationId, sessionId, ingestBatchId], references: [organizationId, sessionId, id])
+  sessionId      String          @map("session_id") @db.Uuid
+  session        AgentSession    @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Cascade)
+  policyId       String          @map("policy_id") @db.Uuid
+  policy         RedactionPolicy @relation(fields: [organizationId, policyId], references: [organizationId, id])
+  count          Int
+
+  @@id([ingestBatchId, sessionId, policyId])
+  @@map("redaction_event")
+}
+
+model RedactionPolicy {
+  organizationId  String           @map("organization_id")
+  id              String           @id @db.Uuid
+  name            String
+  kind            PolicyKind
+  pattern         String?
+  flags           String?
+  ruleId          String?          @map("rule_id")
+  options         Json?
+  replacement     String
+  enabled         Boolean          @default(true)
+  builtin         Boolean          @default(false)
+  createdByUserId String?          @map("created_by_user_id")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+  events          RedactionEvent[]
+
+  @@unique([organizationId, name])
+  @@unique([organizationId, id])
+  @@map("redaction_policy")
+}
+
+model AuditEvent {
+  organizationId String?       @map("organization_id")
+  id             String        @id @db.Uuid
+  ts             DateTime      @default(now()) @db.Timestamptz
+  requestId      String        @map("request_id")
+  userId         String?       @map("user_id")
+  apiKeyId       String?       @map("api_key_id")
+  installationId String?       @map("installation_id") @db.Uuid
+  installation   Installation? @relation(fields: [organizationId, installationId], references: [organizationId, id], onDelete: Restrict)
+  authMethod     String        @map("auth_method")
+  ip             String
+  userAgent      String?       @map("user_agent")
+  transport      String
+  action         String
+  resourceType   String?       @map("resource_type")
+  resourceIds    String[]      @default([]) @map("resource_ids")
+  statusCode     Int           @map("status_code")
+  durationMs     Int           @map("duration_ms")
+  detail         Json
+
+  @@index([organizationId, ts(sort: Desc)])
+  @@index([organizationId, installationId, ts(sort: Desc)])
+  @@index([ts(sort: Desc)])
+  @@index([userId, ts(sort: Desc)])
+  @@index([action, ts(sort: Desc)])
+  @@map("audit_event")
+}
+
+model MessageChunk {
+  organizationId String                       @map("organization_id")
+  id             String                       @id @db.Uuid
+  sessionId      String                       @map("session_id") @db.Uuid
+  session        AgentSession                 @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Cascade)
+  messageId      String                       @map("message_id") @db.Uuid
+  message        Message                      @relation(fields: [organizationId, sessionId, messageId], references: [organizationId, sessionId, id], onDelete: Cascade)
+  ordinal        Int
+  content        String
+  tokenCount     Int                          @map("token_count")
+  model          String
+  embedding      Unsupported("vector(1024)")?
+
+  @@unique([messageId, ordinal])
+  @@index([sessionId])
+  @@map("message_chunk")
+}
+
+model SessionEmbedding {
+  organizationId String                       @map("organization_id")
+  sessionId      String                       @id @map("session_id") @db.Uuid
+  session        AgentSession                 @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Cascade)
+  model          String
+  tokenCount     Int                          @map("token_count")
+  updatedAt      DateTime                     @updatedAt @map("updated_at") @db.Timestamptz
+  embedding      Unsupported("vector(1024)")?
+
+  @@unique([organizationId, sessionId])
+  @@map("session_embedding")
+}
+
+model ApiKeyOwner {
+  keyId          String   @id @map("key_id")
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([organizationId, keyId])
+  @@unique([organizationId, keyId, userId])
+  @@index([organizationId, userId])
+  @@map("api_key_owner")
+}
+
+model RedactionRun {
+  organizationId    String                @map("organization_id")
+  id                String                @db.Uuid
+  state             String                @default("queued")
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz
+  totalSessions     Int                   @map("total_sessions")
+  processedSessions Int                   @default(0) @map("processed_sessions")
+  redactionCount    Int                   @default(0) @map("redaction_count")
+  error             String?
+  targets           RedactionRunSession[]
+
+  @@id([organizationId, id])
+  @@map("redaction_run")
+}
+
+model RedactionRunSession {
+  organizationId String       @map("organization_id")
+  runId          String       @map("run_id") @db.Uuid
+  sessionId      String       @map("session_id") @db.Uuid
+  processedAt    DateTime?    @map("processed_at") @db.Timestamptz
+  run            RedactionRun @relation(fields: [organizationId, runId], references: [organizationId, id], onDelete: Cascade, map: "redaction_run_session_run_fkey")
+  session        AgentSession @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: NoAction, onUpdate: NoAction, map: "redaction_run_session_session_fkey")
+
+  @@id([organizationId, runId, sessionId])
+  @@map("redaction_run_session")
+}
+
+model EmbeddingDeployment {
+  id         Int    @id
+  provider   String
+  model      String
+  dimensions Int
+
+  @@map("embedding_deployment")
+}
+
+model EmbeddingState {
+  organizationId String       @map("organization_id")
+  sessionId      String       @map("session_id") @db.Uuid
+  session        AgentSession @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: Cascade)
+  sourceDigest   String       @map("source_digest")
+  complete       Boolean      @default(false)
+  leaseToken     String?      @map("lease_token") @db.Uuid
+  leaseUntil     DateTime?    @map("lease_until") @db.Timestamptz
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@id([organizationId, sessionId])
+  @@map("embedding_state")
+}
+
+model EmbeddingBudget {
+  organizationId  String             @map("organization_id")
+  day             DateTime           @db.Date
+  reservedTokens  BigInt             @default(0) @map("reserved_tokens")
+  actualTokens    BigInt             @default(0) @map("actual_tokens")
+  costNanoDollars BigInt             @default(0) @map("cost_nano_dollars")
+  attempts        EmbeddingAttempt[]
+
+  @@id([organizationId, day])
+  @@map("embedding_budget")
+}
+
+model EmbeddingAttempt {
+  organizationId String          @map("organization_id")
+  id             String          @id @db.Uuid
+  day            DateTime        @db.Date
+  budget         EmbeddingBudget @relation(fields: [organizationId, day], references: [organizationId, day])
+  purpose        String
+  reservedTokens Int             @map("reserved_tokens")
+  actualTokens   Int?            @map("actual_tokens")
+  state          String          @default("reserved")
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([organizationId, day])
+  @@map("embedding_attempt")
+}

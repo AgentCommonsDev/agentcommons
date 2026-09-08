@@ -1,0 +1,12 @@
+.git
+**/node_modules
+**/dist
+apps/api/public/hook
+**/coverage
+.env
+.env.*
+!.env.example
+infra
+fixtures
+**/playwright-report
+**/test-results

@@ -1,0 +1,49 @@
+name: Browser agent review
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "19 3 * * *"
+  pull_request:
+    paths:
+      - "apps/dashboard/**"
+      - "apps/api/src/routes/public.ts"
+      - "scripts/browser-review*.ts"
+      - ".github/workflows/browser-review.yml"
+      - "pnpm-lock.yaml"
+      - "README.md"
+permissions:
+  contents: read
+concurrency:
+  group: browser-review-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  review:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: npm install --global @anthropic-ai/claude-code@2.1.263
+      - name: Review the disposable instance
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo 'Set the ANTHROPIC_API_KEY repository secret to run the live browser review.' >&2
+            exit 1
+          fi
+          pnpm test:browser-agent
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-agent-findings
+          path: test-results/browser-agent/report.json
+          if-no-files-found: warn

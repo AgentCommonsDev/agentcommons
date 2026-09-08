@@ -1,0 +1,51 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        embeddings: ["false", "true"]
+    env:
+      EMBEDDINGS_ENABLED: ${{ matrix.embeddings }}
+      EMBEDDINGS_PROVIDER: fake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm db:validate
+      - run: pnpm db:diff
+      - run: pnpm test
+      - run: pnpm test:integration
+      - run: pnpm openapi:check
+      - run: pnpm fixtures:check
+      - run: pnpm spec:check
+      - run: pnpm knip
+      - run: pnpm exec playwright install --with-deps
+      - run: pnpm test:e2e:built
+      - run: pnpm test:performance
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-embeddings-${{ matrix.embeddings }}
+          path: |
+            playwright-report/
+            test-results/
+            apps/dashboard/test-results/
+          if-no-files-found: ignore

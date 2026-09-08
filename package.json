@@ -1,0 +1,72 @@
+{
+  "name": "agentcommons",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "packages/pi-extension/src/index.ts"
+    ]
+  },
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10 <11"
+  },
+  "scripts": {
+    "prepare": "husky",
+    "dev": "pnpm --parallel --filter @agentcommons/api --filter @agentcommons/dashboard dev",
+    "build": "pnpm --filter @agentcommons/hook build && pnpm -r --filter '!agentcommons' --filter '!@agentcommons/hook' --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck && tsc --noEmit -p tsconfig.json",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "test": "vitest run --exclude '**/*.integration.test.ts' --exclude '**/*.e2e.test.ts' --exclude '**/*.perf.test.ts'",
+    "test:integration": "vitest run .integration.test.ts",
+    "test:browser-agent": "tsx scripts/browser-review.ts",
+    "test:e2e": "pnpm build && pnpm test:e2e:built",
+    "spec:check": "node scripts/spec-check.mjs",
+    "spec:report": "node scripts/spec-check.mjs --report",
+    "fixtures:check": "tsx scripts/check-fixtures.ts",
+    "openapi:generate": "pnpm --filter @agentcommons/api openapi:generate",
+    "openapi:check": "pnpm --filter @agentcommons/api openapi:check",
+    "db:generate": "pnpm --filter @agentcommons/db generate",
+    "db:validate": "pnpm --filter @agentcommons/db validate",
+    "db:diff": "pnpm --filter @agentcommons/db diff",
+    "db:migrate": "pnpm --filter @agentcommons/db migrate",
+    "db:seed": "pnpm --filter @agentcommons/api seed",
+    "db:recover": "pnpm --filter @agentcommons/api recover",
+    "hook:link": "pnpm --filter @agentcommons/hook link:local",
+    "knip": "knip",
+    "verify": "pnpm build && pnpm typecheck && pnpm lint && pnpm test && pnpm test:integration && pnpm test:e2e:built && pnpm db:validate && pnpm db:diff && pnpm fixtures:check && pnpm openapi:check && pnpm knip && pnpm spec:check && pnpm test:performance",
+    "test:e2e:built": "vitest run .e2e.test.ts && pnpm --filter @agentcommons/dashboard test:browser:built && pnpm --filter @agentcommons/dashboard test:workspace:built",
+    "test:canary": "LIVE_HARNESS_CANARY=1 vitest run e2e/live-harness.e2e.test.ts",
+    "test:performance": "vitest run packages/hook/test/timing.perf.test.ts --maxWorkers=1 --no-file-parallelism"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
+    "@commitlint/cli": "^20.4.1",
+    "@commitlint/config-conventional": "^20.4.1",
+    "@eslint/js": "^9.39.2",
+    "@mariozechner/pi-coding-agent": "0.73.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@playwright/mcp": "^0.0.80",
+    "@playwright/test": "^1.58.2",
+    "@testcontainers/postgresql": "^11.12.0",
+    "@types/node": "^22.19.11",
+    "@types/pg": "^8.16.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^16.5.0",
+    "husky": "^9.1.7",
+    "knip": "^5.83.1",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.8.1",
+    "smol-toml": "1.8.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^4.0.18",
+    "zod": "4.5.4"
+  }
+}

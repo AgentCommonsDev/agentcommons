@@ -1,0 +1,43 @@
+x-application: &application
+  image: agentcommons:${IMAGE_TAG:-local}
+  build: .
+  env_file: .env
+  init: true
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: agentcommons
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: agentcommons
+    volumes: ["agentcommons-db:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentcommons -d agentcommons"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    <<: *application
+    command: ["pnpm", "db:migrate"]
+    environment:
+      DATABASE_MIGRATION_URL: ${DATABASE_MIGRATION_URL:?Set DATABASE_MIGRATION_URL using host db}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+  api:
+    <<: *application
+    environment:
+      DATABASE_MIGRATION_URL: ""
+      POSTGRES_PASSWORD: ""
+      HOST: 0.0.0.0
+      PORT: "3000"
+    ports: ["${API_BIND_ADDRESS:-127.0.0.1}:3000:3000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+volumes:
+  agentcommons-db:

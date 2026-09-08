@@ -1,0 +1,46 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.{ts,mjs}", "*.config.{ts,js}", "e2e/**/*.test.ts"]
+    },
+    "packages/*": {
+      "entry": [
+        "src/index.ts",
+        "src/cli.ts",
+        "auth-schema.ts",
+        "src/**/*.test.ts",
+        "test/**/*.test.ts",
+        "scripts/*.{ts,mjs}"
+      ]
+    },
+    "apps/*": {
+      "entry": [
+        "src/main.{ts,tsx}",
+        "src/entry-server.tsx",
+        "src/**/*.test.ts",
+        "test/**/*.test.ts",
+        "scripts/*.{ts,mjs}"
+      ]
+    },
+    "infra": {
+      "entry": [
+        "index.ts",
+        "test/**/*.test.ts",
+        "scripts/*.ts",
+        "vitest.config.ts"
+      ],
+      "ignoreDependencies": ["tsx"],
+      "ignoreBinaries": ["pulumi"]
+    },
+    "packages/hook": {
+      "entry": [
+        "build.ts",
+        "src/entry.ts",
+        "src/local.ts",
+        "test/**/*.test.ts",
+        "test/kill-worker.ts"
+      ]
+    }
+  }
+}

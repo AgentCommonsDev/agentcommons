@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": ".", "types": ["node"] },
+  "include": [
+    "src/**/*.ts",
+    "schemas/**/*.ts",
+    "normalizers/**/*.ts",
+    "redaction/**/*.ts",
+    "format/**/*.ts",
+    "metadata/**/*.ts"
+  ]
+}

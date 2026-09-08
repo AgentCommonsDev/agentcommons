@@ -1,0 +1,274 @@
+[
+  {
+    "source": "/tmp/agentcommons-live-capture/gemini/raw/hooks.jsonl",
+    "destination": "fixtures/hooks/gemini-cli-0.35.3-tool-events.jsonl",
+    "jsonl": true,
+    "sessionId": "e8c0026d-b5c8-49ec-af84-6eaf5fa5ced5",
+    "sourceSha256": "b0331bddd90433c9b4cc0472f8c4b51a33b156616cbfe3214b110b4c647d6e34",
+    "sha256": "591a43cdae9a029f37b0ba5102e70a6fb32e109976ac1189d676006c7641de06",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/pi/google-raw/events.jsonl",
+    "destination": "fixtures/hooks/pi-0.73.1-cli-events.jsonl",
+    "jsonl": true,
+    "sourceSha256": "9d5b9b55449610877c03c02bff0506ee8d2aa6fb06c9c31adb3eda5e05d5c893",
+    "sha256": "9d5b9b55449610877c03c02bff0506ee8d2aa6fb06c9c31adb3eda5e05d5c893",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/pi/lifecycle/events.jsonl",
+    "destination": "fixtures/hooks/pi-0.73.1-lifecycle-events.jsonl",
+    "jsonl": true,
+    "sourceSha256": "d7f9452ba2ec5f6c8cb582f4e16bb9606baa71699f5bc78f05960e2fcca1a432",
+    "sha256": "d7f9452ba2ec5f6c8cb582f4e16bb9606baa71699f5bc78f05960e2fcca1a432",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/claude/raw/hooks.jsonl",
+    "destination": "fixtures/hooks/claude-code-2.1.263-live-tool-events.jsonl",
+    "jsonl": true,
+    "sessionId": "93db0511-4472-4f3b-90be-899be97a89d1",
+    "sourceSha256": "971aa38f909379dd61055efdcbc875db71051d76cc1b51b0e5eaf3d4320940d5",
+    "sha256": "db5c9e2de72fc8fa6a014697355c49fcdfe9f1f950630cfed198a0295041d8df",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/gemini/raw/1788819018094-308602-BeforeModel.transcript",
+    "destination": "fixtures/transcripts/gemini-cli/01-user.json",
+    "jsonl": false,
+    "sourceSha256": "e593fb248dc61b147c1e1b0fd21ad12ed8380b7bc33c502003460aa8d6711e09",
+    "sha256": "8059816e800b8e80ab69bb2de098e1618a7310c19ba7fd5a19a5ae20172ddaea",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/gemini/raw/1788819020168-308749-BeforeTool.transcript",
+    "destination": "fixtures/transcripts/gemini-cli/02-before-tools.json",
+    "jsonl": false,
+    "sourceSha256": "0bfcd8cc53fdfb6cd3be7e17bc7c441e213c29380eb0323969180cc7d79813a7",
+    "sha256": "163fd8e73a987bac2b644adade88460238fcceda87124669c191407eca965a25",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/gemini/raw/1788819020349-308780-AfterTool.transcript",
+    "destination": "fixtures/transcripts/gemini-cli/03-after-tools-hook.json",
+    "jsonl": false,
+    "sourceSha256": "0bfcd8cc53fdfb6cd3be7e17bc7c441e213c29380eb0323969180cc7d79813a7",
+    "sha256": "163fd8e73a987bac2b644adade88460238fcceda87124669c191407eca965a25",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/gemini/raw/1788819020424-308792-PreCompress.transcript",
+    "destination": "fixtures/transcripts/gemini-cli/04-tools-persisted.json",
+    "jsonl": false,
+    "sourceSha256": "eec5b967435617bd446bec903559f18a3df96d726d50279b970b7324b208f26a",
+    "sha256": "a5b9c0a923fa43d32a1ef8905c228c72f16315ca9625bd4c5dedce763dcdbd83",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/gemini/raw/1788819022246-308924-SessionEnd.transcript",
+    "destination": "fixtures/transcripts/gemini-cli/05-final.json",
+    "jsonl": false,
+    "sourceSha256": "37727c193c08f7ca785f4456ce3f36111957ce24529fc99533088eb285991348",
+    "sha256": "8ca5e5ecdeb161af2e866fabd10f79d31ea6597ace2f645d384e1918da9dfcbe",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/pi/sessions/2026-09-07T22-10-03-597Z_01a07deb-d8cc-7158-bdc6-d421ec5341f4.jsonl",
+    "destination": "fixtures/transcripts/pi/cli-tool.jsonl",
+    "jsonl": true,
+    "sourceSha256": "9ddc2f5675b20f44f2f1a9ef5366c6f6c09378a69f9519a761c6ae69682a6c99",
+    "sha256": "9ddc2f5675b20f44f2f1a9ef5366c6f6c09378a69f9519a761c6ae69682a6c99",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/pi/lifecycle/sessions/2026-09-07T22-12-17-060Z_01a07ded-e222-7379-90d5-02afba4902df.jsonl",
+    "destination": "fixtures/transcripts/pi/tree-and-resume.jsonl",
+    "jsonl": true,
+    "sourceSha256": "37504a75c9f452b25c5a461e72a410d7cbba294addbd5249a151d2c78ecb7c7d",
+    "sha256": "37504a75c9f452b25c5a461e72a410d7cbba294addbd5249a151d2c78ecb7c7d",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/pi/lifecycle/sessions/2026-09-07T22-12-21-090Z_01a07ded-f1e2-727d-aaf1-6354195d6803.jsonl",
+    "destination": "fixtures/transcripts/pi/fork.jsonl",
+    "jsonl": true,
+    "sourceSha256": "6e70fb136161669e9b243695f3783d508cca0e45b54a3835c8cc53dbffdbe472",
+    "sha256": "6e70fb136161669e9b243695f3783d508cca0e45b54a3835c8cc53dbffdbe472",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/home/user/.claude/projects/-tmp-agentcommons-live-capture-claude-repo/93db0511-4472-4f3b-90be-899be97a89d1.jsonl",
+    "destination": "fixtures/transcripts/claude-code/parent.jsonl",
+    "jsonl": true,
+    "sourceSha256": "74ba32a82ac89a7116432192718392cbb6835a2a5bb799e36dc1c219361c8de6",
+    "sha256": "74ba32a82ac89a7116432192718392cbb6835a2a5bb799e36dc1c219361c8de6",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/home/user/.claude/projects/-tmp-agentcommons-live-capture-claude-repo/93db0511-4472-4f3b-90be-899be97a89d1/subagents/agent-ab38e423152bb70b9.jsonl",
+    "destination": "fixtures/transcripts/claude-code/subagent.jsonl",
+    "jsonl": true,
+    "sourceSha256": "cf9f5334308bb99a30947499f52e49ea624f7313a6cce8278dca8f749870f811",
+    "sha256": "cf9f5334308bb99a30947499f52e49ea624f7313a6cce8278dca8f749870f811",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/home/user/.codex/sessions/2026/09/07/rollout-2026-09-07T22-10-30-01a07dec-42d7-7f80-982a-ac0990a52831.jsonl",
+    "destination": "fixtures/transcripts/codex/tool.jsonl",
+    "jsonl": true,
+    "sourceSha256": "47df430e270e24b90b5f307f8924078250728ed3a578aba1efa3c175fe219430",
+    "sha256": "71822339cc06da53d3945b4a91eb98ae691a34c7042bbcc5df4163a66195b187",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/codex/all-events/hooks.jsonl",
+    "destination": "fixtures/hooks/codex-0.153.4-live-tool-events.jsonl",
+    "jsonl": true,
+    "sourceSha256": "714996e673271fa0a103cbe180ae7459387f295a76d168b70f2411d53ee8c327",
+    "sha256": "714996e673271fa0a103cbe180ae7459387f295a76d168b70f2411d53ee8c327",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/home/user/.codex/sessions/2026/09/07/rollout-2026-09-07T22-20-07-01a07df5-0e59-77c1-8d3d-d649da83637e.jsonl",
+    "destination": "fixtures/transcripts/codex/parent-with-subagent.jsonl",
+    "jsonl": true,
+    "sourceSha256": "aed92c0b331f91d35f118fcae69911873a5e7ead3fe62f2e7262c46a96e02c92",
+    "sha256": "101b40c73434c5fb0e655c03bdc5a46c77f040eb2ae9f9a000ac242b1861dc56",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/home/user/.codex/sessions/2026/09/07/rollout-2026-09-07T22-20-19-01a07df5-3d12-7ea1-9f0d-a8f906f862b3.jsonl",
+    "destination": "fixtures/transcripts/codex/subagent.jsonl",
+    "jsonl": true,
+    "sourceSha256": "c22fa36ea21edca0d453f26611ea74fca440974d0ace0ad39ecab62e8fd4c963",
+    "sha256": "2b52caaf9e48c611202bb79029a8d91292330b80b7fa152bd9f2c2db8fdb8544",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  }
+]
