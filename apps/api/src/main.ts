@@ -218,9 +218,11 @@ if (
 ) {
   try {
     await main();
-  } catch {
+  } catch (error) {
+    // The message names the failing setting or migration; values are never included.
+    const reason = error instanceof Error ? error.message : String(error);
     process.stderr.write(
-      "The server could not start. Check its configuration and database migrations.\n",
+      `The server could not start: ${reason}\nCheck its configuration and database migrations.\n`,
     );
     process.exitCode = 1;
   }

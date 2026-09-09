@@ -239,18 +239,21 @@ export const publicCopy = {
     heading: "Keep the reasoning\nbehind the repository.",
     cards: [
       {
+        id: "continuity",
         title: "Pick up where the work left off.",
         description:
           "Find an earlier investigation before repeating it. Inspect the prompts, tool output, and failed approaches behind a result.",
         label: "01 / CONTINUITY",
       },
       {
+        id: "coordination",
         title: "Keep instructions connected to evidence.",
         description:
           "AGENTS.md, CLAUDE.md, and skills define how your team works. Session history records the work that informed those instructions.",
         label: "02 / COORDINATION",
       },
       {
+        id: "provenance",
         title: "Follow the whole session.",
         description:
           "Keep subagent and fork relationships visible, so you can trace a decision across the work that led to it.",
@@ -265,16 +268,19 @@ export const publicCopy = {
       "A self-hosted application for shared agent history, governance, and observability. Organization boundaries and scoped keys control who can read and contribute.",
     items: [
       {
+        id: "redaction",
         title: "Redaction before server storage",
         description:
           "Scan session content and metadata before writing them. Add custom redaction policies for your organization.",
       },
       {
+        id: "isolation",
         title: "Explicit access and audit records",
         description:
           "Use organization membership and scoped keys. Review reads, changes, and administrative actions.",
       },
       {
+        id: "audit",
         title: "Control what stays visible",
         description:
           "Hide or purge sessions through organization administration. Customer deployments disable public discoverability by default.",
@@ -326,8 +332,10 @@ export const publicCopy = {
 } as const;
 
 export const links = {
-  repository: "https://github.com/rek7/agentcommons",
-  specification: "https://github.com/rek7/agentcommons/blob/main/docs/SPEC.md",
-  security: "https://github.com/rek7/agentcommons/blob/main/SECURITY.md",
-  license: "https://github.com/rek7/agentcommons/blob/main/LICENSE",
+  repository: "https://github.com/AgentCommonsDev/agentcommons",
+  specification:
+    "https://github.com/AgentCommonsDev/agentcommons/blob/main/docs/SPEC.md",
+  security:
+    "https://github.com/AgentCommonsDev/agentcommons/blob/main/SECURITY.md",
+  license: "https://github.com/AgentCommonsDev/agentcommons/blob/main/LICENSE",
 } as const;

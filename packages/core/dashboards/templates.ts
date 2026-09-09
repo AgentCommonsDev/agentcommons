@@ -14,8 +14,10 @@ export const standardDashboardVariables: DashboardVariable[] = [
   },
   { name: "repo", type: "repo", label: "Repository" },
 ];
-const time =
-  "started_at >= {time_range_from:DateTime} AND started_at < {time_range_to:DateTime}";
+/** Window predicate; `alias` qualifies `started_at` when the tile joins `sessions` under a name. */
+const timeOf = (alias = "") =>
+  `${alias}started_at >= {time_range_from:DateTime} AND ${alias}started_at < {time_range_to:DateTime}`;
+const time = timeOf();
 const repo =
   "(empty({repo:Array(String)}) OR repo_name IN {repo:Array(String)})";
 const scope = `${time} AND ${repo}`;
@@ -173,7 +175,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Most used tools",
       layout: layout(5, 6),
-      sql: `SELECT t.tool_name AS tool, count() AS sessions FROM session_tools t JOIN sessions s ON s.session_id = t.session_id WHERE s.${time} AND (empty({repo:Array(String)}) OR s.repo_name IN {repo:Array(String)}) GROUP BY tool ORDER BY sessions DESC LIMIT 12`,
+      sql: `SELECT t.tool_name AS tool, count() AS sessions FROM session_tools t JOIN sessions s ON s.session_id = t.session_id WHERE ${timeOf("s.")} AND (empty({repo:Array(String)}) OR s.repo_name IN {repo:Array(String)}) GROUP BY tool ORDER BY sessions DESC LIMIT 12`,
       chart: {
         series: [{ type: "bar", encode: { x: "sessions", y: "tool" } }],
         xAxis: { type: "value" },

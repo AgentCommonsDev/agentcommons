@@ -6,6 +6,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { startApp, type StartedApp } from "../../apps/api/test/app.js";
+import {
+  adminToolNames,
+  readToolNames,
+} from "../../apps/api/src/services/mcp.js";
 import type { startMailpit } from "../../apps/api/test/mailpit.js";
 import type { TraceDatabase } from "./support.js";
 
@@ -85,30 +89,14 @@ export async function measureCatalog(userClient: Client, adminClient: Client) {
     read_budget_bytes: 20 * 1024,
     admin_budget_bytes: 25 * 1024,
   };
-  const readTools = [
-    "dashboard_list",
-    "dashboard_get",
-    "dashboard_render",
-    "dashboard_save",
-    "dashboard_delete",
-    "search",
-    "get",
-    "sql",
-  ];
+  const readTools = [...readToolNames];
   assert.deepEqual(
     (await userClient.listTools()).tools.map((tool) => tool.name),
     readTools,
   );
   assert.deepEqual(
     (await adminClient.listTools()).tools.map((tool) => tool.name),
-    [
-      ...readTools,
-      "set_visibility",
-      "purge",
-      "audit",
-      "status",
-      "dashboard_set_default",
-    ],
+    [...readTools, ...adminToolNames],
   );
   return catalog;
 }

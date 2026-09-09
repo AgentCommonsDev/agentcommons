@@ -22,6 +22,16 @@ import { Example } from "../components/example";
 import { Button } from "../components/ui/button";
 import { usePublicAccount } from "../lib/public-account";
 
+/** One icon per card; the copy carries the card id so the mapping is checked by the compiler. */
+const principleIcons: Record<
+  (typeof copy.site.principles.cards)[number]["id"],
+  typeof Layers
+> = { continuity: Layers, coordination: BookOpen, provenance: GitFork };
+const securityIcons: Record<
+  (typeof copy.site.security.items)[number]["id"],
+  typeof ShieldCheck
+> = { redaction: ShieldCheck, isolation: Fingerprint, audit: LockKeyhole };
+
 function Architecture() {
   return (
     <div
@@ -182,8 +192,8 @@ export function LandingPage() {
           </h2>
         </div>
         <div className="principle-grid">
-          {copy.site.principles.cards.map((card, index) => {
-            const Icon = [Layers, BookOpen, GitFork][index] ?? Layers;
+          {copy.site.principles.cards.map((card) => {
+            const Icon = principleIcons[card.id];
             return (
               <article className="principle-card" key={card.title}>
                 <div className="principle-top">
@@ -234,9 +244,8 @@ export function LandingPage() {
             </div>
           </div>
           <div className="security-items">
-            {copy.site.security.items.map((item, index) => {
-              const Icon =
-                [ShieldCheck, Fingerprint, LockKeyhole][index] ?? ShieldCheck;
+            {copy.site.security.items.map((item) => {
+              const Icon = securityIcons[item.id];
               return (
                 <article key={item.title}>
                   <div className="security-icon">
