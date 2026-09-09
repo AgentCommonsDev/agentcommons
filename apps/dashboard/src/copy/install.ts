@@ -27,14 +27,31 @@ export const installCopy = {
   prepare: {
     title: "Before you run it",
     description:
-      "The machine needs Node.js 20 or newer and curl. The installer downloads the capture hook for Claude Code, Codex, Gemini CLI and pi, registers the AgentCommons MCP server with Claude Code, Codex and Gemini CLI, writes the guidance that makes agents search AgentCommons before they change code into each tool's global instructions file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.gemini/GEMINI.md; pi gets it from its extension), and runs a check. Nothing is added to your repositories.",
-    notesTitle: "Per tool",
+      "The machine needs Node.js 20 or newer and curl. One command does the rest; your repositories are not touched.",
+    does: {
+      hook: {
+        title: "Capture hook",
+        detail: "Claude Code, Codex, Gemini CLI and pi",
+      },
+      mcp: {
+        title: "MCP server",
+        detail: "Claude Code, Codex and Gemini CLI; pi through its extension",
+      },
+      guidance: {
+        title: "Search-first guidance",
+        detail:
+          "Added to each tool's global instructions: ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.gemini/GEMINI.md",
+      },
+      updates: {
+        title: "Self-check and updates",
+        detail: "Hooks update themselves from this server",
+      },
+    },
+    notesTitle: "Good to know",
     notes: {
-      CLAUDE_CODE: "Sessions upload automatically once the hook is installed.",
-      CODEX:
-        "Asks you to trust the hooks once, interactively, before capture starts.",
-      GEMINI_CLI: "Headless runs need GEMINI_API_KEY set in the environment.",
-      PI: "The installer places the pi extension. Restart pi to load it. The extension captures sessions and gives pi the same AgentCommons tools.",
+      CODEX: "Trust the hooks once when Codex asks.",
+      GEMINI_CLI: "Headless runs need GEMINI_API_KEY.",
+      PI: "Restart pi after installing.",
     },
   },
   run: {
@@ -42,7 +59,7 @@ export const installCopy = {
     description:
       "Paste it into a terminal on the machine you are connecting. Run it again only on a new machine or to change the key; installed hooks update themselves.",
     shellHint:
-      "The installer writes the key into your bash, zsh and fish startup files. Open a new terminal before starting Codex; it reads the key from the environment.",
+      "Then open a new terminal so Codex sees the key. The installer adds it to your bash, zsh and fish startup files.",
   },
   arrivals: {
     title: "Start a coding agent",

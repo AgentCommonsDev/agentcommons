@@ -1,6 +1,14 @@
 import { formatInstallCommand } from "@agentcommons/core/format/install";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowRight, Copy, Radio } from "lucide-react";
+import {
+  ArrowRight,
+  Copy,
+  Download,
+  FileText,
+  Plug,
+  Radio,
+  RefreshCw,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
 import {
   CopyButton,
@@ -43,7 +51,7 @@ function InstallCommand({ apiKey }: { apiKey: string | null }) {
       : formatInstallCommand(window.location.origin, apiKey);
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div
           data-testid="install-command"
           aria-disabled={command === null ? true : undefined}
@@ -284,20 +292,50 @@ export function Install() {
           title={copy.install.prepare.title}
           description={copy.install.prepare.description}
         >
-          <div>
-            <p className="mb-2 text-xs font-medium text-muted">
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {(
+              [
+                ["hook", Download],
+                ["mcp", Plug],
+                ["guidance", FileText],
+                ["updates", RefreshCw],
+              ] as const
+            ).map(([key, Icon]) => (
+              <li
+                key={key}
+                className="flex items-start gap-3 rounded-md border border-line bg-surface px-3 py-2.5"
+              >
+                <Icon
+                  size={16}
+                  aria-hidden
+                  className="mt-0.5 shrink-0 text-accent"
+                />
+                <div className="min-w-0 text-sm">
+                  <p className="font-medium">
+                    {copy.install.prepare.does[key].title}
+                  </p>
+                  <p className="text-xs leading-relaxed text-muted">
+                    {copy.install.prepare.does[key].detail}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted">
+            <span className="font-medium">
               {copy.install.prepare.notesTitle}
-            </p>
-            <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)]">
-              {Object.entries(copy.install.prepare.notes).map(
-                ([harness, note]) => (
-                  <div key={harness} className="contents">
-                    <dt className="font-medium">{harnessLabel(harness)}</dt>
-                    <dd className="text-muted">{note}</dd>
-                  </div>
-                ),
-              )}
-            </dl>
+            </span>
+            {Object.entries(copy.install.prepare.notes).map(
+              ([harness, note]) => (
+                <span
+                  key={harness}
+                  className="inline-flex items-center gap-1.5"
+                >
+                  <Badge variant="outline">{harnessLabel(harness)}</Badge>
+                  <span>{note}</span>
+                </span>
+              ),
+            )}
           </div>
         </Step>
         <Step
