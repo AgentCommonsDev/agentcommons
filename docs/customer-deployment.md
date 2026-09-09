@@ -49,7 +49,7 @@ The remainder of this document is the earlier Fargate/RDS plan, kept for referen
 | Instance mode             | `customer`                                                                              |
 | AWS region                | `us-west-2` (Oregon)                                                                    |
 | AWS account               | Discover as `AWS_ACCOUNT_ID` using the command below                                    |
-| GitHub repository         | `rek7/agentcommons`                                                                     |
+| GitHub repository         | `AgentCommonsDev/agentcommons`                                                          |
 | GitHub OIDC provider      | `arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com`       |
 | OIDC audience             | `sts.amazonaws.com`                                                                     |
 | Recommended initial stack | `<PULUMI_OWNER>/agentcommons/prod`                                                      |
@@ -162,7 +162,7 @@ placeholder must be replaced with the issued regional certificate ARN.
 config:
   aws:region: us-west-2
   agentcommons:hostname: hooks.tools.goodhartlabs.com
-  agentcommons:githubRepository: rek7/agentcommons
+  agentcommons:githubRepository: AgentCommonsDev/agentcommons
   agentcommons:githubOidcProviderArn: arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com
   agentcommons:certificateArn: <issued-us-west-2-ACM-certificate-ARN>
   agentcommons:databaseInstanceClass: db.t4g.small

@@ -196,7 +196,7 @@ const privacy: LegalDocument = {
     {
       heading: "Security",
       paragraphs: [
-        "Database row policies enforce organization isolation on every read and write. API keys are hashed and scoped. Redaction runs before any write. Server logs never contain request bodies. Databases and backups are encrypted at rest, traffic uses TLS, and the code is open for review at github.com/rek7/agentcommons.",
+        "Database row policies enforce organization isolation on every read and write. API keys are hashed and scoped. Redaction runs before any write. Server logs never contain request bodies. Databases and backups are encrypted at rest, traffic uses TLS, and the code is open for review at github.com/AgentCommonsDev/agentcommons.",
         "No system is perfectly secure. Report a vulnerability through GitHub's private vulnerability reporting for the repository. We acknowledge reports within two business days and share a fix or mitigation plan within fourteen.",
       ],
     },
@@ -314,7 +314,7 @@ const terms: LegalDocument = {
       heading: "Availability and support",
       paragraphs: [
         "We aim to keep the service available at all times, but Free and Pro carry no uptime commitment and no service credits. We may run maintenance, and we may change or remove features. If a change materially reduces functionality you pay for, we tell organization owners in advance.",
-        `Account and billing questions go to ${contactEmail}. Product questions and bug reports go to the public repository at github.com/rek7/agentcommons. We answer as quickly as we can and promise no response times on Free or Pro.`,
+        `Account and billing questions go to ${contactEmail}. Product questions and bug reports go to the public repository at github.com/AgentCommonsDev/agentcommons. We answer as quickly as we can and promise no response times on Free or Pro.`,
       ],
     },
     {
@@ -326,7 +326,7 @@ const terms: LegalDocument = {
     {
       heading: "Intellectual property",
       paragraphs: [
-        "ZeroPath and its licensors own the service, its design, and its trademarks. The source code is licensed under the Apache License 2.0 at github.com/rek7/agentcommons. If you send us feedback, we may use it without obligation to you.",
+        "ZeroPath and its licensors own the service, its design, and its trademarks. The source code is licensed under the Apache License 2.0 at github.com/AgentCommonsDev/agentcommons. If you send us feedback, we may use it without obligation to you.",
       ],
     },
     {

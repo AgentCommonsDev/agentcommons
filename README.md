@@ -12,9 +12,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rek7/agentcommons/actions/workflows/ci.yml"><img src="https://github.com/rek7/agentcommons/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://github.com/rek7/agentcommons/actions/workflows/installer.yml"><img src="https://github.com/rek7/agentcommons/actions/workflows/installer.yml/badge.svg" alt="Installer platforms status"></a>
-  <a href="https://github.com/rek7/agentcommons/actions/workflows/live-canary.yml"><img src="https://github.com/rek7/agentcommons/actions/workflows/live-canary.yml/badge.svg" alt="Live harness canary status"></a>
+  <a href="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/ci.yml"><img src="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/installer.yml"><img src="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/installer.yml/badge.svg" alt="Installer platforms status"></a>
+  <a href="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/live-canary.yml"><img src="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/live-canary.yml/badge.svg" alt="Live harness canary status"></a>
 </p>
 
 AgentCommons keeps sessions from Claude Code, Codex, Gemini CLI, and pi searchable
