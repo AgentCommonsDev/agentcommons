@@ -20,8 +20,13 @@ it("real commits and pushes run the checked-in gates and stop on failures", () =
   const bin = join(directory, "bin");
   for (const path of [repo, bin]) mkdirSync(path);
   const log = join(directory, "calls.txt");
+  // Under a git hook (a push from a linked worktree exports GIT_DIR), inherited git
+  // variables would point these commands at the outer repository, not the fixture.
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+  );
   const env = {
-    ...process.env,
+    ...inherited,
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     AC_HOOK_LOG: log,
     AC_FAIL_GATE: "",

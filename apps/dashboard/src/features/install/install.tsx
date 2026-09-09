@@ -35,6 +35,7 @@ import { createPersonalKey } from "../../lib/api/keys";
 import { harnessLabel, relativeTime } from "../../lib/display";
 import { paths } from "../../lib/routes";
 import { cn } from "../../lib/utils";
+import { useHighlightedCode } from "../../components/app/markdown";
 import { KeySecretPanel } from "../keys/key-secret";
 import { useRefreshKeys } from "../keys/queries";
 import { InstallKeyPicker } from "../keys/reveal";
@@ -49,6 +50,8 @@ function InstallCommand({ apiKey }: { apiKey: string | null }) {
     apiKey === null
       ? null
       : formatInstallCommand(window.location.origin, apiKey);
+  // The same shiki highlighter as Markdown code blocks; plain text until it loads.
+  const { html } = useHighlightedCode(command ?? "", "bash");
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -64,6 +67,11 @@ function InstallCommand({ apiKey }: { apiKey: string | null }) {
         >
           {command === null ? (
             copy.install.command.pending
+          ) : html !== null ? (
+            <div
+              className="highlighted-code highlighted-inline"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
           ) : (
             <code>{command}</code>
           )}

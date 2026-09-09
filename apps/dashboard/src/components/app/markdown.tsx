@@ -5,21 +5,23 @@ import { copy } from "../../copy";
 import { cn } from "../../lib/utils";
 import { CopyButton } from "./states";
 
-const supported = new Set([
-  "bash",
-  "json",
-  "typescript",
-  "javascript",
-  "tsx",
-  "jsx",
-  "sql",
-  "python",
-  "diff",
-  "yaml",
-  "markdown",
-  "text",
-]);
-const aliases: Record<string, string> = {
+/** One table names every language shiki loads; aliases point at its keys. */
+const langs = {
+  bash: () => import("@shikijs/langs/bash"),
+  json: () => import("@shikijs/langs/json"),
+  typescript: () => import("@shikijs/langs/typescript"),
+  javascript: () => import("@shikijs/langs/javascript"),
+  tsx: () => import("@shikijs/langs/tsx"),
+  jsx: () => import("@shikijs/langs/jsx"),
+  sql: () => import("@shikijs/langs/sql"),
+  python: () => import("@shikijs/langs/python"),
+  diff: () => import("@shikijs/langs/diff"),
+  yaml: () => import("@shikijs/langs/yaml"),
+  markdown: () => import("@shikijs/langs/markdown"),
+};
+const plain = "text";
+const supported = new Set([...Object.keys(langs), plain]);
+const aliases: Record<string, keyof typeof langs> = {
   sh: "bash",
   shell: "bash",
   zsh: "bash",
@@ -42,31 +44,18 @@ async function loadHighlighter() {
       import("@shikijs/themes/github-light"),
       import("@shikijs/themes/github-dark"),
     ],
-    langs: [
-      import("@shikijs/langs/bash"),
-      import("@shikijs/langs/json"),
-      import("@shikijs/langs/typescript"),
-      import("@shikijs/langs/javascript"),
-      import("@shikijs/langs/tsx"),
-      import("@shikijs/langs/jsx"),
-      import("@shikijs/langs/sql"),
-      import("@shikijs/langs/python"),
-      import("@shikijs/langs/diff"),
-      import("@shikijs/langs/yaml"),
-      import("@shikijs/langs/markdown"),
-    ],
+    langs: Object.values(langs).map((load) => load()),
   });
 }
 /** Fenced code with a language label and copy control; highlighting loads lazily. */
-export function CodeBlock({
-  content,
+/**
+ * Shiki HTML for `content`, or null until the highlighter has loaded (callers show the
+ * plain text meanwhile). One highlighter instance serves every code block on the page.
+ */
+export function useHighlightedCode(
+  content: string,
   language = "text",
-  className,
-}: {
-  content: string;
-  language?: string | undefined;
-  className?: string | undefined;
-}) {
+): { lang: string; html: string | null } {
   const normalized = aliases[language] ?? language;
   const lang = supported.has(normalized) ? normalized : "text";
   const [html, setHtml] = useState<{ content: string; html: string } | null>(
@@ -94,6 +83,18 @@ export function CodeBlock({
       current = false;
     };
   }, [content, lang]);
+  return { lang, html: html?.content === content ? html.html : null };
+}
+export function CodeBlock({
+  content,
+  language = "text",
+  className,
+}: {
+  content: string;
+  language?: string | undefined;
+  className?: string | undefined;
+}) {
+  const { lang, html } = useHighlightedCode(content, language);
   return (
     <div
       className={cn(
@@ -107,11 +108,11 @@ export function CodeBlock({
         </span>
         <CopyButton value={content} />
       </div>
-      {html?.content === content ? (
+      {html !== null ? (
         <div
           className="highlighted-code overflow-x-auto"
           tabIndex={0}
-          dangerouslySetInnerHTML={{ __html: html.html }}
+          dangerouslySetInnerHTML={{ __html: html }}
         />
       ) : (
         <pre className="m-0 overflow-x-auto px-3 py-2.5 font-mono text-[12.5px] leading-relaxed">
