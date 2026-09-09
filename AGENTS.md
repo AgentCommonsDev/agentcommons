@@ -150,6 +150,18 @@ this file, ADRs, code comments) are exempt. Rules that matter most for public co
 with the fact; no "It's not X, it's Y"; no throat-clearing; no colon reveals or dramatic
 fragments; no puffery; concrete nouns and numbers; short sentences; active voice.
 
+## Screenshots follow the UI
+
+README.md and `docs/assets/screenshots/*.png` show the real dashboard, captured from the seeded
+browser fixture (provenance and settings in `docs/assets/README.md`). Any change that alters what
+those screens show (layout, components, copy, colours, new controls such as counts or export
+actions) retakes every referenced screenshot in the same change: run
+`apps/dashboard/scripts/readme-screenshots.mjs` against the fixture, both themes, replace the
+files, and update the capture date in `docs/assets/README.md`. Never hand-edit a capture or
+leave a stale one; a dashboard change that touches a screen the README shows is incomplete
+until its screenshots are regenerated. When you add a screenshot anywhere (README, docs, blog),
+add it to that script so it is regenerated with the rest.
+
 ## Commands
 
 ```

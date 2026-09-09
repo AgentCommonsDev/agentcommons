@@ -1,3 +1,4 @@
+import { availableParallelism, totalmem } from "node:os";
 import { setTimeout } from "node:timers/promises";
 import type { PrismaClient } from "@agentcommons/db";
 import { fileURLToPath } from "node:url";
@@ -38,7 +39,11 @@ export async function startTraceDatabase(
       .withExtraHosts([
         { host: "host.docker.internal", ipAddress: "host-gateway" },
       ])
-      .withResourcesQuota({ memory: 4 * 1024 * 1024 * 1024, cpu: 4 })
+      // Bounded by the machine so the same fixture starts on a 2-vCPU CI runner.
+      .withResourcesQuota({
+        memory: Math.min(4 * 1024 * 1024 * 1024, Math.floor(totalmem() / 2)),
+        cpu: Math.min(4, availableParallelism()),
+      })
       .withWaitStrategy(Wait.forHttp("/ping", 8123))
       .start();
     release.unshift(() => container.stop());

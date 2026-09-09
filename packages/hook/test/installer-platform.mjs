@@ -123,7 +123,11 @@ try {
     assert.equal(uninstall.code, 0, uninstall.output);
     assert.equal(requests, before);
     assert.equal(await readFile(configPath, "utf8"), original);
-    assert.doesNotMatch(await readFile(rc, "utf8"), /AGENTCOMMONS_API_KEY/);
+    // Uninstall removes an rc file that held only our block, so absence also passes.
+    const rcAfter = await readFile(rc, "utf8").catch((error) =>
+      error.code === "ENOENT" ? "" : Promise.reject(error),
+    );
+    assert.doesNotMatch(rcAfter, /AGENTCOMMONS_API_KEY/);
     process.stdout.write(
       JSON.stringify({
         platform: process.platform,
