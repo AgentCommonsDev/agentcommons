@@ -69,8 +69,10 @@ while a reader holds the lock. Native reader flags also gate SaaS embedding enti
 
 ## Native lexical semantics
 
-The search box uses native lowercase tokenization and English Snowball stemming,
-matching all query tokens. The same native expression defines the text index and
+The search box uses native lowercase tokenization and English inflection normalization,
+matching all query tokens. (Snowball stemming through `stem()` was replaced by a
+standard-function rule table in ADR 0056 because ClickHouse Cloud locks the experimental
+NLP functions off.) The same native expression defines the text index and
 query. A scalar subquery is required to make the normalized needle a native constant;
 passing an arrayMap expression directly reproduced ILLEGAL_COLUMN on26.8.2.7.
 PostgreSQL websearch operators are removed with that database dialect; no custom
@@ -193,7 +195,7 @@ waits for consistent cross-store visibility; it is not a claim of measured produ
 capacity.
 
 The native text index uses the same `searchTermsSql` expression as search: native
-UTF-8 lowercase tokenization, English Snowball stemming and space joining, indexed
+UTF-8 lowercase tokenization, English inflection normalization (ADR 0056) and space joining, indexed
 with `text(tokenizer=splitByNonAlpha)`. A fresh 100,000-row ReplacingMergeTree probe
 with `FINAL` confirmed the current expression uses the `message_terms` text-index
 filter for `raresttoken runs`, matching 100 rows containing `raresttoken running`.

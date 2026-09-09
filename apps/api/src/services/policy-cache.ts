@@ -2,7 +2,7 @@ import type { Prisma, RedactionPolicy as PolicyRow } from "@agentcommons/db";
 import {
   builtinPolicies,
   PolicyCache,
-  policyDefinitionSchema,
+  policyDefinitionShapeSchema,
   type RedactionPolicy,
 } from "@agentcommons/core/redaction";
 
@@ -12,7 +12,8 @@ function definition(row: PolicyRow): RedactionPolicy {
     enabled: row.enabled,
     replacement: row.replacement,
   };
-  const policy = policyDefinitionSchema.parse(
+  // Rows were analysed when saved (services/policies.ts); reads stay off the recheck path.
+  const policy = policyDefinitionShapeSchema.parse(
     row.kind === "REGEX"
       ? { ...common, kind: row.kind, pattern: row.pattern, flags: row.flags }
       : {

@@ -103,8 +103,12 @@ export async function registerStaticRoutes(
       reply.header("X-Robots-Tag", "noindex, nofollow, noarchive");
     return reply.type("text/html; charset=utf-8").send(html);
   };
+  // Self-hosted instances have no public site: the root goes straight to the app,
+  // which sends signed-out visitors to sign-in.
   app.get("/", async (_request, reply) =>
-    document("index.html", options.mode !== "customer", reply),
+    options.mode === "customer"
+      ? reply.redirect("/app", 302)
+      : document("index.html", true, reply),
   );
   app.get("/docs", async (_request, reply) =>
     document("docs.html", options.mode !== "customer", reply),

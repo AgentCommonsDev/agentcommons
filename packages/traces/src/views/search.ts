@@ -1,15 +1,52 @@
-import { sqlIdentifier } from "../client.js";
+import { sqlIdentifier, sqlString } from "../client.js";
 
-/** Native Snowball stemming keeps inflections searchable without an application query parser. */
+/**
+ * English inflection rules applied in order to every lowercase token, identically on the
+ * indexed and the query side. They cover number, tense and aspect (plural `-s`/`-es`/`-ies`,
+ * `-ed`/`-ing` with a doubled consonant, consonant + `-y`, a final `-e`) with standard string
+ * functions only, so the same DDL runs on every ClickHouse deployment: `stem()` is an
+ * experimental function and ClickHouse Cloud locks `allow_experimental_nlp_functions` off.
+ * Every pattern is anchored on ASCII letters, so identifiers with digits or non-ASCII text
+ * stay literal. ADR 0056 records the measurement behind this table.
+ */
+export const englishInflectionRules: ReadonlyArray<
+  readonly [pattern: string, replacement: string]
+> = [
+  ["^([a-z]{2,})sses$", "\\1ss"],
+  ["^([a-z]{2,})ies$", "\\1i"],
+  ["^([a-z]{2,}[a-rt-z])s$", "\\1"],
+  ["^([a-z]+)eed$", "\\1ee"],
+  [
+    "^([a-z]*[aeiou][a-z]*)(?:(b)b|(g)g|(m)m|(n)n|(p)p|(r)r|(t)t)(?:ing|ed)$",
+    "\\1\\2\\3\\4\\5\\6\\7\\8",
+  ],
+  ["^([a-z]*[aeiou][a-z]*)(?:ing|ed)$", "\\1"],
+  ["^([a-z]*[b-df-hj-np-tv-z])y$", "\\1i"],
+  ["^([a-z]+[a-df-z])e$", "\\1"],
+];
+
+/** The per-token normalization as one nested standard-function expression. */
+export function normalizeTokenSql(token: string): string {
+  return englishInflectionRules.reduce<string>(
+    (expression, [pattern, replacement]) =>
+      `replaceRegexpOne(${expression},${sqlString(pattern)},${sqlString(replacement)})`,
+    token,
+  );
+}
+
+/** Lowercase tokens with their inflections normalized, joined for the text index. */
 export function searchTermsSql(expression: string): string {
-  return `arrayStringConcat(arrayMap(token -> stem(token,'english'),tokens(lowerUTF8(${expression}))),' ')`;
+  return `arrayStringConcat(arrayMap(token -> ${normalizeTokenSql("token")},tokens(lowerUTF8(${expression}))),' ')`;
 }
 
 export function searchViews(database: string): string[] {
   const db = sqlIdentifier(database);
   const owner = sqlIdentifier(`${database}_view_owner`);
   const terms = searchTermsSql("search_text");
-  const query = `(SELECT ${searchTermsSql("{q:String}")})`;
+  // The scalar subquery makes the normalized needle a native constant for the text index;
+  // assumeNotNull strips the Nullable wrapper every release gives scalar subqueries, which
+  // tokens() rejects on ClickHouse 26.2 (ClickHouse Cloud) and tolerates on 26.8.
+  const query = `assumeNotNull((SELECT ${searchTermsSql("{q:String}")}))`;
   // Match history through the text index, then require the latest published row. Filtering before
   // the latest-version check would resurrect a previous edit that still contains the query.
   return [

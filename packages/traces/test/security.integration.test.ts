@@ -1255,7 +1255,7 @@ it("keeps the native lexical relation uncapped beyond 500 rows and composes pred
 });
 
 // @req R-SRCH-02
-it("uses the shared native Snowball text index on 100000 rows and matches inflected search terms", async () => {
+it("uses the shared standard-function text index on 100000 rows and matches inflected search terms", async () => {
   const native = createTraceClient({
     url: db.traceMigration.url,
     username: db.traceMigration.username,
@@ -1273,8 +1273,24 @@ it("uses the shared native Snowball text index on 100000 rows and matches inflec
       .array(z.object({ expr: z.string() }))
       .parse(await indexes.json());
     expect(definition).toHaveLength(1);
-    expect(definition[0]?.expr).toContain("stem(");
+    // ClickHouse Cloud locks experimental NLP functions off; the index must not need them.
+    expect(definition[0]?.expr).not.toContain("stem(");
+    expect(definition[0]?.expr).toContain("replaceRegexpOne(");
     expect(definition[0]?.expr).toContain("lowerUTF8(search_text)");
+    const inflections = await native.query({
+      query: `SELECT ${searchTermsSql("{inflected:String}")} AS inflected,${searchTermsSql("{base:String}")} AS base`,
+      query_params: {
+        inflected:
+          "Libraries caching Policies committed expirations boundaries agreed indexes deployed TS2322 libssl.so.3 pending-batch.json",
+        base: "library cached policy commit expiration boundary agree index deploy TS2322 libssl.so.3 pending-batch.json",
+      },
+      format: "JSONEachRow",
+    });
+    const [normalized] = z
+      .array(z.object({ inflected: z.string(), base: z.string() }))
+      .parse(await inflections.json());
+    expect(normalized?.inflected).toBe(normalized?.base);
+    expect(normalized?.base).toContain("ts2322 libssl so 3 pend batch json");
     await native.command({
       query: `CREATE TABLE ${table} (id UInt64,revision Int64,search_text String,INDEX message_terms ${terms} TYPE text(tokenizer=splitByNonAlpha)) ENGINE=ReplacingMergeTree ORDER BY (id,revision)`,
     });

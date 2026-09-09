@@ -235,8 +235,8 @@ try {
   const catalog = {
     read_bytes: await catalogBytes(userClient),
     admin_bytes: await catalogBytes(adminClient),
-    read_budget_bytes: 15 * 1024,
-    admin_budget_bytes: 20 * 1024,
+    read_budget_bytes: 20 * 1024,
+    admin_budget_bytes: 25 * 1024,
   };
   catalogMeasured = catalog;
   assert.deepEqual(

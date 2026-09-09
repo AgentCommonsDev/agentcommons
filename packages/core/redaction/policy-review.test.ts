@@ -4,7 +4,9 @@ import { z } from "zod";
 import {
   builtinPolicies,
   composePolicies,
+  expressionSafety,
   policyDefinitionSchema,
+  policyDefinitionShapeSchema,
 } from "./policy.js";
 vi.mock("recheck", async (importOriginal) => {
   const original = await importOriginal<typeof recheck>();
@@ -78,4 +80,39 @@ it("retains supported backreferences and lookbehind without an invented regex su
   expect(
     policyDefinitionSchema.safeParse(definition("(?<=prefix)secret")).success,
   ).toBe(true);
+});
+
+// @req R-RED-02
+it("verifies every shipped pattern once here so reads never re-run the backtracking analysis", () => {
+  for (const policy of builtinPolicies) {
+    if (policy.kind !== "REGEX") continue;
+    expect(
+      expressionSafety(new RegExp(policy.pattern, policy.flags)),
+      policy.name,
+    ).toBe("safe");
+    const { id, builtin, ...definition } = policy;
+    expect(policyDefinitionSchema.safeParse(definition).success, id).toBe(true);
+    expect(builtin).toBe(true);
+  }
+  // Stored rows parse structurally without the analysis (the admin API ran it on save).
+  expect(
+    policyDefinitionShapeSchema.safeParse({
+      name: "stored",
+      enabled: true,
+      replacement: "[REDACTED]",
+      kind: "REGEX",
+      pattern: "(a+)+$",
+      flags: "g",
+    }).success,
+  ).toBe(true);
+  expect(
+    policyDefinitionSchema.safeParse({
+      name: "stored",
+      enabled: true,
+      replacement: "[REDACTED]",
+      kind: "REGEX",
+      pattern: "(a+)+$",
+      flags: "g",
+    }).success,
+  ).toBe(false);
 });

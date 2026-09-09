@@ -2,13 +2,27 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { sqlString } from "./client.js";
 
-/** Native libpq TLS options, shared by PostgreSQL engines and direct dictionaries. */
+/**
+ * Native libpq TLS options, shared by PostgreSQL engines and direct dictionaries. Only
+ * options the control URL names are emitted: libpq already defaults to `sslmode=prefer`,
+ * and ClickHouse releases before 26.8 (ClickHouse Cloud runs 26.2) reject every TLS
+ * key-value argument, so an unrequested option would break the migration there.
+ */
 function postgresTlsOptions(connection: string): Record<string, string> {
   const url = new URL(connection);
-  const sslmode = z
-    .enum(["disable", "allow", "prefer", "require", "verify-ca", "verify-full"])
-    .parse(url.searchParams.get("sslmode") ?? "prefer");
-  const result: Record<string, string> = { sslmode };
+  const result: Record<string, string> = {};
+  const sslmode = url.searchParams.get("sslmode");
+  if (sslmode !== null)
+    result.sslmode = z
+      .enum([
+        "disable",
+        "allow",
+        "prefer",
+        "require",
+        "verify-ca",
+        "verify-full",
+      ])
+      .parse(sslmode);
   for (const name of ["sslrootcert", "sslcert", "sslkey"]) {
     const path = url.searchParams.get(name);
     if (path) {
@@ -22,6 +36,7 @@ function postgresTlsOptions(connection: string): Record<string, string> {
   }
   return result;
 }
+/** Empty when the URL requests no TLS option; callers must not add a separator for it. */
 export function postgresTlsSql(
   connection: string,
   style: "engine" | "dictionary",

@@ -58,8 +58,13 @@ async function application(mode: "customer" | "public") {
 // @req R-WEB-04
 it("uses fresh CSP nonces for native bootstrap scripts and keeps customer sites and runtime pages out of discovery", async () => {
   const app = await application("customer");
-  const first = await app.inject("/");
-  const second = await app.inject("/");
+  // Self-hosted instances have no public site: the root sends visitors to the app.
+  const root = await app.inject("/");
+  expect(root.statusCode).toBe(302);
+  expect(root.headers.location).toBe("/app");
+  // The product guide is the rendered document a customer instance still serves.
+  const first = await app.inject("/docs");
+  const second = await app.inject("/docs");
   const nonce = /<script nonce="([^"]+)"/.exec(first.body)?.[1];
   expect(nonce).toBeTruthy();
   expect(first.headers["content-security-policy"]).toContain(

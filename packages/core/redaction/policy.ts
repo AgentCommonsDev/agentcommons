@@ -55,31 +55,37 @@ function safeExpression(regex: RegExp): Safety {
   return safety;
 }
 
-export const policyDefinitionSchema = z
-  .discriminatedUnion("kind", [
-    z.strictObject({
-      ...commonFields,
-      kind: z.literal("REGEX"),
-      pattern: literalText.min(1).max(1024),
-      flags: z
-        .string()
-        .regex(/^[gimsu]*$/)
-        .default("g"),
-    }),
-    z.strictObject({
-      ...commonFields,
-      kind: z.literal("SECRETLINT_RULE"),
-      ruleId: z.enum(allowedRuleIds),
-      // Scanner-specific allow patterns can only suppress that selected rule; the
-      // rest of the shipped scanners still run. No executable or dynamic imports.
-      options: z
-        .strictObject({
-          allows: z.array(literalText.min(1).max(1024)).max(50).optional(),
-        })
-        .default({}),
-    }),
-  ])
-  .superRefine((policy, context) => {
+/**
+ * The structural definition of a policy without the backtracking analysis. Stored rows
+ * were analysed when an admin saved them and the shipped patterns are verified by the
+ * unit suite, so reads (session creation, rescans) never pay for `recheck` again.
+ */
+export const policyDefinitionShapeSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    ...commonFields,
+    kind: z.literal("REGEX"),
+    pattern: literalText.min(1).max(1024),
+    flags: z
+      .string()
+      .regex(/^[gimsu]*$/)
+      .default("g"),
+  }),
+  z.strictObject({
+    ...commonFields,
+    kind: z.literal("SECRETLINT_RULE"),
+    ruleId: z.enum(allowedRuleIds),
+    // Scanner-specific allow patterns can only suppress that selected rule; the
+    // rest of the shipped scanners still run. No executable or dynamic imports.
+    options: z
+      .strictObject({
+        allows: z.array(literalText.min(1).max(1024)).max(50).optional(),
+      })
+      .default({}),
+  }),
+]);
+/** Definition plus the bounded backtracking analysis; use it wherever a pattern is saved. */
+export const policyDefinitionSchema = policyDefinitionShapeSchema.superRefine(
+  (policy, context) => {
     if (policy.kind === "REGEX") {
       try {
         const regex = new RegExp(policy.pattern, policy.flags);
@@ -131,7 +137,10 @@ export const policyDefinitionSchema = z
         }
       }
     }
-  });
+  },
+);
+/** Analyse a single expression; exported for the shipped-pattern verification test. */
+export const expressionSafety = safeExpression;
 
 export type PolicyDefinition = z.output<typeof policyDefinitionSchema>;
 export type RedactionPolicy = PolicyDefinition & {
@@ -169,7 +178,7 @@ export function composePolicies(
   for (const row of rows) {
     const { id, builtin, ...definition } = row;
     policies.set(row.name, {
-      ...policyDefinitionSchema.parse(definition),
+      ...policyDefinitionShapeSchema.parse(definition),
       id,
       builtin,
     });

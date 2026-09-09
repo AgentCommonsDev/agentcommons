@@ -124,7 +124,14 @@ export async function migrateTraces(
       ...controlAnalyticsTables,
     })) {
       await command(
-        `CREATE OR REPLACE TABLE ${db}.${sqlIdentifier(`control_${name}`)} (${columns(fields)}) ENGINE=PostgreSQL(${pgArguments.map((value, index) => sqlString(index === 2 ? name : (value ?? ""))).join(",")},${postgresTlsSql(config.postgresControlUrl, "engine")})`,
+        `CREATE OR REPLACE TABLE ${db}.${sqlIdentifier(`control_${name}`)} (${columns(fields)}) ENGINE=PostgreSQL(${[
+          ...pgArguments.map((value, index) =>
+            sqlString(index === 2 ? name : (value ?? "")),
+          ),
+          postgresTlsSql(config.postgresControlUrl, "engine"),
+        ]
+          .filter(Boolean)
+          .join(",")})`,
       );
     }
     await command(`GRANT SELECT ON ${db}.* TO ${sqlIdentifier(owner)}`);
