@@ -1088,62 +1088,6 @@
   display: grid;
   place-items: center;
 }
-.login-card {
-  width: min(100%, 465px);
-  text-align: center;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 37px 34px;
-}
-.login-icon {
-  display: grid;
-  place-items: center;
-  width: 60px;
-  height: 60px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  margin: 0 auto 26px;
-  color: var(--accent);
-}
-.login-card .eyebrow {
-  font-size: 8px;
-}
-.login-card h1 {
-  font-size: 30px;
-  font-weight: 510;
-  letter-spacing: -1.1px;
-  line-height: 1.25;
-  margin: 15px 0;
-}
-.login-card > p {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.85;
-}
-.login-status {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 13px;
-  margin-top: 23px;
-}
-.login-card p.login-detail {
-  font-size: 10px;
-  margin: 14px 0 25px;
-}
-.login-back {
-  display: flex;
-  justify-content: center;
-  margin-top: 22px;
-  font-size: 10px;
-}
 @media (min-width: 1441px) {
   .container {
     width: min(1200px, calc(100% - 96px));
@@ -1252,12 +1196,6 @@
   .hero-actions {
     margin-top: 25px;
     gap: 9px;
-  }
-  .button-default {
-    font-size: 11px;
-    padding: 11px 14px;
-    min-height: 43px;
-    gap: 8px;
   }
   .hero-status {
     font-size: 8px;
@@ -1513,12 +1451,6 @@
     padding-block: 48px;
     min-height: calc(100svh - 320px);
   }
-  .login-card {
-    padding: 29px 23px;
-  }
-  .login-card h1 {
-    font-size: 27px;
-  }
 }
 @media (max-width: 370px) {
   .container {
@@ -1526,9 +1458,6 @@
   }
   .header-actions {
     gap: 2px;
-  }
-  .header-actions .button-small {
-    padding-inline: 8px;
   }
   .brand {
     font-size: 14px;
@@ -1538,9 +1467,6 @@
   }
   .hero-actions {
     flex-direction: column;
-  }
-  .hero-actions .button {
-    width: 100%;
   }
   .window-chrome > span:first-of-type {
     font-size: 7px;
@@ -1666,7 +1592,7 @@
   flex-direction: column;
   gap: 20px;
   padding: 30px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
   min-width: 0;
@@ -1760,20 +1686,6 @@
     font-size: 22px;
   }
 }
-.auth-related {
-  display: flex;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 24px;
-  font-size: 13px;
-}
-.auth-related a,
-.login-detail a {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
 .verified-email {
   overflow-wrap: anywhere;
 }
@@ -1853,10 +1765,6 @@
   }
   .site-header .brand {
     flex-shrink: 0;
-  }
-  .header-actions .button-icon {
-    min-width: 44px;
-    min-height: 44px;
   }
   .header-actions > a svg {
     display: none;

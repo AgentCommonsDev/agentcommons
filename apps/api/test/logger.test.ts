@@ -8,6 +8,6 @@ it("removes bodies and record lines at the native Pino boundary", () => {
     .object({ remove: z.boolean(), paths: z.array(z.string()) })
     .parse(loggerOptions("info").redact);
   expect(value.remove).toBe(true);
-  for (const path of ["body", "req.body", "records[*].line"])
+  for (const path of ["body", "records[*].line"])
     expect(value.paths).toContain(path);
 });

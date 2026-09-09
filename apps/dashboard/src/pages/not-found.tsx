@@ -8,13 +8,13 @@ export function NotFoundPage() {
   return (
     <main id="main" className="mx-auto w-full max-w-xl px-6 py-16">
       <EmptyState
-        title={copy.notFound.title}
-        description={copy.notFound.description}
+        title={copy.site.notFound.title}
+        description={copy.site.notFound.description}
         action={
           <Button asChild>
             <a href={paths.site}>
               <ArrowLeft aria-hidden />
-              {copy.notFound.action}
+              {copy.site.notFound.action}
             </a>
           </Button>
         }

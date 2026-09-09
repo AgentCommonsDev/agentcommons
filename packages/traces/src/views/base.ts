@@ -1,26 +1,48 @@
-import { sqlIdentifier, sqlString } from "../client.js";
+import { traceViewCatalog } from "@agentcommons/core/sql";
+import {
+  principalFieldSql,
+  principalFlags,
+  sqlIdentifier,
+  sqlString,
+} from "../client.js";
 import { emptyTraceRow } from "../rows.js";
 import {
   sessionColumns,
   messageColumns,
-  rawColumns,
-  fileColumns,
-  chunkColumns,
-  sessionEmbeddingColumns,
+  traceTables,
+  type TraceTable,
 } from "../schema.js";
+
+/** Who may read a canonical view: every reader, vector readers only, or no one (it backs other views). */
+export type TraceViewGrant = "reader" | "vector" | "internal";
+export interface TraceViewDefinition {
+  name: string;
+  sql: string;
+  grant: TraceViewGrant;
+}
+export const traceView = (
+  name: string,
+  sql: string,
+  grant: TraceViewGrant = "reader",
+): TraceViewDefinition => ({ name, sql, grant });
+
+const flagSql = (field: keyof typeof principalFlags) =>
+  `${principalFieldSql(field)}=${sqlString(principalFlags[field][0])}`;
+/** Caller facts read back from the native principal name inside policies and views. */
 export const traceScopeSql = {
-  organization: "unhex(arrayElement(splitByChar('_',currentUser()),2))",
-  user: "unhex(arrayElement(splitByChar('_',currentUser()),3))",
-  admin: "arrayElement(splitByChar('_',currentUser()),4)='a'",
-  embeddings: "arrayElement(splitByChar('_',currentUser()),5)='e'",
+  organization: `unhex(${principalFieldSql("organization")})`,
+  user: `unhex(${principalFieldSql("user")})`,
+  admin: flagSql("authority"),
+  embeddings: flagSql("embeddings"),
+  saas: flagSql("saas"),
 };
 export function latestRowsSql(
   database: string,
-  table: string,
-  columns: Record<string, string>,
-  identity: string,
+  table: TraceTable,
+  columns: Record<string, string> = traceTables[table].columns,
   expressions: Record<string, string> = {},
 ): string {
+  const { identity } = traceTables[table];
   const names = Object.keys(columns);
   const selected = names
     .map((name) =>
@@ -31,28 +53,15 @@ export function latestRowsSql(
     .join(",");
   // Independent aggregates let native column pruning omit large JSON/content fields.
   // The one-element tuple preserves a latest null instead of skipping that revision.
-  // Native row policies fence organization, generation, publication and visibility.
+  // Native row policies fence organization, generation, publication and visibility; the
+  // organization predicate only narrows the scan to the caller's primary-key range.
   return `SELECT ${selected} FROM ${sqlIdentifier(database)}.${sqlIdentifier(table)} r FINAL WHERE r.organization_id=${traceScopeSql.organization} GROUP BY r.organization_id,r.session_id,r.${sqlIdentifier(identity)} HAVING argMax(r.deleted,r.revision)=0`;
 }
-export const sessionDetailColumns = [
-  ...Object.keys(sessionColumns),
-  "parent_tool_use_id",
-  "visibility",
-  "purged_at",
-  "user_email",
-  "user_name",
-  "installation_hostname",
-  "parent_title",
-  "child_count",
-  "file_count",
-  "duration_seconds",
-  "observed_commit_count",
-];
-export const canonicalSessionColumns = [...sessionDetailColumns, "reuse_count"];
-export function baseViews(database: string): string[] {
-  const owner = sqlIdentifier(`${database}_view_owner`);
-  const view = (name: string, sql: string) =>
-    `CREATE OR REPLACE VIEW api_ro.${sqlIdentifier(name)} DEFINER=${owner} SQL SECURITY DEFINER AS ${sql}`;
+/** The `sessions` columns in catalog order, before analytics appends `reuse_count`. */
+export const sessionDetailColumns = Object.keys(
+  traceViewCatalog.sessions.columns,
+).filter((name) => name !== "reuse_count");
+export function baseViews(database: string): TraceViewDefinition[] {
   const headerNames = Object.keys(sessionColumns);
   const override = new Set([
     "parent_session_id",
@@ -84,7 +93,7 @@ export function baseViews(database: string): string[] {
     );
   // Control owns parent links, including the spawning call: the parent's evidence can
   // arrive after the child's last projection, so it is read live, never from the row.
-  const base = `SELECT ${headerSelect},${sessionMetadata("parent_session_id")} AS parent_session_id,${sessionMetadata("parent_relation")} AS parent_relation,if(${traceScopeSql.admin},${sessionMetadata("parent_native_ref")},NULL) AS parent_native_ref,${sessionMetadata("parent_tool_use_id")} AS parent_tool_use_id,${sessionMetadata("status")} AS status,${sessionMetadata("ended_at")} AS ended_at,${sessionMetadata("last_activity_at")} AS last_activity_at,${sessionMetadata("visibility")} AS visibility,${sessionMetadata("purged_at")} AS purged_at,${userMetadata("s", "email")} AS user_email,${userMetadata("s", "name")} AS user_name,${installationMetadata("s")} AS installation_hostname FROM (${latestRowsSql(database, "sessions", sessionColumns, "session_id")}) s`;
+  const base = `SELECT ${headerSelect},${sessionMetadata("parent_session_id")} AS parent_session_id,${sessionMetadata("parent_relation")} AS parent_relation,if(${traceScopeSql.admin},${sessionMetadata("parent_native_ref")},NULL) AS parent_native_ref,${sessionMetadata("parent_tool_use_id")} AS parent_tool_use_id,${sessionMetadata("status")} AS status,${sessionMetadata("ended_at")} AS ended_at,${sessionMetadata("last_activity_at")} AS last_activity_at,${sessionMetadata("visibility")} AS visibility,${sessionMetadata("purged_at")} AS purged_at,${userMetadata("s", "email")} AS user_email,${userMetadata("s", "name")} AS user_name,${installationMetadata("s")} AS installation_hostname FROM (${latestRowsSql(database, "sessions")}) s`;
   const empty = emptyTraceRow("sessions");
   const retained = new Set([
     "session_id",
@@ -159,21 +168,21 @@ export function baseViews(database: string): string[] {
     .map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`)
     .join(",");
   return [
-    view("session_live", `SELECT ${baseOrder} FROM (${base})`),
-    view(
+    traceView("session_live", `SELECT ${baseOrder} FROM (${base})`, "internal"),
+    traceView(
       "session_base",
       `SELECT ${baseOrder} FROM api_ro.session_live UNION ALL SELECT ${baseOrder} FROM (${skeletonSql})`,
+      "internal",
     ),
-    view(
+    traceView(
       "session_state",
       "SELECT session_id,status,message_count,last_activity_at FROM api_ro.session_base",
     ),
-    view(
+    traceView(
       "session_details",
-      `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,if(p.session_id IS NOT NULL,s.parent_tool_use_id,NULL) AS parent_tool_use_id,p.title AS parent_title,coalesce(c.child_count,0) AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count FROM api_ro.session_base s LEFT ANY JOIN api_ro.session_base p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT parent_session_id,count(*) child_count FROM api_ro.session_base WHERE parent_session_id IS NOT NULL GROUP BY parent_session_id)c ON c.parent_session_id=s.session_id LEFT ANY JOIN (SELECT session_id,count(*) file_count FROM (${latestRowsSql(database, "session_files", fileColumns, "file_id")}) GROUP BY session_id)f ON f.session_id=s.session_id`,
+      `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,if(p.session_id IS NOT NULL,s.parent_tool_use_id,NULL) AS parent_tool_use_id,p.title AS parent_title,coalesce(c.child_count,0) AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count FROM api_ro.session_base s LEFT ANY JOIN api_ro.session_base p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT parent_session_id,count(*) child_count FROM api_ro.session_base WHERE parent_session_id IS NOT NULL GROUP BY parent_session_id)c ON c.parent_session_id=s.session_id LEFT ANY JOIN (SELECT session_id,count(*) file_count FROM (${latestRowsSql(database, "session_files")}) GROUP BY session_id)f ON f.session_id=s.session_id`,
     ),
-    view("sessions", "SELECT * FROM api_ro.session_details"),
-    view(
+    traceView(
       "message_metadata",
       latestRowsSql(
         database,
@@ -187,52 +196,42 @@ export function baseViews(database: string): string[] {
           ),
           payload_bytes: "UInt64",
         },
-        "message_id",
         { payload_bytes: "length(r.content)+length(r.tool_input)" },
       ),
     ),
-    view(
+    traceView(
       "messages",
-      `SELECT m.*,s.title AS session_title,s.repo_name,s.branch,s.user_email FROM (${latestRowsSql(database, "messages", messageColumns, "message_id")})m JOIN api_ro.session_live s USING(organization_id,session_id)`,
+      `SELECT m.*,s.title AS session_title,s.repo_name,s.branch,s.user_email FROM (${latestRowsSql(database, "messages")})m JOIN api_ro.session_live s USING(organization_id,session_id)`,
     ),
-    view(
+    traceView(
       "message_chunks",
-      latestRowsSql(database, "message_chunks", chunkColumns, "chunk_id"),
+      latestRowsSql(database, "message_chunks"),
+      "vector",
     ),
-    view(
+    traceView(
       "session_embeddings",
-      latestRowsSql(
-        database,
-        "session_embeddings",
-        sessionEmbeddingColumns,
-        "session_id",
-      ),
+      latestRowsSql(database, "session_embeddings"),
+      "vector",
     ),
-    view(
-      "raw_records",
-      latestRowsSql(database, "raw_records", rawColumns, "raw_record_id"),
-    ),
-    view(
-      "session_files",
-      latestRowsSql(database, "session_files", fileColumns, "file_id"),
-    ),
-    view(
+    traceView("raw_records", latestRowsSql(database, "raw_records")),
+    traceView("session_files", latestRowsSql(database, "session_files")),
+    traceView(
       "users",
       `SELECT DISTINCT user_id AS id,user_email AS email,user_name AS name FROM api_ro.session_base`,
     ),
-    view(
+    traceView(
       "repos",
       `SELECT organization_id,repo_name,min(repo_url) AS repo_url,count(*) AS session_count,uniqExact(user_id) AS user_count,min(started_at) AS first_seen_at,max(last_activity_at) AS last_activity_at FROM api_ro.session_base WHERE repo_name IS NOT NULL GROUP BY organization_id,repo_name`,
     ),
-    view(
+    traceView(
       "installations",
       `SELECT i.organization_id,i.id AS installation_id,any(i.hostname) AS hostname,any(i.os_user) AS os_user,any(i.platform) AS platform,any(i.arch) AS arch,any(i.hook_sha256) AS hook_sha256,toBool(any(i.tools_enabled)) AS tools_enabled,min(s.started_at) AS first_seen_at,max(s.last_activity_at) AS last_seen_at,count(*) AS session_count FROM ${sqlIdentifier(database)}.control_installations i JOIN api_ro.session_base s ON i.organization_id=s.organization_id AND i.id=s.installation_id GROUP BY i.organization_id,i.id`,
     ),
-    view(
+    traceView(
       "session_tools",
       `SELECT organization_id,session_id,arrayJoin(tools_used) AS tool_name FROM api_ro.session_base`,
     ),
-    view(
+    traceView(
       "session_observed_commits",
       `SELECT organization_id,session_id,ordinal,JSONExtractString(value,'sha') AS sha,JSONExtractString(value,'subject') AS subject,JSONExtractString(value,'author') AS author,JSONExtractString(value,'timestamp') AS timestamp FROM api_ro.session_base ARRAY JOIN JSONExtractArrayRaw(observed_commits) AS value,arrayEnumerate(JSONExtractArrayRaw(observed_commits)) AS ordinal`,
     ),

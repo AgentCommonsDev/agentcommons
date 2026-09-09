@@ -1,9 +1,5 @@
 import { formatSchemaContext } from "@agentcommons/core/format";
-import { errorSchema } from "@agentcommons/core/schemas/common";
-import {
-  sqlOutputSchema,
-  type SqlOutput,
-} from "@agentcommons/core/schemas/sql";
+import { sqlOutputSchema } from "@agentcommons/core/schemas/sql";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   BookMarked,
@@ -15,7 +11,7 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { CopyButton } from "../components/app/states";
 import { useWorkspace } from "../components/app/workspace";
 import { Button } from "../components/ui/button";
@@ -57,29 +53,20 @@ import {
   groupViews,
   hasEmbeddings,
 } from "../features/sql/schema";
-import { api } from "../lib/api/client";
-import { relativeTime, truncate } from "../lib/display";
+import { ApiError, api, unwrap } from "../lib/api/client";
+import { cn } from "../lib/utils";
+import { errorMessage, relativeTime, truncate } from "../lib/display";
 
-class QueryFailure extends Error {
-  constructor(
-    message: string,
-    readonly position: number | null,
-  ) {
-    super(message);
-    this.name = "QueryFailure";
-  }
-}
-async function runQuery(sql: string): Promise<SqlOutput> {
-  const result = await api.POST("/api/v1/query", { body: { sql } });
-  if (!result.response.ok || result.data === undefined) {
-    const parsed = errorSchema.safeParse(result.error);
-    throw new QueryFailure(
-      parsed.success ? parsed.data.message : copy.app.common.requestFailed,
-      parsed.success ? (parsed.data.position ?? null) : null,
-    );
-  }
-  return sqlOutputSchema.parse(result.data);
-}
+const runQuery = async (sql: string) =>
+  sqlOutputSchema.parse(
+    unwrap(await api.POST("/api/v1/query", { body: { sql } })),
+  );
+type Tone = "muted" | "danger" | "success";
+const toneClass: Record<Tone, string> = {
+  muted: "text-muted",
+  danger: "text-danger",
+  success: "text-success",
+};
 const isMac =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -100,16 +87,8 @@ export function SqlPage() {
   const [explorerOpen, setExplorerOpen] = useState(false);
   const schema = useQuery({
     queryKey: [organization.id, "schema"],
-    queryFn: async ({ signal }) => {
-      const result = await api.GET("/api/v1/schema", { signal });
-      if (!result.response.ok || result.data === undefined) {
-        const parsed = errorSchema.safeParse(result.error);
-        throw new Error(
-          parsed.success ? parsed.data.message : copy.app.common.requestFailed,
-        );
-      }
-      return result.data;
-    },
+    queryFn: async ({ signal }) =>
+      unwrap(await api.GET("/api/v1/schema", { signal })),
     staleTime: 5 * 60_000,
   });
   const views = useMemo(() => groupViews(schema.data), [schema.data]);
@@ -129,12 +108,10 @@ export function SqlPage() {
       setHistory(pushHistory(organization.id, text));
     },
     onError: (error) => {
-      const failure = error instanceof QueryFailure ? error : null;
-      const message =
-        failure?.message ??
-        (error instanceof Error ? error.message : String(error));
+      const position = error instanceof ApiError ? error.position : null;
+      const message = errorMessage(error);
       setServerError(
-        editor.current?.markServerError(failure?.position ?? null, message) ?? {
+        editor.current?.markServerError(position, message) ?? {
           from: 0,
           to: 0,
           line: 1,
@@ -157,7 +134,7 @@ export function SqlPage() {
     editor.current?.insert(text);
   };
   const problem = problems[0];
-  const status = run.isPending
+  const status: { tone: Tone; text: string; icon: ReactNode } = run.isPending
     ? {
         tone: "muted",
         text: copy.sql.status.running,
@@ -371,13 +348,10 @@ export function SqlPage() {
               data-testid="sql-status"
               role="status"
               aria-live="polite"
-              className={
-                status.tone === "danger"
-                  ? "flex min-w-0 items-start gap-1.5 text-danger"
-                  : status.tone === "success"
-                    ? "flex min-w-0 items-start gap-1.5 text-success"
-                    : "flex min-w-0 items-start gap-1.5 text-muted"
-              }
+              className={cn(
+                "flex min-w-0 items-start gap-1.5",
+                toneClass[status.tone],
+              )}
             >
               <span className="mt-px shrink-0">{status.icon}</span>
               <span className="min-w-0 break-words">{status.text}</span>

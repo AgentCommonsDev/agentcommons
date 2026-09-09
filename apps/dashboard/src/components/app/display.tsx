@@ -1,10 +1,8 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { copy } from "../../copy";
 import { cn } from "../../lib/utils";
-import { Button } from "../../components/ui/button";
-import { Card } from "../../components/ui/card";
-import { CopyButton } from "../../components/app/states";
+import { Button } from "../ui/button";
+import { Card } from "../ui/card";
 
 /** Responsive grid of stat tiles: two per row on phones, four on wide screens. */
 export function StatGrid({
@@ -83,39 +81,6 @@ export function ProgressBar({
       />
     </div>
   );
-}
-/** Monospace block for JSON and redacted text; scrolls inside itself. */
-export function CodeBlock({
-  text,
-  copyLabel,
-  className,
-  maxHeight = "max-h-80",
-}: {
-  text: string;
-  copyLabel?: string | undefined;
-  className?: string | undefined;
-  maxHeight?: string | undefined;
-}) {
-  return (
-    <div className={cn("relative min-w-0", className)}>
-      <pre
-        className={cn(
-          "overflow-auto rounded-md border border-line bg-raised px-3 py-2.5 pr-11 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-fg",
-          maxHeight,
-        )}
-      >
-        {text}
-      </pre>
-      <CopyButton
-        value={text}
-        label={copyLabel ?? copy.app.common.copy}
-        className="absolute top-1.5 right-1.5"
-      />
-    </div>
-  );
-}
-export function formatJson(value: unknown): string {
-  return JSON.stringify(value, null, 2);
 }
 /** Inline show/hide toggle for secondary content such as a data table under a chart. */
 export function Disclosure({

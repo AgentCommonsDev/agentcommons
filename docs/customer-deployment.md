@@ -28,7 +28,7 @@ below remains the reference for a larger footprint and was not selected.
 
 Operator sequence after the final commit is pushed: `pulumi up`, then
 `infra/scripts/single-node-release.sh <commit>`, then
-`infra/scripts/single-node-bootstrap.sh --admin raphael@zeropath.com --organization zpghl --name zpghl --domain zeropath.com --domain goodhartlabs.com`.
+`infra/scripts/single-node-run.sh bootstrap.sh --admin raphael@zeropath.com --organization zpghl --name zpghl --domain zeropath.com --domain goodhartlabs.com`.
 
 Founder actions: keep the Cloudflare-proxied `A` record for `hooks.tools` pointing at the
 `publicIp` stack output (DNS-only also works), set the zone's SSL/TLS mode to Full

@@ -174,7 +174,7 @@ function UnitSelect({
           )}
           {metricUnitSchema.options.map((unit) => (
             <option key={unit} value={unit}>
-              {copy.dashboards.inspector.units[unit]}
+              {copy.app.units[unit]}
             </option>
           ))}
         </NativeSelect>

@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { setTimeout as delay } from "node:timers/promises";
 import { expect, it } from "vitest";
 import { z } from "zod";
 import { chromium } from "@playwright/test";
@@ -22,25 +21,41 @@ import { organizationEmbeddingsOutputSchema } from "../packages/core/schemas/emb
 import { sqlOutputSchema } from "../packages/core/schemas/sql.js";
 import { billingConfigSchema } from "../packages/core/schemas/billing.js";
 import { cleanup } from "../scripts/cleanup.js";
+import { waitForReady } from "../scripts/ready.js";
+import { testEnvelope } from "../apps/api/test/envelopes.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-async function ready(origin: string) {
-  const deadline = Date.now() + 90_000;
-  for (;;) {
-    try {
-      if (
-        (await fetch(`${origin}/ready`, { signal: AbortSignal.timeout(1000) }))
-          .ok
-      )
-        return;
-    } catch {
-      /* Wait for this isolated API boot. */
-    }
-    if (Date.now() > deadline)
-      throw new Error("The Compose API did not become ready.");
-    await delay(500);
-  }
+const ready = (origin: string) =>
+  waitForReady(origin, { subject: "The Compose API", timeoutMs: 90_000 });
+/** The documented example, with Compose hostnames and this run's disposable secrets. */
+async function composeEnvironment(overrides: Record<string, string>) {
+  const example = Object.fromEntries(
+    (await readFile(join(root, ".env.example"), "utf8"))
+      .split("\n")
+      .filter((line) => /^[A-Z][A-Z0-9_]*=/.test(line))
+      .map((line) => {
+        const equal = line.indexOf("=");
+        return [line.slice(0, equal), line.slice(equal + 1)] as const;
+      }),
+  );
+  return (
+    Object.entries({ ...example, ...overrides })
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n") + "\n"
+  );
 }
+/** Native Compose override: an unused loopback port, plus runtime-only values. */
+const portsOverride = (environment: Record<string, string> = {}) =>
+  [
+    "services:",
+    "  api:",
+    "    ports: !override",
+    '      - "127.0.0.1::3000"',
+    ...(Object.keys(environment).length ? ["    environment:"] : []),
+    ...Object.entries(environment).map(
+      ([key, value]) => `      ${key}: ${JSON.stringify(value)}`,
+    ),
+  ].join("\n") + "\n";
 
 // @req R-INF-01 @req R-SAAS-07
 it(
@@ -100,38 +115,30 @@ it(
       join(root, "packages/traces/config/privacy.xml"),
       join(directory, "packages/traces/config/privacy.xml"),
     );
-    // Native Compose override gives this disposable instance an unused loopback port.
-    await writeFile(
-      join(directory, "ports.yml"),
-      'services:\n  api:\n    ports: !override\n      - "127.0.0.1::3000"\n',
-    );
-    const secret = randomUUID() + randomUUID();
+    await writeFile(join(directory, "ports.yml"), portsOverride());
     await writeFile(
       join(directory, ".env"),
-      [
-        `IMAGE_TAG=${imageTag}`,
-        "PUBLIC_URL=http://localhost:3000",
-        "INSTANCE_MODE=customer",
-        "POSTGRES_PASSWORD=compose-database-password",
-        "DATABASE_MIGRATION_URL=postgres://agentcommons:compose-database-password@db:5432/agentcommons",
-        "DATABASE_URL=postgres://ac_app:compose-app-password@db:5432/agentcommons",
-        "DATABASE_TRACE_CONTROL_URL=postgres://ac_trace_control:compose-control-password@db:5432/agentcommons",
-        "CLICKHOUSE_MIGRATION_USER=default",
-        "CLICKHOUSE_MIGRATION_PASSWORD=compose-clickhouse-admin-password",
-        "CLICKHOUSE_URL=http://clickhouse:8123",
-        "CLICKHOUSE_DATABASE=ac_trace",
-        "CLICKHOUSE_WRITER_USER=ac_trace_writer",
-        "CLICKHOUSE_WRITER_PASSWORD=compose-clickhouse-writer-password",
-        "CLICKHOUSE_ACCESS_USER=ac_trace_access",
-        "CLICKHOUSE_ACCESS_PASSWORD=compose-clickhouse-access-password",
-        `CLICKHOUSE_READER_SECRET=${randomUUID()}${randomUUID()}`,
-        `BETTER_AUTH_SECRET=${secret}`,
-        "AUTH_EMAIL_PASSWORD_ENABLED=true",
-        "TRUST_PROXY=loopback",
-        "LOG_LEVEL=silent",
-        `EMBEDDINGS_ENABLED=${process.env.EMBEDDINGS_ENABLED ?? "false"}`,
-        "EMBEDDINGS_PROVIDER=fake",
-      ].join("\n") + "\n",
+      await composeEnvironment({
+        IMAGE_TAG: imageTag,
+        PUBLIC_URL: "http://localhost:3000",
+        POSTGRES_PASSWORD: "compose-database-password",
+        DATABASE_MIGRATION_URL:
+          "postgres://agentcommons:compose-database-password@db:5432/agentcommons",
+        DATABASE_URL:
+          "postgres://ac_app:compose-app-password@db:5432/agentcommons",
+        DATABASE_TRACE_CONTROL_URL:
+          "postgres://ac_trace_control:compose-control-password@db:5432/agentcommons",
+        CLICKHOUSE_POSTGRES_HOST: "db",
+        CLICKHOUSE_MIGRATION_PASSWORD: "compose-clickhouse-admin-password",
+        CLICKHOUSE_URL: "http://clickhouse:8123",
+        CLICKHOUSE_WRITER_PASSWORD: "compose-clickhouse-writer-password",
+        CLICKHOUSE_ACCESS_PASSWORD: "compose-clickhouse-access-password",
+        CLICKHOUSE_READER_SECRET: `${randomUUID()}${randomUUID()}`,
+        BETTER_AUTH_SECRET: randomUUID() + randomUUID(),
+        LOG_LEVEL: "silent",
+        EMBEDDINGS_ENABLED: process.env.EMBEDDINGS_ENABLED ?? "false",
+        EMBEDDINGS_PROVIDER: "fake",
+      }),
       { mode: 0o600 },
     );
     try {
@@ -230,31 +237,16 @@ it(
       )
         .split("\n")
         .filter(Boolean);
-      const envelope = {
-        envelopeVersion: 2,
-        hook: { sha256: "a".repeat(64), extensionSha256: null },
-        harness: "CLAUDE_CODE",
-        harnessSessionId: randomUUID(),
+      const envelope = testEnvelope({
         behavior: "end",
         nativeEvent: "SessionEnd",
-        batchId: randomUUID(),
-        installationId: randomUUID(),
-        sentAt: new Date().toISOString(),
         sourcePos: records.length,
+        cursor: `${String(records.length)}:0`,
         context: {
           cwd: "/compose/probe",
-          installation: {
-            hostname: "compose",
-            osUser: "node",
-            platform: "linux",
-            arch: "x64",
-          },
-          git: null,
-          parentHint: null,
+          installation: { hostname: "compose", osUser: "node" },
         },
         records: records.map((line, pos) => ({ pos, sourceVersion: 0, line })),
-        cursor: `${String(records.length)}:0`,
-        start: null,
         end: {
           reason: "exit",
           head: null,
@@ -262,7 +254,7 @@ it(
           observedDiffStat: null,
           dirtyFileCount: null,
         },
-      };
+      });
       const apiHeaders = {
         "content-type": "application/json",
         authorization: `Bearer ${key}`,
@@ -378,14 +370,17 @@ it(
         const errors: string[] = [];
         page.on("pageerror", (error) => errors.push(error.message));
         page.on("response", (response) => {
-          if (response.status() >= 400) errors.push(String(response.status()));
+          const path = new URL(response.url()).pathname;
+          // The anonymous visit probes identity once before the sign-in redirect.
+          if (response.status() === 401 && path === "/api/v1/me") return;
+          if (response.status() >= 400)
+            errors.push(`${String(response.status())} ${path}`);
         });
+        // A customer instance sends the site root to the application, which asks an
+        // anonymous visitor to sign in (R-DASH-24 companion in app-shell.spec.ts).
         await page.goto(origin);
-        await page
-          .getByRole("heading", {
-            name: "Give your next agent a place to start.",
-          })
-          .waitFor();
+        await page.waitForURL(/\/login$/);
+        await page.getByRole("heading", { level: 1 }).first().waitFor();
         expect(
           z
             .boolean()
@@ -426,7 +421,11 @@ it(
       // the retained SSR renderer; customer mode alone does not exercise that artifact.
       await writeFile(
         join(directory, "ports.yml"),
-        'services:\n  api:\n    ports: !override\n      - "127.0.0.1::3000"\n    environment:\n      INSTANCE_MODE: saas\n      FREE_MONTHLY_RECORDS: "7"\n      PRO_INCLUDED_RECORDS: "13"\n',
+        portsOverride({
+          INSTANCE_MODE: "saas",
+          FREE_MONTHLY_RECORDS: "7",
+          PRO_INCLUDED_RECORDS: "13",
+        }),
       );
       await compose([
         "up",

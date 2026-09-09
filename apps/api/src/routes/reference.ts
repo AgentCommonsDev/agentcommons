@@ -1,13 +1,18 @@
 import { readFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
 import scalar from "@scalar/fastify-api-reference";
 import type { FastifyInstance } from "fastify";
 import { withScriptNonce } from "@agentcommons/core/format/public-config";
+import { scriptNonce } from "./context.js";
 
 /** Native Scalar owns its renderer and bundle; route schemas remain the only API source. */
 export async function registerApiReference(
   app: FastifyInstance,
 ): Promise<void> {
+  // The bundled configuration script is a build artifact: read once, served unchanged.
+  const configScript = await readFile(
+    new URL("../../public/reference-config.js", import.meta.url),
+    "utf8",
+  );
   await app.register(async (scope) => {
     // The document stays uncompressed (see the onRoute hook in app.ts) so the response
     // nonce can be injected into the HTML string here.
@@ -18,7 +23,7 @@ export async function registerApiReference(
         !String(reply.getHeader("content-type")).startsWith("text/html")
       )
         return payload;
-      const nonce = randomBytes(18).toString("base64");
+      const nonce = scriptNonce();
       reply.header("Cache-Control", "no-store");
       reply.header(
         "Content-Security-Policy",
@@ -35,15 +40,8 @@ export async function registerApiReference(
     scope.get(
       "/api/docs/js/config.js",
       { schema: { hide: true } },
-      async (_request, reply) =>
-        reply
-          .type("application/javascript; charset=utf-8")
-          .send(
-            await readFile(
-              new URL("../../public/reference-config.js", import.meta.url),
-              "utf8",
-            ),
-          ),
+      (_request, reply) =>
+        reply.type("application/javascript; charset=utf-8").send(configScript),
     );
     scope.get("/api/docs/json", { schema: { hide: true } }, () =>
       app.swagger(),

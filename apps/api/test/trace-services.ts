@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { waitForTracePublication } from "../../../packages/traces/test/support.js";
 import type { EmbeddingService } from "../src/embeddings/service.js";
 import type { Prisma, PrismaClient } from "@agentcommons/db";
@@ -13,6 +14,35 @@ import { JobService } from "../src/services/jobs.js";
 import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 import { TraceProjectionService } from "../src/services/trace-projection.js";
 
+/** Projects every committed audit row into ClickHouse before a test reads analytics. */
+export async function drainTraceAudit(
+  projection: TraceAuditProjectionService,
+): Promise<void> {
+  while (await projection.flush()) {
+    /* Until the outbox is empty. */
+  }
+}
+
+/** Polls a redaction run until it reaches `state`, failing with the run's last error otherwise. */
+export async function waitForJob(
+  jobs: JobService,
+  context: ServiceContext,
+  id: string,
+  state: "completed" | "failed",
+  timeoutMs = 20_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const progress = (await jobs.progress(context, id)).result;
+    if (progress.state === state) return progress;
+    if (Date.now() >= deadline)
+      throw new Error(
+        `Rescan remained ${progress.state}: ${progress.error ?? "no worker error"}`,
+      );
+    await delay(100);
+  }
+}
+
 /** Real durable admission and native storage; publication is explicit in each test. */
 export function traceServices(
   db: Awaited<ReturnType<typeof startTraceDatabase>>,
@@ -26,6 +56,7 @@ export function traceServices(
     prisma,
     audit,
     repository: db.traces,
+    auth: db.authConfiguration,
     scheduleEmbeddings: (
       tx: Prisma.TransactionClient,
       data: { organizationId: string; sessionId: string },
@@ -44,7 +75,7 @@ export function traceServices(
     traceAudit,
     connectionString: db.urls.app,
     ...(options.embeddings ? { embeddings: options.embeddings } : {}),
-    allowedEmailDomains: [],
+    authConfiguration: db.authConfiguration,
     auditRetentionDays: options.auditRetentionDays ?? 365,
     onError: (error) => errors.push(error),
   });
@@ -99,12 +130,17 @@ export function traceServices(
     } while (after);
     return items.sort((a, b) => a.seq - b.seq);
   }
-  async function publish(context: ServiceContext, input: unknown) {
+  /** Admit and project once without waiting: for assertions on the state right after processing. */
+  async function publishQueued(context: ServiceContext, input: unknown) {
     const accepted = await ingest.execute(context, input);
     await projection.process(
       requireCaller(context).organizationId,
       accepted.result.sessionId,
     );
+    return accepted;
+  }
+  async function publish(context: ServiceContext, input: unknown) {
+    const accepted = await publishQueued(context, input);
     await waitForTracePublication(prisma, [accepted.result.sessionId], {
       allowPurged: true,
     });
@@ -122,7 +158,9 @@ export function traceServices(
     raw,
     messages,
     publish,
+    publishQueued,
     traceAudit,
+    drainTraceAudit: () => drainTraceAudit(traceAudit),
     errors,
     async close() {
       const failures = await cleanup([() => jobs.stop()]);

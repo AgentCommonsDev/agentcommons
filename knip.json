@@ -4,43 +4,18 @@
     ".": {
       "entry": ["scripts/*.{ts,mjs}", "*.config.{ts,js}", "e2e/**/*.test.ts"]
     },
-    "packages/*": {
-      "entry": [
-        "src/index.ts",
-        "src/cli.ts",
-        "auth-schema.ts",
-        "src/**/*.test.ts",
-        "test/**/*.test.ts",
-        "scripts/*.{ts,mjs}"
-      ]
+    "apps/api": { "entry": ["test/**/*.test.ts"] },
+    "apps/dashboard": { "entry": ["src/entry-server.tsx", "scripts/*.mjs"] },
+    "packages/db": { "entry": ["auth-schema.ts", "test/**/*.test.ts"] },
+    "packages/traces": { "entry": ["test/**/*.test.ts"] },
+    "packages/hook": {
+      "entry": ["src/entry.ts", "test/**/*.test.ts", "test/kill-worker.ts"]
     },
-    "apps/*": {
-      "entry": [
-        "src/main.{ts,tsx}",
-        "src/entry-server.tsx",
-        "src/**/*.test.ts",
-        "test/**/*.test.ts",
-        "scripts/*.{ts,mjs}"
-      ]
-    },
+    "packages/pi-extension": { "entry": ["src/index.ts"] },
     "infra": {
-      "entry": [
-        "index.ts",
-        "test/**/*.test.ts",
-        "scripts/*.ts",
-        "vitest.config.ts"
-      ],
+      "entry": ["index.ts", "scripts/*.ts", "test/**/*.test.ts"],
       "ignoreDependencies": ["tsx"],
       "ignoreBinaries": ["pulumi"]
-    },
-    "packages/hook": {
-      "entry": [
-        "build.ts",
-        "src/entry.ts",
-        "src/local.ts",
-        "test/**/*.test.ts",
-        "test/kill-worker.ts"
-      ]
     }
   }
 }

@@ -1,4 +1,4 @@
-import { postgresTlsSql } from "./postgres.js";
+import { postgresSourceSql } from "./postgres.js";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
@@ -7,8 +7,7 @@ import {
   sqlIdentifier,
   sqlString,
 } from "./client.js";
-import { traceTables, auditColumns } from "./schema.js";
-import { controlAnalyticsTables } from "./views/control-analytics.js";
+import { EMBEDDING_DIMENSIONS, traceTables, auditColumns } from "./schema.js";
 import { securityStatements } from "./security.js";
 import { analyticsViews } from "./views/analytics.js";
 import { baseViews } from "./views/base.js";
@@ -17,13 +16,11 @@ import { catalogViews } from "./views/catalog.js";
 import type { TraceMigrationConfig } from "./config.js";
 
 export const CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:26.8.2.7";
+/**
+ * PostgreSQL `trace_control` views mirrored into ClickHouse as `control_<name>` tables.
+ * Narrow operational metadata only; no native identity credentials reach ClickHouse.
+ */
 const controlTables = {
-  users: {
-    id: "String",
-    email: "String",
-    name: "String",
-    organization_id: "String",
-  },
   installations: {
     organization_id: "String",
     id: "UUID",
@@ -41,14 +38,21 @@ const controlTables = {
     embeddings_enabled: "Int32",
     paid_embeddings: "Int32",
   },
+  metrics_health: {
+    organization_id: "String",
+    session_id: "UUID",
+    authorization_blocked: "Int32",
+  },
+  metrics_members: { organization_id: "String", member_count: "Int64" },
 } as const;
+/** Control tables earlier migrations created and nothing reads; dropped so deployments converge. */
+const retiredControlTables = ["control_users", "control_audit_retention"];
 const columns = (fields: Record<string, string>) =>
   Object.entries(fields)
     .map(([name, type]) => `${sqlIdentifier(name)} ${type}`)
     .join(",");
 export async function migrateTraces(
   config: TraceMigrationConfig,
-  additionalViews: readonly string[] = [],
 ): Promise<void> {
   z.string()
     .regex(/^[a-z][a-z0-9_]*$/)
@@ -61,14 +65,15 @@ export async function migrateTraces(
     clickhouse_settings: { join_use_nulls: 1 },
   });
   const db = sqlIdentifier(config.database);
-  const owner = `${config.database}_view_owner`;
-  const reader = `${config.database}_reader`;
+  const owner = sqlIdentifier(`${config.database}_view_owner`);
+  const reader = sqlIdentifier(`${config.database}_reader`);
+  const vectorReader = sqlIdentifier(`${config.database}_reader_vector`);
   const command = (query: string) => client.command({ query });
   try {
     await command(`CREATE DATABASE IF NOT EXISTS ${db}`);
     await command("CREATE DATABASE IF NOT EXISTS api_ro");
     await command(
-      `CREATE USER IF NOT EXISTS ${sqlIdentifier(owner)} IDENTIFIED WITH sha256_password BY ${sqlString(randomBytes(32).toString("hex") + CLICKHOUSE_PASSWORD_SUFFIX)} HOST NONE`,
+      `CREATE USER IF NOT EXISTS ${owner} IDENTIFIED WITH sha256_password BY ${sqlString(randomBytes(32).toString("hex") + CLICKHOUSE_PASSWORD_SUFFIX)} HOST NONE`,
     );
     await command(
       `CREATE USER IF NOT EXISTS ${sqlIdentifier(config.writerUsername)} IDENTIFIED WITH sha256_password BY ${sqlString(config.writerPassword)}`,
@@ -82,13 +87,9 @@ export async function migrateTraces(
     await command(
       `ALTER USER ${sqlIdentifier(config.accessUsername)} IDENTIFIED WITH sha256_password BY ${sqlString(config.accessPassword)}`,
     );
-    await command(`CREATE ROLE IF NOT EXISTS ${sqlIdentifier(reader)}`);
-    await command(
-      `CREATE ROLE IF NOT EXISTS ${sqlIdentifier(reader + "_vector")}`,
-    );
-    await command(
-      `GRANT ${sqlIdentifier(reader)} TO ${sqlIdentifier(reader + "_vector")}`,
-    );
+    await command(`CREATE ROLE IF NOT EXISTS ${reader}`);
+    await command(`CREATE ROLE IF NOT EXISTS ${vectorReader}`);
+    await command(`GRANT ${reader} TO ${vectorReader}`);
     for (const [name, table] of Object.entries(traceTables)) {
       await command(
         `CREATE TABLE IF NOT EXISTS ${db}.${sqlIdentifier(name)} (${columns(table.columns)},revision Int64,generation Int64,deleted UInt8,fingerprint FixedString(64)) ENGINE=ReplacingMergeTree ORDER BY (${table.keys.map(sqlIdentifier).join(",")})`,
@@ -103,97 +104,59 @@ export async function migrateTraces(
     await command(
       `ALTER TABLE ${db}.messages ADD INDEX IF NOT EXISTS message_terms ${searchTermsSql("search_text")} TYPE text(tokenizer=splitByNonAlpha)`,
     );
-    for (const table of ["message_chunks", "session_embeddings"])
-      await command(
-        `ALTER TABLE ${db}.${table} ADD INDEX IF NOT EXISTS embedding_hnsw embedding TYPE vector_similarity('hnsw','cosineDistance',1024)`,
-      );
+    for (const [name, table] of Object.entries(traceTables))
+      if (table.vector)
+        await command(
+          `ALTER TABLE ${db}.${sqlIdentifier(name)} ADD INDEX IF NOT EXISTS embedding_hnsw embedding TYPE vector_similarity('hnsw','cosineDistance',${String(EMBEDDING_DIMENSIONS)})`,
+        );
     await command(
       `CREATE TABLE IF NOT EXISTS ${db}.audit_events (${columns(auditColumns)}) ENGINE=ReplacingMergeTree ORDER BY(organization_id,audit_id)`,
     );
-    const postgres = new URL(config.postgresControlUrl);
-    const pgArguments = [
-      `${postgres.hostname}:${postgres.port || "5432"}`,
-      decodeURIComponent(postgres.pathname.slice(1)),
-      null,
-      decodeURIComponent(postgres.username),
-      decodeURIComponent(postgres.password),
-      "trace_control",
-    ];
-    for (const [name, fields] of Object.entries({
-      ...controlTables,
-      ...controlAnalyticsTables,
-    })) {
+    for (const [name, fields] of Object.entries(controlTables))
       await command(
-        `CREATE OR REPLACE TABLE ${db}.${sqlIdentifier(`control_${name}`)} (${columns(fields)}) ENGINE=PostgreSQL(${[
-          ...pgArguments.map((value, index) =>
-            sqlString(index === 2 ? name : (value ?? "")),
-          ),
-          postgresTlsSql(config.postgresControlUrl, "engine"),
-        ]
-          .filter(Boolean)
-          .join(",")})`,
+        `CREATE OR REPLACE TABLE ${db}.${sqlIdentifier(`control_${name}`)} (${columns(fields)}) ${postgresSourceSql(config.postgresControlUrl, name, "engine")}`,
       );
+    for (const table of retiredControlTables) {
+      // Row policies outlive their table; drop them so SHOW ROW POLICIES stays truthful.
+      for (const policy of ["trace_scope", "trace_internal"])
+        await command(`DROP ROW POLICY IF EXISTS ${policy} ON ${db}.${table}`);
+      await command(`DROP TABLE IF EXISTS ${db}.${table}`);
     }
-    await command(`GRANT SELECT ON ${db}.* TO ${sqlIdentifier(owner)}`);
+    await command(`GRANT SELECT ON ${db}.* TO ${owner}`);
     await command(
       `GRANT SELECT,INSERT ON ${db}.session_identities TO ${sqlIdentifier(config.writerUsername)}`,
     );
-    await command(`GRANT SELECT ON api_ro.* TO ${sqlIdentifier(owner)}`);
+    await command(`GRANT SELECT ON api_ro.* TO ${owner}`);
+    await command(`GRANT SELECT ON system.columns TO ${owner}`);
     for (const table of [...Object.keys(traceTables), "audit_events"])
       await command(
         `GRANT SELECT,INSERT,ALTER DELETE ON ${db}.${sqlIdentifier(table)} TO ${sqlIdentifier(config.writerUsername)}`,
       );
     await command(
-      `GRANT CREATE USER ON *.* TO ${sqlIdentifier(config.accessUsername)}`,
+      `GRANT CREATE USER, ALTER USER ON *.* TO ${sqlIdentifier(config.accessUsername)}`,
     );
     await command(
-      `GRANT ${sqlIdentifier(reader)},${sqlIdentifier(reader + "_vector")} TO ${sqlIdentifier(config.accessUsername)} WITH ADMIN OPTION`,
+      `GRANT ${reader},${vectorReader} TO ${sqlIdentifier(config.accessUsername)} WITH ADMIN OPTION`,
     );
     for (const query of securityStatements(config)) await command(query);
-    for (const query of [
+    for (const { name, sql, grant } of [
       ...baseViews(config.database),
       ...analyticsViews(config.database),
       ...searchViews(config.database),
-      ...additionalViews,
       ...catalogViews(config.database),
-    ])
-      await command(query);
-    for (const name of [
-      "sessions",
-      "session_details",
-      "session_state",
-      "message_metadata",
-      "messages",
-      "raw_records",
-      "session_files",
-      "users",
-      "repos",
-      "installations",
-      "session_tools",
-      "session_observed_commits",
-      "search_messages",
-      "schema_columns",
-      "schema_functions",
-    ])
+    ]) {
+      const view = `api_ro.${sqlIdentifier(name)}`;
       await command(
-        `GRANT SELECT ON api_ro.${sqlIdentifier(name)} TO ${sqlIdentifier(reader)}`,
+        `CREATE OR REPLACE VIEW ${view} DEFINER=${owner} SQL SECURITY DEFINER AS ${sql}`,
       );
-    for (const name of [
-      "message_chunks",
-      "session_embeddings",
-      "similar_sessions",
-    ])
-      await command(
-        `REVOKE SELECT ON api_ro.${sqlIdentifier(name)} FROM ${sqlIdentifier(reader)}`,
-      );
-    for (const name of [
-      "message_chunks",
-      "session_embeddings",
-      "similar_sessions",
-    ])
-      await command(
-        `GRANT SELECT ON api_ro.${sqlIdentifier(name)} TO ${sqlIdentifier(reader + "_vector")}`,
-      );
+      if (grant === "reader")
+        await command(`GRANT SELECT ON ${view} TO ${reader}`);
+      else if (grant === "vector") {
+        // Earlier migrations granted vector views to every reader; converge before granting.
+        await command(`REVOKE SELECT ON ${view} FROM ${reader}`);
+        await command(`GRANT SELECT ON ${view} TO ${vectorReader}`);
+      }
+    }
   } finally {
     await client.close();
   }

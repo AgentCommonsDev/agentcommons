@@ -50,6 +50,10 @@ export interface HarnessDefinition {
   configFormat: "json" | "toml" | "extension";
   mcp(url: string): Record<string, unknown> | null;
   mcpCommand(url: string): string[] | null;
+  /** Printed once after `install` wires this harness. */
+  installNote?: string;
+  /** Printed after `install` wires this harness and wrote the shell exports (§8.4). */
+  shellExportNote?: string;
   timeout: number;
   events: Readonly<Record<string, EventDefinition>>;
   child(event: NativeHook, parentPath: string | null): ChildSource | null;
@@ -141,6 +145,10 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     binary: "codex",
     processMarkers: ["codex", "@openai/codex"],
     mcp: (url) => ({ url, bearer_token_env_var: "AGENTCOMMONS_API_KEY" }),
+    installNote:
+      "Codex asks you to trust hooks on the next interactive launch.",
+    shellExportNote:
+      "Open a new terminal before starting Codex so it reads the exported key.",
     configPath: [".codex", "config.toml"],
     instructionsPath: [".codex", "AGENTS.md"],
     configFormat: "toml",

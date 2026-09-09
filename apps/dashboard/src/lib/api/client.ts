@@ -3,18 +3,23 @@ import qs from "qs";
 import { errorSchema } from "@agentcommons/core/schemas/common";
 import { copy } from "../../copy";
 import type { paths } from "./generated";
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+/**
+ * Object-valued query members travel as JSON, which the server parses for any object
+ * schema; scalars and lists use bracket encoding. The client knows no route's shape.
+ */
 export const api = createClient<paths, "application/json">({
   credentials: "include",
   querySerializer: (query) =>
     qs.stringify(
-      {
-        ...query,
-        ...(typeof query.filters !== "object" ||
-        query.filters === null ||
-        !("where" in query.filters)
-          ? {}
-          : { filters: JSON.stringify(query.filters) }),
-      },
+      Object.fromEntries(
+        Object.entries(query).map(([key, value]) => [
+          key,
+          isPlainObject(value) ? JSON.stringify(value) : value,
+        ]),
+      ),
       { arrayFormat: "brackets", skipNulls: true },
     ),
 });
@@ -23,6 +28,8 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** Character offset into a submitted SQL query, when the server reports one. */
+    public readonly position: number | null = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -39,6 +46,7 @@ export function unwrap<T>(result: {
       result.response.status,
       parsed.success ? parsed.data.code : "request_failed",
       parsed.success ? parsed.data.message : copy.app.common.requestFailed,
+      parsed.success ? (parsed.data.position ?? null) : null,
     );
   }
   return result.data;

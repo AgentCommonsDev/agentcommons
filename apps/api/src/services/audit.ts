@@ -4,10 +4,8 @@ import {
   Redactor,
   omission,
   sanitizeRecord,
-  protocolObject,
-  protocolArray,
-  protocolLiterals,
   type PolicyCache,
+  type RedactionStructure,
 } from "@agentcommons/core/redaction";
 import { v7 as uuidv7 } from "uuid";
 import { ServiceError, type ServiceContext } from "./context.js";
@@ -15,37 +13,13 @@ import { z } from "zod";
 import { APIError } from "better-auth/api";
 import { keyInstallation } from "../auth/installation.js";
 import { wireValue } from "./read-budget.js";
-import {
-  searchInputSchema,
-  searchFilterKeys,
-  searchConditionSchema,
-  searchConditionFields,
-} from "@agentcommons/core/schemas";
-const conditionStructure = protocolObject(
-  [
-    ...new Set(
-      searchConditionSchema.options.flatMap((option) =>
-        Object.keys(option.shape),
-      ),
-    ),
-  ],
-  {
-    field: protocolLiterals(...Object.keys(searchConditionFields)),
-    op: protocolLiterals(
-      ...searchConditionSchema.options.flatMap((option) => [
-        ...option.shape.op.values,
-      ]),
-    ),
-  },
-);
-const searchAuditStructure = protocolObject(["input", "result"], {
-  input: protocolObject(Object.keys(searchInputSchema.shape), {
-    filters: protocolObject(searchFilterKeys, {
-      where: protocolArray(conditionStructure),
-    }),
-  }),
-  result: protocolObject(["hits", "truncated_response"]),
-});
+
+export interface AuditActor {
+  userId: string | null;
+  apiKeyId: string | null;
+  authMethod: string;
+  organizationId?: string;
+}
 
 export interface AuditDescription {
   action: string;
@@ -53,12 +27,32 @@ export interface AuditDescription {
   resourceIds?: readonly string[];
   statusCode?: number;
   detail?: unknown;
-  actor?: {
-    userId: string | null;
-    apiKeyId: string | null;
-    authMethod: string;
-    organizationId?: string;
-  };
+  actor?: AuditActor;
+  /** Keys of `detail` that are protocol structure, kept verbatim by the redactor. */
+  structure?: RedactionStructure;
+}
+
+/** Numeric service metadata is structural, like resourceIds, not persisted free text. */
+const searchResultSchema = z.object({
+  result: z.object({
+    hits: z.number().int().nonnegative(),
+    truncated_response: z.boolean(),
+  }),
+});
+const queryInputSchema = z.object({ input: z.object({ query: z.string() }) });
+const recordInputSchema = z.object({
+  input: z.record(z.string(), z.json()),
+});
+/** Audit rows keep at most this much detail; larger ones retain an omission marker. */
+const DETAIL_BYTES = 8192;
+
+/** The 503 every adapter returns when an operation's audit row could not be written. */
+export function auditUnavailableError(): ServiceError {
+  return new ServiceError(
+    503,
+    "AUDIT_UNAVAILABLE",
+    "The operation could not be recorded. Try again.",
+  );
 }
 
 export class AuditService {
@@ -100,34 +94,21 @@ export class AuditService {
       context.caller?.organizationId ?? operation.actor?.organizationId ?? null;
     const redactor = await this.redactor(organizationId, tx);
     const source = wireValue(operation.detail ?? {});
-    // Numeric service metadata is structural, like resourceIds, not persisted free text.
+    // Search rows keep their structural result and a bounded query preview even when the
+    // full detail exceeds the budget.
     const readResult =
       operation.action === "search"
-        ? z
-            .object({
-              result: z.object({
-                hits: z.number().int().nonnegative(),
-                truncated_response: z.boolean(),
-              }),
-            })
-            .safeParse(source)
+        ? searchResultSchema.safeParse(source)
         : null;
-    const redacted = (
-      await redactor.json(
-        source,
-        operation.action === "search" ? searchAuditStructure : undefined,
-      )
-    ).value;
+    const redacted = (await redactor.json(source, operation.structure)).value;
     const query = readResult?.success
-      ? z.object({ input: z.object({ query: z.string() }) }).safeParse(redacted)
+      ? queryInputSchema.safeParse(redacted)
       : null;
     const queryPreview = query?.success
       ? sanitizeRecord({ query: query.data.input.query }, 2048)
       : null;
     const sanitized = sanitizeRecord(redacted, 6000);
-    const sanitizedInput = z
-      .object({ input: z.record(z.string(), z.json()) })
-      .safeParse(sanitized);
+    const sanitizedInput = recordInputSchema.safeParse(sanitized);
     const retained = readResult?.success
       ? {
           ...(sanitized !== null &&
@@ -146,7 +127,7 @@ export class AuditService {
         }
       : sanitized;
     const detail =
-      Buffer.byteLength(JSON.stringify(retained, null, 1)) <= 8192
+      Buffer.byteLength(JSON.stringify(retained, null, 1)) <= DETAIL_BYTES
         ? retained
         : {
             omitted: omission(JSON.stringify(redacted)),
@@ -159,6 +140,8 @@ export class AuditService {
         : (await redactor.text(context.userAgent)).value;
     const apiKeyId =
       context.caller?.apiKeyId ?? operation.actor?.apiKeyId ?? null;
+    // Resolved at write time, inside the transaction: an ingest's own receipt attributes
+    // its audit row to the installation it just created (R-AUD-04).
     const installation = await keyInstallation(tx, organizationId, apiKeyId);
     const data = {
       id: uuidv7(),

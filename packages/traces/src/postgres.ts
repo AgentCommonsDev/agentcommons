@@ -37,7 +37,7 @@ function postgresTlsOptions(connection: string): Record<string, string> {
   return result;
 }
 /** Empty when the URL requests no TLS option; callers must not add a separator for it. */
-export function postgresTlsSql(
+function postgresTlsSql(
   connection: string,
   style: "engine" | "dictionary",
 ): string {
@@ -47,4 +47,34 @@ export function postgresTlsSql(
         `${key}${style === "engine" ? "=" : " "}${sqlString(value)}`,
     )
     .join(style === "engine" ? "," : " ");
+}
+/**
+ * One `trace_control` view of the PostgreSQL control URL as the complete `ENGINE=PostgreSQL(...)`
+ * clause of a mirrored table or the `SOURCE(POSTGRESQL(...))` clause of a direct dictionary.
+ */
+export function postgresSourceSql(
+  connection: string,
+  table: string,
+  style: "engine" | "dictionary",
+): string {
+  const url = new URL(connection);
+  const host = url.hostname;
+  const port = url.port || "5432";
+  const database = decodeURIComponent(url.pathname.slice(1));
+  const user = decodeURIComponent(url.username);
+  const password = decodeURIComponent(url.password);
+  const tls = postgresTlsSql(connection, style);
+  if (style === "engine")
+    return `ENGINE=PostgreSQL(${[
+      `${host}:${port}`,
+      database,
+      table,
+      user,
+      password,
+      "trace_control",
+    ]
+      .map(sqlString)
+      .concat(tls ? [tls] : [])
+      .join(",")})`;
+  return `SOURCE(POSTGRESQL(HOST ${sqlString(host)} PORT ${port} DB ${sqlString(database)} USER ${sqlString(user)} PASSWORD ${sqlString(password)} SCHEMA 'trace_control' TABLE ${sqlString(table)}${tls ? ` ${tls}` : ""}))`;
 }

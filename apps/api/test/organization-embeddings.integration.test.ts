@@ -1,29 +1,16 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
 import { createTraceClient } from "@agentcommons/traces";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import {
   errorSchema,
   organizationEmbeddingsOutputSchema,
   type IngestEnvelope,
 } from "@agentcommons/core";
-import { cleanup } from "../../../scripts/cleanup.js";
-import {
-  provisionOrganization,
-  provisionMember,
-  testAuthConfiguration,
-} from "./support.js";
-import { createRuntime } from "../src/main.js";
-import { createApp } from "../src/app.js";
-import { environment } from "../src/env.js";
+import { provisionOrganization, provisionMember, releaser } from "./support.js";
+import { mcpClient, startApp, type StartedApp } from "./app.js";
+import { testEnvelope, textRecord } from "./envelopes.js";
 import { EmbeddingService } from "../src/embeddings/service.js";
 import { FakeEmbeddingProvider } from "../src/embeddings/provider.js";
 
@@ -32,59 +19,19 @@ let first: Awaited<ReturnType<typeof provisionOrganization>>;
 let second: typeof first;
 let member: Awaited<ReturnType<typeof provisionMember>>;
 let projections: ReturnType<typeof traceServices>;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
+let runtime: StartedApp["runtime"];
 let address: string;
-const close: Array<() => Promise<unknown>> = [];
-function env(enabled: boolean) {
-  return environment({
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    EMBEDDINGS_ENABLED: String(enabled),
-    EMBEDDINGS_PROVIDER: "fake",
-    LOG_LEVEL: "silent",
-  });
-}
+const { defer, release } = releaser();
+const embeddingsEnvironment = (enabled: boolean) => ({
+  EMBEDDINGS_ENABLED: String(enabled),
+  EMBEDDINGS_PROVIDER: "fake",
+});
 function envelope(text: string): IngestEnvelope {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
-    batchId: randomUUID(),
-    installationId: randomUUID(),
-    sentAt: new Date().toISOString(),
+  return testEnvelope({
     sourcePos: 1,
-    context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "embeddings-test",
-        osUser: "user",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [
-      {
-        pos: 0,
-        key: "user-message",
-        sourceVersion: 0,
-        line: JSON.stringify({
-          type: "user",
-          message: { content: [{ type: "text", text }] },
-        }),
-      },
-    ],
-    cursor: "1",
-    end: null,
-  };
+    context: { installation: { hostname: "embeddings-test", osUser: "user" } },
+    records: [textRecord(0, text)],
+  });
 }
 async function vectorCount(organizationId?: string) {
   const native = createTraceClient(db.traceConfig);
@@ -126,9 +73,9 @@ async function change(enabled: boolean, account = first) {
 }
 beforeAll(async () => {
   db = await startTraceDatabase();
-  close.unshift(() => db.close());
+  defer(() => db.close());
   projections = traceServices(db);
-  close.unshift(() => projections.close());
+  defer(() => projections.close());
   first = await provisionOrganization(db, "embedding-control-first");
   second = await provisionOrganization(db, "embedding-control-second");
   member = await provisionMember(
@@ -136,19 +83,13 @@ beforeAll(async () => {
     first.owner,
     "embedding-control-member@example.com",
   );
-  runtime = await createRuntime(env(true));
-  close.unshift(() => runtime.close());
-  app = await createApp({
-    env: env(true),
-    services: runtime.services,
-    static: false,
+  const started = await startApp(db, embeddingsEnvironment(true), {
+    listen: true,
   });
-  close.unshift(() => app.close());
-  address = await app.listen({ host: "127.0.0.1", port: 0 });
+  defer(() => started.close());
+  ({ runtime, address } = started);
 });
-afterAll(async () => {
-  expect(await cleanup(close.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-EMB-06
 it("defaults off, enforces admin authority, and durably catches up only the opted-in organization's retained corpus", async () => {
@@ -181,10 +122,17 @@ it("defaults off, enforces admin authority, and durably catches up only the opte
     expect(queued[0]?.count).toBe(1n);
     expect((await change(true, second)).status).toBe(200);
     expect((await change(false, second)).status).toBe(200);
+    // The worker runs only for this catch-up; later tests drive the provider themselves.
     await runtime.jobs.start();
-    await expect
-      .poll(async () => (await setting()).sessions_indexed, { timeout: 20_000 })
-      .toBe(2);
+    try {
+      await expect
+        .poll(async () => (await setting()).sessions_indexed, {
+          timeout: 20_000,
+        })
+        .toBe(2);
+    } finally {
+      await runtime.jobs.stop();
+    }
     expect(await setting(second)).toMatchObject({
       effective: false,
       sessions_total: 1,
@@ -252,15 +200,9 @@ it("defaults off, enforces admin authority, and durably catches up only the opte
 
 // @req R-EMB-06
 it("disables retained vectors and SQL discovery immediately while REST and MCP search remain lexical with unchanged tools", async () => {
-  const client = new Client({
+  const client = await mcpClient(address, first.key, {
     name: "organization-embedding-test",
-    version: "1",
   });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
-      requestInit: { headers: { authorization: `Bearer ${first.key}` } },
-    }) as Transport,
-  );
   const dispatch = vi.spyOn(FakeEmbeddingProvider.prototype, "embed");
   try {
     const catalog = (await client.listTools()).tools;
@@ -354,8 +296,6 @@ it("discards an in-flight result across disable and re-enable while retaining it
     account.context,
     envelope("in-flight unique orchard"),
   );
-  // This runtime's worker is stopped so the test controls the single actual provider request.
-  await runtime.jobs.stop();
   expect((await change(true, account)).status).toBe(200);
   let started: () => void = () => {};
   const began = new Promise<void>((resolve) => {
@@ -411,7 +351,8 @@ it("discards an in-flight result across disable and re-enable while retaining it
 
 // @req R-EMB-06
 it("keeps the global operator kill switch authoritative and records failed enable attempts", async () => {
-  const off = await createRuntime(env(false));
+  const disabled = await startApp(db, embeddingsEnvironment(false));
+  const off = disabled.runtime;
   try {
     expect(
       (await off.services.organizationEmbeddings.get(first.context)).result,
@@ -450,7 +391,7 @@ it("keeps the global operator kill switch authoritative and records failed enabl
       }),
     ).toBe(1);
   } finally {
-    await off.close();
+    await disabled.close();
   }
 });
 

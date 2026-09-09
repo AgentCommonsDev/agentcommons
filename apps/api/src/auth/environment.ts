@@ -47,6 +47,24 @@ const schema = z.object({
   STRIPE_CAPTURE_EVENT_NAME: optionalText,
   STRIPE_EMBEDDING_EVENT_NAME: optionalText,
 });
+const requiredText = z.string().min(1);
+const centsPer1000 = z.coerce.number().int().nonnegative().max(1_000_000);
+/** Once any Stripe variable is set, the whole billing configuration must be present. */
+const stripeEnvironmentSchema = z.object({
+  STRIPE_SECRET_KEY: requiredText,
+  STRIPE_WEBHOOK_SECRET: requiredText,
+  STRIPE_PRO_PRICE_ID: requiredText,
+  STRIPE_PRO_EMBEDDINGS_PRICE_ID: requiredText,
+  STRIPE_CAPTURE_PRICE_ID: requiredText,
+  STRIPE_EMBEDDING_USAGE_PRICE_ID: requiredText,
+  STRIPE_CAPTURE_METER_ID: requiredText,
+  STRIPE_EMBEDDING_METER_ID: requiredText,
+  STRIPE_CAPTURE_EVENT_NAME: requiredText,
+  STRIPE_EMBEDDING_EVENT_NAME: requiredText,
+  CAPTURE_CENTS_PER_1000: centsPer1000,
+  EMBEDDING_CENTS_PER_1000: centsPer1000,
+  PRO_INCLUDED_RECORDS: z.coerce.number().int().positive().default(10_000),
+});
 
 /** The API and operator commands share the same native provider configuration. */
 export function authEnvironment(environment: NodeJS.ProcessEnv): {
@@ -78,44 +96,21 @@ export function authEnvironment(environment: NodeJS.ProcessEnv): {
     env.STRIPE_WEBHOOK_SECRET ||
     env.STRIPE_PRO_PRICE_ID
   ) {
+    const stripe = stripeEnvironmentSchema.parse(environment);
     auth.stripe = {
-      client: new Stripe(z.string().min(1).parse(env.STRIPE_SECRET_KEY)),
-      webhookSecret: z.string().min(1).parse(env.STRIPE_WEBHOOK_SECRET),
-      priceId: z.string().min(1).parse(env.STRIPE_PRO_PRICE_ID),
-      embeddingsPriceId: z
-        .string()
-        .min(1)
-        .parse(env.STRIPE_PRO_EMBEDDINGS_PRICE_ID),
-      capturePriceId: z.string().min(1).parse(env.STRIPE_CAPTURE_PRICE_ID),
-      embeddingUsagePriceId: z
-        .string()
-        .min(1)
-        .parse(env.STRIPE_EMBEDDING_USAGE_PRICE_ID),
-      captureMeterId: z.string().min(1).parse(env.STRIPE_CAPTURE_METER_ID),
-      embeddingMeterId: z.string().min(1).parse(env.STRIPE_EMBEDDING_METER_ID),
-      captureEventName: z.string().min(1).parse(env.STRIPE_CAPTURE_EVENT_NAME),
-      embeddingEventName: z
-        .string()
-        .min(1)
-        .parse(env.STRIPE_EMBEDDING_EVENT_NAME),
-      captureCentsPer1000: z.coerce
-        .number()
-        .int()
-        .nonnegative()
-        .max(1_000_000)
-        .parse(environment.CAPTURE_CENTS_PER_1000),
-      embeddingCentsPer1000: z.coerce
-        .number()
-        .int()
-        .nonnegative()
-        .max(1_000_000)
-        .parse(environment.EMBEDDING_CENTS_PER_1000),
-      includedRecords: z.coerce
-        .number()
-        .int()
-        .positive()
-        .default(10_000)
-        .parse(environment.PRO_INCLUDED_RECORDS),
+      client: new Stripe(stripe.STRIPE_SECRET_KEY),
+      webhookSecret: stripe.STRIPE_WEBHOOK_SECRET,
+      priceId: stripe.STRIPE_PRO_PRICE_ID,
+      embeddingsPriceId: stripe.STRIPE_PRO_EMBEDDINGS_PRICE_ID,
+      capturePriceId: stripe.STRIPE_CAPTURE_PRICE_ID,
+      embeddingUsagePriceId: stripe.STRIPE_EMBEDDING_USAGE_PRICE_ID,
+      captureMeterId: stripe.STRIPE_CAPTURE_METER_ID,
+      embeddingMeterId: stripe.STRIPE_EMBEDDING_METER_ID,
+      captureEventName: stripe.STRIPE_CAPTURE_EVENT_NAME,
+      embeddingEventName: stripe.STRIPE_EMBEDDING_EVENT_NAME,
+      captureCentsPer1000: stripe.CAPTURE_CENTS_PER_1000,
+      embeddingCentsPer1000: stripe.EMBEDDING_CENTS_PER_1000,
+      includedRecords: stripe.PRO_INCLUDED_RECORDS,
     };
   }
   if (env.AUTH_SOCIAL_PROVIDER) {

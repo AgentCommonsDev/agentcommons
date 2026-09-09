@@ -1,13 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
-  appendFileSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import * as z from "zod";
 import {
@@ -16,14 +9,9 @@ import {
   type HookManifest,
 } from "@agentcommons/core/schemas/ingest";
 import type { HookConfig } from "./config.js";
-import {
-  hash,
-  isCode,
-  readJson,
-  secureDirectory,
-  writeAtomic,
-} from "./files.js";
+import { hash, readJson, removeFile, writeAtomic } from "./files.js";
 import { acquireLock } from "./lock.js";
+import { note } from "./paths.js";
 
 /** Installed shims check the served manifest at most this often (§6.2 self-update). */
 const UPDATE_CHECK_INTERVAL_MS = 60 * 60_000;
@@ -107,14 +95,6 @@ export function hookIdentity(
     extensionSha256: fileDigest(extensionPath(directory)),
   };
 }
-function note(directory: string, message: string): void {
-  secureDirectory(directory);
-  appendFileSync(
-    join(directory, "hook.log"),
-    `${new Date().toISOString()} ${message}\n`,
-    { mode: 0o600 },
-  );
-}
 function sameOrigin(server: string, path: string): URL {
   const url = new URL(path, server);
   if (url.origin !== new URL(server).origin)
@@ -165,13 +145,7 @@ function stage(target: string, bytes: Buffer): Staged {
   return { temporary, target };
 }
 function discard(staged: Staged[]): void {
-  for (const { temporary } of staged) {
-    try {
-      unlinkSync(temporary);
-    } catch (error) {
-      if (!isCode(error, "ENOENT")) throw error;
-    }
-  }
+  for (const { temporary } of staged) removeFile(temporary);
 }
 /** The new bundle must run and print its own digest before it replaces the installed one. */
 function selfTest(

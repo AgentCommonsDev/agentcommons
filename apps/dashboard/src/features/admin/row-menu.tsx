@@ -1,3 +1,4 @@
+import { Link, type LinkOptions } from "@tanstack/react-router";
 import { MoreHorizontal } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { copy } from "../../copy";
@@ -14,7 +15,8 @@ interface RowMenuItem {
   label: string;
   icon?: LucideIcon;
   onSelect?: () => void;
-  href?: string;
+  /** Rendered as a router link so the row opens without a full reload. */
+  link?: LinkOptions;
   destructive?: boolean;
   disabled?: boolean;
 }
@@ -40,9 +42,9 @@ export function RowMenu({
       disabled: item.disabled ?? false,
       ...(item.onSelect ? { onSelect: item.onSelect } : {}),
     };
-    return item.href ? (
+    return item.link ? (
       <DropdownMenuItem key={item.label} asChild {...shared}>
-        <a href={item.href}>{content}</a>
+        <Link {...item.link}>{content}</Link>
       </DropdownMenuItem>
     ) : (
       <DropdownMenuItem

@@ -1,21 +1,19 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { cleanup } from "../../../scripts/cleanup.js";
 import {
   provisionMember,
   provisionOrganization,
+  releaser,
   startDatabase,
   testAuthConfiguration,
 } from "./support.js";
 import { requireCaller } from "../src/services/context.js";
 let db: Awaited<ReturnType<typeof startDatabase>>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   db = await startDatabase();
-  release.push(() => db.close());
+  defer(() => db.close());
 });
-afterAll(async () => {
-  expect(await cleanup(release)).toEqual([]);
-});
+afterAll(release);
 it("rejects native organization deletion before removing any memberships or organization data", async () => {
   const org = await provisionOrganization(db, "organization-delete-disabled");
   await provisionMember(db, org.owner, "delete-member@example.test");

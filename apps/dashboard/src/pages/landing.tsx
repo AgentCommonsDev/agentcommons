@@ -14,6 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import { copy, links } from "../copy";
+import { paths } from "../lib/routes";
 import { Pricing } from "../components/pricing";
 import { DemoCalendar } from "../components/demo-calendar";
 import { useBillingConfig } from "../lib/billing-config";
@@ -26,11 +27,11 @@ function Architecture() {
     <div
       className="architecture"
       role="img"
-      aria-label={copy.flow.diagramLabel}
+      aria-label={copy.site.flow.diagramLabel}
     >
       <div className="architecture-sources">
-        <span className="diagram-label">{copy.flow.capture}</span>
-        {copy.flow.sources.map((name, index) => (
+        <span className="diagram-label">{copy.site.flow.capture}</span>
+        {copy.site.flow.sources.map((name, index) => (
           <div className="source-node" key={name}>
             <span
               className={`source-symbol source-symbol-${String(index)}`}
@@ -61,8 +62,8 @@ function Architecture() {
         <div className="history-logo">
           <img src="/logo.png" alt="" width={46} height={46} />
         </div>
-        <strong>{copy.flow.center}</strong>
-        <span>{copy.flow.centerDetail}</span>
+        <strong>{copy.site.flow.center}</strong>
+        <span>{copy.site.flow.centerDetail}</span>
         <div className="node-data" aria-hidden>
           <i />
           <i />
@@ -80,7 +81,7 @@ function Architecture() {
         </svg>
       </div>
       <div className="architecture-destinations">
-        {copy.flow.destinations.map((destination, index) => (
+        {copy.site.flow.destinations.map((destination, index) => (
           <div className="destination-node" key={destination.title}>
             {index === 0 ? (
               <Terminal size={21} aria-hidden />
@@ -106,14 +107,14 @@ export function LandingPage() {
         <div className="container hero-content">
           <div className="eyebrow hero-eyebrow">
             <span className="eyebrow-rule" />
-            {copy.hero.eyebrow}
+            {copy.site.hero.eyebrow}
           </div>
           <h1>
-            {copy.hero.title}
+            {copy.site.hero.title}
             <br />
-            <span>{copy.hero.titleEnd}</span>
+            <span>{copy.site.hero.titleEnd}</span>
           </h1>
-          <p className="hero-description">{copy.hero.description}</p>
+          <p className="hero-description">{copy.site.hero.description}</p>
           <div className="hero-actions">
             <Button asChild>
               <a href={account.href}>
@@ -123,14 +124,14 @@ export function LandingPage() {
             </Button>
             <Button asChild variant="secondary">
               <a href={links.repository}>
-                {copy.hero.secondary}
+                {copy.site.hero.secondary}
                 <ArrowUpRight size={15} aria-hidden />
               </a>
             </Button>
           </div>
           <p className="hero-status">
             <span className="status-dot" />
-            {billing.enabled ? copy.saas.status : copy.hero.status}
+            {billing.enabled ? copy.site.saas.status : copy.site.hero.status}
           </p>
         </div>
       </section>
@@ -141,10 +142,10 @@ export function LandingPage() {
       >
         <div className="section-heading preview-heading">
           <div>
-            <span className="eyebrow">{copy.preview.eyebrow}</span>
-            <h2 id="preview-heading">{copy.preview.heading}</h2>
+            <span className="eyebrow">{copy.site.preview.eyebrow}</span>
+            <h2 id="preview-heading">{copy.site.preview.heading}</h2>
           </div>
-          <p>{copy.preview.description}</p>
+          <p>{copy.site.preview.description}</p>
         </div>
         <Example />
       </section>
@@ -156,14 +157,14 @@ export function LandingPage() {
       >
         <div className="container">
           <div className="section-heading centered">
-            <span className="eyebrow">{copy.flow.eyebrow}</span>
-            <h2 id="flow-heading">{copy.flow.heading}</h2>
-            <p>{copy.flow.description}</p>
+            <span className="eyebrow">{copy.site.flow.eyebrow}</span>
+            <h2 id="flow-heading">{copy.site.flow.heading}</h2>
+            <p>{copy.site.flow.description}</p>
           </div>
           <Architecture />
           <p className="diagram-note">
             <span className="status-dot" />
-            {copy.flow.sourcesNote}
+            {copy.site.flow.sourcesNote}
           </p>
         </div>
       </section>
@@ -173,15 +174,15 @@ export function LandingPage() {
         aria-labelledby="principles-heading"
       >
         <div className="section-heading">
-          <span className="eyebrow">{copy.principles.eyebrow}</span>
+          <span className="eyebrow">{copy.site.principles.eyebrow}</span>
           <h2 id="principles-heading">
             {billing.enabled
-              ? copy.saas.principlesTitle
-              : copy.principles.heading}
+              ? copy.site.saas.principlesTitle
+              : copy.site.principles.heading}
           </h2>
         </div>
         <div className="principle-grid">
-          {copy.principles.cards.map((card, index) => {
+          {copy.site.principles.cards.map((card, index) => {
             const Icon = [Layers, BookOpen, GitFork][index] ?? Layers;
             return (
               <article className="principle-card" key={card.title}>
@@ -206,21 +207,21 @@ export function LandingPage() {
           <div className="security-intro">
             <span className="eyebrow">
               {billing.enabled
-                ? copy.saas.securityEyebrow
-                : copy.security.eyebrow}
+                ? copy.site.saas.securityEyebrow
+                : copy.site.security.eyebrow}
             </span>
             <h2 id="security-heading">
               {billing.enabled
-                ? copy.saas.securityHeading
-                : copy.security.heading}
+                ? copy.site.saas.securityHeading
+                : copy.site.security.heading}
             </h2>
             <p>
               {billing.enabled
-                ? copy.saas.securityDescription
-                : copy.security.description}
+                ? copy.site.saas.securityDescription
+                : copy.site.security.description}
             </p>
             <a className="text-link" href={links.specification}>
-              {copy.security.link}
+              {copy.site.security.link}
               <ArrowUpRight size={15} aria-hidden />
             </a>
             <div className="security-seal" aria-hidden>
@@ -233,7 +234,7 @@ export function LandingPage() {
             </div>
           </div>
           <div className="security-items">
-            {copy.security.items.map((item, index) => {
+            {copy.site.security.items.map((item, index) => {
               const Icon =
                 [ShieldCheck, Fingerprint, LockKeyhole][index] ?? ShieldCheck;
               return (
@@ -250,7 +251,7 @@ export function LandingPage() {
             })}
             <p className="security-note">
               <Check size={14} aria-hidden />
-              {copy.security.note}
+              {copy.site.security.note}
             </p>
           </div>
         </div>
@@ -264,9 +265,9 @@ export function LandingPage() {
       )}
       <section className="closing-section">
         <div className="container">
-          <span className="eyebrow">{copy.closing.eyebrow}</span>
-          <h2>{copy.closing.heading}</h2>
-          <p>{copy.closing.description}</p>
+          <span className="eyebrow">{copy.site.closing.eyebrow}</span>
+          <h2>{copy.site.closing.heading}</h2>
+          <p>{copy.site.closing.description}</p>
           <div className="hero-actions">
             <Button asChild>
               <a href={account.href}>
@@ -275,8 +276,8 @@ export function LandingPage() {
               </a>
             </Button>
             <Button variant="ghost" asChild>
-              <a href={links.documentation}>
-                {copy.closing.secondary}
+              <a href={paths.docs}>
+                {copy.site.closing.secondary}
                 <ArrowUpRight size={15} aria-hidden />
               </a>
             </Button>

@@ -1,10 +1,12 @@
 import {
   projectionIdentity,
   projectionRecord,
+  valueAt,
 } from "../redaction/tool-results.js";
 import { z } from "zod";
 import { SourceNotReadyError } from "./errors.js";
 import { truncateUtf8 } from "../metadata/index.js";
+import { compareBigInt } from "../schemas/common.js";
 import type {
   JsonValue,
   NormalizedMessage,
@@ -14,11 +16,11 @@ import type {
   SourceRecord,
 } from "./types.js";
 
-const objectSchema = z.looseObject({});
-export const recordSchema = z.looseObject({ type: z.string() });
+/** The record's own object, or an empty one; arrays and primitives read as no fields. */
 export function object(value: unknown): Record<string, unknown> {
-  const parsed = objectSchema.safeParse(value);
-  return parsed.success ? parsed.data : {};
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 export function array(value: unknown): unknown[] {
   return Array.isArray(value) ? (value as unknown[]) : [];
@@ -32,7 +34,6 @@ export function timestamp(value: unknown): Date | null {
   return Number.isFinite(date.getTime()) ? date : null;
 }
 export function tokens(value: unknown): bigint | null {
-  if (typeof value === "bigint") return value >= 0n ? value : null;
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? BigInt(value)
     : null;
@@ -78,21 +79,31 @@ export function message(
     ...fields,
   };
 }
+/** Native role or record type to canonical role; a value outside the table is not a message. */
+export type NativeRoles = Readonly<Record<string, NormalizedMessage["role"]>>;
+/** Copy each truthy value onto the delta so absent native fields keep what earlier records set. */
+export function assignPresent<T extends object>(
+  target: T,
+  values: { [K in keyof T]?: T[K] | null },
+): void {
+  for (const key of Object.keys(values) as (keyof T)[]) {
+    const value = values[key];
+    if (value) target[key] = value;
+  }
+}
 export interface BlockDialect {
   textTypes: readonly string[];
   thinkingTypes: readonly string[];
-  toolUseTypes: readonly string[];
-  toolResultTypes: readonly string[];
-  toolInput: string;
-  toolResultId: string;
+  /** Tool calls carried inline as content blocks, when the dialect has them. */
+  toolUse?: { types: readonly string[]; inputKey: string };
+  /** Tool results carried inline as content blocks, when the dialect has them. */
+  toolResult?: { types: readonly string[]; idKey: string };
 }
 export const anthropicBlocks: BlockDialect = {
   textTypes: ["text"],
   thinkingTypes: ["thinking"],
-  toolUseTypes: ["tool_use"],
-  toolResultTypes: ["tool_result"],
-  toolInput: "input",
-  toolResultId: "tool_use_id",
+  toolUse: { types: ["tool_use"], inputKey: "input" },
+  toolResult: { types: ["tool_result"], idKey: "tool_use_id" },
 };
 export function blocks(
   record: SourceRecord,
@@ -123,7 +134,7 @@ export function blocks(
           content: text(block.thinking ?? block.text),
         }),
       ];
-    if (dialect.toolUseTypes.includes(type))
+    if (dialect.toolUse?.types.includes(type))
       return [
         message(record, blockIndex, {
           ...base,
@@ -131,17 +142,17 @@ export function blocks(
           content: "",
           toolName: string(block.name),
           toolUseId: string(block.id),
-          toolInput: json(block[dialect.toolInput]),
+          toolInput: json(block[dialect.toolUse.inputKey]),
         }),
       ];
-    if (dialect.toolResultTypes.includes(type))
+    if (dialect.toolResult?.types.includes(type))
       return [
         message(record, blockIndex, {
           ...base,
           role: "TOOL_RESULT",
           kind: "TOOL_RESULT",
           content: text(block.content),
-          toolUseId: string(block[dialect.toolResultId]),
+          toolUseId: string(block[dialect.toolResult.idKey]),
           toolName: string(block.toolName),
         }),
       ];
@@ -176,22 +187,23 @@ export function assignUsage(
   }
 }
 function order(records: readonly SourceRecord[]): SourceRecord[] {
-  const identities = new Map(
-    records.map((record) => [
-      record.id,
-      record.key === null ? "" : projectionIdentity(record.key),
-    ]),
-  );
-  return [...records].sort((a, b) =>
-    a.pos < b.pos
-      ? -1
-      : a.pos > b.pos
-        ? 1
-        : a.sourceVersion - b.sourceVersion ||
-          (identities.get(a.id) ?? "").localeCompare(
-            identities.get(b.id) ?? "",
-          ) ||
-          a.id.localeCompare(b.id),
+  // The durable identity digest breaks ties only between records sharing a position and
+  // version, so it is hashed on demand rather than once per record.
+  const identities = new Map<string, string>();
+  const identity = (record: SourceRecord): string => {
+    let value = identities.get(record.id);
+    if (value === undefined) {
+      value = record.key === null ? "" : projectionIdentity(record.key);
+      identities.set(record.id, value);
+    }
+    return value;
+  };
+  return [...records].sort(
+    (a, b) =>
+      compareBigInt(a.pos, b.pos) ||
+      a.sourceVersion - b.sourceVersion ||
+      identity(a).localeCompare(identity(b)) ||
+      a.id.localeCompare(b.id),
   );
 }
 function latestVersions(records: readonly SourceRecord[]): SourceRecord[] {
@@ -266,21 +278,25 @@ export const SENSITIVE_FILE_MARKER =
   "[agentcommons: sensitive file output redacted]";
 
 export function createNormalizer(
-  config: Omit<Normalizer, "toolUses"> & {
+  config: Omit<Normalizer, "toolUses" | "normalize"> & {
     versioned?: boolean;
     tree?: boolean;
   },
 ): Normalizer {
   const prepare = config.versioned ? latestVersions : order;
-  const toMessages: Normalizer["toMessages"] = (records, context = {}) => {
-    const prepared = prepare(records).map(projectionRecord);
+  const messagesOf = (
+    prepared: readonly SourceRecord[],
+    records: readonly SourceRecord[],
+    context: NormalizerContext,
+  ): NormalizedMessage[] => {
+    const projected = prepared.map(projectionRecord);
     const projectionContext =
       context.activeLeafId &&
       records.some((record) => record.redactionContext?.identities.length)
         ? { ...context, activeLeafId: projectionIdentity(context.activeLeafId) }
         : context;
     const result = config.toMessages(
-      config.tree ? activeBranch(prepared, projectionContext) : prepared,
+      config.tree ? activeBranch(projected, projectionContext) : projected,
       projectionContext,
     );
     const names = new Map(
@@ -293,15 +309,25 @@ export function createNormalizer(
         item.toolName = names.get(item.toolUseId) ?? null;
     return result;
   };
+  const normalize: Normalizer["normalize"] = (records, context = {}) => {
+    const prepared = prepare(records);
+    const messages = messagesOf(prepared, records, context);
+    return {
+      messages,
+      delta: {
+        ...baseDelta(messages),
+        ...config.sessionDelta(prepared, context),
+      },
+    };
+  };
   return {
     harness: config.harness,
     redactionStructure: config.redactionStructure,
     nativeIdentities: config.nativeIdentities,
-    toMessages,
-    sessionDelta: (records, context) => ({
-      ...baseDelta(toMessages(records, context)),
-      ...config.sessionDelta(prepare(records), context),
-    }),
+    normalize,
+    toMessages: (records, context = {}) =>
+      messagesOf(prepare(records), records, context),
+    sessionDelta: (records, context) => normalize(records, context).delta,
     links: (records) => config.links(prepare(records)),
     spawns: (records) => config.spawns(prepare(records)),
     toolUses: (records) =>
@@ -318,10 +344,7 @@ export function identitiesAt(
   paths: readonly (readonly (string | number)[])[],
 ): { id: string; path: (string | number)[] }[] {
   return paths.flatMap((path) => {
-    let value: unknown = record.payload;
-    for (const key of path)
-      value = typeof key === "number" ? array(value)[key] : object(value)[key];
-    const id = string(value);
+    const id = string(valueAt(record.payload, path));
     return id ? [{ id, path: [...path] }] : [];
   });
 }

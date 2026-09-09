@@ -1,48 +1,40 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { testAuthConfiguration, testAccountPassword } from "./support.js";
-import { createRuntime } from "../src/main.js";
-import { createApp } from "../src/app.js";
-import { environment } from "../src/env.js";
+import {
+  cookieHeader,
+  releaser,
+  testAuthConfiguration,
+  testAccountPassword,
+  verifyEmail,
+} from "./support.js";
+import { startApp, type StartedApp } from "./app.js";
+import { testEnvelope, textRecord } from "./envelopes.js";
 import { AuthService } from "../src/services/auth.js";
 import { operatorContext } from "../src/auth/bootstrap.js";
 import {
-  ingestEnvelopeSchema,
   onboardingOutputSchema,
   keysOutputSchema,
   keyCreateOutputSchema,
 } from "@agentcommons/core/schemas";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
-const release: Array<() => Promise<unknown>> = [];
+let runtime: StartedApp["runtime"];
+let app: StartedApp["app"];
+const { defer, release } = releaser();
 const origin = testAuthConfiguration.publicUrl;
 async function identity(label: string) {
   const email = `${label}-${randomUUID()}@example.test`;
   const created = await db.auth.native.api.createUser({
     body: { email, name: `${label} owner`, password: testAccountPassword },
   });
-  await (
-    await db.auth.native.$context
-  ).internalAdapter.updateUser(created.user.id, { emailVerified: true });
+  await verifyEmail(db, created.user.id);
   const signed = await db.auth.native.api.signInEmail({
     body: { email, password: testAccountPassword },
     asResponse: true,
   });
-  const headers = {
-    origin,
-    cookie: signed.headers
-      .getSetCookie()
-      .map((value) => value.split(";")[0])
-      .join("; "),
-  };
+  const headers = { origin, cookie: cookieHeader(signed) };
   return { id: created.user.id, email, headers };
 }
 type Identity = Awaited<ReturnType<typeof identity>>;
@@ -74,24 +66,12 @@ async function key(user: Identity, name: string) {
 }
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
-  const env = environment({
-    PUBLIC_URL: origin,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    INSTANCE_MODE: "saas",
-    LOG_LEVEL: "silent",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  app = await createApp({ env, services: runtime.services, static: false });
-  release.unshift(() => app.close());
+  defer(() => db.close());
+  const started = await startApp(db, { INSTANCE_MODE: "saas" });
+  defer(() => started.close());
+  ({ runtime, app } = started);
 });
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-SAAS-01 @req R-AUD-01
 it("keeps initial onboarding idempotent while explicit concurrent owned-slug retries create one additional native organization", async () => {
@@ -267,13 +247,9 @@ it("requires verified native cookies and leaves customer/public creation operato
     payload: { name: "Forbidden", slug: "key-forbidden" },
   });
   expect(fromKey.statusCode).toBe(403);
-  await (
-    await db.auth.native.$context
-  ).internalAdapter.updateUser(user.id, { emailVerified: false });
+  await verifyEmail(db, user.id, false);
   expect((await create(user, "unverified-forbidden")).statusCode).toBe(403);
-  await (
-    await db.auth.native.$context
-  ).internalAdapter.updateUser(user.id, { emailVerified: true });
+  await verifyEmail(db, user.id);
   const context = { ...operatorContext(), headers: new Headers(user.headers) };
   for (const instanceMode of ["customer", "public"] as const) {
     const auth = new AuthService(
@@ -309,43 +285,9 @@ it("keeps keys, capture data and monthly billing isolated and returns human-read
     user_email: user.email,
     user_name: "key-display owner",
   });
-  const body = ingestEnvelopeSchema.parse({
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    installationId: randomUUID(),
-    batchId: randomUUID(),
-    behavior: "sync",
-    nativeEvent: "Stop",
-    sentAt: new Date().toISOString(),
-    sourcePos: 0,
-    cursor: "1",
-    start: null,
-    end: null,
-    context: {
-      cwd: "/org-isolation",
-      installation: {
-        hostname: "fixture",
-        osUser: "fixture",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [
-      {
-        key: "message",
-        pos: 0,
-        sourceVersion: 0,
-        line: JSON.stringify({
-          type: "user",
-          uuid: "message",
-          message: { content: "Organization isolation evidence" },
-        }),
-      },
-    ],
+  const body = testEnvelope({
+    context: { cwd: "/org-isolation", installation: { osUser: "fixture" } },
+    records: [textRecord(0, "Organization isolation evidence")],
   });
   expect(
     (

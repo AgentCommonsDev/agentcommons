@@ -1,20 +1,9 @@
 import * as pulumi from "@pulumi/pulumi";
-import { z } from "zod";
-import { unwrap } from "./stack-contract.js";
+import { fixtureSecretConfig, record, resourceQueries } from "./mocks.js";
 
-export const fixtureSecrets = {
-  databaseMigrationPassword: "migration-password-fixture",
-  databaseAppPassword: "application-password-fixture",
-  databaseTraceControlPassword: "trace-control-password-fixture",
-  clickhouseAdminPassword: "clickhouse-admin-password-fixture",
-  clickhouseWriterPassword: "clickhouse-writer-password-fixture",
-  clickhouseAccessPassword: "clickhouse-access-password-fixture",
-  clickhouseReaderSecret: "clickhouse-reader-principal-secret-fixture",
-  betterAuthSecret: "test-only-authentication-secret-at-least-32",
-};
+export { fixtureSecrets } from "./mocks.js";
 export const googleSecret = "google-client-secret-fixture";
 const resources: pulumi.runtime.MockResourceArgs[] = [];
-const record = z.record(z.string(), z.unknown());
 /** Mocks and config for the single-node shape; `extraConfig` selects variants such as the cloud trace store. */
 export function singleNodeFixture(extraConfig: Record<string, string> = {}) {
   const mocksReady = pulumi.runtime.setMocks(
@@ -77,25 +66,9 @@ export function singleNodeFixture(extraConfig: Record<string, string> = {}) {
       AUTH_GOOGLE_CLIENT_ID: "google-client-id-fixture",
       AUTH_GOOGLE_CLIENT_SECRET: googleSecret,
     }),
-    ...Object.fromEntries(
-      Object.entries(fixtureSecrets).map(([key, value]) => [
-        `agentcommons:${key}`,
-        value,
-      ]),
-    ),
+    ...fixtureSecretConfig,
     ...extraConfig,
   });
   return { mocksReady };
 }
-export const find = (type: string, suffix = "") => {
-  const resource = resources.find(
-    (item) => item.type === type && item.name.endsWith(suffix),
-  );
-  if (resource === undefined)
-    throw new Error(`Resource absent: ${type} ${suffix}`);
-  return record.parse(unwrap(resource.inputs));
-};
-export const all = (type: string) =>
-  resources
-    .filter((item) => item.type === type)
-    .map((item) => record.parse(unwrap(item.inputs)));
+export const { find, all } = resourceQueries(resources);

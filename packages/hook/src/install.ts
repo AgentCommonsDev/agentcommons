@@ -1,57 +1,78 @@
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync,
   accessSync,
+  chmodSync,
   constants,
-  mkdirSync,
-  rmSync,
   existsSync,
   readFileSync,
-  renameSync,
-  writeFileSync,
+  rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { parse, stringify } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import * as z from "zod";
-import { configSchema, type HookConfig } from "./config.js";
-import { hash, writeAtomic } from "./files.js";
+import { configSchema, objectSchema, type HookConfig } from "./config.js";
+import { hash, readJsonOr, writeAtomic, writeUserFile } from "./files.js";
 import { credentialOrganization } from "./identity.js";
-import { HARNESSES, type CliHarness } from "./harnesses.js";
+import {
+  HARNESSES,
+  type CliHarness,
+  type HarnessDefinition,
+} from "./harnesses.js";
 
 import { agentInstructions } from "@agentcommons/core/format/install";
 export { agentInstructions };
-const INSTRUCTIONS_BEGIN = "<!-- agentcommons-hook begin -->";
-const INSTRUCTIONS_END = "<!-- agentcommons-hook end -->";
+const MARKER = "agentcommons-hook";
+const MCP_NAME = "agentcommons";
+/** Delimits the one block the installer owns inside a file the user owns. */
+interface BlockMarkers {
+  begin: string;
+  end: string;
+}
+const INSTRUCTIONS_MARKERS: BlockMarkers = {
+  begin: `<!-- ${MARKER} begin -->`,
+  end: `<!-- ${MARKER} end -->`,
+};
+const SHELL_MARKERS: BlockMarkers = {
+  begin: `# ${MARKER} begin`,
+  end: `# ${MARKER} end`,
+};
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
- * The §8.3 guidance block in a harness's global instructions file: written for every
- * configured harness, replaced in place on every install (a self-update carries new text),
- * removed on uninstall. The rest of the file belongs to the user and is never touched.
+ * Writes or replaces the marked block in place, or removes it when `content` is null
+ * (a self-update carries new text; uninstall removes it). Everything outside the
+ * markers is the user's and is kept byte for byte; a file left empty is removed.
  */
-function instructionsFile(path: string, uninstall: boolean): void {
+function replaceMarkedBlock(
+  path: string,
+  markers: BlockMarkers,
+  content: string | null,
+): void {
   const original = existsSync(path) ? readFileSync(path, "utf8") : "";
-  if (uninstall && !original) return;
-  // Everything outside the markers is the user's and is kept byte for byte.
+  if (content === null && !original) return;
   const kept = original.replace(
-    /\n?<!-- agentcommons-hook begin -->\n[\s\S]*?<!-- agentcommons-hook end -->\n?/g,
+    new RegExp(
+      `\\n?${escapeRegExp(markers.begin)}\\n[\\s\\S]*?${escapeRegExp(markers.end)}\\n?`,
+      "g",
+    ),
     "",
   );
-  if (uninstall) {
+  if (content === null) {
     if (kept === original) return;
     if (kept.trim() === "") rmSync(path, { force: true });
-    else atomicText(path, kept);
+    else writeUserFile(path, kept);
     return;
   }
-  const block = `${INSTRUCTIONS_BEGIN}\n${agentInstructions}\n${INSTRUCTIONS_END}\n`;
   const separator =
     kept === "" || kept.endsWith("\n\n")
       ? ""
       : kept.endsWith("\n")
         ? "\n"
         : "\n\n";
-  const next = `${kept}${separator}${block}`;
-  if (next !== original) atomicText(path, next);
+  const next = `${kept}${separator}${markers.begin}\n${content}\n${markers.end}\n`;
+  if (next !== original) writeUserFile(path, next);
 }
 /** The global instructions files the installer manages for these harnesses. */
 export function instructionFiles(
@@ -63,33 +84,18 @@ export function instructionFiles(
     return path ? [join(home, ...path)] : [];
   });
 }
-const objectSchema = z.record(z.string(), z.unknown());
-const MARKER = "agentcommons-hook";
-const MCP_NAME = "agentcommons";
 const shellQuote = (value: string): string =>
   `'${value.replaceAll("'", "'\\''")}'`;
+const HOOK_COMMAND = new RegExp(`(?:^|\\s)${MARKER}(?:\\s|$)`);
 function marker(command: unknown): boolean {
-  return (
-    typeof command === "string" &&
-    /(?:^|\s)agentcommons-hook(?:\s|$)/.test(command)
-  );
-}
-function atomicText(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o600, flag: "wx" });
-  renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  return typeof command === "string" && HOOK_COMMAND.test(command);
 }
 export function configure(directory: string, input: unknown): HookConfig {
   const path = join(directory, "config.json");
-  const existing: unknown = existsSync(path)
-    ? JSON.parse(readFileSync(path, "utf8"))
-    : {};
   const config = configSchema.parse({
     installationId: randomUUID(),
     node: process.execPath,
-    ...objectSchema.parse(existing),
+    ...readJsonOr(path, objectSchema, {}),
     ...objectSchema.parse(input),
   });
   writeAtomic(path, config);
@@ -99,7 +105,6 @@ export function configure(directory: string, input: unknown): HookConfig {
 export interface InstallOptions {
   configHome?: string;
   noShellRc?: boolean;
-  harnesses?: CliHarness[];
 }
 function present(binary: string): boolean {
   return (process.env.PATH ?? "").split(delimiter).some((directory) => {
@@ -111,13 +116,48 @@ function present(binary: string): boolean {
     }
   });
 }
-function updateHooks(
-  input: unknown,
+/** What a harness's configuration document carries for this installation. */
+interface Wiring {
+  harness: CliHarness;
+  events: readonly string[];
+  timeout: number;
+  command: string;
+  extension: string;
+}
+function wiringFor(
+  directory: string,
+  config: HookConfig,
   harness: CliHarness,
-  command: string,
+): Wiring {
+  const definition = HARNESSES[harness];
+  return {
+    harness,
+    events: Object.keys(definition.events),
+    timeout: definition.timeout,
+    command: `AGENTCOMMONS_DIR=${shellQuote(directory)} ${shellQuote(config.node)} ${shellQuote(join(directory, "hook.js"))} ${harness} ${MARKER}`,
+    extension: join(directory, "pi-extension.mjs"),
+  };
+}
+/** How a harness's configuration is serialized and how the shim is wired into it. */
+interface ConfigFormat {
+  parse(text: string): unknown;
+  stringify(value: Record<string, unknown>): string;
+  /** The table naming MCP servers in documents of this format. */
+  mcpKey: string;
+  /** Adds this installation to a document, or removes it. Entries the user wrote are kept. */
+  wire(
+    config: Record<string, unknown>,
+    wiring: Wiring,
+    uninstall: boolean,
+  ): Record<string, unknown>;
+  /** Throws when a document does not carry this installation. */
+  verify(config: Record<string, unknown>, wiring: Wiring): void;
+}
+function wireHooks(
+  config: Record<string, unknown>,
+  wiring: Wiring,
   uninstall: boolean,
 ): Record<string, unknown> {
-  const config = objectSchema.parse(input);
   const hooks = objectSchema.parse(config.hooks ?? {});
   for (const [event, groups] of Object.entries(hooks)) {
     if (!Array.isArray(groups)) continue;
@@ -132,19 +172,105 @@ function updateHooks(
     });
   }
   if (!uninstall)
-    for (const event of Object.keys(HARNESSES[harness].events)) {
+    for (const event of wiring.events) {
       const previous = hooks[event];
       hooks[event] = [
         ...z.array(z.unknown()).parse(previous ?? []),
         {
           matcher: "",
           hooks: [
-            { type: "command", command, timeout: HARNESSES[harness].timeout },
+            {
+              type: "command",
+              command: wiring.command,
+              timeout: wiring.timeout,
+            },
           ],
         },
       ];
     }
   return { ...config, hooks };
+}
+function verifyHooks(config: Record<string, unknown>, wiring: Wiring): void {
+  const hooks = objectSchema.parse(config.hooks ?? {});
+  for (const event of wiring.events) {
+    const groups = z.array(z.unknown()).parse(hooks[event] ?? []);
+    const found = groups.some((group) => {
+      const entries = objectSchema.safeParse(group).data?.hooks;
+      return (
+        Array.isArray(entries) &&
+        entries.some((entry: unknown) =>
+          marker(objectSchema.safeParse(entry).data?.command),
+        )
+      );
+    });
+    if (!found)
+      throw new Error(`The ${wiring.harness} ${event} hook is missing.`);
+  }
+}
+const extensionsOf = (config: Record<string, unknown>): unknown[] =>
+  z.array(z.unknown()).parse(config.extensions ?? []);
+function wireExtension(
+  config: Record<string, unknown>,
+  wiring: Wiring,
+  uninstall: boolean,
+): Record<string, unknown> {
+  const extensions = extensionsOf(config).filter(
+    (item) => item !== wiring.extension,
+  );
+  return {
+    ...config,
+    extensions: uninstall ? extensions : [...extensions, wiring.extension],
+  };
+}
+function verifyExtension(
+  config: Record<string, unknown>,
+  wiring: Wiring,
+): void {
+  if (
+    !extensionsOf(config).includes(wiring.extension) ||
+    !existsSync(wiring.extension)
+  )
+    throw new Error(`The ${wiring.harness} extension is missing.`);
+}
+const json: ConfigFormat = {
+  parse: (text) => JSON.parse(text) as unknown,
+  stringify: (value) => `${JSON.stringify(value, null, 2)}\n`,
+  mcpKey: "mcpServers",
+  wire: wireHooks,
+  verify: verifyHooks,
+};
+const FORMATS: Readonly<
+  Record<HarnessDefinition["configFormat"], ConfigFormat>
+> = {
+  json,
+  toml: {
+    parse: (text) => parseToml(text),
+    stringify: (value) => stringifyToml(value),
+    mcpKey: "mcp_servers",
+    wire: wireHooks,
+    verify: verifyHooks,
+  },
+  // A JSON settings file that lists extension modules instead of shell hooks (pi).
+  extension: { ...json, wire: wireExtension, verify: verifyExtension },
+};
+/** A harness configuration document, or null when the file does not exist. */
+function readConfig(
+  format: ConfigFormat,
+  path: string,
+): Record<string, unknown> | null {
+  return existsSync(path)
+    ? objectSchema.parse(format.parse(readFileSync(path, "utf8")))
+    : null;
+}
+/** Saves a document, keeping the first pre-install copy beside it as a backup. */
+function saveConfig(
+  format: ConfigFormat,
+  path: string,
+  value: Record<string, unknown>,
+): void {
+  if (existsSync(path) && !existsSync(`${path}.agentcommons-backup`))
+    writeUserFile(`${path}.agentcommons-backup`, readFileSync(path, "utf8"));
+  writeUserFile(path, format.stringify(value));
 }
 /**
  * Every login shell a person may start a coding agent from gets the exports: bash and zsh
@@ -161,21 +287,19 @@ function shellRcPaths(home: string): string[] {
 }
 function shellRc(home: string, config: HookConfig, uninstall: boolean): void {
   for (const path of shellRcPaths(home)) {
-    const original = existsSync(path) ? readFileSync(path, "utf8") : "";
-    if (uninstall && !original) continue;
-    const cleaned = original.replace(
-      /^# agentcommons-hook begin\n[\s\S]*?^# agentcommons-hook end\n?/gm,
-      "",
-    );
     const exports = path.endsWith("config.fish")
-      ? `set -gx AGENTCOMMONS_SERVER ${shellQuote(config.server)}\nset -gx AGENTCOMMONS_API_KEY ${shellQuote(config.key)}\n`
-      : `export AGENTCOMMONS_SERVER=${shellQuote(config.server)}\nexport AGENTCOMMONS_API_KEY=${shellQuote(config.key)}\n`;
-    atomicText(
+      ? [
+          `set -gx AGENTCOMMONS_SERVER ${shellQuote(config.server)}`,
+          `set -gx AGENTCOMMONS_API_KEY ${shellQuote(config.key)}`,
+        ]
+      : [
+          `export AGENTCOMMONS_SERVER=${shellQuote(config.server)}`,
+          `export AGENTCOMMONS_API_KEY=${shellQuote(config.key)}`,
+        ];
+    replaceMarkedBlock(
       path,
-      cleaned +
-        (uninstall
-          ? ""
-          : `${cleaned.endsWith("\n") || !cleaned ? "" : "\n"}# agentcommons-hook begin\n${exports}# agentcommons-hook end\n`),
+      SHELL_MARKERS,
+      uninstall ? null : exports.join("\n"),
     );
   }
 }
@@ -185,6 +309,16 @@ export function detectHarnesses(): CliHarness[] {
     present(HARNESSES[name].binary),
   );
 }
+const registrySchema = z.record(
+  z.string(),
+  z.strictObject({
+    installed: z.unknown(),
+    previous: z.unknown().optional(),
+  }),
+);
+type Registry = z.infer<typeof registrySchema>;
+const mcpUrl = (config: HookConfig): string =>
+  new URL("/mcp", config.server).href;
 export function install(
   directory: string,
   config: HookConfig,
@@ -193,65 +327,37 @@ export function install(
 ): CliHarness[] {
   const home = options.configHome ?? homedir();
   const registryPath = join(directory, "installations.json");
-  const registrySchema = z.record(
-    z.string(),
-    z.strictObject({
-      installed: z.unknown(),
-      previous: z.unknown().optional(),
-    }),
-  );
-  const registry = registrySchema.parse(
-    existsSync(registryPath)
-      ? (JSON.parse(readFileSync(registryPath, "utf8")) as unknown)
-      : {},
-  );
-  const selected =
-    options.harnesses ??
-    (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
-      uninstall
-        ? existsSync(join(home, ...HARNESSES[name].configPath))
-        : present(HARNESSES[name].binary),
-    );
+  const registry: Registry = readJsonOr(registryPath, registrySchema, {});
+  const selected = uninstall
+    ? (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
+        existsSync(join(home, ...HARNESSES[name].configPath)),
+      )
+    : detectHarnesses();
+  const url = mcpUrl(config);
   for (const harness of selected) {
     const definition = HARNESSES[harness];
+    const format = FORMATS[definition.configFormat];
+    const wiring = wiringFor(directory, config, harness);
     const path = join(home, ...definition.configPath);
-    const toml = definition.configFormat === "toml";
-    const read = (file: string): Record<string, unknown> => {
-      if (!existsSync(file)) return {};
-      const text = readFileSync(file, "utf8");
-      return objectSchema.parse(
-        toml ? parse(text) : (JSON.parse(text) as unknown),
-      );
-    };
-    const save = (file: string, value: Record<string, unknown>): void => {
-      if (existsSync(file) && !existsSync(`${file}.agentcommons-backup`))
-        atomicText(`${file}.agentcommons-backup`, readFileSync(file, "utf8"));
-      atomicText(
-        file,
-        toml ? stringify(value) : `${JSON.stringify(value, null, 2)}\n`,
-      );
-    };
-    const command = `AGENTCOMMONS_DIR=${shellQuote(directory)} ${shellQuote(config.node)} ${shellQuote(join(directory, "hook.js"))} ${harness} ${MARKER}`;
-    const input = read(path);
-    let output: Record<string, unknown>;
-    if (definition.configFormat === "extension") {
-      output = input;
-      const extension = join(directory, "pi-extension.mjs");
-      const extensions = z
-        .array(z.unknown())
-        .parse(output.extensions ?? [])
-        .filter((item) => item !== extension);
-      output.extensions = uninstall ? extensions : [...extensions, extension];
-    } else output = updateHooks(input, harness, command, uninstall);
-    save(path, output);
+    const output = format.wire(
+      readConfig(format, path) ?? {},
+      wiring,
+      uninstall,
+    );
+    saveConfig(format, path, output);
     if (definition.instructionsPath)
-      instructionsFile(join(home, ...definition.instructionsPath), uninstall);
+      replaceMarkedBlock(
+        join(home, ...definition.instructionsPath),
+        INSTRUCTIONS_MARKERS,
+        uninstall ? null : agentInstructions,
+      );
     if (!definition.mcpConfigPath) continue;
     const mcpPath = join(home, ...definition.mcpConfigPath);
-    const mcpKey = toml ? "mcp_servers" : "mcpServers";
-    const mcpConfig = mcpPath === path ? output : read(mcpPath);
-    const servers = objectSchema.parse(mcpConfig[mcpKey] ?? {});
+    const mcpConfig =
+      mcpPath === path ? output : (readConfig(format, mcpPath) ?? {});
+    const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
     const previous = registry[mcpPath];
+    const expected = definition.mcp(url);
     if (uninstall) {
       if (
         previous &&
@@ -263,66 +369,67 @@ export function install(
         Reflect.deleteProperty(registry, mcpPath);
       }
     } else {
-      const installed = definition.mcp(new URL("/mcp", config.server).href);
       registry[mcpPath] = {
-        installed,
+        installed: expected,
         ...(previous
           ? { previous: previous.previous }
           : servers[MCP_NAME] !== undefined
             ? { previous: servers[MCP_NAME] }
             : {}),
       };
-      servers[MCP_NAME] = installed;
+      servers[MCP_NAME] = expected;
     }
-    mcpConfig[mcpKey] = servers;
-    save(mcpPath, mcpConfig);
-    writeAtomic(registryPath, registry);
-    const nativeCommand = definition.mcpCommand(
-      new URL("/mcp", config.server).href,
-    );
-    if (!uninstall && options.configHome === undefined && nativeCommand) {
-      const registrationConfig = {
-        ...mcpConfig,
-        [mcpKey]: Object.fromEntries(
-          Object.entries(servers).filter(([name]) => name !== MCP_NAME),
-        ),
-      };
-      save(mcpPath, registrationConfig);
-      try {
-        execFileSync(definition.binary, nativeCommand, {
-          timeout: 10000,
-          stdio: "ignore",
-        });
-      } catch {
-        save(mcpPath, mcpConfig);
-        throw new Error(`The ${harness} MCP registration failed.`);
-      }
-      chmodSync(mcpPath, 0o600);
-      const nativeConfig = read(mcpPath);
-      const nativeServers = objectSchema.parse(nativeConfig[mcpKey] ?? {});
-      const written = nativeServers[MCP_NAME];
-      if (written === undefined) {
-        save(mcpPath, mcpConfig);
-        throw new Error(
-          `The ${harness} CLI wrote to an unexpected configuration location.`,
+    mcpConfig[format.mcpKey] = servers;
+    saveConfig(format, mcpPath, mcpConfig);
+    const nativeCommand = definition.mcpCommand(url);
+    try {
+      if (!uninstall && options.configHome === undefined && nativeCommand) {
+        const registrationConfig = {
+          ...mcpConfig,
+          [format.mcpKey]: Object.fromEntries(
+            Object.entries(servers).filter(([name]) => name !== MCP_NAME),
+          ),
+        };
+        saveConfig(format, mcpPath, registrationConfig);
+        try {
+          execFileSync(definition.binary, nativeCommand, {
+            timeout: 10000,
+            stdio: "ignore",
+          });
+        } catch {
+          saveConfig(format, mcpPath, mcpConfig);
+          throw new Error(`The ${harness} MCP registration failed.`);
+        }
+        chmodSync(mcpPath, 0o600);
+        const nativeConfig = readConfig(format, mcpPath) ?? {};
+        const nativeServers = objectSchema.parse(
+          nativeConfig[format.mcpKey] ?? {},
         );
+        const written = nativeServers[MCP_NAME];
+        if (written === undefined) {
+          saveConfig(format, mcpPath, mcpConfig);
+          throw new Error(
+            `The ${harness} CLI wrote to an unexpected configuration location.`,
+          );
+        }
+        // The CLI owns its own fields; options it cannot express (Claude's alwaysLoad)
+        // are merged into the entry it wrote.
+        const missing = Object.entries(expected ?? {}).filter(
+          ([key]) => !(key in objectSchema.parse(written)),
+        );
+        const installed = missing.length
+          ? { ...objectSchema.parse(written), ...Object.fromEntries(missing) }
+          : written;
+        if (missing.length) {
+          nativeServers[MCP_NAME] = installed;
+          nativeConfig[format.mcpKey] = nativeServers;
+          saveConfig(format, mcpPath, nativeConfig);
+        }
+        const owned = registry[mcpPath];
+        if (owned) registry[mcpPath] = { ...owned, installed };
       }
-      // The CLI owns its own fields; options it cannot express (Claude's alwaysLoad)
-      // are merged into the entry it wrote.
-      const expected = definition.mcp(new URL("/mcp", config.server).href);
-      const missing = Object.entries(expected ?? {}).filter(
-        ([key]) => !(key in objectSchema.parse(written)),
-      );
-      const installed = missing.length
-        ? { ...objectSchema.parse(written), ...Object.fromEntries(missing) }
-        : written;
-      if (missing.length) {
-        nativeServers[MCP_NAME] = installed;
-        nativeConfig[mcpKey] = nativeServers;
-        save(mcpPath, nativeConfig);
-      }
-      const owned = registry[mcpPath];
-      if (owned) registry[mcpPath] = { ...owned, installed };
+    } finally {
+      // Recorded even when a native registration fails: the restored file carries the entry.
       writeAtomic(registryPath, registry);
     }
   }
@@ -343,62 +450,33 @@ export async function doctor(
   if (!existsSync(join(directory, "hook.js")))
     throw new Error("The installed hook.js file is missing.");
   const home = options.configHome ?? homedir();
-  for (const harness of options.harnesses ??
-    (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
-      present(HARNESSES[name].binary),
-    )) {
+  const url = mcpUrl(config);
+  for (const harness of detectHarnesses()) {
     const definition = HARNESSES[harness];
-    const read = (path: string) =>
-      objectSchema.parse(
-        definition.configFormat === "toml"
-          ? parse(readFileSync(path, "utf8"))
-          : (JSON.parse(readFileSync(path, "utf8")) as unknown),
-      );
-    const parsed = read(join(home, ...definition.configPath));
-    if (definition.configFormat === "extension") {
-      const extension = join(directory, "pi-extension.mjs");
-      if (
-        !z
-          .array(z.unknown())
-          .parse(parsed.extensions ?? [])
-          .includes(extension) ||
-        !existsSync(extension)
+    const format = FORMATS[definition.configFormat];
+    const settings = readConfig(format, join(home, ...definition.configPath));
+    if (!settings)
+      throw new Error(`The ${harness} configuration file is missing.`);
+    format.verify(settings, wiringFor(directory, config, harness));
+    if (!definition.mcpConfigPath) continue;
+    const mcpConfig = readConfig(
+      format,
+      join(home, ...definition.mcpConfigPath),
+    );
+    if (!mcpConfig)
+      throw new Error(`The ${harness} MCP configuration file is missing.`);
+    const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
+    const configured = objectSchema.parse(servers[MCP_NAME] ?? {});
+    const expected = definition.mcp(url);
+    if (
+      expected &&
+      Object.entries(expected).some(
+        ([key, value]) =>
+          JSON.stringify(configured[key]) !== JSON.stringify(value),
       )
-        throw new Error("The pi extension is missing.");
-    } else {
-      const hooks = objectSchema.parse(parsed.hooks ?? {});
-      for (const event of Object.keys(definition.events)) {
-        const groups = z.array(z.unknown()).parse(hooks[event] ?? []);
-        const found = groups.some((group) => {
-          const entries = objectSchema.safeParse(group).data?.hooks;
-          return (
-            Array.isArray(entries) &&
-            entries.some((entry: unknown) =>
-              marker(objectSchema.safeParse(entry).data?.command),
-            )
-          );
-        });
-        if (!found) throw new Error(`The ${harness} ${event} hook is missing.`);
-      }
-    }
-    if (definition.mcpConfigPath) {
-      const servers = objectSchema.parse(
-        read(join(home, ...definition.mcpConfigPath))[
-          definition.configFormat === "toml" ? "mcp_servers" : "mcpServers"
-        ] ?? {},
+    )
+      throw new Error(
+        `The ${harness} MCP configuration does not match this server.`,
       );
-      const configured = objectSchema.parse(servers[MCP_NAME] ?? {});
-      const expected = definition.mcp(new URL("/mcp", config.server).href);
-      if (
-        expected &&
-        Object.entries(expected).some(
-          ([key, value]) =>
-            JSON.stringify(configured[key]) !== JSON.stringify(value),
-        )
-      )
-        throw new Error(
-          `The ${harness} MCP configuration does not match this server.`,
-        );
-    }
   }
 }

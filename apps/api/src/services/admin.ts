@@ -3,10 +3,14 @@ import { v7 as uuidv7 } from "uuid";
 import type { TraceReaders } from "@agentcommons/traces";
 import { MetricsService } from "./metrics.js";
 import type { Prisma } from "@agentcommons/db";
-import { lockTracePublication, type PrismaClient } from "@agentcommons/db";
+import {
+  lockTracePublication,
+  lockTraceSessionControl,
+  type PrismaClient,
+} from "@agentcommons/db";
 import {
   visibilityInputSchema,
-  installationToolsInputSchema,
+  enabledInputSchema,
   installationToolsOutputSchema,
   sessionIdSchema,
   purgeInputSchema,
@@ -16,20 +20,18 @@ import {
   statusOutputSchema,
   redactionRescanInputSchema,
   jobOutputSchema,
-  jsonValueSchema,
 } from "@agentcommons/core";
 import type { AuditService } from "./audit.js";
 import type { CursorCodec } from "./cursor.js";
+import type { TraceQueue } from "./trace-outbox.js";
 import { lockOrganization } from "./auth.js";
 import { mutationOperation } from "./mutation.js";
 import { readOperation } from "./read-operation.js";
+import { wireValue } from "./read-budget.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 
-export interface AdminJobs {
-  enqueue(
-    tx: Prisma.TransactionClient,
-    data: { organizationId: string; sessionId: string; outboxId: string },
-  ): Promise<void>;
+/** The job service as admin operations see it: the trace queue plus rescans and status. */
+export interface AdminJobs extends TraceQueue {
   rescan(
     tx: Prisma.TransactionClient,
     context: ServiceContext,
@@ -42,15 +44,13 @@ export interface AdminJobs {
     embedding_daily_cost: string;
   }>;
 }
+/** Lock one session's control row for the transaction and return it, or 404. */
 async function session(
   tx: Prisma.TransactionClient,
   organizationId: string,
   id: string,
 ) {
-  const locked = await tx.$queryRaw<
-    { id: string }[]
-  >`SELECT id FROM trace_session_control WHERE organization_id=${organizationId} AND id=${id}::uuid FOR UPDATE`;
-  if (locked.length === 0)
+  if (!(await lockTraceSessionControl(tx, organizationId, id)))
     throw new ServiceError(404, "NOT_FOUND", "Session not found.");
   return tx.traceSessionControl.findUniqueOrThrow({
     where: { organizationId_id: { organizationId, id } },
@@ -65,7 +65,22 @@ const auditSort = {
   transport: "transport",
   request_id: "requestId",
 } as const;
+const auditCursorSchema = z.strictObject({
+  id: z.uuid(),
+  cutoff: z.iso.datetime(),
+});
+/** Derived session fields a purge resets; the manifest and the audit detail list the same set. */
+const purgeResetFields = [
+  "normalizer_context",
+  "projected_context",
+  "message_count",
+  "tool_call_count",
+  "input_tokens",
+  "output_tokens",
+  "tools_used",
+];
 export class AdminService {
+  private readonly metricsService: MetricsService;
   constructor(
     private readonly dependencies: {
       prisma: PrismaClient;
@@ -74,9 +89,11 @@ export class AdminService {
       cursors: CursorCodec;
       jobs: AdminJobs;
     },
-  ) {}
+  ) {
+    this.metricsService = new MetricsService(dependencies);
+  }
   metrics(context: ServiceContext, group: unknown, input: unknown) {
-    return new MetricsService(this.dependencies).get(context, group, input);
+    return this.metricsService.get(context, group, input);
   }
   setInstallationTools(
     context: ServiceContext,
@@ -93,7 +110,7 @@ export class AdminService {
       },
       async (tx, caller) => {
         const id = sessionIdSchema.parse(installationId);
-        const request = installationToolsInputSchema.parse(input);
+        const request = enabledInputSchema.parse(input);
         await lockOrganization(tx, caller);
         const current = await tx.installation.findUnique({
           where: {
@@ -208,15 +225,7 @@ export class AdminService {
               "observed_diff_stat",
               "branch",
             ],
-            reset_fields: [
-              "normalizer_context",
-              "projected_context",
-              "message_count",
-              "tool_call_count",
-              "input_tokens",
-              "output_tokens",
-              "tools_used",
-            ],
+            reset_fields: purgeResetFields,
             retained: [
               "session_identity",
               "ingest_receipts",
@@ -268,15 +277,7 @@ export class AdminService {
           detail: {
             reason,
             manifest: result.manifest,
-            reset_fields: [
-              "normalizer_context",
-              "projected_context",
-              "message_count",
-              "tool_call_count",
-              "input_tokens",
-              "output_tokens",
-              "tools_used",
-            ],
+            reset_fields: purgeResetFields,
           },
         };
       },
@@ -294,21 +295,13 @@ export class AdminService {
       async (caller) => {
         const request = auditListInputSchema.parse(input);
         const { cursor, ...query } = request;
-        const binding = jsonValueSchema.parse(
-          JSON.parse(
-            JSON.stringify({
-              organizationId: caller.organizationId,
-              operation: "audit.list",
-              input: query,
-            }),
-          ),
-        );
+        const binding = wireValue({
+          organizationId: caller.organizationId,
+          operation: "audit.list",
+          input: query,
+        });
         const position = cursor
-          ? this.dependencies.cursors.decode(
-              cursor,
-              binding,
-              z.strictObject({ id: z.uuid(), cutoff: z.iso.datetime() }),
-            )
+          ? this.dependencies.cursors.decode(cursor, binding, auditCursorSchema)
           : null;
         const clock = position
           ? new Date(position.cutoff)
@@ -390,8 +383,10 @@ export class AdminService {
               : null,
         });
       },
-      (result) => ({ row_count: result.items.length }),
-      "admin",
+      {
+        describeResult: (result) => ({ row_count: result.items.length }),
+        permission: "admin",
+      },
     );
   }
   status(context: ServiceContext) {
@@ -449,8 +444,9 @@ export class AdminService {
           },
         });
       },
-      undefined,
-      "admin",
+      {
+        permission: "admin",
+      },
     );
   }
   rescan(context: ServiceContext, input: unknown) {

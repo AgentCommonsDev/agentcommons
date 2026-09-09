@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { PrismaClient, type Prisma } from "@prisma/client";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import { authPlugins } from "../src/auth-plugins.js";
+import { startDatabase } from "./support.js";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 let prisma: PrismaClient;
@@ -68,24 +66,10 @@ function createAuth(
 }
 
 beforeAll(async () => {
-  const container = await new PostgreSqlContainer("postgres:16").start();
-  cleanup.push(() => container.stop());
-  const urls = ["ac_app", "ac_trace_control"].map((role) => {
-    const url = new URL(container.getConnectionUri());
-    url.username = role;
-    url.password = "test-password";
-    return url.toString();
-  });
-  await promisify(execFile)("pnpm", ["migrate"], {
-    cwd: new URL("../", import.meta.url),
-    env: {
-      ...process.env,
-      DATABASE_MIGRATION_URL: container.getConnectionUri(),
-      DATABASE_URL: urls[0],
-      DATABASE_TRACE_CONTROL_URL: urls[1],
-    },
-  });
-  prisma = new PrismaClient({ datasourceUrl: container.getConnectionUri() });
+  const db = await startDatabase();
+  cleanup.push(() => db.close());
+  // Better Auth's adapter owns every native table here, so it runs as the migration role.
+  prisma = new PrismaClient({ datasourceUrl: db.urls.migration });
   cleanup.push(() => prisma.$disconnect());
 }, 120_000);
 

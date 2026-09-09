@@ -1,10 +1,8 @@
 import { readFile, stat } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { PrismaClient } from "@agentcommons/db";
-import { operatorContext } from "./auth/bootstrap.js";
+import { operatorContext, runOperatorCommand } from "./auth/bootstrap.js";
 import { enrollDomain, domainEnrollmentInputSchema } from "./auth/domain.js";
-import { authEnvironment } from "./auth/environment.js";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -34,16 +32,11 @@ if (
 const cookie = (await readFile(path, "utf8")).trim();
 if (!cookie || /[\r\n]/.test(cookie))
   throw new Error("The cookie file must contain one Cookie header value.");
-const env = authEnvironment(process.env);
-const prisma = new PrismaClient({ datasourceUrl: env.databaseUrl });
-try {
-  const { result } = await enrollDomain(
+await runOperatorCommand((prisma, auth) =>
+  enrollDomain(
     prisma,
-    env.auth,
+    auth,
     { ...operatorContext(), headers: new Headers({ cookie }) },
     input,
-  );
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-} finally {
-  await prisma.$disconnect();
-}
+  ),
+);

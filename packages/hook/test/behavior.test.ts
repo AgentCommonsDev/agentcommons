@@ -12,9 +12,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { expect, it, vi, afterEach } from "vitest";
-import { configure } from "../src/install.js";
 import { recordHook } from "../src/hook.js";
-import { loadState, intents } from "../src/state.js";
+import {
+  intentFileName,
+  intents,
+  journalPath,
+  loadState,
+  quarantinePath,
+  type Intent,
+} from "../src/state.js";
 import { hash, writeAtomic } from "../src/files.js";
 import { HARNESSES } from "../src/harnesses.js";
 import {
@@ -25,12 +31,19 @@ import {
 } from "../src/readers.js";
 import { upload } from "../src/upload.js";
 import { gitContext, gitEnd } from "../src/git.js";
-import {
-  ingestEnvelopeSchema,
-  type IngestEnvelope,
-} from "@agentcommons/core/schemas/ingest";
+import { fixture } from "./fixture.js";
 
 afterEach(() => vi.unstubAllEnvs());
+const git = (
+  cwd: string,
+  args: string[],
+  env: Record<string, string> = {},
+): string =>
+  execFileSync("git", ["-C", cwd, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, ...env },
+  }).trim();
 // @req R-CAP-12
 it("terminates a stalled git observation without waiting for the command to finish", () => {
   const directory = mkdtempSync(join(tmpdir(), "agentcommons-slow-git-"));
@@ -48,50 +61,6 @@ it("terminates a stalled git observation without waiting for the command to fini
   expect(Number.isSafeInteger(pid)).toBe(true);
   expect(() => process.kill(pid, 0)).toThrow();
 });
-function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "agentcommons-behavior-"));
-  const config = configure(directory, {
-    server: "http://127.0.0.1:3000",
-    key: "test",
-    organizationId: "019939c0-0000-7000-8000-000000000001",
-    credentialHash: hash("test"),
-  });
-  const transcript = join(directory, "transcript.jsonl");
-  writeFileSync(transcript, '{"uuid":"one"}\n');
-  const event = {
-    session_id: randomUUID(),
-    transcript_path: transcript,
-    cwd: directory,
-    hook_event_name: "Stop",
-  };
-  const hook = (input = event) => {
-    const path = recordHook(
-      directory,
-      "/nonexistent-test-shim.js",
-      config,
-      "claude",
-      input,
-      "launch",
-    );
-    if (!path) throw new Error("Missing state.");
-    return path;
-  };
-  const received: IngestEnvelope[] = [];
-  const fetcher: typeof fetch = (_url, options) => {
-    if (options?.method !== "POST")
-      return Promise.resolve(
-        Response.json({ organization: { id: config.organizationId } }),
-      );
-    const body = ingestEnvelopeSchema.parse(
-      JSON.parse(
-        typeof options.body === "string" ? options.body : "null",
-      ) as unknown,
-    );
-    received.push(body);
-    return Promise.resolve(new Response(null, { status: 202 }));
-  };
-  return { directory, config, transcript, event, hook, received, fetcher };
-}
 // @req R-CAP-02 @req R-CAP-03 @req R-CAP-13
 it("journals lifecycle and due sync intents, honors tool thresholds, and skips disabled paths", async () => {
   const f = fixture();
@@ -178,19 +147,12 @@ it("flushes a captured child source independently and preserves the parent trans
     recursive: true,
   });
   writeFileSync(child, '{"uuid":"child-message"}\n');
-  recordHook(
-    f.directory,
-    "/none",
-    f.config,
-    "claude",
-    {
-      ...f.event,
-      hook_event_name: "SubagentStart",
-      agent_id: "child",
-      agent_type: "Explore",
-    },
-    "launch",
-  );
+  recordHook(f.directory, "/none", f.config, "claude", {
+    ...f.event,
+    hook_event_name: "SubagentStart",
+    agent_id: "child",
+    agent_type: "Explore",
+  });
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
     sweep: false,
@@ -206,19 +168,12 @@ it("flushes a captured child source independently and preserves the parent trans
     agentType: "Explore",
   });
   expect(loadState(path).transcriptPath).toBe(f.transcript);
-  recordHook(
-    f.directory,
-    "/none",
-    f.config,
-    "claude",
-    {
-      ...f.event,
-      hook_event_name: "SubagentStop",
-      agent_id: "child",
-      agent_transcript_path: child,
-    },
-    "launch",
-  );
+  recordHook(f.directory, "/none", f.config, "claude", {
+    ...f.event,
+    hook_event_name: "SubagentStop",
+    agent_id: "child",
+    agent_transcript_path: child,
+  });
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
     sweep: false,
@@ -270,20 +225,15 @@ it("resets truncated sources and preserves oversized bytes before returning an a
 // @req R-CAP-12
 it("collects end observations in a detached worktree with committed and dirty files", async () => {
   const f = fixture();
-  const git = (...args: string[]) =>
-    execFileSync("git", ["-C", f.directory, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  git("init");
-  git("config", "user.name", "Fixture");
-  git("config", "user.email", "fixture@example.test");
+  git(f.directory, ["init"]);
+  git(f.directory, ["config", "user.name", "Fixture"]);
+  git(f.directory, ["config", "user.email", "fixture@example.test"]);
   writeFileSync(join(f.directory, "tracked"), "first\n");
-  git("add", "tracked");
-  git("commit", "-m", "initial");
-  const initial = git("rev-parse", "HEAD");
+  git(f.directory, ["add", "tracked"]);
+  git(f.directory, ["commit", "-m", "initial"]);
+  const initial = git(f.directory, ["rev-parse", "HEAD"]);
   const worktree = join(f.directory, "worktree");
-  git("worktree", "add", "--detach", worktree, initial);
+  git(f.directory, ["worktree", "add", "--detach", worktree, initial]);
   const path = f.hook({
     ...f.event,
     cwd: worktree,
@@ -294,9 +244,7 @@ it("collects end observations in a detached worktree with committed and dirty fi
     sweep: false,
   });
   writeFileSync(join(worktree, "tracked"), "first\nsecond\n");
-  execFileSync("git", ["-C", worktree, "commit", "-am", "observed commit"], {
-    stdio: "ignore",
-  });
+  git(worktree, ["commit", "-am", "observed commit"]);
   writeFileSync(join(worktree, "dirty"), "pending\n");
   expect(gitContext(worktree)).toMatchObject({ root: worktree, branch: null });
   const end = gitEnd(worktree, initial, "exit");
@@ -371,18 +319,11 @@ it("transports the explicit parent environment as a SPAWNED hint for every harne
       ([, event]) => event.behavior === "start",
     )?.[0];
     if (!nativeEvent) throw new Error("Missing native start event.");
-    const path = recordHook(
-      f.directory,
-      "/none",
-      f.config,
-      harness,
-      {
-        session_id: randomUUID(),
-        cwd: f.directory,
-        hook_event_name: nativeEvent,
-      },
-      "launch",
-    );
+    const path = recordHook(f.directory, "/none", f.config, harness, {
+      session_id: randomUUID(),
+      cwd: f.directory,
+      hook_event_name: nativeEvent,
+    });
     if (!path) throw new Error("Missing state.");
     await upload(f.directory, "/none", path, f.config, {
       fetch: f.fetcher,
@@ -413,19 +354,12 @@ it("keeps parallel child starts distinct when their parent source and prompt are
       recursive: true,
     });
     writeFileSync(child, JSON.stringify({ uuid: id }) + "\n");
-    recordHook(
-      f.directory,
-      "/none",
-      f.config,
-      "claude",
-      {
-        ...f.event,
-        hook_event_name: "SubagentStart",
-        prompt_id: "same-prompt",
-        agent_id: id,
-      },
-      "launch",
-    );
+    recordHook(f.directory, "/none", f.config, "claude", {
+      ...f.event,
+      hook_event_name: "SubagentStart",
+      prompt_id: "same-prompt",
+      agent_id: id,
+    });
   }
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
@@ -454,36 +388,15 @@ it("keeps bridge lifecycle identity and native ordering when detached hooks arri
     event_id: "native-observation-start",
     timestamp: "2026-09-08T00:00:02.000Z",
   };
-  const path = recordHook(
-    f.directory,
-    "/none",
-    f.config,
-    "pi",
-    start,
-    "same-native-process",
-  );
+  const path = recordHook(f.directory, "/none", f.config, "pi", start);
   if (!path) throw new Error("Missing state.");
-  recordHook(
-    f.directory,
-    "/none",
-    f.config,
-    "pi",
-    {
-      ...start,
-      hook_event_name: "session_shutdown",
-      event_id: "native-observation-end",
-      timestamp: "2026-09-08T00:00:01.000Z",
-    },
-    "same-native-process",
-  );
-  recordHook(
-    f.directory,
-    "/none",
-    f.config,
-    "pi",
-    start,
-    "same-native-process",
-  );
+  recordHook(f.directory, "/none", f.config, "pi", {
+    ...start,
+    hook_event_name: "session_shutdown",
+    event_id: "native-observation-end",
+    timestamp: "2026-09-08T00:00:01.000Z",
+  });
+  recordHook(f.directory, "/none", f.config, "pi", start);
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
     sweep: false,
@@ -492,18 +405,11 @@ it("keeps bridge lifecycle identity and native ordering when detached hooks arri
     ["end", "2026-09-08T00:00:01.000Z"],
     ["start", "2026-09-08T00:00:02.000Z"],
   ]);
-  recordHook(
-    f.directory,
-    "/none",
-    f.config,
-    "pi",
-    {
-      ...start,
-      event_id: "later-empty-resume",
-      timestamp: "2026-09-08T00:00:03.000Z",
-    },
-    "same-native-process",
-  );
+  recordHook(f.directory, "/none", f.config, "pi", {
+    ...start,
+    event_id: "later-empty-resume",
+    timestamp: "2026-09-08T00:00:03.000Z",
+  });
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
     sweep: false,
@@ -578,7 +484,7 @@ it("quarantines an actually oversized complete JSONL record and still uploads th
     kind: "jsonl",
     offset: statSync(f.transcript).size,
   });
-  const directory = `${path}.quarantine/raw`;
+  const directory = join(quarantinePath(path), "raw");
   const file = readdirSync(directory).find((name) => name.endsWith(".raw"));
   if (!file) throw new Error("Missing oversized quarantine.");
   expect(readFileSync(join(directory, file), "utf8")).toBe(oversized);
@@ -598,7 +504,7 @@ it("carries the global agent guidance exactly as specified", async () => {
 it("reads indexed backlog heads without losing the latest source or lifecycle phase", async () => {
   const f = fixture();
   const path = f.hook();
-  const { recentIntents, latestPhase, latestSource, journalPath } =
+  const { recentIntents, latestPhase, latestSource } =
     await import("../src/state.js");
   const original = intents(path, loadState(path))[0];
   if (!original) throw new Error("Missing journal entry.");
@@ -607,7 +513,8 @@ it("reads indexed backlog heads without losing the latest source or lifecycle ph
     const time = new Date(
       Date.parse(original.sentAt) + index + 1,
     ).toISOString();
-    const behavior = index === 50 ? "start" : index === 1100 ? "end" : "sync";
+    const behavior: Intent["behavior"] =
+      index === 50 ? "start" : index === 1100 ? "end" : "sync";
     const intent = {
       ...original,
       id,
@@ -617,10 +524,7 @@ it("reads indexed backlog heads without losing the latest source or lifecycle ph
       preceding: "previous-phase",
     };
     writeFileSync(
-      join(
-        journalPath(path),
-        `${String(index).padStart(16, "0")}.${String(Date.parse(time)).padStart(16, "0")}.${behavior}.${id}.json`,
-      ),
+      join(journalPath(path), intentFileName(intent)),
       JSON.stringify(intent),
     );
   }
@@ -635,40 +539,35 @@ it("reads indexed backlog heads without losing the latest source or lifecycle ph
 // @req R-CAP-12
 it("reports the commit the session started from even when the first upload drains after a later commit", async () => {
   const f = fixture();
-  const git = (env: Record<string, string>, ...args: string[]) =>
-    execFileSync("git", ["-C", f.directory, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      env: { ...process.env, ...env },
-    }).trim();
   const dated = (time: string) => ({
     GIT_AUTHOR_DATE: time,
     GIT_COMMITTER_DATE: time,
   });
-  git({}, "init");
-  git({}, "config", "user.name", "Fixture");
-  git({}, "config", "user.email", "fixture@example.test");
+  git(f.directory, ["init"]);
+  git(f.directory, ["config", "user.name", "Fixture"]);
+  git(f.directory, ["config", "user.email", "fixture@example.test"]);
   writeFileSync(join(f.directory, "tracked"), "first\n");
-  git({}, "add", "tracked");
-  git(dated("2026-09-08T00:00:00Z"), "commit", "-m", "before start");
-  const before = git({}, "rev-parse", "HEAD");
-  const path = recordHook(
+  git(f.directory, ["add", "tracked"]);
+  git(
     f.directory,
-    "/none",
-    f.config,
-    "claude",
-    {
-      ...f.event,
-      hook_event_name: "SessionStart",
-      timestamp: "2026-09-08T00:00:05.000Z",
-    },
-    "launch",
+    ["commit", "-m", "before start"],
+    dated("2026-09-08T00:00:00Z"),
   );
+  const before = git(f.directory, ["rev-parse", "HEAD"]);
+  const path = recordHook(f.directory, "/none", f.config, "claude", {
+    ...f.event,
+    hook_event_name: "SessionStart",
+    timestamp: "2026-09-08T00:00:05.000Z",
+  });
   if (!path) throw new Error("Missing state.");
   // The agent commits before the detached uploader gets to observe git context.
   writeFileSync(join(f.directory, "tracked"), "first\nsecond\n");
-  git(dated("2026-09-08T00:00:10Z"), "commit", "-am", "during session");
-  const after = git({}, "rev-parse", "HEAD");
+  git(
+    f.directory,
+    ["commit", "-am", "during session"],
+    dated("2026-09-08T00:00:10Z"),
+  );
+  const after = git(f.directory, ["rev-parse", "HEAD"]);
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
     sweep: false,

@@ -48,15 +48,19 @@ ssm_run() {
   }
 }
 
-# ship_run <local script> <args...>: copies a script from this checkout to the host through
-# the release bucket and runs it there as root, so operator tooling follows the checkout
-# while the application stays the released code. Arguments are quoted for the remote shell.
+# ship_run <local script> <args...>: copies a script from this checkout, with the on-host
+# library it sources, to the host through the release bucket and runs it there as root, so
+# operator tooling follows the checkout while the application stays the released code.
+# Arguments are quoted for the remote shell.
 ship_run() {
-  local script=$1 name arguments
+  local script=$1 name lib arguments
   shift
+  lib=$(dirname "$script")/host-lib.sh
   bash -n "$script"
+  bash -n "$lib"
   name=$(basename "$script")
+  aws s3 cp --region "$region" --only-show-errors "$lib" "s3://$bucket/scripts/host-lib.sh"
   aws s3 cp --region "$region" --only-show-errors "$script" "s3://$bucket/scripts/$name"
   printf -v arguments '%q ' "$@"
-  ssm_run "AgentCommons $name" "aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/$name /opt/agentcommons/$name && chmod 0700 /opt/agentcommons/$name && /opt/agentcommons/$name $arguments"
+  ssm_run "AgentCommons $name" "aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/host-lib.sh /opt/agentcommons/host-lib.sh && aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/$name /opt/agentcommons/$name && chmod 0700 /opt/agentcommons/host-lib.sh /opt/agentcommons/$name && /opt/agentcommons/$name $arguments"
 }

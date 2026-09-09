@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { appendFileSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { agentInstructions } from "@agentcommons/core/format/install";
+// Bundled with the extension by the shim's build (packages/hook/build.ts); zod-free.
+import { dataDirectory, note } from "../../hook/src/paths.js";
 
 interface ObservationState {
   events: WeakMap<object, { id: string; timestamp: string }>;
@@ -75,8 +76,7 @@ function configuration(): {
   directory: string;
   values: Record<string, unknown>;
 } | null {
-  const directory =
-    process.env.AGENTCOMMONS_DIR ?? join(homedir(), ".agentcommons");
+  const directory = dataDirectory();
   try {
     const input: unknown = JSON.parse(
       readFileSync(join(directory, "config.json"), "utf8"),
@@ -166,17 +166,6 @@ interface McpTool {
 type Registration = Parameters<ExtensionAPI["registerTool"]>[0];
 function reason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-function note(directory: string, text: string): void {
-  try {
-    appendFileSync(
-      join(directory, "hook.log"),
-      `${new Date().toISOString()} ${text}\n`,
-      { mode: 0o600 },
-    );
-  } catch {
-    /* The log is best effort. */
-  }
 }
 async function rpc(
   bridge: Bridge,

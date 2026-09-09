@@ -1,28 +1,23 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
-import { Writable } from "node:stream";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { createRuntime } from "../src/main.js";
-import { createApp } from "../src/app.js";
-import { environment } from "../src/env.js";
+import { startApp, type StartedApp } from "./app.js";
 import {
   testAuthConfiguration,
   testAccountPassword,
   provisionOrganization,
+  releaser,
+  verifyEmail,
 } from "./support.js";
 import { startMailpit } from "./mailpit.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let mail: Awaited<ReturnType<typeof startMailpit>>;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
-const release: Array<() => Promise<unknown>> = [];
-const logs: string[] = [];
+let runtime: StartedApp["runtime"];
+let app: StartedApp["app"];
+let logs: string[] = [];
+const { defer, release } = releaser();
 let clientIndex = 0;
 let clientIp = "10.20.0.1";
 beforeEach(() => {
@@ -70,46 +65,25 @@ async function verify(email: string) {
 }
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   mail = await startMailpit();
-  release.unshift(() => mail.close());
-  const env = environment({
-    PUBLIC_URL: origin,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    INSTANCE_MODE: "saas",
-    EMAIL_TRANSPORT: "smtp",
-    EMAIL_FROM: "no-reply@example.test",
-    SMTP_URL: mail.smtpUrl,
-    EMBEDDINGS_ENABLED: "false",
-  });
-  runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  await runtime.jobs.start();
-  app = await createApp({
-    env,
-    services: runtime.services,
-    static: false,
-    loggerStream: new Writable({
-      write(chunk: unknown, _encoding, callback) {
-        logs.push(
-          z
-            .union([z.string(), z.instanceof(Buffer)])
-            .parse(chunk)
-            .toString(),
-        );
-        callback();
-      },
-    }),
-  });
-  release.unshift(() => app.close());
+  defer(() => mail.close());
+  // This file keeps the default log level so the request logs it asserts on exist.
+  const started = await startApp(
+    db,
+    {
+      INSTANCE_MODE: "saas",
+      EMAIL_TRANSPORT: "smtp",
+      EMAIL_FROM: "no-reply@example.test",
+      SMTP_URL: mail.smtpUrl,
+      LOG_LEVEL: "info",
+    },
+    { jobs: true, captureLogs: true },
+  );
+  defer(() => started.close());
+  ({ runtime, app, logs } = started);
 });
-afterAll(async () => {
-  const errors = await cleanup(release.splice(0));
-  if (errors.length)
-    throw new AggregateError(errors, "SaaS auth cleanup failed");
-});
+afterAll(release);
 
 // @req R-SAAS-01 @req R-SAAS-02
 it("uses native verification, creates one organization across concurrent retries, and delivers one durable welcome", async () => {
@@ -469,10 +443,7 @@ it("withholds verification after audit failure, rejects expired reset tokens, an
       })
     ).statusCode,
   ).toBe(403);
-  await db.prisma.user.update({
-    where: { email: existing.email },
-    data: { emailVerified: true },
-  });
+  await verifyEmail(db, z.string().parse(existing.owner.caller?.userId));
   expect(
     (
       await app.inject({

@@ -1,38 +1,74 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import {
+  jsonObjectSchema,
+  sha256Schema,
+  uniqueBy,
+  type JsonValue,
+} from "../schemas/common.js";
 import type {
-  JsonValue,
+  NormalizedMessage,
   Normalizer,
   SourceRecord,
 } from "../normalizers/types.js";
 import type { RedactionStructure } from "./structure.js";
+import { SENSITIVE_FILE_PATTERNS } from "./rules.js";
 import { sanitizeRecord } from "./sanitize.js";
 import type { Redactor, RedactionResult } from "./index.js";
 
-export const identityDigest = (value: string): string =>
+/** Lower-case hex SHA-256 of one string, the digest every stored identity and fingerprint uses. */
+export const sha256Hex = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
+/** The digest a native identity (session, agent or tool-use id) is stored and matched under. */
+export const identityDigest = (value: string): string => sha256Hex(value);
 // This namespace is reserved for server-generated identities. Keeping it stable
 // prevents rescans from hashing a previous digest when policies match its prefix.
+const redactedIdentityPattern = /^redacted-[a-f0-9]{64}$/;
+/** The projected form of a native identity: `redacted-` plus its SHA-256 digest. */
+export const redactedIdentity = (hash: string): string => `redacted-${hash}`;
+export const isRedactedIdentity = (value: string): boolean =>
+  redactedIdentityPattern.test(value);
+
+// A Redactor is immutable for its policy set, so identical identity strings (session,
+// agent and message ids repeat on every record) are scanned once per instance.
+const identityMemos = new WeakMap<
+  Redactor,
+  Map<string, RedactionResult<string>>
+>();
+const IDENTITY_MEMO_LIMIT = 4096;
 export async function canonicalIdentity(
   value: string,
   redactor: Redactor,
 ): Promise<RedactionResult<string>> {
-  if (/^redacted-[a-f0-9]{64}$/.test(value)) return { value, counts: [] };
+  if (isRedactedIdentity(value)) return { value, counts: [] };
+  let memo = identityMemos.get(redactor);
+  if (!memo) {
+    memo = new Map();
+    identityMemos.set(redactor, memo);
+  }
+  const cached = memo.get(value);
+  if (cached) return { value: cached.value, counts: [...cached.counts] };
   const result = await redactor.text(value);
-  return {
-    ...result,
+  const canonical = {
     value:
       result.value === value && Buffer.byteLength(value) <= 256
         ? value
-        : `redacted-${identityDigest(value)}`,
+        : redactedIdentity(identityDigest(value)),
+    counts: result.counts,
   };
+  if (memo.size >= IDENTITY_MEMO_LIMIT) {
+    const oldest = memo.keys().next().value;
+    if (oldest !== undefined) memo.delete(oldest);
+  }
+  memo.set(value, canonical);
+  return { value: canonical.value, counts: [...canonical.counts] };
 }
 
 export const redactionContextSchema = z.strictObject({
   toolCalls: z
     .array(
       z.strictObject({
-        idHash: z.string().regex(/^[a-f0-9]{64}$/),
+        idHash: sha256Schema,
         sensitive: z.boolean(),
       }),
     )
@@ -41,7 +77,7 @@ export const redactionContextSchema = z.strictObject({
     .array(
       z.strictObject({
         path: z.array(z.union([z.string(), z.number().int().nonnegative()])),
-        idHash: z.string().regex(/^[a-f0-9]{64}$/),
+        idHash: sha256Schema,
         canonicalId: z.string(),
       }),
     )
@@ -57,17 +93,9 @@ export class UnpairedToolResultError extends Error {
   }
 }
 
-export function sensitiveFile(path: string): boolean {
+function sensitiveFile(path: string): boolean {
   const name = path.replaceAll("\\", "/").split("/").at(-1) ?? "";
-  return (
-    name.startsWith(".env") ||
-    name.endsWith(".pem") ||
-    name.endsWith(".key") ||
-    name.startsWith("id_rsa") ||
-    name.startsWith("credentials") ||
-    name === ".npmrc" ||
-    name === ".netrc"
-  );
+  return SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(name));
 }
 
 function replaceAt(
@@ -91,30 +119,34 @@ function replaceAt(
   }
 }
 
-// All source branches and historical versions participate in pairing. Displayed
-// branch selection must never decide which raw output receives protection.
+/**
+ * Mask sensitive tool outputs before redaction. `knownCalls` are the classifications the
+ * server already holds for this session (earlier batches); `uses` are the tool calls in
+ * `records`, passed in when the caller has already normalized them.
+ *
+ * All source branches and historical versions participate in pairing. Displayed branch
+ * selection must never decide which raw output receives protection.
+ */
 export function maskToolResults(
   normalizer: Normalizer,
   records: readonly SourceRecord[],
-  existing: readonly SourceRecord[] = [],
+  knownCalls: readonly { idHash: string; sensitive: boolean }[] = [],
+  uses: readonly NormalizedMessage[] = normalizer.toolUses(records),
 ): SourceRecord[] {
   const calls = new Map<string, boolean>();
-  const sources = new Map(
-    [...existing, ...records].map((record) => [record.id, record]),
-  );
+  const sources = new Map(records.map((record) => [record.id, record]));
   const contexts = new Map(
     records.map((record) => [
       record.id,
       redactionContextSchema.parse(record.redactionContext ?? {}),
     ]),
   );
-  for (const record of [...existing, ...records])
-    for (const call of record.redactionContext?.toolCalls ?? [])
-      calls.set(
-        call.idHash,
-        (calls.get(call.idHash) ?? false) || call.sensitive,
-      );
-  for (const use of normalizer.toolUses([...existing, ...records])) {
+  for (const call of [
+    ...knownCalls,
+    ...records.flatMap((record) => record.redactionContext?.toolCalls ?? []),
+  ])
+    calls.set(call.idHash, (calls.get(call.idHash) ?? false) || call.sensitive);
+  for (const use of uses) {
     if (!use.toolUseId) continue;
     const record = sources.get(use.rawRecordId);
     const stored = record?.redactionContext?.identities.find(
@@ -132,9 +164,7 @@ export function maskToolResults(
   }
   const deferred: { pos: number; key: string | null }[] = [];
   const result = records.map((record) => {
-    const payload = structuredClone(
-      z.record(z.string(), z.json()).parse(record.payload),
-    );
+    const payload = structuredClone(jsonObjectSchema.parse(record.payload));
     for (const source of normalizer.toolResults(record)) {
       const stored = record.redactionContext?.identities.find(
         (identity) => identity.canonicalId === source.toolUseId,
@@ -160,12 +190,7 @@ export function maskToolResults(
   });
   if (deferred.length)
     throw new UnpairedToolResultError(
-      deferred.filter(
-        (record, index) =>
-          deferred.findIndex(
-            (other) => other.pos === record.pos && other.key === record.key,
-          ) === index,
-      ),
+      uniqueBy(deferred, (record) => JSON.stringify([record.pos, record.key])),
     );
   return result;
 }
@@ -192,18 +217,17 @@ export async function redactSourceRecord(
         identity.canonicalId === location.id &&
         JSON.stringify(identity.path) === JSON.stringify(location.path),
     );
-    if (stored && stored.canonicalId === `redacted-${stored.idHash}`) continue;
+    if (stored && stored.canonicalId === redactedIdentity(stored.idHash))
+      continue;
     const redacted = await canonicalIdentity(location.id, redactor);
     counts.push(...redacted.counts);
     const idHash = stored?.idHash ?? identityDigest(location.id);
     const canonicalId =
-      redacted.value === location.id ? location.id : `redacted-${idHash}`;
+      redacted.value === location.id ? location.id : redactedIdentity(idHash);
     if (stored) stored.canonicalId = canonicalId;
     else context.identities.push({ path: location.path, idHash, canonicalId });
   }
-  const payload = z
-    .record(z.string(), z.json())
-    .parse(structuredClone(record.payload));
+  const payload = jsonObjectSchema.parse(structuredClone(record.payload));
   let structure = normalizer.redactionStructure;
   for (const identity of context.identities) {
     replaceAt(payload, identity.path, identity.canonicalId);
@@ -218,7 +242,7 @@ export async function redactSourceRecord(
   return {
     value: {
       ...record,
-      payload: z.record(z.string(), z.json()).parse(redacted.value),
+      payload: jsonObjectSchema.parse(redacted.value),
       redactionContext: context,
     },
     counts,
@@ -229,21 +253,23 @@ export async function redactSourceRecord(
  * split a use/result pair or tree edge across old and newly redacted records. */
 export function projectionRecord(record: SourceRecord): SourceRecord {
   if (!record.redactionContext?.identities.length) return record;
-  const payload = z
-    .record(z.string(), z.json())
-    .parse(structuredClone(record.payload));
+  const payload = jsonObjectSchema.parse(structuredClone(record.payload));
   for (const identity of record.redactionContext.identities)
     if (valueAt(payload, identity.path) !== undefined)
-      replaceAt(payload, identity.path, `redacted-${identity.idHash}`);
+      replaceAt(payload, identity.path, redactedIdentity(identity.idHash));
   return { ...record, payload };
 }
 export function projectionIdentity(value: string): string {
-  return /^redacted-[a-f0-9]{64}$/.test(value)
+  return isRedactedIdentity(value)
     ? value
-    : `redacted-${identityDigest(value)}`;
+    : redactedIdentity(identityDigest(value));
 }
 
-function valueAt(value: unknown, path: readonly (string | number)[]): unknown {
+/** The value at a JSON path: numbers index arrays, strings index objects, anything else is undefined. */
+export function valueAt(
+  value: unknown,
+  path: readonly (string | number)[],
+): unknown {
   let current: unknown = value;
   for (const key of path) {
     if (typeof key === "number") {
@@ -263,9 +289,9 @@ function valueAt(value: unknown, path: readonly (string | number)[]): unknown {
 }
 
 export function sanitizeSourceRecord(record: SourceRecord): SourceRecord {
-  const payload = z
-    .record(z.string(), z.json())
-    .parse(sanitizeRecord(z.json().parse(record.payload)));
+  const payload = jsonObjectSchema.parse(
+    sanitizeRecord(z.json().parse(record.payload)),
+  );
   const context = redactionContextSchema.parse(record.redactionContext ?? {});
   context.identities = context.identities.filter(
     (identity) => valueAt(payload, identity.path) === identity.canonicalId,

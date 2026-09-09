@@ -5,21 +5,23 @@ import {
   protocolObject,
   protocolTimestamp,
 } from "../redaction/structure.js";
+import { uniqueBy } from "../schemas/common.js";
 import {
   advanceCumulativeUsage,
   array,
+  assignPresent,
   identitiesAt,
   blocks,
   createNormalizer,
   json,
   message,
   object,
-  recordSchema,
   string,
   text,
   timestamp,
   tokens,
   SENSITIVE_FILE_MARKER,
+  type NativeRoles,
 } from "./shared.js";
 import type { BlockDialect } from "./shared.js";
 import type {
@@ -31,13 +33,26 @@ import type {
   SourceRecord,
 } from "./types.js";
 
+/** Codex carries tool calls and results as their own response items, never as content blocks. */
 const dialect: BlockDialect = {
   textTypes: ["input_text", "output_text", "text"],
   thinkingTypes: ["thinking"],
-  toolUseTypes: [],
-  toolResultTypes: [],
-  toolInput: "arguments",
-  toolResultId: "call_id",
+};
+/** Response items that are tool calls and the items that answer them. */
+const ORDINARY_CALL_TYPES = new Set([
+  "function_call",
+  "custom_tool_call",
+  "local_shell_call",
+]);
+const ORDINARY_RESULT_TYPES = new Set([
+  "function_call_output",
+  "custom_tool_call_output",
+]);
+const nativeRoles: NativeRoles = {
+  user: "USER",
+  assistant: "ASSISTANT",
+  developer: "SYSTEM",
+  system: "SYSTEM",
 };
 function argumentsValue(value: unknown): JsonValue {
   if (typeof value !== "string") return json(value);
@@ -66,6 +81,7 @@ function contentItemKinds(payload: Record<string, unknown>): string[] | null {
 /** Older rollouts carry no kinds; these wrappers are the injected user-role context. */
 const INJECTED_USER_CONTEXT =
   /^\s*(?:<(?:environment_context|recommended_plugins|user_instructions|permissions instructions|skills_instructions|collaboration_mode|multi_agent_role|multi_agent_mode|turn_aborted|AGENTS\.md)\b|# AGENTS\.md instructions for )/;
+/** `FileChange` kinds and `apply_patch` headers (lowercased) to the recorded file operation. */
 const CHANGE_OPERATIONS: Readonly<Record<string, string>> = {
   add: "write",
   update: "edit",
@@ -106,6 +122,10 @@ function commandReads(
     return [{ path: base ? posix.resolve(base, path) : path, ops: ["read"] }];
   });
 }
+/** The `thread_spawn` source of a `session_meta` payload; empty for a root thread. */
+function threadSpawn(native: Record<string, unknown>): Record<string, unknown> {
+  return object(object(object(native.source).subagent).thread_spawn);
+}
 /** `SubAgentActivity` `started` items pair the `spawn_agent` call id with the child thread. */
 function subagentStart(record: SourceRecord) {
   const payload = object(record.payload.payload);
@@ -141,7 +161,6 @@ function nativeCompletion(record: SourceRecord) {
   )
     return {
       id,
-      payload,
       item,
       toolName: `mcp__${item.server}__${item.tool}`,
       input: json(item.arguments),
@@ -154,7 +173,6 @@ function nativeCompletion(record: SourceRecord) {
   )
     return {
       id,
-      payload,
       item,
       toolName: "web.search",
       input: json(item.action),
@@ -166,7 +184,6 @@ function nativeCompletion(record: SourceRecord) {
       .join("\n");
     return {
       id,
-      payload,
       item,
       toolName: "apply_patch",
       input: json(item.changes),
@@ -176,6 +193,7 @@ function nativeCompletion(record: SourceRecord) {
   }
   return null;
 }
+type NativeCompletion = ReturnType<typeof nativeCompletion>;
 function patchFiles(
   toolName: string | null,
   input: JsonValue,
@@ -189,20 +207,8 @@ function patchFiles(
     ...input.matchAll(/^\*\*\* (Add|Update|Delete) File: (.+)$/gm),
   ].flatMap((match) => {
     const path = match[2];
-    return path
-      ? [
-          {
-            path,
-            ops: [
-              match[1] === "Add"
-                ? "write"
-                : match[1] === "Delete"
-                  ? "delete"
-                  : "edit",
-            ],
-          },
-        ]
-      : [];
+    const operation = CHANGE_OPERATIONS[match[1]?.toLowerCase() ?? ""];
+    return path && operation ? [{ path, ops: [operation] }] : [];
   });
 }
 export const codex = createNormalizer({
@@ -337,15 +343,10 @@ export const codex = createNormalizer({
     if (spawn)
       return [{ id: spawn.toolUseId, path: ["payload", "item", "id"] }];
     const payload = object(record.payload.payload);
+    const type = string(payload.type) ?? "";
     if (
       record.payload.type !== "response_item" ||
-      ![
-        "function_call",
-        "custom_tool_call",
-        "local_shell_call",
-        "function_call_output",
-        "custom_tool_call_output",
-      ].includes(string(payload.type) ?? "")
+      (!ORDINARY_CALL_TYPES.has(type) && !ORDINARY_RESULT_TYPES.has(type))
     )
       return [];
     const field = typeof payload.call_id === "string" ? "call_id" : "id";
@@ -357,7 +358,6 @@ export const codex = createNormalizer({
     if (completion)
       return [
         {
-          rawRecordId: record.id,
           toolUseId: completion.id,
           locations: ["result", "error", "results", "stdout", "stderr"].flatMap(
             (field) =>
@@ -376,14 +376,11 @@ export const codex = createNormalizer({
     const payload = object(record.payload.payload);
     if (
       record.payload.type !== "response_item" ||
-      !["function_call_output", "custom_tool_call_output"].includes(
-        string(payload.type) ?? "",
-      )
+      !ORDINARY_RESULT_TYPES.has(string(payload.type) ?? "")
     )
       return [];
     return [
       {
-        rawRecordId: record.id,
         toolUseId: string(payload.call_id),
         locations: [
           {
@@ -402,20 +399,16 @@ export const codex = createNormalizer({
   toMessages(records) {
     const ordinaryCalls = new Set<string>();
     const ordinaryResults = new Set<string>();
+    const completions = new Map<string, NativeCompletion>();
     const firstCompletion = new Map<string, string>();
     const lastResult = new Map<string, string>();
     for (const record of records) {
       const payload = object(record.payload.payload);
       if (record.payload.type === "response_item") {
-        const target = [
-          "function_call",
-          "custom_tool_call",
-          "local_shell_call",
-        ].includes(string(payload.type) ?? "")
+        const type = string(payload.type) ?? "";
+        const target = ORDINARY_CALL_TYPES.has(type)
           ? ordinaryCalls
-          : ["function_call_output", "custom_tool_call_output"].includes(
-                string(payload.type) ?? "",
-              )
+          : ORDINARY_RESULT_TYPES.has(type)
             ? ordinaryResults
             : null;
         for (const id of [string(payload.call_id), string(payload.id)])
@@ -423,6 +416,7 @@ export const codex = createNormalizer({
       }
       const completion = nativeCompletion(record);
       if (!completion) continue;
+      completions.set(record.id, completion);
       if (!firstCompletion.has(completion.id))
         firstCompletion.set(completion.id, record.id);
       if (completion.result !== undefined && completion.result !== null)
@@ -437,11 +431,11 @@ export const codex = createNormalizer({
     // items (with parsed reads) between that call and its output record.
     let pendingCall: NormalizedMessage | null = null;
     return records.flatMap((record) => {
-      const parsed = recordSchema.safeParse(record.payload);
-      if (!parsed.success) return [];
-      const data = parsed.data;
+      const data = record.payload;
+      const type = string(data.type);
+      if (type === null) return [];
       const payload = object(data.payload);
-      if (data.type === "event_msg" && payload.type === "item_completed") {
+      if (type === "event_msg" && payload.type === "item_completed") {
         const item = object(payload.item);
         if (item.type === "CommandExecution") {
           const reads = commandReads(item);
@@ -450,7 +444,7 @@ export const codex = createNormalizer({
           return [];
         }
       }
-      const completion = nativeCompletion(record);
+      const completion = completions.get(record.id);
       if (completion) {
         const result: NormalizedMessage[] = [];
         const fields = {
@@ -490,7 +484,7 @@ export const codex = createNormalizer({
           );
         return result;
       }
-      if (data.type === "session_meta") {
+      if (type === "session_meta") {
         if (recordedInstructions) {
           resumeMayResetUsage = true;
           return [];
@@ -503,13 +497,13 @@ export const codex = createNormalizer({
           }),
         ];
       }
-      if (data.type === "turn_context") {
+      if (type === "turn_context") {
         model = string(payload.model) ?? model;
         return [];
       }
-      if (data.type === "world_state")
+      if (type === "world_state")
         return [message(record, 0, { content: text(payload), model })];
-      if (data.type === "event_msg" && payload.type === "token_count") {
+      if (type === "event_msg" && payload.type === "token_count") {
         const total = object(object(payload.info).total_token_usage);
         const input = tokens(total.input_tokens);
         const output = tokens(total.output_tokens);
@@ -535,22 +529,11 @@ export const codex = createNormalizer({
           }),
         ];
       }
-      if (data.type !== "response_item") return [];
-      const type = string(payload.type);
-      if (type === "message") {
-        const nativeRole = string(payload.role);
-        if (
-          !["user", "assistant", "developer", "system"].includes(
-            nativeRole ?? "",
-          )
-        )
-          return [];
-        const role =
-          nativeRole === "user"
-            ? "USER"
-            : nativeRole === "assistant"
-              ? "ASSISTANT"
-              : "SYSTEM";
+      if (type !== "response_item") return [];
+      const itemType = string(payload.type) ?? "";
+      if (itemType === "message") {
+        const role = nativeRoles[string(payload.role) ?? ""];
+        if (!role) return [];
         const kinds = contentItemKinds(payload);
         const injected =
           role === "USER" &&
@@ -575,19 +558,15 @@ export const codex = createNormalizer({
         return result;
       }
       // Inter-agent traffic: the subagent's final answer reaches the parent only here.
-      if (type === "agent_message")
+      if (itemType === "agent_message")
         return blocks(record, payload.content, "SYSTEM", dialect, {
           model,
           nativeId: string(payload.id),
         }).filter((item) => item.kind === "TEXT");
-      if (
-        type === "function_call" ||
-        type === "custom_tool_call" ||
-        type === "local_shell_call"
-      ) {
+      if (ORDINARY_CALL_TYPES.has(itemType)) {
         const toolName =
           string(payload.name) ??
-          (type === "local_shell_call" ? "local_shell" : null);
+          (itemType === "local_shell_call" ? "local_shell" : null);
         const toolInput = argumentsValue(
           payload.arguments ?? payload.input ?? payload.action,
         );
@@ -604,10 +583,7 @@ export const codex = createNormalizer({
         pendingCall = call;
         return [call];
       }
-      if (
-        type === "function_call_output" ||
-        type === "custom_tool_call_output"
-      ) {
+      if (ORDINARY_RESULT_TYPES.has(itemType)) {
         if (pendingCall?.toolUseId === string(payload.call_id))
           pendingCall = null;
         return [
@@ -621,7 +597,7 @@ export const codex = createNormalizer({
           }),
         ];
       }
-      if (type === "reasoning") {
+      if (itemType === "reasoning") {
         const parts = array(payload.summary).length
           ? payload.summary
           : payload.content;
@@ -643,13 +619,11 @@ export const codex = createNormalizer({
   },
   sessionDelta(records) {
     const delta: SessionDelta = {};
-    let metadataCount = 0;
     for (const { payload: data } of records) {
       if (data.type !== "session_meta") continue;
-      metadataCount++;
       const native = object(data.payload);
       const git = object(native.git);
-      const values = {
+      assignPresent(delta, {
         harnessSessionId: string(native.id),
         harnessVersion: string(native.cli_version),
         entrypoint: string(native.entrypoint) ?? string(native.originator),
@@ -662,18 +636,11 @@ export const codex = createNormalizer({
         // A configured role names the agent kind. Without one, the hook-reported
         // agent_type stays in the header; nicknames are random display names.
         agentType:
-          string(native.agent_role) ??
-          string(
-            object(object(object(native.source).subagent).thread_spawn)
-              .agent_role,
-          ),
-      };
-      for (const [key, value] of Object.entries(values))
-        if (value) Object.assign(delta, { [key]: value });
+          string(native.agent_role) ?? string(threadSpawn(native).agent_role),
+      });
       const time = timestamp(native.timestamp) ?? timestamp(data.timestamp);
       if (!delta.startedAt && time) delta.startedAt = time;
     }
-    delta.resumeCount = Math.max(0, metadataCount - 1);
     return delta;
   },
   links(records) {
@@ -681,21 +648,17 @@ export const codex = createNormalizer({
     for (const { payload: data } of records) {
       if (data.type !== "session_meta") continue;
       const native = object(data.payload);
-      const spawn = object(object(object(native.source).subagent).thread_spawn);
       const parent =
-        string(spawn.parent_thread_id) ?? string(native.parent_thread_id);
+        string(threadSpawn(native).parent_thread_id) ??
+        string(native.parent_thread_id);
       const fork =
         string(native.forked_from) ?? string(object(native.forked_from).id);
       if (parent) links.push({ relation: "SUBAGENT", parentNativeRef: parent });
       else if (fork) links.push({ relation: "FORK", parentNativeRef: fork });
     }
-    return links.filter(
-      (link, index) =>
-        links.findIndex(
-          (other) =>
-            other.relation === link.relation &&
-            other.parentNativeRef === link.parentNativeRef,
-        ) === index,
+    return uniqueBy(
+      links,
+      (link) => `${link.relation}:${link.parentNativeRef}`,
     );
   },
   spawns(records) {

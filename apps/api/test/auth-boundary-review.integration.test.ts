@@ -1,39 +1,22 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { provisionOrganization, testAuthConfiguration } from "./support.js";
-import { createRuntime } from "../src/main.js";
-import { createApp } from "../src/app.js";
-import { environment } from "../src/env.js";
-import type { FastifyInstance } from "fastify";
+import { provisionOrganization, releaser } from "./support.js";
+import { startApp, type StartedApp } from "./app.js";
 
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: FastifyInstance;
+let runtime: StartedApp["runtime"];
+let app: StartedApp["app"];
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   owner = await provisionOrganization(database, "boundary-review");
-  const env = environment({
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: database.urls.app,
-    ...traceEnvironment(database.traceConfig),
-    LOG_LEVEL: "silent",
-  });
-  runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  app = await createApp({ env, services: runtime.services, static: false });
-  release.unshift(() => app.close());
+  const started = await startApp(database);
+  defer(() => started.close());
+  ({ runtime, app } = started);
 });
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-ORG-10
 it("organization switcher membership listing requires a browser session", async () => {

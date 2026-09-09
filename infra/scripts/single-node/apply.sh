@@ -4,15 +4,12 @@
 # parameters, builds the image, runs the migration task and restarts the API behind
 # Caddy. Idempotent; the full build log stays on the host under /var/log/agentcommons.
 set -euo pipefail
+. "$(dirname "$0")/host-lib.sh"
 : "${AWS_REGION:?Set AWS_REGION}" "${AGENTCOMMONS_PARAMETER_PATH:?Set AGENTCOMMONS_PARAMETER_PATH}"
-app=${AGENTCOMMONS_APP_DIR:-/opt/agentcommons/app}
 logs=/var/log/agentcommons
 install -d -m 0750 "$logs"
 log="$logs/apply-$(date -u +%Y%m%dT%H%M%SZ).log"
 cd "$app"
-setting() {
-  sed -n "s/^$1='\(.*\)'\$/\1/p" .env
-}
 compose() {
   docker compose -p agentcommons -f docker-compose.yml -f docker-compose.caddy.yml "${compose_files[@]}" "$@"
 }
@@ -112,4 +109,4 @@ fi
   -c "file:$app/infra/compose/cloudwatch-agent.json" >>"$log" 2>&1
 docker image prune -f >/dev/null
 compose ps
-echo "AgentCommons is ready at $(sed -n "s/^PUBLIC_URL='\(.*\)'$/\1/p" .env)"
+echo "AgentCommons is ready at $(setting PUBLIC_URL)"

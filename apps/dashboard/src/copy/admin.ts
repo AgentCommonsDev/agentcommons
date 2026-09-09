@@ -104,8 +104,6 @@ export const adminCopy = {
     purgeDescription:
       "Messages, files and source records are deleted, and later uploads for this session are rejected. The session record and its audit history stay.",
     purgeWarning: "Purged content cannot be recovered.",
-    purged: "Purged",
-    untitled: "Untitled session",
     repo: "Repository",
     user: "User",
     since: "Started after",
@@ -138,7 +136,6 @@ export const adminCopy = {
     preview: "Preview",
     previewHint:
       "Paste sample text to see what this pattern replaces. The server checks the pattern again when you save.",
-    previewOutput: "Result",
     previewMatches: (count: number) =>
       count === 1 ? "1 match" : `${String(count)} matches`,
     previewNoMatches: "No matches in the sample.",
@@ -233,7 +230,6 @@ export const adminCopy = {
       "Showing the first 100 observations. Export the CSV for all of them.",
     chartEmpty: "No observations in this range",
     chartEmptyHint: "Widen the date range or clear the repository filter.",
-    chartLabel: "Metric chart",
     csvName: "health-metrics.csv",
     snapshot: "Right now",
     snapshotHint: "Live totals for the whole organization right now.",
@@ -242,26 +238,10 @@ export const adminCopy = {
     backlog: "Embedding backlog",
     tokens: "Embedding tokens today",
     cost: "Embedding cost today",
+    /** Metric column headings that differ from the shared field labels. */
     dimensions: {
-      date: "Date",
-      value: "Value",
-      repo_name: "Repository",
-      harness: "Coding tool",
-      user_id: "User ID",
-      tool: "Tool",
       policy_id: "Policy ID",
       tools_enabled: "MCP tools",
-      numerator: "Numerator",
-      denominator: "Denominator",
-      unit: "Unit",
-    },
-    units: {
-      count: "Count",
-      ratio: "Percentage",
-      seconds: "Seconds",
-      milliseconds: "Milliseconds",
-      tokens: "Tokens",
-      usd: "USD",
     },
   },
   installations: {

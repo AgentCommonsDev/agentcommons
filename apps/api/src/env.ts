@@ -1,5 +1,9 @@
-import { clickHouseEnvironment } from "@agentcommons/traces";
+import {
+  clickHouseEnvironment,
+  EMBEDDING_DIMENSIONS,
+} from "@agentcommons/traces";
 import { emailTransportSchema } from "./auth/mail.js";
+import { EMBEDDING_MODEL } from "./embeddings/provider.js";
 import { createEnv } from "@t3-oss/env-core";
 import { z } from "zod";
 import {
@@ -12,6 +16,22 @@ import { authEnvironment, publicUrlSchema } from "./auth/environment.js";
 const boolean = z
   .enum(["true", "false"])
   .transform((value) => value === "true");
+/** Which embedding provider main.ts instantiates, with the credential it needs. */
+type EmbeddingProviderConfiguration =
+  { name: "fake" } | { name: "openai"; apiKey: string };
+function embeddingProviderConfiguration(env: {
+  EMBEDDINGS_ENABLED: boolean;
+  EMBEDDINGS_PROVIDER: "openai" | "fake";
+  OPENAI_API_KEY?: string | undefined;
+}): EmbeddingProviderConfiguration | null {
+  if (!env.EMBEDDINGS_ENABLED) return null;
+  if (env.EMBEDDINGS_PROVIDER === "fake") return { name: "fake" };
+  if (!env.OPENAI_API_KEY)
+    throw new Error(
+      "OPENAI_API_KEY is required when OpenAI embeddings are enabled.",
+    );
+  return { name: "openai", apiKey: env.OPENAI_API_KEY };
+}
 export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
   const env = createEnv({
     server: {
@@ -61,13 +81,13 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
       AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
       EMBEDDINGS_ENABLED: boolean.default(false),
       EMBEDDINGS_PROVIDER: z.enum(["openai", "fake"]).default("openai"),
-      EMBEDDINGS_MODEL: z
-        .literal("text-embedding-3-small")
-        .default("text-embedding-3-small"),
+      // Both values are fixed by the deployment (§11); the variables exist so a
+      // mismatched operator configuration fails at boot instead of at first use.
+      EMBEDDINGS_MODEL: z.literal(EMBEDDING_MODEL).default(EMBEDDING_MODEL),
       EMBEDDINGS_DIMENSIONS: z.coerce
         .number()
-        .pipe(z.literal(1024))
-        .default(1024),
+        .pipe(z.literal(EMBEDDING_DIMENSIONS))
+        .default(EMBEDDING_DIMENSIONS),
       EMBEDDINGS_DAILY_TOKEN_BUDGET: z.coerce
         .number()
         .int()
@@ -84,20 +104,15 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
     runtimeEnv,
     emptyStringAsUndefined: true,
   });
-  if (
-    env.EMBEDDINGS_ENABLED &&
-    env.EMBEDDINGS_PROVIDER === "openai" &&
-    !env.OPENAI_API_KEY
-  )
-    throw new Error(
-      "OPENAI_API_KEY is required when OpenAI embeddings are enabled.",
-    );
+  const embeddingProvider = embeddingProviderConfiguration(env);
   if (env.PRO_INCLUDED_RECORDS < env.FREE_MONTHLY_RECORDS)
     throw new Error(
       "PRO_INCLUDED_RECORDS must be at least FREE_MONTHLY_RECORDS.",
     );
   return {
     ...env,
+    saas: env.INSTANCE_MODE === "saas",
+    embeddingProvider,
     auth: authEnvironment(runtimeEnv).auth,
     clickhouse: clickHouseEnvironment(runtimeEnv),
     billing: {

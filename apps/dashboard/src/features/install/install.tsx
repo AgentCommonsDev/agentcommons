@@ -10,11 +10,8 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import {
-  CopyButton,
-  LoadingState,
-  RequestError,
-} from "../../components/app/states";
+import { CodeBlock } from "../../components/app/markdown";
+import { QueryState, RequestError } from "../../components/app/states";
 import { useWorkspace } from "../../components/app/workspace";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -31,13 +28,10 @@ import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
-import { createPersonalKey } from "../../lib/api/keys";
 import { harnessLabel, relativeTime } from "../../lib/display";
 import { paths } from "../../lib/routes";
-import { cn } from "../../lib/utils";
-import { useHighlightedCode } from "../../components/app/markdown";
 import { KeySecretPanel } from "../keys/key-secret";
-import { useRefreshKeys } from "../keys/queries";
+import { createPersonalKey, useRefreshKeys } from "../keys/queries";
 import { InstallKeyPicker } from "../keys/reveal";
 
 /**
@@ -50,46 +44,35 @@ function InstallCommand({ apiKey }: { apiKey: string | null }) {
     apiKey === null
       ? null
       : formatInstallCommand(window.location.origin, apiKey);
-  // The same shiki highlighter as Markdown code blocks; plain text until it loads.
-  const { html } = useHighlightedCode(command ?? "", "bash");
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div
-          data-testid="install-command"
-          aria-disabled={command === null ? true : undefined}
-          className={cn(
-            "m-0 min-w-0 flex-1 rounded-md border px-3 py-2.5 text-[13px] leading-relaxed",
-            command === null
-              ? "border-dashed border-line bg-surface text-muted select-none"
-              : "overflow-x-auto border-line bg-raised font-mono whitespace-pre-wrap break-all",
-          )}
-        >
-          {command === null ? (
-            copy.install.command.pending
-          ) : html !== null ? (
-            <div
-              className="highlighted-code highlighted-inline"
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
-          ) : (
-            <code>{command}</code>
-          )}
-        </div>
-        {command === null ? (
+      {command === null ? (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <div
+            data-testid="install-command"
+            aria-disabled
+            className="min-w-0 flex-1 rounded-lg border border-dashed border-line bg-surface px-3 py-2.5 text-[13px] leading-relaxed text-muted select-none"
+          >
+            {copy.install.command.pending}
+          </div>
           <Button variant="secondary" size="sm" disabled>
             <Copy aria-hidden />
             {copy.install.command.copy}
           </Button>
-        ) : (
-          <CopyButton
-            value={command}
-            label={copy.install.command.copy}
-            showLabel
-            variant="secondary"
-          />
-        )}
-      </div>
+        </div>
+      ) : (
+        // The same block as every other code surface; the one-line command wraps so the
+        // whole thing, key included, is readable before it is run.
+        <CodeBlock
+          content={command}
+          language="bash"
+          wrap
+          copyLabel={copy.install.command.copy}
+          showCopyLabel
+          testId="install-command"
+          className="my-0"
+        />
+      )}
       {command !== null && (
         <p className="text-xs text-muted">{copy.install.command.secretHint}</p>
       )}
@@ -378,46 +361,43 @@ export function Install() {
               )}
               {copy.install.arrivals.polling}
             </p>
-            {arrivals.isPending ? (
-              <LoadingState rows={2} />
-            ) : arrivals.error !== null ? (
-              <RequestError
-                error={arrivals.error}
-                retry={() => {
-                  void arrivals.refetch();
-                }}
-              />
-            ) : arrivals.data.items.length === 0 ? (
-              <EmptyState
-                compact
-                title={copy.install.arrivals.empty}
-                description={copy.install.arrivals.emptyHint}
-              />
-            ) : (
-              <ul className="divide-y divide-line-soft rounded-lg border border-line">
-                {arrivals.data.items.map((session) => (
-                  <li key={session.session_id}>
-                    <a
-                      href={paths.session(session.session_id)}
-                      className="flex flex-col gap-1 px-4 py-3 transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent sm:flex-row sm:items-center sm:gap-3"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                        {session.title ?? copy.install.arrivals.untitled}
-                      </span>
-                      <span className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                        <Badge>{harnessLabel(session.harness)}</Badge>
-                        {session.repo_name !== null && (
-                          <span className="truncate font-mono">
-                            {session.repo_name}
+            <QueryState query={arrivals} rows={2}>
+              {(data) =>
+                data.items.length === 0 ? (
+                  <EmptyState
+                    compact
+                    title={copy.install.arrivals.empty}
+                    description={copy.install.arrivals.emptyHint}
+                  />
+                ) : (
+                  <ul className="divide-y divide-line-soft rounded-lg border border-line">
+                    {data.items.map((session) => (
+                      <li key={session.session_id}>
+                        <a
+                          href={paths.session(session.session_id)}
+                          className="flex flex-col gap-1 px-4 py-3 transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent sm:flex-row sm:items-center sm:gap-3"
+                        >
+                          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                            {session.title ?? copy.app.common.untitledSession}
                           </span>
-                        )}
-                        <span>{relativeTime(session.last_activity_at)}</span>
-                      </span>
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            )}
+                          <span className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                            <Badge>{harnessLabel(session.harness)}</Badge>
+                            {session.repo_name !== null && (
+                              <span className="truncate font-mono">
+                                {session.repo_name}
+                              </span>
+                            )}
+                            <span>
+                              {relativeTime(session.last_activity_at)}
+                            </span>
+                          </span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              }
+            </QueryState>
           </div>
         </Step>
       </ol>

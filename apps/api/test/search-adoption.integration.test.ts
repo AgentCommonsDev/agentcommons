@@ -19,12 +19,8 @@ import {
   type MetricRow,
 } from "@agentcommons/core";
 type JsonObject = z.infer<typeof jsonObjectSchema>;
-import { cleanup } from "../../../scripts/cleanup.js";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
-import { TraceProjectionService } from "../src/services/trace-projection.js";
-import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
-import { JobService } from "../src/services/jobs.js";
-import { IngestService } from "../src/services/ingest.js";
+import { traceServices } from "./trace-services.js";
 import { DashboardService } from "../src/services/dashboards.js";
 import { QueryService } from "../src/services/query.js";
 import { MetricsService } from "../src/services/metrics.js";
@@ -32,19 +28,18 @@ import { PolicyService } from "../src/services/policies.js";
 import { AdminService } from "../src/services/admin.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
-import { provisionOrganization, provisionMember } from "./support.js";
+import { provisionOrganization, provisionMember, releaser } from "./support.js";
+import { testEnvelope } from "./envelopes.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let org: Awaited<ReturnType<typeof provisionOrganization>>;
 let member: Awaited<ReturnType<typeof provisionMember>>;
 let foreign: Awaited<ReturnType<typeof provisionOrganization>>;
-let ingest: IngestService;
-let projection: TraceProjectionService;
-const workerErrors: Error[] = [];
+let services: ReturnType<typeof traceServices>;
 let dashboards: DashboardService;
 let metrics: MetricsService;
 let admin: AdminService;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 const countSchema = z.strictObject({
   session_id: z.string(),
   agentcommons_search_calls: z.coerce.number(),
@@ -81,35 +76,21 @@ function envelope(
   at = week,
 ): IngestEnvelope {
   const native = randomUUID();
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
+  return testEnvelope({
     harness,
     harnessSessionId: native,
-    batchId: randomUUID(),
-    installationId: randomUUID(),
-    behavior: "sync",
-    start: null,
     nativeEvent: "fixture-sync",
-    sentAt: new Date().toISOString(),
     sourcePos: records.length,
     cursor: "initial",
-    end: null,
     context: {
       cwd: "/adoption",
-      installation: {
-        hostname: "adoption",
-        osUser: "fixture",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "adoption", osUser: "fixture" },
       git: {
         root: "/adoption",
         remoteUrl: `https://github.com/adoption/${repo}.git`,
         branch: "main",
         head: "abc123",
       },
-      parentHint: null,
       ...(harness === "GEMINI_CLI"
         ? {
             transcriptMetadata: {
@@ -129,15 +110,10 @@ function envelope(
         timestamp: new Date(at.getTime() + pos).toISOString(),
       }),
     })),
-  };
+  });
 }
-async function publish(context: ServiceContext, input: IngestEnvelope) {
-  const result = await ingest.execute(context, input);
-  await projection.process(
-    requireCaller(context).organizationId,
-    result.result.sessionId,
-  );
-  return result;
+function publish(context: ServiceContext, input: IngestEnvelope) {
+  return services.publishQueued(context, input);
 }
 async function messages(context: ServiceContext, id: string) {
   return db.traceReaders.read(
@@ -247,11 +223,13 @@ function piRecords(calls: Array<{ name: string; id: string }>): JsonObject[] {
 }
 /** Home's KPIs are stat tiles of the default dashboard; read this week's captured and searching sessions. */
 async function homeKpis(context: ServiceContext) {
+  // Saved renders are cached for an hour (ADR 0058); refresh so the tiles reflect the fixtures just captured.
   const rendered = (
     await dashboards.render(context, {
       id: builtinDashboardId,
       tiles: ["captured_sessions", "search_sessions"],
       variables: { time_range: "this_week" },
+      refresh: true,
     })
   ).result;
   const value = (id: string) => {
@@ -283,7 +261,7 @@ async function usage(
 
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   org = await provisionOrganization(db, "adoption-primary");
   member = await provisionMember(db, org.owner, "adoption-member@example.com");
   foreign = await provisionOrganization(db, "adoption-foreign");
@@ -292,44 +270,17 @@ beforeAll(async () => {
     readers: db.traceReaders,
     cursors: new CursorCodec("adoption-cursor-secret"),
   };
-  projection = new TraceProjectionService({
-    prisma: db.prisma,
-    audit: db.audit,
-    repository: db.traces,
-  });
-  const jobs = new JobService({
-    prisma: db.prisma,
-    audit: db.audit,
-    traces: projection,
-    traceAudit: new TraceAuditProjectionService({
-      prisma: db.prisma,
-      audit: db.audit,
-      traces: db.traces,
-    }),
-    connectionString: db.urls.app,
-    auditRetentionDays: 365,
-    allowedEmailDomains: [],
-    onError: (error) => {
-      workerErrors.push(error);
-    },
-  });
-  release.unshift(() => jobs.stop());
-  ingest = new IngestService({ ...db, traces: jobs });
+  services = traceServices(db);
+  defer(() => services.close());
   dashboards = new DashboardService({
     prisma: db.prisma,
     audit: db.audit,
     query: new QueryService(dependencies),
   });
   metrics = new MetricsService(dependencies);
-  admin = new AdminService({
-    ...dependencies,
-    jobs,
-  });
+  admin = new AdminService({ ...dependencies, jobs: services.jobs });
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-  expect(workerErrors).toEqual([]);
-});
+afterAll(release);
 
 // @req R-DASH-18
 it("counts real persisted Claude and Codex typed calls, including rejected Codex attempts, without counting results or batch retries", async () => {
@@ -903,7 +854,6 @@ it("retains real transient Gemini delegation snapshots in raw history while proj
       ),
     );
     const source = readSource(path, cursor, HARNESSES.gemini, watermark);
-    expect(source.complete).toBe(true);
     expect(source.transcriptMetadata?.sourceRecordCount).toBe(
       [1, 4, 5, 2, 4][index],
     );

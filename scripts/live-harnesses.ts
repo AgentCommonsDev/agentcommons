@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import { finished } from "node:stream/promises";
 import { parse, stringify } from "smol-toml";
 import { z } from "zod";
+import type { Harness } from "../packages/core/schemas/common.js";
 import { nativeCompletionSchema } from "./canary-completion.js";
+import harnessVersions from "./harness-versions.json" with { type: "json" };
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 export interface CanaryEnvironment {
@@ -28,6 +30,31 @@ export interface RecallStageEnvironment extends CanaryEnvironment {
   recallRepository: string;
   /** Ticket reference in the organic prompt, used only to find the captured session. */
   ticket: string;
+}
+export type NativeCompletion = z.infer<typeof nativeCompletionSchema>;
+/** One native harness the canary drives; every difference between harnesses is a field here. */
+export interface LiveHarness {
+  cli: string;
+  harness: Harness;
+  version: string;
+  /** Relation of the child session the capture run produces, or null when it produces none. */
+  links: "SUBAGENT" | "FORK" | null;
+  /** Whether the parent records the tool call that spawned its child (§5.5). */
+  spawningCall: boolean;
+  /** Whether the capture run resumes its session, leaving a lifecycle marker. */
+  resume: boolean;
+  /** Native delegation tool whose completed call the capture run must show, or null. */
+  delegationTool: string | null;
+  /** Built-in that loads MCP tools lazily once the catalog is too large, or null. */
+  deferralTool: string | null;
+  /** How the harness names the AgentCommons MCP tools. */
+  mcpTool: (tool: string) => string;
+  /** Hooked session that calls every required MCP tool through the installed registration. */
+  tools: (options: ToolStageEnvironment) => Promise<void>;
+  /** Hooked capture session, returning the native shutdown checkpoints it can name (pi). */
+  run: (options: CanaryEnvironment) => Promise<NativeCompletion[]>;
+  /** Decision session then organic task (R-MCP-10), or null without an MCP client. */
+  recall: ((options: RecallStageEnvironment) => Promise<void>) | null;
 }
 /** The decision one hooked session records and a later, ordinary task must recover (R-MCP-10). */
 export const recallDecision = {
@@ -175,294 +202,294 @@ async function piDriver(options: CanaryEnvironment) {
       : {}),
   };
 }
-const shared = (options: CanaryEnvironment) => ({
-  cwd: options.repository,
-  env: options.env,
-  log: join(options.directory, "native.jsonl"),
-});
-export const liveHarnesses = [
-  {
-    cli: "claude",
-    harness: "CLAUDE_CODE",
-    version: "2.1.265",
-    links: "SUBAGENT",
-    // The parent's Agent result names the child it spawned (§5.5).
-    spawningCall: true,
-    // Claude Code exposes MCP tools as mcp__<server>__<tool> (Appendix A, 2026-09-08).
-    mcpTool: (tool: string) => `mcp__agentcommons__${tool}`,
-    // Claude Code loads MCP tools through this built-in once their combined definitions
-    // pass 10% of the context window; a direct first call proves the catalog fits.
-    deferralTool: "ToolSearch",
-    async tools(options: ToolStageEnvironment) {
-      // The installed registration lives in the private config home; strict mode keeps
-      // the workstation's own MCP servers out of the session.
-      await runNative(
-        "claude",
-        [
-          "--print",
-          "--settings",
-          join(options.configHome, ".claude/settings.json"),
+/** Writes live-pi.mjs's input for one stage, runs it, and parses the identities it wrote. */
+async function runPi<T>(
+  options: CanaryEnvironment,
+  stage: string,
+  input: { prompt: string; tools: string[] | null; mode?: "prompt" },
+  log: string,
+  identities: z.ZodType<T>,
+): Promise<T> {
+  const inputPath = join(options.directory, `pi-${stage}-input.json`);
+  const outputPath = join(options.directory, `pi-${stage}-identities.json`);
+  await writeFile(
+    inputPath,
+    JSON.stringify({
+      ...(await piDriver(options)),
+      ...input,
+      output: outputPath,
+    }),
+    { mode: 0o600 },
+  );
+  await runNative(
+    process.execPath,
+    [join(root, "scripts/live-pi.mjs"), inputPath],
+    {
+      cwd: options.repository,
+      env: options.env,
+      log,
+    },
+  );
+  return identities.parse(JSON.parse(await readFile(outputPath, "utf8")));
+}
+/** Where the capture run's native output goes. */
+const captureLog = (options: CanaryEnvironment) =>
+  join(options.directory, "native.jsonl");
+const toolsLog = (options: CanaryEnvironment) =>
+  join(options.directory, "native-tools.jsonl");
+/** A tracked file gives edit, dirty-file, diff-stat and commit observations a target. */
+async function seedNotes(options: CanaryEnvironment) {
+  await writeFile(join(options.repository, "notes.txt"), "Canary notes.\n");
+  const git = (args: string[], log: string) =>
+    runNative("git", args, {
+      cwd: options.repository,
+      env: options.env,
+      log: join(options.directory, log),
+    });
+  await git(["add", "notes.txt"], "git-add-notes.txt");
+  await git(["commit", "-m", "test: add canary notes"], "git-commit-notes.txt");
+}
+/** The recall stage: the decision session in `repository`, then the task in `recallRepository`. */
+async function runRecall(
+  invoke: (prompt: string, cwd: string, log: string) => Promise<void>,
+  options: RecallStageEnvironment,
+) {
+  await invoke(
+    recallDecisionPrompt(options),
+    options.repository,
+    join(options.directory, "native-recall-decision.jsonl"),
+  );
+  await invoke(
+    recallTaskPrompt(options),
+    options.recallRepository,
+    join(options.directory, "native-recall-task.jsonl"),
+  );
+}
+/**
+ * Claude Code arguments. The installed registration lives in the private config home;
+ * strict mode keeps the workstation's own MCP servers out of the session.
+ */
+function claudeArgs(
+  options: CanaryEnvironment,
+  input: { allowedTools: string; mcp: boolean },
+  prompt: string,
+) {
+  return [
+    "--print",
+    "--settings",
+    join(options.configHome, ".claude/settings.json"),
+    ...(input.mcp
+      ? [
           "--mcp-config",
           join(options.configHome, ".claude.json"),
           "--strict-mcp-config",
-          "--allowedTools",
-          "mcp__agentcommons__*",
-          "--",
-          nativeToolPrompt(options, (tool) => `mcp__agentcommons__${tool}`),
-        ],
-        {
-          cwd: options.repository,
-          env: options.env,
-          log: join(options.directory, "native-tools.jsonl"),
-        },
-      );
-    },
-    async recall(options: RecallStageEnvironment) {
-      const claude = (prompt: string, cwd: string, log: string) =>
-        runNative(
-          "claude",
-          [
-            "--print",
-            "--settings",
-            join(options.configHome, ".claude/settings.json"),
-            "--mcp-config",
-            join(options.configHome, ".claude.json"),
-            "--strict-mcp-config",
-            "--allowedTools",
-            "Read,Edit,Write,Grep,Glob,Bash,mcp__agentcommons__*",
-            "--",
-            prompt,
-          ],
-          { cwd, env: options.env, log: join(options.directory, log) },
-        );
-      await claude(
-        recallDecisionPrompt(options),
-        options.repository,
-        "native-recall-decision.jsonl",
-      );
-      await claude(
-        recallTaskPrompt(options),
-        options.recallRepository,
-        "native-recall-task.jsonl",
-      );
-    },
-    async run(options: CanaryEnvironment) {
-      // A tracked file gives Edit, dirty-file, diff-stat and commit observations a target.
-      await writeFile(join(options.repository, "notes.txt"), "Canary notes.\n");
-      const git = (args: string[], log: string) =>
-        runNative("git", args, {
-          cwd: options.repository,
-          env: options.env,
-          log: join(options.directory, log),
-        });
-      await git(["add", "notes.txt"], "git-add-notes.txt");
-      await git(
-        ["commit", "-m", "test: add canary notes"],
-        "git-commit-notes.txt",
-      );
+        ]
+      : []),
+    "--allowedTools",
+    input.allowedTools,
+    "--",
+    prompt,
+  ];
+}
+function codexArgs(profile: string, cwd: string, prompt: string) {
+  return [
+    "exec",
+    "--profile",
+    profile,
+    "--dangerously-bypass-hook-trust",
+    "--sandbox",
+    "workspace-write",
+    "-C",
+    cwd,
+    "--model",
+    "gpt-6-astra",
+    "-c",
+    'model_reasoning_effort="high"',
+    prompt,
+  ];
+}
+/** Gemini reads the project settings; the capture step copies the installed ones into a repository. */
+async function geminiProjectSettings(options: CanaryEnvironment, cwd: string) {
+  await mkdir(join(cwd, ".gemini"), { mode: 0o700 });
+  await copyFile(
+    join(options.configHome, ".gemini/settings.json"),
+    join(cwd, ".gemini/settings.json"),
+  );
+}
+// MCP tool names as each harness exposes them (Appendix A, 2026-09-08). Claude Code and
+// Codex both project mcp__<server>__<tool>; pi has no MCP client, so the installed
+// extension registers the key's catalog as agentcommons_<tool> natives (ADR 0054).
+const doubleUnderscoreTool = (tool: string) => `mcp__agentcommons__${tool}`;
+const geminiTool = (tool: string) => `mcp_agentcommons_${tool}`;
+const piTool = (tool: string) => `agentcommons_${tool}`;
+
+export const liveHarnesses: LiveHarness[] = [
+  {
+    cli: "claude",
+    harness: "CLAUDE_CODE",
+    version: harnessVersions.claude.version,
+    links: "SUBAGENT",
+    // The parent's Agent result names the child it spawned (§5.5).
+    spawningCall: true,
+    resume: false,
+    delegationTool: null,
+    // Claude Code loads MCP tools through this built-in once their combined definitions
+    // pass 10% of the context window; a direct first call proves the catalog fits.
+    deferralTool: "ToolSearch",
+    mcpTool: doubleUnderscoreTool,
+    async tools(options) {
       await runNative(
         "claude",
-        [
-          "--print",
-          "--settings",
-          join(options.configHome, ".claude/settings.json"),
-          "--allowedTools",
-          "Read,Edit,Write,Bash,Agent",
-          "--",
-          `${options.marker}. Do these steps in order. 1) Use Read to read probe.txt. 2) Use Read to read notes.txt, then use Edit to append the line "AgentCommons canary note ${options.marker}" to notes.txt. 3) Use Bash to run: git status --short. 4) Use Bash to run: git add notes.txt && git commit -m "test: claude canary note". 5) Use the Agent tool with subagent_type Explore to read probe.txt and report its exact content; wait for it. Reply with the probe.txt content, the final notes.txt content, and the new commit hash.`,
-        ],
-        shared(options),
+        claudeArgs(
+          options,
+          { allowedTools: "mcp__agentcommons__*", mcp: true },
+          nativeToolPrompt(options, doubleUnderscoreTool),
+        ),
+        { cwd: options.repository, env: options.env, log: toolsLog(options) },
       );
+    },
+    async recall(options) {
+      await runRecall(
+        (prompt, cwd, log) =>
+          runNative(
+            "claude",
+            claudeArgs(
+              options,
+              {
+                allowedTools:
+                  "Read,Edit,Write,Grep,Glob,Bash,mcp__agentcommons__*",
+                mcp: true,
+              },
+              prompt,
+            ),
+            { cwd, env: options.env, log },
+          ),
+        options,
+      );
+    },
+    async run(options) {
+      await seedNotes(options);
+      await runNative(
+        "claude",
+        claudeArgs(
+          options,
+          { allowedTools: "Read,Edit,Write,Bash,Agent", mcp: false },
+          `${options.marker}. Do these steps in order. 1) Use Read to read probe.txt. 2) Use Read to read notes.txt, then use Edit to append the line "AgentCommons canary note ${options.marker}" to notes.txt. 3) Use Bash to run: git status --short. 4) Use Bash to run: git add notes.txt && git commit -m "test: claude canary note". 5) Use the Agent tool with subagent_type Explore to read probe.txt and report its exact content; wait for it. Reply with the probe.txt content, the final notes.txt content, and the new commit hash.`,
+        ),
+        { cwd: options.repository, env: options.env, log: captureLog(options) },
+      );
+      return [];
     },
   },
   {
     cli: "codex",
     harness: "CODEX",
-    version: "0.153.4",
+    version: harnessVersions.codex.version,
     links: "SUBAGENT",
     // The parent's SubAgentActivity item names the spawn_agent call and child thread (§5.5).
     spawningCall: true,
+    resume: false,
+    delegationTool: null,
+    deferralTool: null,
     // Codex persists typed McpToolCall items; the adapter projects mcp__<server>__<tool>.
-    mcpTool: (tool: string) => `mcp__agentcommons__${tool}`,
-    async tools(options: ToolStageEnvironment) {
+    mcpTool: doubleUnderscoreTool,
+    async tools(options) {
       const { profile, path } = await codexProfile(options, "tools", true);
       try {
         await runNative(
           "codex",
-          [
-            "exec",
-            "--profile",
+          codexArgs(
             profile,
-            "--dangerously-bypass-hook-trust",
-            "--sandbox",
-            "workspace-write",
-            "-C",
             options.repository,
-            "--model",
-            "gpt-6-astra",
-            "-c",
-            'model_reasoning_effort="high"',
-            nativeToolPrompt(options, (tool) => `mcp__agentcommons__${tool}`),
-          ],
+            nativeToolPrompt(options, doubleUnderscoreTool),
+          ),
+          { cwd: options.repository, env: options.env, log: toolsLog(options) },
+        );
+      } finally {
+        await unlink(path);
+      }
+    },
+    async recall(options) {
+      const { profile, path } = await codexProfile(options, "recall", true);
+      try {
+        await runRecall(
+          (prompt, cwd, log) =>
+            runNative("codex", codexArgs(profile, cwd, prompt), {
+              cwd,
+              env: options.env,
+              log,
+            }),
+          options,
+        );
+      } finally {
+        await unlink(path);
+      }
+    },
+    async run(options) {
+      const { profile, path } = await codexProfile(options, "capture", false);
+      await seedNotes(options);
+      try {
+        await runNative(
+          "codex",
+          codexArgs(
+            profile,
+            options.repository,
+            `${options.marker}. Do these steps in order. 1) Run cat probe.txt with a shell command. 2) Use apply_patch to append the line "AgentCommons canary note ${options.marker}" to notes.txt. 3) With shell commands run git status --short, then git add notes.txt, then git commit -m "test: codex canary note". 4) Use a subagent to independently read probe.txt and return its exact content; wait for it. Reply with the probe.txt content, the final notes.txt content, and the new commit hash.`,
+          ),
           {
             cwd: options.repository,
             env: options.env,
-            log: join(options.directory, "native-tools.jsonl"),
+            log: captureLog(options),
           },
         );
       } finally {
         await unlink(path);
       }
-    },
-    async recall(options: RecallStageEnvironment) {
-      const { profile, path } = await codexProfile(options, "recall", true);
-      const codex = (prompt: string, cwd: string, log: string) =>
-        runNative(
-          "codex",
-          [
-            "exec",
-            "--profile",
-            profile,
-            "--dangerously-bypass-hook-trust",
-            "--sandbox",
-            "workspace-write",
-            "-C",
-            cwd,
-            "--model",
-            "gpt-6-astra",
-            "-c",
-            'model_reasoning_effort="high"',
-            prompt,
-          ],
-          { cwd, env: options.env, log: join(options.directory, log) },
-        );
-      try {
-        await codex(
-          recallDecisionPrompt(options),
-          options.repository,
-          "native-recall-decision.jsonl",
-        );
-        await codex(
-          recallTaskPrompt(options),
-          options.recallRepository,
-          "native-recall-task.jsonl",
-        );
-      } finally {
-        await unlink(path);
-      }
-    },
-    async run(options: CanaryEnvironment) {
-      const { profile, path } = await codexProfile(options, "capture", false);
-      // A tracked file gives apply_patch, dirty-file and commit observations a target.
-      await writeFile(join(options.repository, "notes.txt"), "Canary notes.\n");
-      const git = (args: string[], log: string) =>
-        runNative("git", args, {
-          cwd: options.repository,
-          env: options.env,
-          log: join(options.directory, log),
-        });
-      await git(["add", "notes.txt"], "git-add-notes.txt");
-      await git(
-        ["commit", "-m", "test: add canary notes"],
-        "git-commit-notes.txt",
-      );
-      try {
-        await runNative(
-          "codex",
-          [
-            "exec",
-            "--profile",
-            profile,
-            "--dangerously-bypass-hook-trust",
-            "--sandbox",
-            "workspace-write",
-            "-C",
-            options.repository,
-            "--model",
-            "gpt-6-astra",
-            "-c",
-            'model_reasoning_effort="high"',
-            `${options.marker}. Do these steps in order. 1) Run cat probe.txt with a shell command. 2) Use apply_patch to append the line "AgentCommons canary note ${options.marker}" to notes.txt. 3) With shell commands run git status --short, then git add notes.txt, then git commit -m "test: codex canary note". 4) Use a subagent to independently read probe.txt and return its exact content; wait for it. Reply with the probe.txt content, the final notes.txt content, and the new commit hash.`,
-          ],
-          shared(options),
-        );
-      } finally {
-        await unlink(path);
-      }
+      return [];
     },
   },
   {
     cli: "gemini",
     harness: "GEMINI_CLI",
-    version: "0.35.3",
-    delegationTool: "generalist",
+    version: harnessVersions.gemini.version,
     links: null,
-    // Gemini CLI names MCP tools mcp_<server>_<tool> (Appendix A, 2026-09-08).
-    mcpTool: (tool: string) => `mcp_agentcommons_${tool}`,
-    async tools(options: ToolStageEnvironment) {
+    spawningCall: false,
+    resume: false,
+    delegationTool: "generalist",
+    deferralTool: null,
+    mcpTool: geminiTool,
+    async tools(options) {
       // The capture step copied the installed settings (hooks and mcpServers) into the
       // repository; the same project registration serves this session.
       await runNative(
         "gemini",
         [
           "--prompt",
-          nativeToolPrompt(options, (tool) => `mcp_agentcommons_${tool}`),
+          nativeToolPrompt(options, geminiTool),
           "--approval-mode",
           "yolo",
           "--allowed-mcp-server-names",
           "agentcommons",
         ],
-        {
-          cwd: options.repository,
-          env: options.env,
-          log: join(options.directory, "native-tools.jsonl"),
-        },
+        { cwd: options.repository, env: options.env, log: toolsLog(options) },
       );
     },
-    async recall(options: RecallStageEnvironment) {
-      // The capture step copied the installed settings into `repository`; the fresh task
-      // repository needs the same project registration.
-      await mkdir(join(options.recallRepository, ".gemini"), { mode: 0o700 });
-      await copyFile(
-        join(options.configHome, ".gemini/settings.json"),
-        join(options.recallRepository, ".gemini/settings.json"),
-      );
-      const gemini = (prompt: string, cwd: string, log: string) =>
-        runNative("gemini", ["--prompt", prompt, "--approval-mode", "yolo"], {
-          cwd,
-          env: options.env,
-          log: join(options.directory, log),
-        });
-      await gemini(
-        recallDecisionPrompt(options),
-        options.repository,
-        "native-recall-decision.jsonl",
-      );
-      await gemini(
-        recallTaskPrompt(options),
-        options.recallRepository,
-        "native-recall-task.jsonl",
+    async recall(options) {
+      // The fresh task repository needs the same project registration as `repository`.
+      await geminiProjectSettings(options, options.recallRepository);
+      await runRecall(
+        (prompt, cwd, log) =>
+          runNative("gemini", ["--prompt", prompt, "--approval-mode", "yolo"], {
+            cwd,
+            env: options.env,
+            log,
+          }),
+        options,
       );
     },
-    async run(options: CanaryEnvironment) {
-      await mkdir(join(options.repository, ".gemini"), { mode: 0o700 });
-      await copyFile(
-        join(options.configHome, ".gemini/settings.json"),
-        join(options.repository, ".gemini/settings.json"),
-      );
-      // A tracked file gives write_file, dirty-file and commit observations a target.
-      await writeFile(join(options.repository, "notes.txt"), "Canary notes.\n");
-      const git = (args: string[], log: string) =>
-        runNative("git", args, {
-          cwd: options.repository,
-          env: options.env,
-          log: join(options.directory, log),
-        });
-      await git(["add", "notes.txt"], "git-add-notes.txt");
-      await git(
-        ["commit", "-m", "test: add canary notes"],
-        "git-commit-notes.txt",
-      );
+    async run(options) {
+      await geminiProjectSettings(options, options.repository);
+      await seedNotes(options);
       await runNative(
         "gemini",
         [
@@ -471,95 +498,52 @@ export const liveHarnesses = [
           "--approval-mode",
           "yolo",
         ],
-        shared(options),
+        { cwd: options.repository, env: options.env, log: captureLog(options) },
       );
+      return [];
     },
   },
   {
     cli: "pi",
     harness: "PI",
-    version: "0.73.1",
+    version: harnessVersions.pi.version,
     links: "FORK",
+    spawningCall: false,
     resume: true,
-    // pi has no MCP client; the installed extension registers the key's catalog as
-    // agentcommons_<tool> natives that forward to /mcp (ADR 0054).
-    mcpTool: (tool: string) => `agentcommons_${tool}`,
-    async tools(options: ToolStageEnvironment) {
-      const input = join(options.directory, "pi-tools-input.json");
-      await writeFile(
-        input,
-        JSON.stringify({
-          ...(await piDriver(options)),
-          prompt: nativeToolPrompt(options, (tool) => `agentcommons_${tool}`),
-          output: join(options.directory, "pi-tools-identities.json"),
+    delegationTool: null,
+    deferralTool: null,
+    mcpTool: piTool,
+    async tools(options) {
+      await runPi(
+        options,
+        "tools",
+        {
+          prompt: nativeToolPrompt(options, piTool),
           // pi's defaults plus every extension tool, as an interactive user has them.
           tools: null,
           mode: "prompt",
-        }),
-        { mode: 0o600 },
-      );
-      await runNative(
-        process.execPath,
-        [join(root, "scripts/live-pi.mjs"), input],
-        {
-          cwd: options.repository,
-          env: options.env,
-          log: join(options.directory, "native-tools.jsonl"),
         },
-      );
-      z.object({ originalId: z.string(), forkId: z.null() }).parse(
-        JSON.parse(
-          await readFile(
-            join(options.directory, "pi-tools-identities.json"),
-            "utf8",
-          ),
-        ),
+        toolsLog(options),
+        z.object({ originalId: z.string(), forkId: z.null() }),
       );
     },
-    async run(options: CanaryEnvironment) {
-      // A tracked file gives edit, dirty-file and commit observations a target.
-      await writeFile(join(options.repository, "notes.txt"), "Canary notes.\n");
-      const git = (args: string[], log: string) =>
-        runNative("git", args, {
-          cwd: options.repository,
-          env: options.env,
-          log: join(options.directory, log),
-        });
-      await git(["add", "notes.txt"], "git-add-notes.txt");
-      await git(
-        ["commit", "-m", "test: add canary notes"],
-        "git-commit-notes.txt",
-      );
-      const input = join(options.directory, "pi-input.json");
-      await writeFile(
-        input,
-        JSON.stringify({
-          ...(await piDriver(options)),
+    recall: null,
+    async run(options) {
+      await seedNotes(options);
+      const result = await runPi(
+        options,
+        "native",
+        {
           prompt: `${options.marker}. Do these steps in order. 1) Use read to read probe.txt. 2) Use bash to run: git status --short. 3) Use read to read notes.txt, then use edit to append the line "AgentCommons canary note ${options.marker}" after its last line. 4) Use bash to run: git add notes.txt && git commit -m "test: pi canary note". Reply with the probe.txt content, the final notes.txt content and the new commit hash.`,
-          output: join(options.directory, "pi-native-identities.json"),
           tools: ["read", "bash", "edit", "write"],
-        }),
-        { mode: 0o600 },
-      );
-      await runNative(
-        process.execPath,
-        [join(root, "scripts/live-pi.mjs"), input],
-        shared(options),
-      );
-      const result = z
-        .object({
+        },
+        captureLog(options),
+        z.object({
           originalId: z.string(),
           forkId: z.string(),
           completion: z.array(nativeCompletionSchema).length(2),
-        })
-        .parse(
-          JSON.parse(
-            await readFile(
-              join(options.directory, "pi-native-identities.json"),
-              "utf8",
-            ),
-          ),
-        );
+        }),
+      );
       if (
         ![result.originalId, result.forkId].every((id) =>
           result.completion.some((checkpoint) => checkpoint.sessionId === id),
@@ -569,4 +553,4 @@ export const liveHarnesses = [
       return result.completion;
     },
   },
-] as const;
+];

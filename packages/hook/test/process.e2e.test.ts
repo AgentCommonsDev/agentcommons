@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { configure } from "../src/install.js";
 import { recordHook } from "../src/hook.js";
-import { loadState } from "../src/state.js";
+import { journalPath, loadState, ownerPath } from "../src/state.js";
 import { upload } from "../src/upload.js";
 import {
   ingestEnvelopeSchema,
@@ -124,7 +124,6 @@ it("recovers after actual SIGKILL before send, after acceptance, and after local
         cwd: directory,
         hook_event_name: "Stop",
       },
-      "launch",
     );
     if (!path) throw new Error("Missing state.");
     const child = spawn(
@@ -153,7 +152,7 @@ it("recovers after actual SIGKILL before send, after acceptance, and after local
     expect(after.pending).toBeNull();
     expect(after.cleanup).toEqual({ files: [], intents: [] });
     expect(readdirSync(join(directory, "spool"))).toEqual([]);
-    expect(readdirSync(`${path}.intents`)).toEqual([]);
+    expect(readdirSync(journalPath(path))).toEqual([]);
     expect(after.ackedCursor).toEqual({
       kind: "jsonl",
       offset: statSync(transcript).size,
@@ -244,9 +243,11 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
     );
     expect(readFileSync(file, "utf8")).toContain("## AgentCommons");
   }
-  expect(installed.output).toContain("pi gets it from its extension");
   expect(installed.output).toContain(
-    "open a new terminal before starting Codex",
+    "pi reads the AgentCommons guidance from its extension",
+  );
+  expect(installed.output).toContain(
+    "Open a new terminal before starting Codex",
   );
   // Every login shell gets the exports, not only $SHELL: Codex reads the key from the
   // environment of whichever shell starts it.
@@ -309,19 +310,12 @@ it("terminates an expired real owner before one of two contenders takes over", a
   });
   const transcript = join(directory, "source.jsonl");
   writeFileSync(transcript, '{"uuid":"record"}\n');
-  const path = recordHook(
-    directory,
-    "/none",
-    config,
-    "claude",
-    {
-      session_id: randomUUID(),
-      cwd: directory,
-      transcript_path: transcript,
-      hook_event_name: "Stop",
-    },
-    "launch",
-  );
+  const path = recordHook(directory, "/none", config, "claude", {
+    session_id: randomUUID(),
+    cwd: directory,
+    transcript_path: transcript,
+    hook_event_name: "Stop",
+  });
   if (!path) throw new Error("Missing state.");
   const child = spawn(
     process.execPath,
@@ -341,20 +335,20 @@ it("terminates an expired real owner before one of two contenders takes over", a
       throw new Error("Worker exited before acquiring its lock.");
     }),
   ]);
-  const ownerPath = `${path}.owner`;
-  const owner = JSON.parse(readFileSync(ownerPath, "utf8")) as Record<
+  const owner = ownerPath(path);
+  const previous = JSON.parse(readFileSync(owner, "utf8")) as Record<
     string,
     unknown
   >;
-  (await import("../src/files.js")).writeAtomic(ownerPath, {
-    ...owner,
+  (await import("../src/files.js")).writeAtomic(owner, {
+    ...previous,
     since: Date.now() - 300001,
   });
   const exited = once(child, "exit");
   const { acquireLock } = await import("../src/lock.js");
   const contenders = await Promise.all([
-    acquireLock(ownerPath),
-    acquireLock(ownerPath),
+    acquireLock(owner),
+    acquireLock(owner),
   ]);
   await exited;
   expect(contenders.filter(Boolean)).toHaveLength(1);

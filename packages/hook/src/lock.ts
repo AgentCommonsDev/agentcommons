@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import * as z from "zod";
-import { isCode, readJson, removeFile, writeExclusive } from "./files.js";
+import { readJsonOr, removeFile, writeExclusive } from "./files.js";
 import { isAlive, selfIdentity, terminateExpiredOwner } from "./process.js";
 
 export const MAX_UPLOADER_MS = 5 * 60_000;
@@ -11,20 +11,13 @@ const ownerSchema = z.strictObject({
   since: z.number(),
   token: z.uuid(),
 });
-export type Owner = z.infer<typeof ownerSchema>;
+type Owner = z.infer<typeof ownerSchema>;
 export interface Lock {
-  owner: Owner;
   release(): void;
   assertOwned(): void;
 }
-function ownerAt(path: string): Owner | null {
-  try {
-    return readJson(path, ownerSchema);
-  } catch (error) {
-    if (isCode(error, "ENOENT")) return null;
-    throw error;
-  }
-}
+const ownerAt = (path: string): Owner | null =>
+  readJsonOr(path, ownerSchema, null);
 export function liveOwner(path: string): boolean {
   try {
     const owner = ownerAt(path);
@@ -74,13 +67,11 @@ export async function acquireLock(
       recovery.release();
     }
   }
-  const assertOwned = () => {
-    if (ownerAt(path)?.token !== owner.token)
-      throw new Error("The uploader no longer owns this session.");
-  };
   return {
-    owner,
-    assertOwned,
+    assertOwned() {
+      if (ownerAt(path)?.token !== owner.token)
+        throw new Error("The uploader no longer owns this session.");
+    },
     release() {
       if (ownerAt(path)?.token === owner.token) removeFile(path);
     },

@@ -1,8 +1,6 @@
-import {
-  embeddingAvailability,
-  embeddingsDisabledMessage,
-} from "../embeddings/settings.js";
-import { canonicalSessionColumns, sqlIdentifier } from "@agentcommons/traces";
+import { embeddingsDisabledMessage } from "../embeddings/settings.js";
+import { traceViewCatalog } from "@agentcommons/core/sql";
+import { sqlIdentifier } from "@agentcommons/traces";
 import { ServiceError } from "./context.js";
 import {
   similarInputSchema,
@@ -10,10 +8,16 @@ import {
   sessionIdSchema,
 } from "@agentcommons/core";
 import { sessionHeaders, visibleSession } from "../repositories/read-model.js";
+import type { QueryService } from "./query.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 import type { ServiceContext } from "./context.js";
+/** Every `sessions` column, as the shared catalog documents the view. */
+const sessionColumns = Object.keys(traceViewCatalog.sessions.columns);
 export class SimilarService {
-  constructor(private readonly dependencies: ReadDependencies) {}
+  constructor(
+    private readonly dependencies: ReadDependencies,
+    private readonly query: Pick<QueryService, "embeddingsEnabled">,
+  ) {}
   execute(context: ServiceContext, id: string, input: unknown) {
     return readOperation(
       this.dependencies.audit,
@@ -25,14 +29,7 @@ export class SimilarService {
         detail: input,
       },
       async (caller) => {
-        // This service exists only when the operator enabled a provider, so the
-        // remaining gates are the organization's own setting and, in SaaS, its plan.
-        const availability = await embeddingAvailability(
-          this.dependencies.prisma,
-          caller.organizationId,
-          true,
-          Boolean(this.dependencies.saas),
-        );
+        const availability = await this.query.embeddingsEnabled(caller);
         if (!availability.enabled)
           throw new ServiceError(
             404,
@@ -44,7 +41,7 @@ export class SimilarService {
         return this.dependencies.readers.read(caller, async (client) => {
           await visibleSession(client, id);
           const rows = await client.query(
-            `SELECT ${canonicalSessionColumns.map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")} FROM api_ro.similar_sessions(source={source:UUID},max_rows={max_rows:UInt32}) nearest JOIN api_ro.sessions s USING(session_id) ORDER BY nearest.distance,nearest.session_id`,
+            `SELECT ${sessionColumns.map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")} FROM api_ro.similar_sessions(source={source:UUID},max_rows={max_rows:UInt32}) nearest JOIN api_ro.sessions s USING(session_id) ORDER BY nearest.distance,nearest.session_id`,
             { source: id, max_rows: request.max_rows },
           );
           const sessions = await sessionHeaders(client, rows.rows);

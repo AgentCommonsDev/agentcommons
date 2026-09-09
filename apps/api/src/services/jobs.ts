@@ -1,6 +1,12 @@
-import { traceRescanPayloadSchema } from "./trace-rescan.js";
+import {
+  completeRunSession,
+  traceRescanPayloadSchema,
+} from "./trace-rescan.js";
 import { setImmediate } from "node:timers/promises";
-import type { TraceAuditProjectionService } from "./trace-audit-projection.js";
+import {
+  AUDIT_PROJECTION_BATCH,
+  type TraceAuditProjectionService,
+} from "./trace-audit-projection.js";
 import type { TraceProjectionService } from "./trace-projection.js";
 import type { BillingMeterService } from "./billing-meter.js";
 import { organizationEmbeddingSetting } from "../embeddings/settings.js";
@@ -17,14 +23,24 @@ import type { Prisma } from "@agentcommons/db";
 import {
   JOB_QUEUES,
   lockTracePublication,
+  lockTraceSessionControl,
   type PrismaClient,
 } from "@agentcommons/db";
-import type { redactionRescanInputSchema } from "@agentcommons/core";
-import { jobProgressSchema, sessionIdSchema } from "@agentcommons/core";
+import type {
+  CallerContext,
+  redactionRescanInputSchema,
+} from "@agentcommons/core";
+import {
+  callerContextSchema,
+  jobProgressSchema,
+  sessionIdSchema,
+} from "@agentcommons/core";
 import { reauthorizeJob } from "../auth/jobs.js";
-import { operatorContext } from "../auth/bootstrap.js";
+import { cookieCaller } from "../auth/identity.js";
+import { operatorContext, workerActor } from "../auth/bootstrap.js";
 import { lockOrganization } from "./auth.js";
 import type { AuditService } from "./audit.js";
+import { renderScope, type DashboardService } from "./dashboards.js";
 import { readOperation } from "./read-operation.js";
 import {
   requirePermission,
@@ -33,18 +49,30 @@ import {
 } from "./context.js";
 import type { AdminJobs } from "./admin.js";
 
-const rescanJobSchema = traceRescanPayloadSchema;
-type RescanJob = z.infer<typeof rescanJobSchema>;
+type RescanJob = z.infer<typeof traceRescanPayloadSchema>;
+const traceProjectionJobSchema = z.strictObject({
+  organizationId: z.string().min(1),
+  sessionId: z.uuid(),
+  outboxId: z.uuid(),
+});
+type TraceProjectionJob = z.infer<typeof traceProjectionJobSchema>;
+const welcomeJobSchema = z.strictObject({ userId: z.string().min(1) });
+const catchupJobSchema = z.strictObject({ organizationId: z.string().min(1) });
+/** Callers who rendered a dashboard within this window get their dashboards pre-rendered (§10). */
+const PRERENDER_WINDOW_DAYS = 7;
+/** Cache scopes pre-rendered per organization and run, most recently active first. */
+const PRERENDER_SCOPES_PER_ORGANIZATION = 20;
 interface Dependencies {
   prisma: PrismaClient;
   audit: AuditService;
   connectionString: string;
   auditRetentionDays: number;
-  allowedEmailDomains: readonly string[];
+  authConfiguration: AuthConfiguration;
   onError: (error: Error) => void;
   embeddings?: EmbeddingService;
-  authConfiguration?: AuthConfiguration;
   billingMeter?: BillingMeterService;
+  /** When present, saved dashboards are pre-rendered hourly for recently active callers. */
+  dashboards?: DashboardService;
   traces: TraceProjectionService;
   traceAudit: TraceAuditProjectionService;
 }
@@ -60,7 +88,9 @@ function prismaJobDatabase(tx: Prisma.TransactionClient): PgBoss.Db {
 
 export class JobService implements AdminJobs {
   readonly boss: PgBoss;
+  private readonly saas: boolean;
   constructor(private readonly dependencies: Dependencies) {
+    this.saas = dependencies.authConfiguration.instanceMode === "saas";
     this.boss = new PgBoss({
       connectionString: dependencies.connectionString,
       migrate: false,
@@ -75,7 +105,7 @@ export class JobService implements AdminJobs {
 
   async enqueue(
     tx: Prisma.TransactionClient,
-    data: { organizationId: string; sessionId: string; outboxId: string },
+    data: TraceProjectionJob,
   ): Promise<void> {
     const id = await this.boss.send(JOB_QUEUES.traceProjection, data, {
       db: prismaJobDatabase(tx),
@@ -118,7 +148,7 @@ export class JobService implements AdminJobs {
     tx: Prisma.TransactionClient,
     userId: string,
   ): Promise<void> {
-    if (this.dependencies.authConfiguration?.instanceMode !== "saas") return;
+    if (!this.saas) return;
     await tx.$queryRaw`SELECT id FROM "user" WHERE id=${userId} FOR UPDATE`;
     const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
     if (
@@ -151,7 +181,9 @@ export class JobService implements AdminJobs {
   async start(): Promise<void> {
     await this.boss.start();
     await this.boss.work(JOB_QUEUES.traceAudit, async () => {
-      while ((await this.dependencies.traceAudit.flush()) === 100)
+      while (
+        (await this.dependencies.traceAudit.flush()) === AUDIT_PROJECTION_BATCH
+      )
         await setImmediate();
     });
     await this.boss.schedule(
@@ -167,13 +199,7 @@ export class JobService implements AdminJobs {
     );
     await this.boss.work<unknown>(JOB_QUEUES.traceProjection, async (jobs) => {
       for (const job of jobs) {
-        const data = z
-          .strictObject({
-            organizationId: z.string().min(1),
-            sessionId: z.uuid(),
-            outboxId: z.uuid(),
-          })
-          .parse(job.data);
+        const data = traceProjectionJobSchema.parse(job.data);
         await this.dependencies.traces.process(
           data.organizationId,
           data.sessionId,
@@ -197,15 +223,11 @@ export class JobService implements AdminJobs {
         { singletonKey: "startup", singletonSeconds: 60 },
       );
     }
-    if (
-      this.dependencies.authConfiguration?.instanceMode === "saas" &&
-      this.dependencies.authConfiguration.mail
-    ) {
+    const { mail, publicUrl } = this.dependencies.authConfiguration;
+    if (this.saas && mail) {
       await this.boss.work<unknown>(JOB_QUEUES.welcome, async (jobs) => {
         for (const job of jobs) {
-          const data = z
-            .strictObject({ userId: z.string().min(1) })
-            .parse(job.data);
+          const data = welcomeJobSchema.parse(job.data);
           const user = await this.dependencies.prisma.user.findUnique({
             where: { id: data.userId },
           });
@@ -215,10 +237,10 @@ export class JobService implements AdminJobs {
             actor: { userId: user.id, apiKeyId: null, authMethod: "worker" },
             detail: { job_id: job.id },
           });
-          await this.dependencies.authConfiguration?.mail?.send({
+          await mail.send({
             to: user.email,
             kind: "welcome",
-            url: this.dependencies.authConfiguration.publicUrl,
+            url: publicUrl,
             id: `welcome-${user.id}`,
           });
         }
@@ -230,21 +252,29 @@ export class JobService implements AdminJobs {
         for (const job of jobs) {
           const data = embeddingJobSchema.parse(job.data);
           const result = await this.dependencies.embeddings?.process(data);
-          if (result && !result.complete)
-            await this.enqueueEmbedding(
-              data,
-              undefined,
-              result.deferredUntil ?? undefined,
+          if (!result || result.complete) continue;
+          const startAfter = result.deferredUntil ?? undefined;
+          await this.dependencies.prisma.$transaction(async (tx) => {
+            await this.enqueueEmbedding(data, tx, startAfter);
+            await this.dependencies.audit.write(
+              operatorContext(),
+              {
+                action: "embeddings.schedule",
+                resourceType: "session",
+                resourceIds: [data.sessionId],
+                actor: workerActor(data.organizationId),
+                detail: { deferred_until: startAfter?.toISOString() ?? null },
+              },
+              tx,
             );
+          });
         }
       });
       await this.boss.work<unknown>(
         JOB_QUEUES.embeddingCatchup,
         async (jobs) => {
           for (const job of jobs) {
-            const data = z
-              .strictObject({ organizationId: z.string().min(1) })
-              .parse(job.data);
+            const data = catchupJobSchema.parse(job.data);
             await this.catchupEmbeddings(data.organizationId);
           }
         },
@@ -256,7 +286,7 @@ export class JobService implements AdminJobs {
       { includeMetadata: true },
       async (jobs) => {
         for (const job of jobs) {
-          const data = rescanJobSchema.parse(job.data);
+          const data = traceRescanPayloadSchema.parse(job.data);
           try {
             await this.processRescan(data);
           } catch (error) {
@@ -313,6 +343,24 @@ export class JobService implements AdminJobs {
       {},
       { singletonKey: "startup", singletonSeconds: 60 },
     );
+    if (this.dependencies.dashboards) {
+      await this.boss.work(JOB_QUEUES.dashboardPrerender, async () => {
+        await this.prerenderDashboards();
+      });
+      // Hourly, matching the render cache's validity, and once at startup so a fresh
+      // process serves complete results without waiting for the first tick.
+      await this.boss.schedule(
+        JOB_QUEUES.dashboardPrerender,
+        "0 * * * *",
+        {},
+        { retryLimit: 1, retryDelay: 60, expireInSeconds: 3000 },
+      );
+      await this.boss.send(
+        JOB_QUEUES.dashboardPrerender,
+        {},
+        { singletonKey: "startup", singletonSeconds: 60 },
+      );
+    }
   }
 
   async stop(): Promise<void> {
@@ -341,7 +389,7 @@ export class JobService implements AdminJobs {
       },
       data: { totalSessions: total },
     });
-    const data = rescanJobSchema.parse({
+    const data = traceRescanPayloadSchema.parse({
       organizationId: caller.organizationId,
       runId: id,
       caller,
@@ -395,8 +443,9 @@ export class JobService implements AdminJobs {
           error: run.error,
         });
       },
-      undefined,
-      "admin",
+      {
+        permission: "admin",
+      },
     );
   }
 
@@ -444,8 +493,7 @@ export class JobService implements AdminJobs {
       const context = await reauthorizeJob(
         tx,
         this.jobContext(data),
-        this.dependencies.allowedEmailDomains,
-        this.dependencies.authConfiguration?.instanceMode === "saas",
+        this.dependencies.authConfiguration,
       );
       await lockOrganization(tx, requirePermission(context, "admin"));
       const target = await tx.redactionRunSession.findFirst({
@@ -468,7 +516,14 @@ export class JobService implements AdminJobs {
         });
         return null;
       }
-      await tx.$queryRaw`SELECT id FROM trace_session_control WHERE organization_id=${data.organizationId} AND id=${target.sessionId}::uuid FOR UPDATE`;
+      if (
+        !(await lockTraceSessionControl(
+          tx,
+          data.organizationId,
+          target.sessionId,
+        ))
+      )
+        throw new ServiceError(404, "NOT_FOUND", "Session not found.");
       const control = await tx.traceSessionControl.findUniqueOrThrow({
         where: {
           organizationId_id: {
@@ -478,31 +533,14 @@ export class JobService implements AdminJobs {
         },
       });
       if (control.purgedAt) {
-        await tx.redactionRunSession.update({
-          where: {
-            organizationId_runId_sessionId: {
-              organizationId: data.organizationId,
-              runId: data.runId,
-              sessionId: target.sessionId,
-            },
-          },
-          data: { processedAt: new Date() },
-        });
-        await tx.redactionRun.update({
-          where: {
-            organizationId_id: {
-              organizationId: data.organizationId,
-              id: data.runId,
-            },
-          },
-          data: {
-            processedSessions: { increment: 1 },
-            state:
-              run.processedSessions + 1 === run.totalSessions
-                ? "completed"
-                : "running",
-          },
-        });
+        // A purged session has nothing left to rescan: processed, with no hits.
+        await completeRunSession(
+          tx,
+          data.organizationId,
+          data.runId,
+          target.sessionId,
+          0,
+        );
       } else {
         const pending = await tx.traceOutbox.findFirst({
           where: {
@@ -596,12 +634,7 @@ export class JobService implements AdminJobs {
           action: "redaction.rescan.advance",
           resourceType: "redaction_run",
           resourceIds: [run.id],
-          actor: {
-            organizationId: data.organizationId,
-            userId: null,
-            apiKeyId: null,
-            authMethod: "worker",
-          },
+          actor: workerActor(data.organizationId),
           detail: { processed_sessions: run.processedSessions },
         },
         tx,
@@ -620,7 +653,7 @@ export class JobService implements AdminJobs {
           tx,
           data.organizationId,
           false,
-          this.dependencies.authConfiguration?.instanceMode === "saas",
+          this.saas,
         )
       ).enabled
     )
@@ -628,31 +661,9 @@ export class JobService implements AdminJobs {
   }
   private async enqueueEmbedding(
     data: EmbeddingJob,
-    tx?: Prisma.TransactionClient,
+    tx: Prisma.TransactionClient,
     startAfter?: Date,
   ): Promise<void> {
-    if (!tx) {
-      await this.dependencies.prisma.$transaction(async (transaction) => {
-        await this.enqueueEmbedding(data, transaction, startAfter);
-        await this.dependencies.audit.write(
-          operatorContext(),
-          {
-            action: "embeddings.schedule",
-            resourceType: "session",
-            resourceIds: [data.sessionId],
-            actor: {
-              organizationId: data.organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: { deferred_until: startAfter?.toISOString() ?? null },
-          },
-          transaction,
-        );
-      });
-      return;
-    }
     const id = await this.boss.send(JOB_QUEUES.embedding, data, {
       db: prismaJobDatabase(tx),
       ...(startAfter ? { startAfter } : {}),
@@ -723,7 +734,7 @@ export class JobService implements AdminJobs {
                 tx,
                 session.organizationId,
                 false,
-                this.dependencies.authConfiguration?.instanceMode === "saas",
+                this.saas,
               )
             ).enabled
           )
@@ -749,12 +760,7 @@ export class JobService implements AdminJobs {
                 action: "embeddings.catchup",
                 resourceType: "session",
                 resourceIds: [session.id],
-                actor: {
-                  organizationId: session.organizationId,
-                  userId: null,
-                  apiKeyId: null,
-                  authMethod: "worker",
-                },
+                actor: workerActor(session.organizationId),
                 detail: { job_id: id },
               },
               tx,
@@ -763,6 +769,110 @@ export class JobService implements AdminJobs {
       }
       after = sessions.at(-1)?.id;
     }
+  }
+  /**
+   * Pre-render the default and saved dashboards of every organization for each caller
+   * scope that rendered a dashboard in the last seven days, as recorded by its
+   * `dashboard.render` audit rows (§10). Each scope's membership and key are re-checked
+   * first; a scope that lost access is skipped and audited as such. One organization's
+   * failure never stops the run.
+   */
+  async prerenderDashboards(now = new Date()): Promise<void> {
+    const { dashboards, prisma, audit } = this.dependencies;
+    if (!dashboards) return;
+    const viewers = await prisma.auditEvent.groupBy({
+      by: ["organizationId", "userId", "apiKeyId"],
+      where: {
+        action: "dashboard.render",
+        statusCode: 200,
+        ts: {
+          gte: new Date(now.getTime() - PRERENDER_WINDOW_DAYS * 86_400_000),
+        },
+        organizationId: { not: null },
+        userId: { not: null },
+      },
+      _max: { ts: true },
+      orderBy: [{ organizationId: "asc" }, { _max: { ts: "desc" } }],
+    });
+    const rendered = new Map<string, Set<string>>();
+    for (const viewer of viewers) {
+      const { organizationId, userId, apiKeyId } = viewer;
+      if (organizationId === null || userId === null) continue;
+      const scopes = rendered.get(organizationId) ?? new Set<string>();
+      rendered.set(organizationId, scopes);
+      if (scopes.size >= PRERENDER_SCOPES_PER_ORGANIZATION) continue;
+      const actor = workerActor(organizationId);
+      try {
+        const caller = await this.viewerCaller({
+          organizationId,
+          userId,
+          apiKeyId,
+        });
+        const scope = renderScope(caller);
+        if (scopes.has(scope)) continue;
+        scopes.add(scope);
+        const summary = await dashboards.prerender(caller);
+        await audit.write(operatorContext(), {
+          action: "dashboard.prerender",
+          resourceType: "dashboard",
+          resourceIds: summary.dashboards,
+          actor,
+          detail: {
+            scope,
+            user_id: userId,
+            api_key_id: apiKeyId,
+            dashboards: summary.dashboards.length,
+            tiles: summary.tiles,
+            errors: summary.errors,
+          },
+        });
+      } catch (error) {
+        if (error instanceof ServiceError && error.statusCode === 403) {
+          await audit.write(operatorContext(), {
+            action: "dashboard.prerender",
+            statusCode: 403,
+            resourceType: "dashboard",
+            actor,
+            detail: {
+              user_id: userId,
+              api_key_id: apiKeyId,
+              skipped: error.code,
+            },
+          });
+          continue;
+        }
+        this.dependencies.onError(
+          new Error("A dashboard pre-render failed; the next run retries it.", {
+            cause: error,
+          }),
+        );
+      }
+    }
+  }
+  /** The current authority of a caller seen in the audit log, or 403 when it lapsed. */
+  private async viewerCaller(viewer: {
+    organizationId: string;
+    userId: string;
+    apiKeyId: string | null;
+  }): Promise<CallerContext> {
+    const context = await reauthorizeJob(
+      this.dependencies.prisma,
+      {
+        ...operatorContext(),
+        caller: callerContextSchema.parse({
+          ...viewer,
+          // Placeholders: re-authorization reads the membership role and key permissions.
+          role: "member",
+          authMethod: viewer.apiKeyId === null ? "cookie" : "key",
+          permissions: {},
+        }),
+      },
+      this.dependencies.authConfiguration,
+    );
+    const caller = requirePermission(context, "read");
+    return caller.authMethod === "cookie"
+      ? cookieCaller({ ...viewer, role: caller.role })
+      : caller;
   }
   async maintenance(now = new Date()): Promise<void> {
     await this.recoverTraceOutboxes();
@@ -822,12 +932,7 @@ export class JobService implements AdminJobs {
               {
                 action: "sessions.inactive",
                 resourceType: "session",
-                actor: {
-                  organizationId: organization.id,
-                  userId: null,
-                  apiKeyId: null,
-                  authMethod: "worker",
-                },
+                actor: workerActor(organization.id),
                 detail: { count: changed.count },
               },
               tx,

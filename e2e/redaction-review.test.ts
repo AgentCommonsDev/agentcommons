@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  allowedRuleIds,
   PolicyCache,
   policyDefinitionSchema,
   Redactor,
@@ -36,9 +35,6 @@ describe("independent redaction regression review", () => {
   );
 
   it("excludes the suppression filter from the selectable scanner allowlist", () => {
-    expect(allowedRuleIds).not.toContain(
-      "@secretlint/secretlint-rule-filter-comments",
-    );
     expect(
       policyDefinitionSchema.safeParse({
         name: "suppression",

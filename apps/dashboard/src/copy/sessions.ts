@@ -44,24 +44,12 @@ export const sessionsCopy = {
     dateRange: "Active",
     dateSeparator: " – ",
     open: "Open filter",
+    /** Filter headings that differ from the shared field labels. */
     fields: {
       date: "Active between",
-      files: "Files",
       file_prefix: "File path",
-      file_operation: "File operation",
-      title: "Title",
-      repo_name: "Repository",
-      branch: "Branch",
-      user_email: "User",
-      status: "Status",
-      harness: "Coding tool",
-      model: "Model",
-      tool_name: "Tool name",
-      tool_use_id: "Tool call ID",
       content: "Message text",
       role: "Message role",
-      kind: "Message type",
-      session_id: "Session ID",
       tool_input: "Tool parameter",
     },
     hints: {
@@ -100,7 +88,6 @@ export const sessionsCopy = {
   list: {
     label: "Session list",
     csvName: "sessions.csv",
-    untitled: "Untitled session",
     empty: "No sessions yet",
     emptyHint:
       "Install the capture hook on a workstation. The first session appears here within a minute of its first message.",
@@ -137,7 +124,6 @@ export const sessionsCopy = {
     details: "Details",
     hideDetails: "Hide details",
     copyHeader: "Copy header as text",
-    untitled: "Untitled session",
     subagentRun: "This run belongs to",
     openRoot: "Open the root session",
     openParent: "Open the parent session",

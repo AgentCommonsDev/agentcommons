@@ -1,4 +1,6 @@
+import type { z } from "zod";
 import type { RedactionStructure } from "../redaction/structure.js";
+import type { redactionContextSchema } from "../redaction/tool-results.js";
 import type {
   Harness,
   JsonValue,
@@ -18,14 +20,7 @@ export interface SourceRecord {
   sourceVersion: number;
   payload: Record<string, unknown>;
   receivedAt: Date;
-  redactionContext?: {
-    toolCalls: { idHash: string; sensitive: boolean }[];
-    identities: {
-      path: (string | number)[];
-      idHash: string;
-      canonicalId: string;
-    }[];
-  };
+  redactionContext?: z.infer<typeof redactionContextSchema>;
 }
 export interface NormalizedMessage {
   rawRecordId: string;
@@ -59,12 +54,10 @@ export interface SessionDelta {
   firstPrompt?: string;
   startedAt?: Date;
   agentType?: string;
-  resumeCount?: number;
 }
 export interface NativeLink {
   relation: "SUBAGENT" | "FORK";
   parentNativeRef: string;
-  agentType?: string;
 }
 /** A parent transcript's record of the tool call that started one child session. */
 export interface NativeSpawn {
@@ -74,7 +67,6 @@ export interface NativeSpawn {
   childNativeRef: string;
 }
 export interface ResultSource {
-  rawRecordId: string;
   toolUseId: string | null;
   locations: { path: (string | number)[]; replacement: JsonValue }[];
 }
@@ -84,6 +76,11 @@ export interface Normalizer {
   nativeIdentities(
     record: SourceRecord,
   ): { id: string; path: (string | number)[] }[];
+  /** Messages and the session delta from one ordering and projection pass over the records. */
+  normalize(
+    records: readonly SourceRecord[],
+    context?: NormalizerContext,
+  ): { messages: NormalizedMessage[]; delta: SessionDelta };
   toMessages(
     records: readonly SourceRecord[],
     context?: NormalizerContext,

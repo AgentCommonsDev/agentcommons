@@ -22,6 +22,7 @@ import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import {
   dateTime,
+  metricColumnLabel,
   harnessLabel,
   metricValue,
   number,
@@ -31,8 +32,13 @@ import { useHookManifest } from "../../lib/use-hook-manifest";
 import { useWorkspace } from "../../components/app/workspace";
 import { ConfirmDialog } from "../../components/app/confirm-dialog";
 import { DataTable } from "../../components/app/data-table";
+import { Disclosure, Stat, StatGrid } from "../../components/app/display";
 import { EChart } from "../../components/app/echart";
-import { LoadingState, RequestError } from "../../components/app/states";
+import {
+  LoadingState,
+  QueryState,
+  RequestError,
+} from "../../components/app/states";
 import { Badge } from "../../components/ui/badge";
 import {
   Card,
@@ -49,8 +55,12 @@ import {
   TooltipTrigger,
 } from "../../components/ui/menu";
 import { useListPage } from "./list";
-import { FilterBar, countActive, without } from "./filters";
-import { Disclosure, Stat, StatGrid } from "./display";
+import {
+  BooleanFilterSelect,
+  FilterBar,
+  countActive,
+  without,
+} from "./filters";
 import { RowMenu, actionsHeader } from "./row-menu";
 
 export interface MetricFilters {
@@ -61,6 +71,7 @@ export interface MetricFilters {
 type HealthMetric = (typeof metricGroups.health)[number];
 const healthMetrics = metricGroups.health;
 const text = copy.admin.status;
+const dimension = (key: keyof MetricRow) => metricColumnLabel(key);
 const toolsLabel = (enabled: boolean | null) =>
   enabled === null
     ? null
@@ -213,12 +224,12 @@ export function HealthMetricsCard({
     () => [
       {
         accessorKey: "date",
-        header: text.dimensions.date,
+        header: dimension("date"),
         cell: ({ row }) => textValue(row.original.date),
       },
       {
         accessorKey: "value",
-        header: text.dimensions.value,
+        header: dimension("value"),
         cell: ({ row }) => (
           <span className="tabular-nums">
             {metricValue(row.original.value, row.original.unit)}
@@ -227,18 +238,18 @@ export function HealthMetricsCard({
       },
       {
         accessorKey: "repo_name",
-        header: text.dimensions.repo_name,
+        header: dimension("repo_name"),
         cell: ({ row }) => textValue(row.original.repo_name),
       },
       {
         accessorKey: "harness",
-        header: text.dimensions.harness,
+        header: dimension("harness"),
         cell: ({ row }) =>
           harnessName(row.original.harness) ?? copy.app.common.unavailable,
       },
       {
         accessorKey: "user_id",
-        header: text.dimensions.user_id,
+        header: dimension("user_id"),
         cell: ({ row }) => (
           <span className="font-mono text-xs">
             {textValue(row.original.user_id)}
@@ -247,12 +258,12 @@ export function HealthMetricsCard({
       },
       {
         accessorKey: "tool",
-        header: text.dimensions.tool,
+        header: dimension("tool"),
         cell: ({ row }) => textValue(row.original.tool),
       },
       {
         accessorKey: "policy_id",
-        header: text.dimensions.policy_id,
+        header: dimension("policy_id"),
         cell: ({ row }) => (
           <span className="font-mono text-xs">
             {textValue(row.original.policy_id)}
@@ -261,24 +272,24 @@ export function HealthMetricsCard({
       },
       {
         accessorKey: "tools_enabled",
-        header: text.dimensions.tools_enabled,
+        header: dimension("tools_enabled"),
         cell: ({ row }) =>
           toolsLabel(row.original.tools_enabled) ?? copy.app.common.unavailable,
       },
       {
         accessorKey: "numerator",
-        header: text.dimensions.numerator,
+        header: dimension("numerator"),
         cell: ({ row }) => number(row.original.numerator),
       },
       {
         accessorKey: "denominator",
-        header: text.dimensions.denominator,
+        header: dimension("denominator"),
         cell: ({ row }) => number(row.original.denominator),
       },
       {
         accessorKey: "unit",
-        header: text.dimensions.unit,
-        cell: ({ row }) => text.units[row.original.unit],
+        header: dimension("unit"),
+        cell: ({ row }) => copy.app.units[row.original.unit],
       },
     ],
     [],
@@ -380,7 +391,6 @@ export function SnapshotCards({ embeddings }: { embeddings: boolean }) {
       unwrap(await api.GET("/api/v1/admin/status", { signal })),
     refetchInterval: 30_000,
   });
-  const data = query.data;
   return (
     <section className="flex flex-col gap-3" aria-label={text.snapshot}>
       <div>
@@ -391,47 +401,40 @@ export function SnapshotCards({ embeddings }: { embeddings: boolean }) {
           {text.snapshotHint}
         </p>
       </div>
-      {query.error && (
-        <RequestError
-          error={query.error}
-          retry={() => {
-            void query.refetch();
-          }}
-        />
-      )}
-      {query.isPending && <LoadingState rows={1} />}
-      {data && (
-        <StatGrid
-          data-testid="admin-status-snapshot"
-          className={
-            embeddings
-              ? "sm:grid-cols-3 lg:grid-cols-5"
-              : "sm:grid-cols-2 lg:grid-cols-4"
-          }
-        >
-          <Stat label={text.queue} value={number(data.queue_depth)} />
-          <Stat
-            label={text.failed}
-            value={number(data.projection.failed_sessions)}
-          />
-          {embeddings && (
-            <>
-              <Stat
-                label={text.backlog}
-                value={number(data.embedding_backlog)}
-              />
-              <Stat
-                label={text.tokens}
-                value={number(data.embedding_daily_tokens)}
-              />
-              <Stat
-                label={text.cost}
-                value={metricValue(Number(data.embedding_daily_cost), "usd")}
-              />
-            </>
-          )}
-        </StatGrid>
-      )}
+      <QueryState query={query} rows={1}>
+        {(data) => (
+          <StatGrid
+            data-testid="admin-status-snapshot"
+            className={
+              embeddings
+                ? "sm:grid-cols-3 lg:grid-cols-5"
+                : "sm:grid-cols-2 lg:grid-cols-4"
+            }
+          >
+            <Stat label={text.queue} value={number(data.queue_depth)} />
+            <Stat
+              label={text.failed}
+              value={number(data.projection.failed_sessions)}
+            />
+            {embeddings && (
+              <>
+                <Stat
+                  label={text.backlog}
+                  value={number(data.embedding_backlog)}
+                />
+                <Stat
+                  label={text.tokens}
+                  value={number(data.embedding_daily_tokens)}
+                />
+                <Stat
+                  label={text.cost}
+                  value={metricValue(Number(data.embedding_daily_cost), "usd")}
+                />
+              </>
+            )}
+          </StatGrid>
+        )}
+      </QueryState>
     </section>
   );
 }
@@ -478,28 +481,26 @@ export function InstallationsCard() {
   const words = copy.admin.installations;
   const manifest = useHookManifest().data ?? null;
   const [hostDraft, setHostDraft] = useState("");
-  const [filters, setFilters] = useState<InstallationFilters>({});
   const [selected, setSelected] = useState<Installation | null>(null);
   const queryKey = [organization.id, "admin", "installations"];
-  const list = useListPage<Installation, (typeof installationSortKeys)[number]>(
-    {
-      queryKey: [...queryKey, filters],
-      initialSort: "last_seen_at",
-      sortKeys: installationSortKeys,
-      csvName: words.csvName,
-      fetchPage: async (request, signal) =>
-        unwrap(
-          await api.GET("/api/v1/installations", {
-            params: { query: { filters, ...request, format: "json" } },
-            signal,
-          }),
-        ),
-    },
-  );
-  const update = (next: InstallationFilters) => {
-    setFilters(next);
-    list.reset();
-  };
+  const list = useListPage<
+    Installation,
+    (typeof installationSortKeys)[number],
+    InstallationFilters
+  >({
+    queryKey,
+    initialSort: "last_seen_at",
+    sortKeys: installationSortKeys,
+    csvName: words.csvName,
+    fetchPage: async (request, signal) =>
+      unwrap(
+        await api.GET("/api/v1/installations", {
+          params: { query: { ...request, format: "json" } },
+          signal,
+        }),
+      ),
+  });
+  const { filters } = list;
   const columns = useMemo<ColumnDef<Installation>[]>(
     () => [
       {
@@ -594,98 +595,76 @@ export function InstallationsCard() {
         </div>
       </CardHeader>
       <CardContent>
-        {list.query.error ? (
-          <RequestError
-            error={list.query.error}
-            retry={() => {
-              void list.query.refetch();
-            }}
+        <div data-testid="admin-installations-table">
+          <DataTable
+            {...list.table}
+            columns={columns}
+            label={words.title}
+            compact
+            hiddenColumns={[
+              "first_seen_at",
+              "os_user",
+              "platform",
+              "arch",
+              "installation_id",
+            ]}
+            rowId={(row) => row.installation_id}
+            emptyTitle={words.empty}
+            emptyDescription={words.emptyHint}
+            toolbar={
+              <FilterBar
+                label={copy.app.common.filters}
+                activeCount={countActive(filters)}
+                onApply={() => {
+                  const rest = without(filters, "hostname");
+                  const hostname = hostDraft.trim();
+                  list.setFilters(hostname ? { ...rest, hostname } : rest);
+                }}
+                onClear={() => {
+                  setHostDraft("");
+                  list.setFilters({});
+                }}
+                controls={[
+                  {
+                    id: "host",
+                    label: words.host,
+                    width: "sm:w-52",
+                    render: (props) => (
+                      <Input
+                        {...props}
+                        type="search"
+                        placeholder={words.host}
+                        value={hostDraft}
+                        onChange={(event) => {
+                          setHostDraft(event.target.value);
+                        }}
+                      />
+                    ),
+                  },
+                  {
+                    id: "tools",
+                    label: words.tools,
+                    width: "sm:w-40",
+                    render: (props) => (
+                      <BooleanFilterSelect
+                        {...props}
+                        value={filters.tools_enabled}
+                        labels={{
+                          all: words.allStates,
+                          on: words.toolsEnabled,
+                          off: words.toolsDisabled,
+                        }}
+                        onChange={(next) => {
+                          list.setFilter("tools_enabled", next);
+                        }}
+                      />
+                    ),
+                  },
+                ]}
+              />
+            }
           />
-        ) : (
-          <div data-testid="admin-installations-table">
-            <DataTable
-              {...list.table}
-              columns={columns}
-              label={words.title}
-              compact
-              hiddenColumns={[
-                "first_seen_at",
-                "os_user",
-                "platform",
-                "arch",
-                "installation_id",
-              ]}
-              rowId={(row) => row.installation_id}
-              emptyTitle={words.empty}
-              emptyDescription={words.emptyHint}
-              toolbar={
-                <FilterBar
-                  label={copy.app.common.filters}
-                  activeCount={countActive(filters)}
-                  onApply={() => {
-                    const rest = without(filters, "hostname");
-                    const hostname = hostDraft.trim();
-                    update(hostname ? { ...rest, hostname } : rest);
-                  }}
-                  onClear={() => {
-                    setHostDraft("");
-                    update({});
-                  }}
-                  controls={[
-                    {
-                      id: "host",
-                      label: words.host,
-                      width: "sm:w-52",
-                      render: (props) => (
-                        <Input
-                          {...props}
-                          type="search"
-                          placeholder={words.host}
-                          value={hostDraft}
-                          onChange={(event) => {
-                            setHostDraft(event.target.value);
-                          }}
-                        />
-                      ),
-                    },
-                    {
-                      id: "tools",
-                      label: words.tools,
-                      width: "sm:w-40",
-                      render: (props) => (
-                        <NativeSelect
-                          {...props}
-                          value={
-                            filters.tools_enabled === undefined
-                              ? ""
-                              : filters.tools_enabled
-                                ? "on"
-                                : "off"
-                          }
-                          onChange={(event) => {
-                            const rest = without(filters, "tools_enabled");
-                            update(
-                              event.target.value
-                                ? {
-                                    ...rest,
-                                    tools_enabled: event.target.value === "on",
-                                  }
-                                : rest,
-                            );
-                          }}
-                        >
-                          <option value="">{words.allStates}</option>
-                          <option value="on">{words.toolsEnabled}</option>
-                          <option value="off">{words.toolsDisabled}</option>
-                        </NativeSelect>
-                      ),
-                    },
-                  ]}
-                />
-              }
-            />
-          </div>
-        )}
+        </div>
       </CardContent>
       <ConfirmDialog
         open={selected !== null}

@@ -17,6 +17,10 @@ import { mutationOperation } from "./mutation.js";
 import { readOperation } from "./read-operation.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 
+type EmbeddingSetting = Awaited<
+  ReturnType<typeof organizationEmbeddingSetting>
+>;
+
 export class OrganizationEmbeddingsService {
   constructor(
     private readonly dependencies: {
@@ -32,23 +36,23 @@ export class OrganizationEmbeddingsService {
       };
     },
   ) {}
-  private async state(tx: Prisma.TransactionClient, caller: CallerContext) {
-    const setting = await organizationEmbeddingSetting(
-      tx,
-      caller.organizationId,
-      false,
-      this.dependencies.saas,
-    );
-    const counts = await tx.$queryRaw<
-      { total: number; indexed: number }[]
-    >`SELECT count(*)::integer AS total,count(*) FILTER(WHERE published_revision>0 AND embedding_source_revision=published_revision AND embedding_revision IS NOT NULL)::integer AS indexed FROM trace_session_control WHERE organization_id=${caller.organizationId} AND purged_at IS NULL AND (${hasAdminAuthority(caller)} OR visibility='PUBLIC')`;
+  private async state(
+    tx: Prisma.TransactionClient,
+    caller: CallerContext,
+    setting: EmbeddingSetting,
+  ) {
+    const [counts, last] = await Promise.all([
+      tx.$queryRaw<
+        { total: number; indexed: number }[]
+      >`SELECT count(*)::integer AS total,count(*) FILTER(WHERE published_revision>0 AND embedding_source_revision=published_revision AND embedding_revision IS NOT NULL)::integer AS indexed FROM trace_session_control WHERE organization_id=${caller.organizationId} AND purged_at IS NULL AND (${hasAdminAuthority(caller)} OR visibility='PUBLIC')`,
+      tx.embeddingAttempt.findFirst({
+        where: { organizationId: caller.organizationId },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { state: true },
+      }),
+    ]);
     const total = counts[0]?.total ?? 0;
     const indexed = counts[0]?.indexed ?? 0;
-    const last = await tx.embeddingAttempt.findFirst({
-      where: { organizationId: caller.organizationId },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      select: { state: true },
-    });
     return organizationEmbeddingsOutputSchema.parse({
       enabled: setting.requested,
       entitled: setting.entitled,
@@ -68,17 +72,24 @@ export class OrganizationEmbeddingsService {
       context,
       { action: "organization.embeddings.read", resourceType: "organization" },
       (caller) =>
-        this.dependencies.prisma.$transaction(async (tx) => {
-          await organizationEmbeddingSetting(
+        this.dependencies.prisma.$transaction(async (tx) =>
+          this.state(
             tx,
-            caller.organizationId,
-            true,
-            this.dependencies.saas,
-          );
-          return this.state(tx, caller);
-        }),
-      undefined,
-      context.caller && hasAdminAuthority(context.caller) ? "admin" : "read",
+            caller,
+            await organizationEmbeddingSetting(
+              tx,
+              caller.organizationId,
+              true,
+              this.dependencies.saas,
+            ),
+          ),
+        ),
+      {
+        permission:
+          context.caller && hasAdminAuthority(context.caller)
+            ? "admin"
+            : "read",
+      },
     );
   }
   set(context: ServiceContext, input: unknown) {
@@ -106,7 +117,8 @@ export class OrganizationEmbeddingsService {
           false,
           this.dependencies.saas,
         );
-        if (previous.requested !== request.enabled) {
+        const changed = previous.requested !== request.enabled;
+        if (changed) {
           await lockTracePublication(tx, caller.organizationId, "write");
           await tx.organizationSettings.upsert({
             where: { organizationId: caller.organizationId },
@@ -126,8 +138,16 @@ export class OrganizationEmbeddingsService {
               caller.organizationId,
             );
         }
+        const setting = changed
+          ? await organizationEmbeddingSetting(
+              tx,
+              caller.organizationId,
+              false,
+              this.dependencies.saas,
+            )
+          : previous;
         return {
-          result: await this.state(tx, caller),
+          result: await this.state(tx, caller, setting),
           resourceIds: [caller.organizationId],
           detail: {
             enabled: request.enabled,

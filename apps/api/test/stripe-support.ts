@@ -409,7 +409,6 @@ export async function startStripe() {
     priceFor,
     meterEvents,
     billing,
-    meters,
     ambiguousMeterEvents,
     subscription,
     close,

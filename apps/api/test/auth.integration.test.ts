@@ -1,8 +1,6 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { PostgreSqlContainer } from "@testcontainers/postgresql";
-import { PrismaClient, hasAdminAuthority } from "@agentcommons/db";
+import { hasAdminAuthority, type PrismaClient } from "@agentcommons/db";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import { createAuth, type AuthConfiguration } from "../src/auth/config.js";
@@ -11,8 +9,19 @@ import { AuthService } from "../src/services/auth.js";
 import { AuditService } from "../src/services/audit.js";
 import { MembershipService } from "../src/services/membership.js";
 import type { ServiceContext } from "../src/services/context.js";
+import {
+  claimSetup,
+  contextFor,
+  cookieHeader,
+  loginAs,
+  releaser,
+  setupToken,
+  startDatabase,
+  type TestDatabase,
+} from "./support.js";
 
-const cleanup: (() => Promise<unknown>)[] = [];
+const { defer, release } = releaser();
+let database: TestDatabase;
 let prisma: PrismaClient;
 let databaseUrl: string;
 let auth: AuthService;
@@ -28,36 +37,9 @@ const config: AuthConfiguration = {
   allowedEmailDomains: [],
 };
 const password = "Test password with enough entropy 42!";
-function token(url: string | null): string {
-  return z
-    .string()
-    .min(1)
-    .parse(url ? new URL(url).pathname.split("/").at(-1) : null);
-}
-async function context(headers: Headers): Promise<ServiceContext> {
-  const base = { ...operatorContext(), headers, ip: "127.0.0.1" };
-  return { ...base, caller: (await auth.authenticate(headers, base)).caller };
-}
-async function login(email: string): Promise<ServiceContext> {
-  const response = await auth.native.api.signInEmail({
-    body: { email, password },
-    asResponse: true,
-  });
-  expect(response.status).toBe(200);
-  return context(
-    new Headers({
-      cookie: response.headers
-        .getSetCookie()
-        .map((value) => value.split(";")[0])
-        .join("; "),
-    }),
-  );
-}
-async function claim(url: string | null) {
-  await auth.native.api.resetPassword({
-    body: { token: token(url), newPassword: password },
-  });
-}
+const context = (headers: Headers) => contextFor(database, headers);
+const login = (email: string) => loginAs(database, email, password);
+const claim = (url: string | null) => claimSetup(database, url, password);
 async function add(
   owner: ServiceContext,
   email: string,
@@ -70,28 +52,12 @@ async function add(
 }
 
 beforeAll(async () => {
-  const container = await new PostgreSqlContainer("postgres:16").start();
-  cleanup.push(() => container.stop());
-  const urls = ["ac_app", "ac_trace_control"].map((role) => {
-    const url = new URL(container.getConnectionUri());
-    url.username = role;
-    url.password = "test-password";
-    return url.toString();
-  });
-  await promisify(execFile)("pnpm", ["migrate"], {
-    cwd: new URL("../../../packages/db/", import.meta.url),
-    env: {
-      ...process.env,
-      DATABASE_MIGRATION_URL: container.getConnectionUri(),
-      DATABASE_URL: urls[0],
-      DATABASE_TRACE_CONTROL_URL: urls[1],
-    },
-  });
-  databaseUrl = z.string().parse(urls[0]);
-  prisma = new PrismaClient({ datasourceUrl: z.string().parse(urls[0]) });
-  cleanup.push(() => prisma.$disconnect());
-  audit = new AuditService(prisma);
-  auth = new AuthService(prisma, config, audit);
+  database = await startDatabase(config);
+  defer(() => database.close());
+  prisma = database.prisma;
+  databaseUrl = database.urls.app;
+  audit = database.audit;
+  auth = database.auth;
   members = new MembershipService(prisma, config, audit);
   const first = await bootstrap(prisma, config, {
     email: "owner-a@example.test",
@@ -106,9 +72,7 @@ beforeAll(async () => {
   await claim(second.result.setup_url);
   ownerB = await login("owner-b@example.test");
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(cleanup.splice(0).reverse())).toEqual([]);
-});
+afterAll(release);
 
 it("bootstraps idempotently without public password signup or authentication management bypass", async () => {
   const repeat = await bootstrap(prisma, config, {
@@ -176,10 +140,10 @@ it("uses native single-use initial setup, blocks cross-organization account reco
     where: { resourceIds: { has: userId } },
   });
   expect(JSON.stringify(records)).not.toContain(
-    token(reissued.result.setup_url),
+    setupToken(reissued.result.setup_url),
   );
   expect(JSON.stringify(records)).not.toContain(
-    token(recovery.result.setup_url),
+    setupToken(recovery.result.setup_url),
   );
 });
 
@@ -436,15 +400,11 @@ async function oauthLogin(service: AuthService): Promise<Response> {
   expect(started.result.status).toBe(200);
   const { url } = z.object({ url: z.url() }).parse(await started.result.json());
   const state = new URL(url).searchParams.get("state");
-  const cookies = started.result.headers
-    .getSetCookie()
-    .map((value) => value.split(";")[0])
-    .join("; ");
   return (
     await service.handle(
       new Request(
         `${config.publicUrl}/auth/callback/fixture?code=fixture-code&state=${encodeURIComponent(state ?? "")}`,
-        { headers: { cookie: cookies } },
+        { headers: { cookie: cookieHeader(started.result) } },
       ),
       operatorContext(),
     )
@@ -515,13 +475,9 @@ it("enforces SSO signup modes and allowed domains without public organization me
     where: { email: providerProfile.email },
   });
   expect(await prisma.member.count({ where: { userId: created.id } })).toBe(0);
-  const headers = new Headers({
-    cookie: accepted.headers
-      .getSetCookie()
-      .map((value) => value.split(";")[0])
-      .join("; "),
-  });
-  const noMembership = await context(headers);
+  const noMembership = await context(
+    new Headers({ cookie: cookieHeader(accepted) }),
+  );
   expect(noMembership.caller).toBeNull();
   expect((await auth.me(noMembership)).result.organization).toBeNull();
   await expect(
@@ -557,7 +513,7 @@ it("accepts only one of two concurrent initial credentials and prevents cross-or
           "content-type": "application/json",
           origin: config.publicUrl,
         },
-        body: JSON.stringify({ token: token(url), newPassword: password }),
+        body: JSON.stringify({ token: setupToken(url), newPassword: password }),
       }),
       operatorContext(),
     );

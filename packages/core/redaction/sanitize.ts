@@ -1,20 +1,39 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { utf8ByteLength } from "../schemas/common.js";
+import {
+  jsonByteLength,
+  utf8ByteLength,
+  type JsonValue,
+} from "../schemas/common.js";
 
-type JsonValue = z.infer<ReturnType<typeof z.json>>;
-export const MAX_RECORD_BYTES = 1024 * 1024;
-export const byteLength = (value: unknown): number =>
-  utf8ByteLength(JSON.stringify(value));
-
+/** A persisted record is held to 1 MiB of JSON (§6); larger leaves are replaced by omission markers. */
+const recordByteLimit = 1024 * 1024;
+const omissionMarker = (bytes: number, digest: string) =>
+  `[agentcommons: ${String(bytes)} bytes omitted, sha256 ${digest}]`;
+/** Same width as a real digest, so a marker's size is known before anything is hashed. */
+const digestPlaceholder = "0".repeat(64);
 export function omission(value: string): string {
-  return `[agentcommons: ${String(utf8ByteLength(value))} bytes omitted, sha256 ${createHash("sha256").update(value).digest("hex")}]`;
+  return omissionMarker(
+    utf8ByteLength(value),
+    createHash("sha256").update(value).digest("hex"),
+  );
 }
+const base64ImageSchema = z.looseObject({
+  type: z.literal("base64"),
+  media_type: z.string(),
+  data: z.string(),
+});
+const inlineImageSchema = z.looseObject({
+  mimeType: z.string().startsWith("image/"),
+  data: z.string(),
+});
+const imageMarker = (mime: string, data: string) =>
+  `[image: ${mime}, ${String(Buffer.from(data, "base64").byteLength)} bytes]`;
 
 // Run after redaction. The hash never fingerprints a pre-redaction secret.
 export function sanitizeRecord(
   input: JsonValue,
-  limit = MAX_RECORD_BYTES,
+  limit = recordByteLimit,
 ): JsonValue {
   const leaves: { bytes: number; replace: () => number }[] = [];
   const holder: { value: JsonValue } = { value: input };
@@ -24,18 +43,21 @@ export function sanitizeRecord(
         value,
       );
       if (image) {
-        assign(
-          `[image: ${image[1] ?? "unknown"}, ${String(Buffer.from(image[2] ?? "", "base64").byteLength)} bytes]`,
-        );
+        assign(imageMarker(image[1] ?? "unknown", image[2] ?? ""));
         return;
       }
-      const marker = omission(value);
-      const saved = byteLength(value) - byteLength(marker);
+      const bytes = jsonByteLength(value);
+      const saved =
+        bytes -
+        jsonByteLength(
+          omissionMarker(utf8ByteLength(value), digestPlaceholder),
+        );
       if (saved > 0)
         leaves.push({
-          bytes: byteLength(value),
+          bytes,
+          // The digest is computed only for a leaf that is actually replaced.
           replace: () => {
-            assign(marker);
+            assign(omission(value));
             return saved;
           },
         });
@@ -47,34 +69,23 @@ export function sanitizeRecord(
           children[index] = replacement;
         });
     } else if (value !== null && typeof value === "object") {
-      const source = z
-        .looseObject({
-          type: z.literal("base64"),
-          media_type: z.string(),
-          data: z.string(),
-        })
-        .safeParse(value);
-      const inline = z
-        .looseObject({
-          mimeType: z.string().startsWith("image/"),
-          data: z.string(),
-        })
-        .safeParse(value);
+      const source = base64ImageSchema.safeParse(value);
+      const inline = inlineImageSchema.safeParse(value);
       const image = source.success
         ? { mime: source.data.media_type, data: source.data.data }
         : inline.success
           ? { mime: inline.data.mimeType, data: inline.data.data }
-          : null;
+          : value.type === "image" && typeof value.data === "string"
+            ? {
+                mime:
+                  typeof value.mimeType === "string"
+                    ? value.mimeType
+                    : "unknown",
+                data: value.data,
+              }
+            : null;
       if (image) {
-        assign(
-          `[image: ${image.mime}, ${String(Buffer.from(image.data, "base64").byteLength)} bytes]`,
-        );
-        return;
-      }
-      if (value.type === "image" && typeof value.data === "string") {
-        assign(
-          `[image: ${typeof value.mimeType === "string" ? value.mimeType : "unknown"}, ${String(Buffer.from(value.data, "base64").byteLength)} bytes]`,
-        );
+        assign(imageMarker(image.mime, image.data));
         return;
       }
       const children: Record<string, JsonValue> = Object.fromEntries(
@@ -90,7 +101,7 @@ export function sanitizeRecord(
   visit(input, (value) => {
     holder.value = value;
   });
-  let bytes = byteLength(holder.value);
+  let bytes = jsonByteLength(holder.value);
   for (const leaf of leaves.sort((a, b) => b.bytes - a.bytes)) {
     if (bytes <= limit) break;
     bytes -= leaf.replace();

@@ -8,6 +8,9 @@ on:
       - "apps/dashboard/**"
       - "apps/api/src/routes/public.ts"
       - "scripts/browser-review*.ts"
+      - "scripts/claude-agent.ts"
+      - "scripts/ready.ts"
+      - "scripts/harness-versions.json"
       - ".github/workflows/browser-review.yml"
       - "pnpm-lock.yaml"
       - "README.md"
@@ -23,15 +26,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
-      - run: npm install --global @anthropic-ai/claude-code@2.1.265
+      - run: npm install --global $(jq -r '"\(.claude.package)@\(.claude.version)"' scripts/harness-versions.json)
       - name: Review the disposable instance
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

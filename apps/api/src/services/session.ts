@@ -1,16 +1,18 @@
-import { createHash } from "node:crypto";
 import {
   utf8Slice,
   truncateUtf8,
+  decimalIntegerSchema,
   getInputSchema,
   getOutputSchema,
+  jsonByteLength,
   messageSchema,
   paginationSchema,
   rawOutputSchema,
+  responseBytes,
   sessionsInputSchema,
   sessionsOutputSchema,
+  sha256Hex,
   treeOutputSchema,
-  treeInputSchema,
   schemaOutputSchema,
   reposOutputSchema,
   installationsOutputSchema,
@@ -20,11 +22,16 @@ import {
   sessionReuseOutputSchema,
   reusePagePositionSchema,
   sessionIdSchema,
-  searchConditionFields,
+  type ContentCursor,
   type GetOutput,
   type Message,
+  type SessionHeader,
 } from "@agentcommons/core";
-import { formatGet, messageContent } from "@agentcommons/core/format";
+import {
+  formatGet,
+  formatMessage,
+  formatSessionHeader,
+} from "@agentcommons/core/format";
 import { hasAdminAuthority } from "@agentcommons/db";
 import { z } from "zod";
 import {
@@ -33,28 +40,29 @@ import {
   rawRecords,
   sessionHeader,
   sessionHeaders,
-  traceJson,
   visibleSession,
   sessionTreePage,
   reuseEdgePage,
 } from "../repositories/read-model.js";
 import {
   messagePayloadBatches,
+  messageText,
   readMessagePayloads,
 } from "../repositories/message-payload.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import {
   boundedPage,
-  bytes,
   compactMetadata,
+  fitsToolBudget,
+  offsetPage,
+  pickSchema,
   wireRow,
   wireValue,
 } from "./read-budget.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 
-const pagePosition = z.strictObject({ offset: z.number().int().nonnegative() });
 const rawPosition = z.strictObject({
-  pos: z.string().regex(/^\d+$/),
+  pos: decimalIntegerSchema,
   sourceVersion: z.number().int().nonnegative(),
   id: z.uuid(),
   offset: z.number().int().nonnegative(),
@@ -64,17 +72,86 @@ const treePosition = z.strictObject({ time: z.iso.datetime(), id: z.uuid() });
 const reusePosition = reusePagePositionSchema.extend({
   asOf: z.iso.datetime(),
 });
-function getFits(output: GetOutput): boolean {
-  return (
-    bytes(output) <= 32768 && Buffer.byteLength(formatGet(output).text) <= 32768
-  );
+/** Message columns read before payloads; content and its cursor come from the payload pass. */
+const MESSAGE_METADATA_COLUMNS = Object.keys(messageSchema.shape)
+  .filter(
+    (key) => !["content", "content_cursor", "truncated_fields"].includes(key),
+  )
+  .join(",");
+/** The two catalog views differ only in this data: input schema, ordering and numeric or omitted columns. */
+interface CatalogView {
+  input: typeof reposInputSchema | typeof installationsInputSchema;
+  defaultSort: string;
+  tie: string;
+  numeric: readonly string[];
+  omit: readonly string[];
 }
-function content(row: Record<string, unknown>): string {
-  return messageContent(
-    String(row.content),
-    String(row.kind),
-    row.tool_input === undefined ? undefined : traceJson(row.tool_input),
-  );
+const CATALOG_VIEWS: Record<"repos" | "installations", CatalogView> = {
+  repos: {
+    input: reposInputSchema,
+    defaultSort: "repo_name",
+    tie: "repo_name",
+    numeric: ["session_count", "user_count"],
+    omit: ["organization_id"],
+  },
+  installations: {
+    input: installationsInputSchema,
+    defaultSort: "hostname",
+    tie: "installation_id",
+    numeric: ["session_count"],
+    omit: [],
+  },
+};
+const CATALOG_TEXT_FIELDS = [
+  "hostname",
+  "os_user",
+  "platform",
+  "arch",
+  "repo_name",
+  "repo_url",
+];
+
+/**
+ * Running JSON and text sizes of one get page, mirroring how `formatGet` joins the header,
+ * messages and `next` with blank lines, so each candidate message costs one serialization
+ * instead of re-rendering the whole page.
+ */
+class GetPageBudget {
+  private json: number;
+  private text: number;
+  private count = 0;
+  constructor(header: SessionHeader) {
+    this.json =
+      jsonByteLength({ header, messages: [], next: null }) -
+      jsonByteLength(null);
+    this.text = Buffer.byteLength(formatSessionHeader(header));
+  }
+  private cost(message: Message) {
+    return {
+      json: jsonByteLength(message) + (this.count ? 1 : 0),
+      text: 2 + Buffer.byteLength(formatMessage(message)),
+    };
+  }
+  fits(message: Message, next: ContentCursor | null): boolean {
+    const added = this.cost(message);
+    const tail =
+      next === null
+        ? { json: jsonByteLength(null), text: 0 }
+        : {
+            json: jsonByteLength(next),
+            text: 2 + Buffer.byteLength(`next: ${JSON.stringify(next)}`),
+          };
+    return (
+      this.json + added.json + tail.json <= responseBytes.read &&
+      this.text + added.text + tail.text <= responseBytes.read
+    );
+  }
+  add(message: Message): void {
+    const added = this.cost(message);
+    this.json += added.json;
+    this.text += added.text;
+    this.count++;
+  }
 }
 export class SessionService {
   constructor(private readonly dependencies: ReadDependencies) {}
@@ -138,7 +215,12 @@ export class SessionService {
           );
         });
       },
-      (result) => ({ session_id: sessionId, peers: result.items.length }),
+      {
+        describeResult: (result) => ({
+          session_id: sessionId,
+          peers: result.items.length,
+        }),
+      },
     );
   }
 
@@ -157,22 +239,15 @@ export class SessionService {
           );
           const header = await sessionHeader(client, row);
           const output: GetOutput = { header, messages: [], next: null };
-          if (!getFits(output))
+          if (!fitsToolBudget(output, formatGet))
             throw new ServiceError(
               413,
               "SESSION_HEADER_TOO_LARGE",
               "The session header exceeds the response limit. Use SQL to select the fields you need.",
             );
-          const metadataColumns = Object.keys(messageSchema.shape)
-            .filter(
-              (key) =>
-                !["content", "content_cursor", "truncated_fields"].includes(
-                  key,
-                ),
-            )
-            .join(",");
+          const budget = new GetPageBudget(header);
           const rows = await client.query(
-            `SELECT ${metadataColumns},payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND seq >= {first:UInt32} AND ({last:Nullable(UInt32)} IS NULL OR seq <= {last:Nullable(UInt32)}) ORDER BY seq LIMIT 101`,
+            `SELECT ${MESSAGE_METADATA_COLUMNS},payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND seq >= {first:UInt32} AND ({last:Nullable(UInt32)} IS NULL OR seq <= {last:Nullable(UInt32)}) ORDER BY seq LIMIT 101`,
             {
               id: request.session_id,
               first: request.cursor?.seq ?? request.from ?? 0,
@@ -183,7 +258,7 @@ export class SessionService {
           // first message remains readable through the existing lossless byte cursor.
           const firstBatch = messagePayloadBatches(
             rows.rows.slice(0, 100),
-            32768,
+            responseBytes.read,
           ).next();
           const batch = firstBatch.done ? [] : firstBatch.value;
           const payloads = await readMessagePayloads(client, batch);
@@ -206,34 +281,28 @@ export class SessionService {
             if (!message) continue;
             const seq = Number(message.seq);
             const offset = index === 0 ? (request.cursor?.offset ?? 0) : 0;
-            const full = content(message);
+            const full = messageText(message);
             if (offset > Buffer.byteLength(full))
               throw new ServiceError(
                 400,
                 "INVALID_CURSOR",
                 "The content cursor is beyond the end of this message.",
               );
-            const wire = wireRow(message);
-            const metadata: Record<string, unknown> = {};
-            for (const key of Object.keys(messageSchema.shape))
-              if (key in wire) metadata[key] = wire[key];
-            const fields = compactMetadata(metadata, [
-              "tool_name",
-              "tool_use_id",
-              "model",
-              "agent_id",
-            ]);
+            const fields = compactMetadata(
+              pickSchema(wireRow(message), messageSchema),
+              ["tool_name", "tool_use_id", "model", "agent_id"],
+            );
             let item: Message | null = null;
             // JSON escaping and the header affect the remaining byte budget. Reduce the
             // content slice until both representations fit, preserving character boundaries.
             for (
-              let budget = Math.min(4096, Buffer.byteLength(full) - offset);
-              budget >= 0;
-              budget = budget === 0 ? -1 : Math.max(0, budget - 256)
+              let size = Math.min(4096, Buffer.byteLength(full) - offset);
+              size >= 0;
+              size = size === 0 ? -1 : Math.max(0, size - 256)
             ) {
               let slice;
               try {
-                slice = utf8Slice(full, offset, budget);
+                slice = utf8Slice(full, offset, size);
               } catch {
                 throw new ServiceError(
                   400,
@@ -256,13 +325,7 @@ export class SessionService {
                 (rows.rows[index + 1]
                   ? { seq: Number(rows.rows[index + 1]?.seq), offset: 0 }
                   : null);
-              if (
-                getFits({
-                  header,
-                  messages: [...output.messages, candidate],
-                  next,
-                })
-              ) {
+              if (budget.fits(candidate, next)) {
                 item = candidate;
                 output.next = next;
                 break;
@@ -279,18 +342,20 @@ export class SessionService {
               break;
             }
             output.messages.push(item);
+            budget.add(item);
             if (item.content_cursor) break;
           }
           return getOutputSchema.parse(output);
         });
       },
-      (result) => ({
-        session_id: result.header.session_id,
-        message_count: result.messages.length,
-        next: result.next,
-      }),
-      "read",
-      (result) => [result.header.session_id],
+      {
+        describeResult: (result) => ({
+          session_id: result.header.session_id,
+          message_count: result.messages.length,
+          next: result.next,
+        }),
+        describeResources: (result) => [result.header.session_id],
+      },
     );
   }
 
@@ -312,62 +377,43 @@ export class SessionService {
           ...request,
           cursor: null,
         });
-        const offset = request.cursor
-          ? this.dependencies.cursors.decode(
-              request.cursor,
-              binding,
-              pagePosition,
-            ).offset
-          : 0;
-        return this.dependencies.readers.read(caller, async (client) => {
-          const params = new Parameters();
-          const conditions = await filterSql(client, request.filters, params);
-          const sort = request.sort ?? "started_at";
-          const messageFilter =
-            [
-              request.filters.role,
-              request.filters.tool_name,
-              request.filters.since,
-              request.filters.until,
-            ].some((value) => value !== undefined) ||
-            request.filters.where?.some(
-              (condition) =>
-                searchConditionFields[condition.field] === "message",
-            );
-          const scoped = messageFilter
-            ? `s.session_id IN (SELECT m.session_id FROM api_ro.messages m JOIN api_ro.sessions s ON s.session_id=m.session_id WHERE ${conditions})`
-            : conditions;
-          // parent_session_id is the caller-visible parent, so a child of a hidden session lists as a root.
-          const predicate = request.roots_only
-            ? `(${scoped}) AND s.parent_session_id IS NULL`
-            : scoped;
-          const rows = await client.query(
-            `SELECT s.* FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(request.limit + 1)} OFFSET ${params.add(offset)}`,
-            params.values,
-          );
-          const selected = rows.rows.slice(0, request.limit);
-          const headers = await sessionHeaders(client, selected);
-          const items = selected.map((row, index) => ({
-            ...headers[index],
-            duration_seconds:
-              row.duration_seconds === null
-                ? null
-                : Number(row.duration_seconds),
-            last_activity_at: wireValue(row.last_activity_at),
-          }));
-          return sessionsOutputSchema.parse(
-            boundedPage(
-              items,
-              rows.rows.length > request.limit,
-              (_last, count) =>
-                this.dependencies.cursors.encode(binding, {
-                  offset: offset + count,
-                }),
-            ),
-          );
-        });
+        const page = await offsetPage(
+          this.dependencies.cursors,
+          binding,
+          request.cursor,
+          request.limit,
+          (offset, take) =>
+            this.dependencies.readers.read(caller, async (client) => {
+              const params = new Parameters();
+              const filter = await filterSql(client, request.filters, params);
+              const sort = request.sort ?? "started_at";
+              const scoped = filter.joinsMessages
+                ? `s.session_id IN (SELECT m.session_id FROM api_ro.messages m JOIN api_ro.sessions s ON s.session_id=m.session_id WHERE ${filter.sql})`
+                : filter.sql;
+              // parent_session_id is the caller-visible parent, so a child of a hidden session lists as a root.
+              const predicate = request.roots_only
+                ? `(${scoped}) AND s.parent_session_id IS NULL`
+                : scoped;
+              const rows = await client.query(
+                `SELECT s.* FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
+                params.values,
+              );
+              const headers = await sessionHeaders(client, rows.rows);
+              return rows.rows.map((row, index) => ({
+                ...headers[index],
+                duration_seconds:
+                  row.duration_seconds === null
+                    ? null
+                    : Number(row.duration_seconds),
+                last_activity_at: wireValue(row.last_activity_at),
+              }));
+            }),
+        );
+        return sessionsOutputSchema.parse(page);
       },
-      (result) => ({ row_count: result.items.length }),
+      {
+        describeResult: (result) => ({ row_count: result.items.length }),
+      },
     );
   }
 
@@ -397,15 +443,19 @@ export class SessionService {
               rawPosition,
             )
           : null;
-        const rows = await this.dependencies.readers.read(caller, (client) =>
-          rawRecords(client, sessionId, after, request.limit),
+        const rows = await this.dependencies.readers.read(
+          caller,
+          async (client) => {
+            await visibleSession(client, sessionId);
+            return rawRecords(client, sessionId, after, request.limit);
+          },
         );
         const items = [];
         let cursor: string | null = null;
         for (const [index, row] of rows.slice(0, request.limit).entries()) {
           const serialized = JSON.stringify(row.payload);
           const offset = index === 0 ? (after?.offset ?? 0) : 0;
-          const digest = createHash("sha256").update(serialized).digest("hex");
+          const digest = sha256Hex(serialized);
           if (
             offset > 0 &&
             (after?.pos !== row.pos.toString() ||
@@ -450,7 +500,9 @@ export class SessionService {
               })
             : null;
           items.push(item);
-          if (bytes({ items, cursor: nextCursor }) > 256 * 1024) {
+          if (
+            jsonByteLength({ items, cursor: nextCursor }) > responseBytes.page
+          ) {
             items.pop();
             if (!items.length)
               throw new ServiceError(
@@ -471,7 +523,9 @@ export class SessionService {
           );
         return rawOutputSchema.parse({ items, cursor });
       },
-      (result) => ({ row_count: result.items.length }),
+      {
+        describeResult: (result) => ({ row_count: result.items.length }),
+      },
     );
   }
 
@@ -487,7 +541,7 @@ export class SessionService {
       },
       async (caller) => {
         sessionIdSchema.parse(sessionId);
-        const request = treeInputSchema.parse(input);
+        const request = paginationSchema.parse(input);
         const binding = {
           operation: "tree",
           organization: caller.organizationId,
@@ -540,7 +594,9 @@ export class SessionService {
           cursor: page.cursor,
         });
       },
-      (result) => ({ row_count: result.nodes.length }),
+      {
+        describeResult: (result) => ({ row_count: result.nodes.length }),
+      },
     );
   }
 
@@ -581,7 +637,7 @@ export class SessionService {
   >(
     context: ServiceContext,
     input: unknown,
-    view: "repos" | "installations",
+    view: keyof typeof CATALOG_VIEWS,
     outputSchema: T,
   ) {
     return readOperation(
@@ -589,18 +645,7 @@ export class SessionService {
       context,
       { action: `${view}.list`, resourceType: view, detail: input ?? null },
       async (caller) => {
-        const configuration = {
-          repos: {
-            input: reposInputSchema,
-            defaultSort: "repo_name",
-            tie: "repo_name",
-          },
-          installations: {
-            input: installationsInputSchema,
-            defaultSort: "hostname",
-            tie: "installation_id",
-          },
-        }[view];
+        const configuration = CATALOG_VIEWS[view];
         const request = configuration.input.parse(input);
         const binding = wireValue({
           operation: view,
@@ -609,54 +654,43 @@ export class SessionService {
           ...request,
           cursor: null,
         });
-        const offset = request.cursor
-          ? this.dependencies.cursors.decode(
-              request.cursor,
-              binding,
-              pagePosition,
-            ).offset
-          : 0;
-        return this.dependencies.readers.read(caller, async (client) => {
-          const params = new Parameters();
-          const predicates = Object.entries(request.filters)
-            .filter(([, value]) => value !== undefined)
-            .map(([field, value]) =>
-              typeof value === "boolean"
-                ? `${field}=${params.add(value)}`
-                : `positionCaseInsensitiveUTF8(${field},${params.add(value ?? "")})>0`,
-            );
-          const rows = await client.query(
-            `SELECT * FROM api_ro.${view} WHERE ${predicates.join(" AND ") || "true"} ORDER BY ${request.sort ?? configuration.defaultSort} ${request.order} NULLS LAST,${configuration.tie} LIMIT ${params.add(request.limit + 1)} OFFSET ${params.add(offset)}`,
-            params.values,
-          );
-          const items = rows.rows.slice(0, request.limit).map((row) => {
-            const wire = wireRow(row);
-            wire.session_count = Number(row.session_count);
-            if (view === "repos") {
-              delete wire.organization_id;
-              wire.user_count = Number(row.user_count);
-            }
-            return compactMetadata(wire, [
-              "hostname",
-              "os_user",
-              "platform",
-              "arch",
-              "repo_name",
-              "repo_url",
-            ]);
-          });
-          const result = boundedPage(
-            items,
-            rows.rows.length > request.limit,
-            (_last, count) =>
-              this.dependencies.cursors.encode(binding, {
-                offset: offset + count,
-              }),
-          );
-          return outputSchema.parse(result);
-        });
+        const page = await offsetPage(
+          this.dependencies.cursors,
+          binding,
+          request.cursor,
+          request.limit,
+          (offset, take) =>
+            this.dependencies.readers.read(caller, async (client) => {
+              const params = new Parameters();
+              const predicates = Object.entries(request.filters)
+                .filter(([, value]) => value !== undefined)
+                .map(([field, value]) =>
+                  typeof value === "boolean"
+                    ? `${field}=${params.add(value)}`
+                    : `positionCaseInsensitiveUTF8(${field},${params.add(value ?? "")})>0`,
+                );
+              const rows = await client.query(
+                `SELECT * FROM api_ro.${view} WHERE ${predicates.join(" AND ") || "true"} ORDER BY ${request.sort ?? configuration.defaultSort} ${request.order} NULLS LAST,${configuration.tie} LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
+                params.values,
+              );
+              const omitted = new Set(configuration.omit);
+              return rows.rows.map((row) => {
+                const wire = Object.fromEntries(
+                  Object.entries(wireRow(row)).filter(
+                    ([key]) => !omitted.has(key),
+                  ),
+                );
+                for (const column of configuration.numeric)
+                  wire[column] = Number(row[column]);
+                return compactMetadata(wire, CATALOG_TEXT_FIELDS);
+              });
+            }),
+        );
+        return outputSchema.parse(page);
       },
-      (result) => ({ row_count: result.items.length }),
+      {
+        describeResult: (result) => ({ row_count: result.items.length }),
+      },
     );
   }
 }

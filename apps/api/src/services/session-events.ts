@@ -68,6 +68,7 @@ export class SessionEventsService {
             const current = await snapshot({
               ...context,
               caller: identity.caller,
+              principal: identity,
             });
             const serialized = JSON.stringify(current);
             if (serialized !== previous) {
@@ -78,7 +79,9 @@ export class SessionEventsService {
         }
         return { changes };
       },
-      () => ({ session_id: id }),
+      {
+        describeResult: () => ({ session_id: id }),
+      },
     );
   }
 }

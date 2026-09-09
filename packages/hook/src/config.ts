@@ -1,8 +1,10 @@
-import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import * as z from "zod";
+import { readJson } from "./files.js";
 
+/** Any JSON object; the shape harness settings files and stored configuration are read as. */
+export const objectSchema = z.record(z.string(), z.unknown());
 export const configSchema = z.looseObject({
   server: z.url().refine((value) => {
     const url = new URL(value);
@@ -35,18 +37,9 @@ export const configSchema = z.looseObject({
     .optional(),
 });
 export type HookConfig = z.infer<typeof configSchema>;
-export function dataDirectory(): string {
-  return process.env.AGENTCOMMONS_DIR
-    ? resolve(process.env.AGENTCOMMONS_DIR)
-    : join(homedir(), ".agentcommons");
-}
 export function loadConfig(directory: string): HookConfig {
-  const input: unknown = JSON.parse(
-    readFileSync(join(directory, "config.json"), "utf8"),
-  );
-  const stored = configSchema.parse(input);
   return configSchema.parse({
-    ...stored,
+    ...readJson(join(directory, "config.json"), objectSchema),
     ...(process.env.AGENTCOMMONS_SERVER
       ? { server: process.env.AGENTCOMMONS_SERVER }
       : {}),

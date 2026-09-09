@@ -1,4 +1,3 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { execFile } from "node:child_process";
 import {
   mkdtemp,
@@ -18,17 +17,17 @@ import {
 } from "../../../packages/traces/test/support.js";
 import { PrismaClient } from "@agentcommons/db";
 import { expect, it } from "vitest";
+import { releaser } from "./support.js";
 
 it("runs documented migration and bootstrap commands using only an unexported root .env", async () => {
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const workspace = await mkdtemp(join(tmpdir(), "agentcommons-setup-review-"));
-  const cleanup: (() => Promise<unknown>)[] = [
-    () => rm(workspace, { recursive: true, force: true }),
-  ];
+  const { defer, release } = releaser();
+  defer(() => rm(workspace, { recursive: true, force: true }));
   const errors: unknown[] = [];
   try {
     const database = await startTraceDatabase();
-    cleanup.push(() => database.close());
+    defer(() => database.close());
     for (const file of ["package.json", "pnpm-workspace.yaml"]) {
       await copyFile(join(root, file), join(workspace, file));
     }
@@ -90,7 +89,7 @@ it("runs documented migration and bootstrap commands using only an unexported ro
       { cwd: workspace, env: environment, timeout: 90_000 },
     );
     const prisma = new PrismaClient({ datasourceUrl: values.DATABASE_URL });
-    cleanup.push(() => prisma.$disconnect());
+    defer(() => prisma.$disconnect());
     const user = await prisma.user.findUniqueOrThrow({
       where: { email: "setup-review@example.com" },
     });
@@ -104,7 +103,11 @@ it("runs documented migration and bootstrap commands using only an unexported ro
   } catch (error) {
     errors.push(error);
   } finally {
-    errors.push(...(await cleanupAll(cleanup.splice(0).reverse())));
+    try {
+      await release();
+    } catch (error) {
+      errors.push(error);
+    }
   }
   if (errors.length)
     throw new AggregateError(errors, "Development setup or cleanup failed");

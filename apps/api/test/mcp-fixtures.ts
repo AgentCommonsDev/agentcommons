@@ -11,7 +11,7 @@ import {
 } from "@agentcommons/core";
 import { formatGet, formatSearch, formatSql } from "@agentcommons/core/format";
 
-export const mcpFixtureSchema = z.strictObject({
+const mcpFixtureSchema = z.strictObject({
   tools: z.array(ToolSchema),
   search: searchOutputSchema,
   get: getOutputSchema,

@@ -5,6 +5,7 @@ import * as command from "@pulumi/command";
 import * as pulumi from "@pulumi/pulumi";
 import { z } from "zod";
 import type { FargateSettings, Secrets } from "./config.js";
+import { alertTopic, githubTrust, metricAlarms, traceNames } from "./shared.js";
 
 /** VPC, Fargate service behind an ALB, RDS controls and the private ClickHouse host. */
 export function fargateStack(settings: FargateSettings, secrets: Secrets) {
@@ -134,9 +135,7 @@ export function fargateStack(settings: FargateSettings, secrets: Secrets) {
   const runtimeValues = pulumi
     .output({
       DATABASE_URL: databaseUrl("ac_app", secrets.appPassword),
-      BETTER_AUTH_SECRET: secrets.authSecret.apply((value) =>
-        z.string().min(32).parse(value),
-      ),
+      BETTER_AUTH_SECRET: secrets.authSecret,
       additional: secrets.additional,
       CLICKHOUSE_WRITER_PASSWORD: secrets.clickhouseWriterPassword,
       CLICKHOUSE_ACCESS_PASSWORD: secrets.clickhouseAccessPassword,
@@ -146,9 +145,7 @@ export function fargateStack(settings: FargateSettings, secrets: Secrets) {
     .apply(({ additional, ...values }) => ({
       ...additional,
       ...values,
-      CLICKHOUSE_DATABASE: "ac_trace",
-      CLICKHOUSE_WRITER_USER: "ac_trace_writer",
-      CLICKHOUSE_ACCESS_USER: "ac_trace_access",
+      ...traceNames.runtime,
     }));
   const runtimeSecret = new aws.secretsmanager.Secret(`${name}-application`, {
     recoveryWindowInDays: production ? 30 : 7,
@@ -305,7 +302,10 @@ export function fargateStack(settings: FargateSettings, secrets: Secrets) {
         essential: true,
         environment: [
           ...environment,
-          { name: "CLICKHOUSE_MIGRATION_USER", value: "default" },
+          {
+            name: "CLICKHOUSE_MIGRATION_USER",
+            value: traceNames.migration.CLICKHOUSE_MIGRATION_USER,
+          },
         ],
         secrets: containerSecrets.apply((values) => [
           ...values,
@@ -488,14 +488,7 @@ export function fargateStack(settings: FargateSettings, secrets: Secrets) {
       ],
     });
   }
-  const alerts = new aws.sns.Topic(`${name}-alerts`, { tags });
-  if (settings.alarmEmail !== undefined) {
-    new aws.sns.TopicSubscription(`${name}-alerts`, {
-      topic: alerts.arn,
-      protocol: "email",
-      endpoint: settings.alarmEmail,
-    });
-  }
+  const alerts = alertTopic(name, tags, settings.alarmEmail);
   const alarmDefinitions = [
     {
       suffix: "database-storage",
@@ -537,36 +530,22 @@ export function fargateStack(settings: FargateSettings, secrets: Secrets) {
       dimensions: { LoadBalancer: alb.loadBalancer.arnSuffix },
     },
   ];
-  for (const alarm of alarmDefinitions) {
-    const { suffix, ...args } = alarm;
-    new aws.cloudwatch.MetricAlarm(`${name}-${suffix}`, {
-      ...args,
+  metricAlarms(
+    name,
+    tags,
+    alerts,
+    alarmDefinitions.map((alarm) => ({
+      ...alarm,
       evaluationPeriods: 2,
       period: 60,
       treatMissingData: "notBreaching",
-      alarmActions: [alerts.arn],
-      okActions: [alerts.arn],
-      tags,
-    });
-  }
-  const oidcSubject = `repo:${settings.githubRepository}:environment:${settings.stack}`;
+    })),
+  );
   const deploymentRole = new aws.iam.Role(`${name}-github`, {
-    assumeRolePolicy: JSON.stringify({
-      Version: "2012-10-17",
-      Statement: [
-        {
-          Effect: "Allow",
-          Principal: { Federated: settings.githubOidcProviderArn },
-          Action: "sts:AssumeRoleWithWebIdentity",
-          Condition: {
-            StringEquals: {
-              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-              "token.actions.githubusercontent.com:sub": oidcSubject,
-            },
-          },
-        },
-      ],
-    }),
+    assumeRolePolicy: githubTrust(
+      settings.githubOidcProviderArn,
+      `repo:${settings.githubRepository}:environment:${settings.stack}`,
+    ),
     tags,
   });
   new aws.iam.RolePolicy(`${name}-github`, {
@@ -639,22 +618,10 @@ export function fargateStack(settings: FargateSettings, secrets: Secrets) {
 
   if (!production) {
     const previewRole = new aws.iam.Role(`${name}-github-preview`, {
-      assumeRolePolicy: JSON.stringify({
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Effect: "Allow",
-            Principal: { Federated: settings.githubOidcProviderArn },
-            Action: "sts:AssumeRoleWithWebIdentity",
-            Condition: {
-              StringEquals: {
-                "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                "token.actions.githubusercontent.com:sub": `repo:${settings.githubRepository}:environment:preview`,
-              },
-            },
-          },
-        ],
-      }),
+      assumeRolePolicy: githubTrust(
+        settings.githubOidcProviderArn,
+        `repo:${settings.githubRepository}:environment:preview`,
+      ),
       tags,
     });
     new aws.iam.RolePolicyAttachment(`${name}-github-preview`, {

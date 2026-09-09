@@ -1,4 +1,7 @@
-import { policyDefinitionSchema } from "../redaction/policy.js";
+import {
+  policyDefinitionSchema,
+  policyKindSchema,
+} from "../redaction/policy.js";
 import { z } from "zod";
 import {
   createListInputSchema,
@@ -8,7 +11,6 @@ import {
   jsonValueSchema,
   keyPermissionsSchema,
   nonnegativeIntegerSchema,
-  opaqueCursorSchema,
   paginatedOutput,
   paginationSchema,
   organizationRoleSchema,
@@ -20,14 +22,26 @@ import {
 } from "./common.js";
 
 export const reasonInputSchema = z.strictObject({ reason: reasonSchema });
+/** Toggle a per-installation or per-organization capability with an audit reason. */
+export const enabledInputSchema = reasonInputSchema.extend({
+  enabled: z.boolean(),
+});
+const httpStatusSchema = z.number().int().min(100).max(599);
+/** An organization API key secret as returned once on creation or reveal. */
+const apiKeySecretSchema = z.string().startsWith("ac_");
+const policyHitSchema = z.strictObject({
+  policy_id: identityIdSchema,
+  count: nonnegativeIntegerSchema,
+});
+const dailyCountSchema = z.strictObject({
+  date: z.iso.date(),
+  count: nonnegativeIntegerSchema,
+});
 
 export const visibilityInputSchema = z.strictObject({
   session_id: sessionIdSchema,
   visibility: visibilitySchema,
-  reason: reasonSchema,
-});
-export const installationToolsInputSchema = reasonInputSchema.extend({
-  enabled: z.boolean(),
+  ...reasonInputSchema.shape,
 });
 export const installationToolsOutputSchema = z.strictObject({
   installation_id: sessionIdSchema,
@@ -35,7 +49,7 @@ export const installationToolsOutputSchema = z.strictObject({
 });
 export const purgeInputSchema = z.strictObject({
   session_id: sessionIdSchema,
-  reason: reasonSchema,
+  ...reasonInputSchema.shape,
 });
 export const mutationOutputSchema = z.strictObject({
   id: identityIdSchema,
@@ -64,7 +78,7 @@ export const auditFiltersSchema = z.strictObject({
   resource_id: identityIdSchema.optional(),
   action: z.string().min(1).optional(),
   transport: transportSchema.optional(),
-  status_code: z.number().int().min(100).max(599).optional(),
+  status_code: httpStatusSchema.optional(),
   since: utcDateTimeSchema.optional(),
   until: utcDateTimeSchema.optional(),
 });
@@ -97,21 +111,18 @@ export const auditEventSchema = z.strictObject({
   action: z.string(),
   resource_type: z.string().nullable(),
   resource_ids: z.array(z.string()),
-  status_code: z.number().int().min(100).max(599),
+  status_code: httpStatusSchema,
   duration_ms: nonnegativeIntegerSchema,
   detail: jsonValueSchema,
 });
-export const auditOutputSchema = z.strictObject({
-  items: z.array(auditEventSchema),
-  cursor: opaqueCursorSchema,
-});
+export const auditOutputSchema = paginatedOutput(auditEventSchema);
 
 export const redactionPolicyInputSchema = policyDefinitionSchema;
 export const redactionPolicySchema = z.strictObject({
   id: sessionIdSchema,
   organization_id: identityIdSchema,
   name: z.string(),
-  kind: z.enum(["REGEX", "SECRETLINT_RULE"]),
+  kind: policyKindSchema,
   pattern: z.string().nullable(),
   flags: z.string().nullable(),
   rule_id: z.string().nullable(),
@@ -126,12 +137,7 @@ export const redactionPolicySchema = z.strictObject({
 export const redactionTestInputSchema = z.strictObject({ text: z.string() });
 export const redactionTestOutputSchema = z.strictObject({
   text: z.string(),
-  matches: z.array(
-    z.strictObject({
-      policy_id: identityIdSchema,
-      count: nonnegativeIntegerSchema,
-    }),
-  ),
+  matches: z.array(policyHitSchema),
 });
 export const redactionRescanInputSchema = z.strictObject({
   policyIds: z.array(sessionIdSchema).min(1).optional(),
@@ -200,12 +206,12 @@ export const keySchema = z.strictObject({
   last_used_at: utcDateTimeSchema.nullable(),
 });
 export const keyCreateOutputSchema = z.strictObject({
-  key: z.string().startsWith("ac_"),
+  key: apiKeySecretSchema,
   metadata: keySchema,
 });
 /** `POST /me/keys/:id/reveal`: the caller's own active key, decrypted from its stored copy. */
 export const apiKeyRevealOutputSchema = z.strictObject({
-  key: z.string().startsWith("ac_"),
+  key: apiKeySecretSchema,
 });
 export const statusOutputSchema = z.strictObject({
   projection: z.strictObject({
@@ -216,27 +222,14 @@ export const statusOutputSchema = z.strictObject({
     waiting_source_sessions: nonnegativeIntegerSchema,
     pending_audit_events: nonnegativeIntegerSchema,
   }),
-  ingest_per_day: z.array(
-    z.strictObject({ date: z.iso.date(), count: nonnegativeIntegerSchema }),
-  ),
-  redaction_hits: z.array(
-    z.strictObject({
-      policy_id: identityIdSchema,
-      count: nonnegativeIntegerSchema,
-    }),
-  ),
-  failures: z.array(
-    z.strictObject({ date: z.iso.date(), count: nonnegativeIntegerSchema }),
-  ),
+  ingest_per_day: z.array(dailyCountSchema),
+  redaction_hits: z.array(policyHitSchema),
+  failures: z.array(dailyCountSchema),
   queue_depth: nonnegativeIntegerSchema,
   embedding_backlog: nonnegativeIntegerSchema,
   embedding_daily_tokens: decimalIntegerSchema,
   embedding_daily_cost: z.string(),
 });
-export type RedactionPolicyInput = z.infer<typeof redactionPolicyInputSchema>;
-export type AuditInput = z.infer<typeof auditInputSchema>;
-export type AuditOutput = z.infer<typeof auditOutputSchema>;
-export type MemberAddInput = z.infer<typeof memberAddInputSchema>;
 
 export const membersInputSchema = createListInputSchema([
   "email",
@@ -281,7 +274,7 @@ export const redactionPoliciesInputSchema = createListInputSchema([
   filters: z
     .strictObject({
       name: z.string().trim().min(1).optional(),
-      kind: z.enum(["REGEX", "SECRETLINT_RULE"]).optional(),
+      kind: policyKindSchema.optional(),
       enabled: z.boolean().optional(),
       builtin: z.boolean().optional(),
     })

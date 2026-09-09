@@ -60,6 +60,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    # Rotated on disk so one noisy release cannot fill the host; the last 250 MiB stay.
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"
     restart: unless-stopped
 
 volumes:

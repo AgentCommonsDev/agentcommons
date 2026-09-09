@@ -7,7 +7,13 @@ import type { ApiKey, Page } from "../../lib/types";
 type KeyQuery = NonNullable<
   paths["/api/v1/me/keys"]["get"]["parameters"]["query"]
 >;
+type KeyInput =
+  paths["/api/v1/me/keys"]["post"]["requestBody"]["content"]["application/json"];
 type KeySort = (typeof keySortKeys)[number];
+
+export async function createPersonalKey(body: KeyInput) {
+  return unwrap(await api.POST("/api/v1/me/keys", { body }));
+}
 
 export async function fetchKeys(
   query: {

@@ -24,8 +24,8 @@ const statements = z.array(
 );
 const scripts = [
   "single-node-release.sh",
-  "single-node-bootstrap.sh",
   "single-node/lib.sh",
+  "single-node/host-lib.sh",
   "single-node/apply.sh",
   "single-node/bootstrap.sh",
   "single-node-run.sh",
@@ -305,6 +305,10 @@ describe("single-node resource contract", () => {
       expect(source).toContain("set -euo pipefail");
       if (script.startsWith("single-node-"))
         expect(source).toContain('. "$(dirname "$0")/single-node/lib.sh"');
+      // On-host scripts share one library, shipped or released next to them.
+      if (script.startsWith("single-node/") && !script.endsWith("lib.sh"))
+        expect(source).toContain('. "$(dirname "$0")/host-lib.sh"');
+      if (script.endsWith("lib.sh")) expect(source).not.toContain("#!");
       if (script === "clickhouse-cloud-egress.sh")
         expect(source).toContain(
           "https://api.clickhouse.cloud/static-ips.json",
@@ -345,25 +349,41 @@ describe("single-node resource contract", () => {
     expect(bootstrap).toContain("src/seed.ts --admin");
     expect(bootstrap).toContain("src/domain.ts --organization");
     expect(bootstrap).toContain("/auth/reset-password");
-    expect(bootstrap).toContain("/auth/sign-in/email");
-    expect(bootstrap).toContain("/root/agentcommons");
+    expect(bootstrap).toContain('owner_sign_in "$organization"');
     expect(bootstrap).toContain("--key)");
     expect(bootstrap).toContain("/api/v1/me/keys");
     expect(bootstrap).toContain('permissions: {sessions: ["read", "ingest"]}');
-    const operatorBootstrap = readFileSync(
-      new URL("../scripts/single-node-bootstrap.sh", import.meta.url),
+    // The operator's checkout ships on-host scripts through the release bucket (lib.sh).
+    const runner = readFileSync(
+      new URL("../scripts/single-node-run.sh", import.meta.url),
       "utf8",
     );
-    // The operator's checkout ships on-host scripts through the release bucket (lib.sh).
-    expect(operatorBootstrap).toContain(
-      'ship_run "$repo/infra/scripts/single-node/bootstrap.sh" "$@"',
+    expect(runner).toContain(
+      'ship_run "$repo/infra/scripts/single-node/$name" "$@"',
     );
     const lib = readFileSync(
       new URL("../scripts/single-node/lib.sh", import.meta.url),
       "utf8",
     );
     expect(lib).toContain('"s3://$bucket/scripts/$name"');
+    expect(lib).toContain('"s3://$bucket/scripts/host-lib.sh"');
     expect(lib).toContain("/opt/agentcommons/$name $arguments");
+    const hostLib = readFileSync(
+      new URL("../scripts/single-node/host-lib.sh", import.meta.url),
+      "utf8",
+    );
+    for (const helper of [
+      "setting()",
+      "require_public_url()",
+      "require_owner_state()",
+      "owner_sign_in()",
+      "api()",
+      "sign_out()",
+      "/auth/sign-in/email",
+      "/auth/sign-out",
+      "/root/agentcommons",
+    ])
+      expect(hostLib).toContain(helper);
     expect(bootstrap).toContain('state="$state_dir/owner-$organization.json"');
     const isolation = readFileSync(
       new URL("../scripts/single-node/isolation-check.sh", import.meta.url),

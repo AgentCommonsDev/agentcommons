@@ -6,36 +6,49 @@ import {
 } from "../redaction/structure.js";
 import {
   array,
+  assignPresent,
   identitiesAt,
   assignUsage,
   blocks,
   createNormalizer,
   message,
   object,
-  recordSchema,
   string,
   text,
   timestamp,
   tokens,
   toolFiles,
   SENSITIVE_FILE_MARKER,
+  type NativeRoles,
 } from "./shared.js";
 import type { BlockDialect } from "./shared.js";
 import type { NativeLink, SessionDelta } from "./types.js";
 
+/** pi carries tool results as whole `toolResult` messages, never as content blocks. */
 const dialect: BlockDialect = {
   textTypes: ["text"],
   thinkingTypes: ["thinking"],
-  toolUseTypes: ["toolCall"],
-  toolResultTypes: [],
-  toolInput: "arguments",
-  toolResultId: "toolCallId",
+  toolUse: { types: ["toolCall"], inputKey: "arguments" },
 };
 const fileRules = {
   read: { paths: ["path"], ops: ["read"] },
   edit: { paths: ["path"], ops: ["edit"] },
   write: { paths: ["path"], ops: ["write"] },
 };
+/** Message roles that carry content blocks; `toolResult` and `bashExecution` are handled whole. */
+const nativeRoles: NativeRoles = {
+  user: "USER",
+  assistant: "ASSISTANT",
+  custom: "SYSTEM",
+};
+/** Record types projected as metadata rows with their JSON as text. */
+const metadataTypes = new Set([
+  "model_change",
+  "thinking_level_change",
+  "custom",
+  "label",
+  "session_info",
+]);
 export const pi = createNormalizer({
   harness: "PI",
   redactionStructure: protocolObject(
@@ -119,7 +132,6 @@ export const pi = createNormalizer({
     const id = string(native.toolCallId);
     return [
       {
-        rawRecordId: record.id,
         toolUseId: id,
         locations: [
           {
@@ -143,21 +155,13 @@ export const pi = createNormalizer({
   toMessages(records) {
     let model: string | null = null;
     return records.flatMap((record) => {
-      const parsed = recordSchema.safeParse(record.payload);
-      if (!parsed.success) return [];
-      const data = parsed.data;
-      if (data.type === "model_change") model = string(data.modelId);
-      if (
-        [
-          "model_change",
-          "thinking_level_change",
-          "custom",
-          "label",
-          "session_info",
-        ].includes(data.type)
-      )
+      const data = record.payload;
+      const type = string(data.type);
+      if (type === null) return [];
+      if (type === "model_change") model = string(data.modelId);
+      if (metadataTypes.has(type))
         return [message(record, 0, { content: text(data), model })];
-      if (data.type === "compaction" || data.type === "branch_summary")
+      if (type === "compaction" || type === "branch_summary")
         return [
           message(record, 0, {
             kind: "TEXT",
@@ -165,7 +169,7 @@ export const pi = createNormalizer({
             model,
           }),
         ];
-      if (data.type === "custom_message")
+      if (type === "custom_message")
         return [
           message(record, 0, {
             kind: "TEXT",
@@ -173,7 +177,7 @@ export const pi = createNormalizer({
             model,
           }),
         ];
-      if (data.type !== "message") return [];
+      if (type !== "message") return [];
       const native = object(data.message);
       const currentModel = string(native.model) ?? model;
       const sourceTime =
@@ -201,14 +205,8 @@ export const pi = createNormalizer({
             model: currentModel,
           }),
         ];
-      if (!["user", "assistant", "custom"].includes(string(native.role) ?? ""))
-        return [];
-      const role =
-        native.role === "user"
-          ? "USER"
-          : native.role === "assistant"
-            ? "ASSISTANT"
-            : "SYSTEM";
+      const role = nativeRoles[string(native.role) ?? ""];
+      if (!role) return [];
       const result = blocks(record, native.content, role, dialect, {
         model: currentModel,
         timestamp: sourceTime,
@@ -229,23 +227,19 @@ export const pi = createNormalizer({
     const delta: SessionDelta = {};
     // The transcript has no host version or mode; the extension reports them per process.
     const host = object(context?.transcriptMetadata);
-    const harnessVersion = string(host.harnessVersion);
-    if (harnessVersion) delta.harnessVersion = harnessVersion;
-    const entrypoint = string(host.entrypoint);
-    if (entrypoint) delta.entrypoint = entrypoint;
+    assignPresent(delta, {
+      harnessVersion: string(host.harnessVersion),
+      entrypoint: string(host.entrypoint),
+    });
     for (const { payload: data } of records) {
-      if (data.type === "session") {
-        const id = string(data.id);
-        if (id) delta.harnessSessionId = id;
-        const cwd = string(data.cwd);
-        if (cwd) delta.cwd = cwd;
-        const time = timestamp(data.timestamp);
-        if (time) delta.startedAt = time;
-      }
-      if (data.type === "session_info") {
-        const name = string(data.name);
-        if (name) delta.title = name;
-      }
+      if (data.type === "session")
+        assignPresent(delta, {
+          harnessSessionId: string(data.id),
+          cwd: string(data.cwd),
+          startedAt: timestamp(data.timestamp),
+        });
+      if (data.type === "session_info")
+        assignPresent(delta, { title: string(data.name) });
     }
     return delta;
   },

@@ -20,27 +20,35 @@ export interface ReadDependencies {
   cursors: CursorCodec;
   saas?: boolean;
 }
+interface ReadOptions<T> {
+  /** Permission the caller must hold; reads default to `read`. */
+  permission?: "read" | "admin";
+  /** Structural summary of the result recorded in the audit detail. */
+  describeResult?: (result: T) => unknown;
+  /** Resource ids the audit row should reference. */
+  describeResources?: (result: T) => readonly string[];
+}
 export async function readOperation<T>(
   audit: AuditService,
   context: ServiceContext,
   description: AuditDescription,
   execute: (caller: CallerContext) => Promise<T>,
-  describeResult?: (result: T) => unknown,
-  permission: "read" | "admin" = "read",
-  describeResources?: (result: T) => readonly string[],
+  options: ReadOptions<T> = {},
 ): Promise<ServiceResult<T>> {
   try {
-    const result = await execute(requirePermission(context, permission));
+    const result = await execute(
+      requirePermission(context, options.permission ?? "read"),
+    );
     return {
       result,
       audit: await audit.write(context, {
         ...description,
-        ...(describeResources
-          ? { resourceIds: describeResources(result) }
+        ...(options.describeResources
+          ? { resourceIds: options.describeResources(result) }
           : {}),
         detail: {
           input: description.detail ?? null,
-          result: describeResult?.(result) ?? null,
+          result: options.describeResult?.(result) ?? null,
         },
       }),
     };

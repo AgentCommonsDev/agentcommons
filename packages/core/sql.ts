@@ -1,4 +1,6 @@
 import { format, parse, ParseError, type Statement } from "@clickhouse/parser";
+import { utf8ByteLength } from "./schemas/common.js";
+import { sqlLimits } from "./schemas/sql.js";
 export {
   parse as parseTraceSql,
   ParseError as TraceSqlParseError,
@@ -239,6 +241,7 @@ const allowedFunctions = new Set<string>(
   traceSqlFunctions.map((name) => name.toLowerCase()),
 );
 const allowedViews = new Set<string>(traceViews);
+const embeddingViews = new Set<string>(traceEmbeddingViews);
 const nodes = new Set([
   "SelectWithUnionQuery",
   "SelectIntersectExceptQuery",
@@ -334,8 +337,10 @@ export function guardTraceSql(
   embeddings = false,
   parameters: Readonly<Record<string, string>> = {},
 ): string {
-  if (new TextEncoder().encode(sql).length > 20 * 1024)
-    throw new TraceSqlError("Keep the query within 20 KB.");
+  if (utf8ByteLength(sql) > sqlLimits.sqlBytes)
+    throw new TraceSqlError(
+      `Keep the query within ${String(sqlLimits.sqlBytes / 1024)} KB.`,
+    );
   let ast: Statement[];
   try {
     ast = parse(sql);
@@ -427,17 +432,14 @@ export function guardTraceSql(
       if (
         !embeddings &&
         (node.database === undefined || node.database === "api_ro") &&
-        (traceEmbeddingViews as readonly string[]).includes(name) &&
+        embeddingViews.has(name) &&
         !bindings.has(name)
       )
         failEmbeddings(node, name);
       if (
         (node.database !== undefined && node.database !== "api_ro") ||
         (!allowedViews.has(name) &&
-          !(
-            embeddings &&
-            (traceEmbeddingViews as readonly string[]).includes(name)
-          ) &&
+          !(embeddings && embeddingViews.has(name)) &&
           !(node.database === undefined && bindings.has(name)))
       )
         fail(node, "Select from the views listed in the schema browser.");

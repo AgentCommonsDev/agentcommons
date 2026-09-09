@@ -1,28 +1,28 @@
 import { organizationEmbeddingSetting } from "../embeddings/settings.js";
-import { listDomains, manageDomain } from "../auth/domain.js";
-import type {
-  domainsInputSchema,
-  domainInputSchema,
-} from "@agentcommons/core/schemas";
+import { registerDomain, requireDomainEnrollment } from "../auth/domain.js";
 import type { WelcomeJobs } from "../auth/mail.js";
 import { onboard } from "../auth/onboarding.js";
-import type { onboardingInputSchema } from "@agentcommons/core/schemas";
-import { auditedOperation } from "./audit.js";
+import { membershipTransaction } from "../auth/transaction.js";
+import { auditedOperation, type AuditActor } from "./audit.js";
 import { z } from "zod";
 import {
   authConfigOutputSchema,
-  reasonInputSchema,
-} from "@agentcommons/core/schemas";
-import {
-  keyPermissionsSchema,
+  domainInputSchema,
+  domainsInputSchema,
+  domainsOutputSchema,
   keySchema,
   meOutputSchema,
-  organizationRoleSchema,
   organizationsOutputSchema,
   organizationSwitchOutputSchema,
   keysOutputSchema,
   keyCreateOutputSchema,
+  keysInputSchema,
+  keyCreateInputSchema,
+  apiKeyRevealOutputSchema,
+  reasonInputSchema,
+  type onboardingInputSchema,
   type CallerContext,
+  parseKeyPermissions,
 } from "@agentcommons/core/schemas";
 import {
   Prisma,
@@ -30,11 +30,18 @@ import {
   type PrismaClient,
 } from "@agentcommons/db";
 import {
+  billingReturnUrl,
   createAuth,
+  domainEnrollmentEnabled,
   type AuthConfiguration,
   type NativeAuth,
 } from "../auth/config.js";
-import { identityFromHeaders, type AuthIdentity } from "../auth/identity.js";
+import {
+  cookieCaller,
+  identityFromHeaders,
+  keyIsActive,
+  type AuthIdentity,
+} from "../auth/identity.js";
 import type { AuditService, AuditDescription } from "./audit.js";
 import { CursorCodec } from "./cursor.js";
 import {
@@ -44,11 +51,7 @@ import {
   type ServiceContext,
   type ServiceResult,
 } from "./context.js";
-import {
-  keysInputSchema,
-  keyCreateInputSchema,
-  apiKeyRevealOutputSchema,
-} from "@agentcommons/core/schemas";
+import { offsetPage, wireValue } from "./read-budget.js";
 import { KeySecretCipher } from "./key-secrets.js";
 
 class AuthResponseFailure extends Error {
@@ -56,24 +59,44 @@ class AuthResponseFailure extends Error {
     super("Authentication request failed");
   }
 }
-const allowedNativeRoutes = [
-  ["POST", /^\/auth\/stripe\/webhook$/],
-  ["POST", /^\/auth\/sign-in\/(email|social)$/],
-  ["POST", /^\/auth\/(sign-out|reset-password)$/],
-  ["GET", /^\/auth\/(get-session|error)$/],
-  ["GET", /^\/auth\/reset-password\/[^/]+$/],
-  ["GET", /^\/auth\/callback\/[^/]+$/],
-  ["POST", /^\/auth\/callback\/[^/]+$/],
-] as const;
+/** Native Better Auth routes the API forwards; SaaS-only rows serve hosted signup. */
+const nativeRoutes: readonly {
+  method: "GET" | "POST";
+  pattern: RegExp;
+  saasOnly?: true;
+}[] = [
+  { method: "POST", pattern: /^\/auth\/stripe\/webhook$/ },
+  { method: "POST", pattern: /^\/auth\/sign-in\/(email|social)$/ },
+  { method: "POST", pattern: /^\/auth\/(sign-out|reset-password)$/ },
+  { method: "GET", pattern: /^\/auth\/(get-session|error)$/ },
+  { method: "GET", pattern: /^\/auth\/reset-password\/[^/]+$/ },
+  { method: "GET", pattern: /^\/auth\/callback\/[^/]+$/ },
+  { method: "POST", pattern: /^\/auth\/callback\/[^/]+$/ },
+  {
+    method: "POST",
+    pattern:
+      /^\/auth\/(sign-up\/email|send-verification-email|request-password-reset)$/,
+    saasOnly: true,
+  },
+  { method: "GET", pattern: /^\/auth\/verify-email$/, saasOnly: true },
+];
+const stripeObjectSchema = z.looseObject({
+  customer: z
+    .union([z.string().max(255), z.looseObject({ id: z.string().max(255) })])
+    .nullable()
+    .optional(),
+});
 
-export function requireCookie(context: ServiceContext): CallerContext {
+export function requireCookie(
+  context: ServiceContext,
+  failure: { code: string; message: string } = {
+    code: "COOKIE_REQUIRED",
+    message: "Use a signed-in browser session for this operation.",
+  },
+): CallerContext {
   const caller = requireCaller(context);
   if (caller.authMethod !== "cookie")
-    throw new ServiceError(
-      403,
-      "COOKIE_REQUIRED",
-      "Use a signed-in browser session for this operation.",
-    );
+    throw new ServiceError(403, failure.code, failure.message);
   return caller;
 }
 
@@ -97,11 +120,7 @@ export async function lockOrganization(
     );
   if (caller.apiKeyId) {
     const key = await tx.apikey.findUnique({ where: { id: caller.apiKeyId } });
-    if (
-      !key?.enabled ||
-      key.referenceId !== caller.organizationId ||
-      (key.expiresAt && key.expiresAt <= new Date())
-    )
+    if (!keyIsActive(key, caller.organizationId))
       throw new ServiceError(
         403,
         "KEY_REVOKED",
@@ -123,9 +142,7 @@ function mapKey(
     user_name: user?.name ?? null,
     name: key.name,
     prefix: key.prefix,
-    permissions: keyPermissionsSchema.parse(
-      key.permissions ? JSON.parse(key.permissions) : {},
-    ),
+    permissions: parseKeyPermissions(key.permissions),
     enabled: key.enabled ?? true,
     created_at: key.createdAt.toISOString(),
     expires_at: key.expiresAt?.toISOString() ?? null,
@@ -133,9 +150,28 @@ function mapKey(
   });
 }
 
+/** Audit actor for a request whose identity resolved, with or without an organization. */
+function identityActor(identity: AuthIdentity): AuditActor {
+  return {
+    userId: identity.user.id,
+    apiKeyId: identity.caller?.apiKeyId ?? null,
+    authMethod: identity.caller?.authMethod ?? "cookie",
+  };
+}
+/** Audit actor for Stripe webhook deliveries, scoped once the customer maps to an organization. */
+function stripeActor(organizationId: string | null | undefined): AuditActor {
+  return {
+    userId: null,
+    apiKeyId: null,
+    authMethod: "stripe",
+    ...(organizationId ? { organizationId } : {}),
+  };
+}
+
 export class AuthService {
   readonly native: NativeAuth;
   private readonly cursors: CursorCodec;
+  private readonly saas: boolean;
   /** Encrypts stored key plaintext for owner reveal (ADR 0051); derived once per process. */
   private readonly secrets: KeySecretCipher;
   constructor(
@@ -148,6 +184,19 @@ export class AuthService {
     this.native = createAuth(prisma, config);
     this.cursors = new CursorCodec(config.secret);
     this.secrets = new KeySecretCipher(config.secret);
+    this.saas = config.instanceMode === "saas";
+  }
+
+  /** The identity the adapter authenticated, or a fresh resolution for direct callers. */
+  private identity(context: ServiceContext): Promise<AuthIdentity> {
+    return context.principal
+      ? Promise.resolve(context.principal)
+      : identityFromHeaders(
+          this.prisma,
+          this.native,
+          context.headers,
+          this.config,
+        );
   }
 
   async configuration(context: ServiceContext) {
@@ -157,15 +206,7 @@ export class AuthService {
       (context.headers.has("cookie") || context.headers.has("authorization"))
     ) {
       try {
-        caller = (
-          await identityFromHeaders(
-            this.prisma,
-            this.native,
-            context.headers,
-            this.config.allowedEmailDomains,
-            this.config.instanceMode === "saas",
-          )
-        ).caller;
+        caller = (await this.identity(context)).caller;
       } catch (error) {
         if (!(
           error instanceof ServiceError && [401, 403].includes(error.statusCode)
@@ -180,7 +221,7 @@ export class AuthService {
           this.prisma,
           caller.organizationId,
           false,
-          this.config.instanceMode === "saas",
+          this.saas,
         )
       ).enabled
         ? this.features
@@ -211,8 +252,7 @@ export class AuthService {
         this.prisma,
         this.native,
         headers,
-        this.config.allowedEmailDomains,
-        this.config.instanceMode === "saas",
+        this.config,
       );
     } catch (error) {
       const failure =
@@ -246,12 +286,9 @@ export class AuthService {
       if (
         path === "/auth/subscription/success" &&
         request.method === "GET" &&
-        this.config.instanceMode === "saas"
+        this.saas
       ) {
-        const response = Response.redirect(
-          `${this.config.publicUrl}/app/billing`,
-          303,
-        );
+        const response = Response.redirect(billingReturnUrl(this.config), 303);
         return {
           result: response,
           audit: await this.audit.write(context, {
@@ -260,25 +297,14 @@ export class AuthService {
           }),
         };
       }
-      const saasRoute =
-        this.config.instanceMode === "saas" &&
-        ((request.method === "POST" &&
-          [
-            "/auth/sign-up/email",
-            "/auth/send-verification-email",
-            "/auth/request-password-reset",
-          ].includes(path)) ||
-          (request.method === "GET" && path === "/auth/verify-email"));
       const webhook = path === "/auth/stripe/webhook";
-      if (
-        (webhook &&
-          (this.config.instanceMode !== "saas" || !this.config.stripe)) ||
-        (!saasRoute &&
-          !allowedNativeRoutes.some(
-            ([method, pattern]) =>
-              method === request.method && pattern.test(path),
-          ))
-      ) {
+      const allowed = nativeRoutes.some(
+        (route) =>
+          route.method === request.method &&
+          route.pattern.test(path) &&
+          (!route.saasOnly || this.saas),
+      );
+      if ((webhook && (!this.saas || !this.config.stripe)) || !allowed) {
         throw new ServiceError(
           404,
           "NOT_FOUND",
@@ -306,17 +332,7 @@ export class AuthService {
               request.headers.get("stripe-signature") ?? "",
               this.config.stripe.webhookSecret,
             );
-          const object = z
-            .looseObject({
-              customer: z
-                .union([
-                  z.string().max(255),
-                  z.looseObject({ id: z.string().max(255) }),
-                ])
-                .nullable()
-                .optional(),
-            })
-            .parse(event.data.object);
+          const object = stripeObjectSchema.parse(event.data.object);
           stripeEvent = {
             id: event.id,
             type: event.type,
@@ -333,22 +349,17 @@ export class AuthService {
           );
         }
       }
+      const stripeDetail = stripeEvent
+        ? { event_id: stripeEvent.id, event_type: stripeEvent.type }
+        : null;
       if (stripeEvent) {
         const organization = stripeEvent.customer
           ? await this.prisma.organization.findFirst({
               where: { stripeCustomerId: stripeEvent.customer },
             })
           : null;
-        operation.actor = {
-          userId: null,
-          apiKeyId: null,
-          authMethod: "stripe",
-          ...(organization ? { organizationId: organization.id } : {}),
-        };
-        operation.detail = {
-          event_id: stripeEvent.id,
-          event_type: stripeEvent.type,
-        };
+        operation.actor = stripeActor(organization?.id);
+        operation.detail = stripeDetail;
       }
       try {
         return await this.prisma.$transaction(
@@ -368,8 +379,7 @@ export class AuthService {
                   tx,
                   native,
                   request.headers,
-                  this.config.allowedEmailDomains,
-                  this.config.instanceMode === "saas",
+                  this.config,
                 );
             } catch {
               /* Most authentication requests start without an identity. */
@@ -391,8 +401,7 @@ export class AuthService {
                   tx,
                   native,
                   cookies ? new Headers({ cookie: cookies }) : request.headers,
-                  this.config.allowedEmailDomains,
-                  this.config.instanceMode === "saas",
+                  this.config,
                 );
             } catch {
               /* Anonymous auth actions retain a null actor. */
@@ -400,6 +409,8 @@ export class AuthService {
             identity ??= priorIdentity;
             if (identity)
               await this.welcome?.enqueueWelcome(tx, identity.user.id);
+            // The native handler may have just linked the customer to an organization,
+            // so the audit scope is read again inside this transaction.
             const billingOrganization = stripeEvent?.customer
               ? await tx.organization.findFirst({
                   where: { stripeCustomerId: stripeEvent.customer },
@@ -414,31 +425,13 @@ export class AuthService {
               {
                 action,
                 statusCode: response.status,
-                ...(stripeEvent
+                ...(stripeDetail
                   ? {
-                      actor: {
-                        userId: null,
-                        apiKeyId: null,
-                        authMethod: "stripe",
-                        ...(billingOrganization
-                          ? { organizationId: billingOrganization.id }
-                          : {}),
-                      },
-                      detail: {
-                        event_id: stripeEvent.id,
-                        event_type: stripeEvent.type,
-                      },
+                      actor: stripeActor(billingOrganization?.id),
+                      detail: stripeDetail,
                     }
                   : {}),
-                ...(identity
-                  ? {
-                      actor: {
-                        userId: identity.user.id,
-                        apiKeyId: identity.caller?.apiKeyId ?? null,
-                        authMethod: identity.caller?.authMethod ?? "cookie",
-                      },
-                    }
-                  : {}),
+                ...(identity ? { actor: identityActor(identity) } : {}),
               },
               tx,
             );
@@ -464,31 +457,118 @@ export class AuthService {
   }
 
   domains(context: ServiceContext, input: z.input<typeof domainsInputSchema>) {
-    return listDomains(this.prisma, this.config, this.audit, context, input);
+    return auditedOperation(
+      this.audit,
+      context,
+      { action: "domains.list" },
+      async () => {
+        const caller = requirePermission(context, "admin");
+        const parsed = domainsInputSchema.parse(input);
+        const { cursor, ...query } = parsed;
+        const binding = wireValue({
+          organizationId: caller.organizationId,
+          operation: "domains.list",
+          input: query,
+        });
+        return membershipTransaction(this.prisma, async (tx) => {
+          await lockOrganization(tx, caller);
+          const page = await offsetPage(
+            this.cursors,
+            binding,
+            cursor,
+            parsed.limit,
+            async (skip, take) =>
+              (
+                await tx.ssoProvider.findMany({
+                  where: {
+                    organizationId: caller.organizationId,
+                    issuer: "https://accounts.google.com",
+                    ...(parsed.domain
+                      ? {
+                          domain: {
+                            contains: parsed.domain.replace(/[\\%_]/g, "\\$&"),
+                          },
+                        }
+                      : {}),
+                  },
+                  orderBy: [{ domain: parsed.order }, { providerId: "asc" }],
+                  skip,
+                  take,
+                })
+              ).map((row) => ({
+                organization_id: caller.organizationId,
+                domain: row.domain,
+                provider_id: row.providerId,
+                verified: row.domainVerified === true,
+              })),
+          );
+          const result = domainsOutputSchema.parse({
+            enabled: domainEnrollmentEnabled(this.config),
+            items: page.items,
+            cursor: page.cursor,
+          });
+          return {
+            result,
+            audit: await this.audit.write(
+              context,
+              {
+                action: "domains.list",
+                resourceType: "organization",
+                resourceIds: [caller.organizationId],
+                detail: { ...query, row_count: result.items.length },
+              },
+              tx,
+            ),
+          };
+        });
+      },
+    );
   }
 
+  /** An owner or admin allowlists a Google domain for their current organization. */
   domain(context: ServiceContext, input: z.input<typeof domainInputSchema>) {
-    return manageDomain(this.prisma, this.config, context, input.domain);
+    return auditedOperation(
+      this.audit,
+      context,
+      { action: "operator.domain.register" },
+      async () => {
+        const caller = requirePermission(context, "admin");
+        requireCookie(context);
+        const { domain } = domainInputSchema.parse(input);
+        requireDomainEnrollment(this.config, domain);
+        return membershipTransaction(this.prisma, async (tx) => {
+          await lockOrganization(tx, caller);
+          return registerDomain(
+            tx,
+            createAuth(tx, this.config),
+            this.audit,
+            context,
+            caller.organizationId,
+            domain,
+          );
+        });
+      },
+    );
   }
 
   private async onboardingState(
-    userId: string,
+    user: AuthIdentity["user"],
   ): Promise<
     "verify_email" | "create_organization" | "ready" | "contact_admin"
   > {
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-    });
     if (!user.emailVerified) return "verify_email";
     if (
       await this.prisma.member.count({
-        where: { userId, suspended: false, removedAt: null },
+        where: { userId: user.id, suspended: false, removedAt: null },
       })
     )
       return "ready";
-    return user.onboardingOrganizationId
-      ? "contact_admin"
-      : "create_organization";
+    const { onboardingOrganizationId } =
+      await this.prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+        select: { onboardingOrganizationId: true },
+      });
+    return onboardingOrganizationId ? "contact_admin" : "create_organization";
   }
 
   onboard(
@@ -500,6 +580,7 @@ export class AuthService {
       this.config,
       this.audit,
       context,
+      () => this.identity(context),
       input,
       this.welcome,
     );
@@ -514,6 +595,7 @@ export class AuthService {
       this.config,
       this.audit,
       context,
+      () => this.identity(context),
       input,
       this.welcome,
       "explicit",
@@ -526,58 +608,40 @@ export class AuthService {
       context,
       { action: "auth.me" },
       async () => {
-        const identity = await identityFromHeaders(
-          this.prisma,
-          this.native,
-          context.headers,
-          this.config.allowedEmailDomains,
-          this.config.instanceMode === "saas",
-        );
-        const organization = identity.caller
-          ? await this.prisma.organization.findUniqueOrThrow({
-              where: { id: identity.caller.organizationId },
-            })
-          : null;
-        const key = identity.caller?.apiKeyId
-          ? await this.prisma.apikey.findUnique({
-              where: { id: identity.caller.apiKeyId },
-            })
-          : null;
-        const result = meOutputSchema.parse({
-          user: {
-            ...identity.user,
-            email_verified: (
-              await this.prisma.user.findUniqueOrThrow({
-                where: { id: identity.user.id },
+        const identity = await this.identity(context);
+        const caller = identity.caller;
+        const [organization, key, onboarding] = await Promise.all([
+          caller
+            ? this.prisma.organization.findUniqueOrThrow({
+                where: { id: caller.organizationId },
               })
-            ).emailVerified,
-          },
-          onboarding:
-            this.config.instanceMode !== "saas"
-              ? "not_applicable"
-              : await this.onboardingState(identity.user.id),
-          caller: identity.caller,
+            : null,
+          caller?.apiKeyId
+            ? this.prisma.apikey.findUnique({ where: { id: caller.apiKeyId } })
+            : null,
+          this.saas
+            ? this.onboardingState(identity.user)
+            : ("not_applicable" as const),
+        ]);
+        const { emailVerified, ...user } = identity.user;
+        const result = meOutputSchema.parse({
+          user: { ...user, email_verified: emailVerified },
+          onboarding,
+          caller,
           organization:
-            organization && identity.caller
+            organization && caller
               ? {
                   id: organization.id,
                   name: organization.name,
                   slug: organization.slug,
-                  role: identity.caller.role,
+                  role: caller.role,
                 }
               : null,
           key: key ? { id: key.id, name: key.name } : null,
         });
         const audit = await this.audit.write(
-          { ...context, caller: identity.caller },
-          {
-            action: "auth.me",
-            actor: {
-              userId: identity.user.id,
-              apiKeyId: identity.caller?.apiKeyId ?? null,
-              authMethod: identity.caller?.authMethod ?? "cookie",
-            },
-          },
+          { ...context, caller },
+          { action: "auth.me", actor: identityActor(identity) },
         );
         return { result, audit };
       },
@@ -590,13 +654,7 @@ export class AuthService {
       context,
       { action: "auth.organizations" },
       async () => {
-        const identity = await identityFromHeaders(
-          this.prisma,
-          this.native,
-          context.headers,
-          this.config.allowedEmailDomains,
-          this.config.instanceMode === "saas",
-        );
+        const identity = await this.identity(context);
         if (!identity.sessionId || identity.caller?.authMethod === "key")
           throw new ServiceError(
             403,
@@ -623,14 +681,7 @@ export class AuthService {
         });
         const audit = await this.audit.write(
           { ...context, caller: identity.caller },
-          {
-            action: "auth.organizations",
-            actor: {
-              userId: identity.user.id,
-              apiKeyId: identity.caller?.apiKeyId ?? null,
-              authMethod: identity.caller?.authMethod ?? "cookie",
-            },
-          },
+          { action: "auth.organizations", actor: identityActor(identity) },
         );
         return { result, audit };
       },
@@ -643,13 +694,7 @@ export class AuthService {
       context,
       { action: "auth.organization_switch" },
       async () => {
-        const identity = await identityFromHeaders(
-          this.prisma,
-          this.native,
-          context.headers,
-          this.config.allowedEmailDomains,
-          this.config.instanceMode === "saas",
-        );
+        const identity = await this.identity(context);
         if (identity.caller?.authMethod === "key" || !identity.sessionId)
           throw new ServiceError(
             403,
@@ -668,14 +713,7 @@ export class AuthService {
           });
           if (!member)
             throw new ServiceError(404, "NOT_FOUND", "Organization not found.");
-          const caller: CallerContext = {
-            organizationId,
-            userId: identity.user.id,
-            role: organizationRoleSchema.parse(member.role),
-            apiKeyId: null,
-            authMethod: "cookie",
-            permissions: { sessions: ["read", "ingest"] },
-          };
+          const caller = cookieCaller(member);
           await lockOrganization(tx, caller);
           await createAuth(tx, this.config).api.setActiveOrganization({
             headers: context.headers,
@@ -719,19 +757,12 @@ export class AuthService {
           : requirePermission(context, "admin");
         const parsed = keysInputSchema.parse(input);
         const { cursor, ...query } = parsed;
-        const binding = z.json().parse(
-          JSON.parse(
-            JSON.stringify({
-              organizationId: caller.organizationId,
-              operation: "keys",
-              userId: own ? caller.userId : null,
-              input: query,
-            }),
-          ),
-        );
-        const offset = cursor
-          ? this.cursors.decode(cursor, binding, z.number().int().nonnegative())
-          : 0;
+        const binding = wireValue({
+          organizationId: caller.organizationId,
+          operation: "keys",
+          userId: own ? caller.userId : null,
+          input: query,
+        });
         const sort = {
           name: "k.name",
           user_id: "o.user_id",
@@ -740,55 +771,61 @@ export class AuthService {
           last_used_at: 'k."lastRequest"',
           enabled: "k.enabled",
         } as const;
-        const ids = await this.prisma.$queryRaw<
-          {
-            id: string;
-            userId: string;
-            userEmail: string | null;
-            userName: string | null;
-          }[]
-        >(Prisma.sql`
+        const page = await offsetPage(
+          this.cursors,
+          binding,
+          cursor,
+          parsed.limit,
+          async (offset, take) => {
+            const owners = await this.prisma.$queryRaw<
+              {
+                id: string;
+                userId: string;
+                userEmail: string | null;
+                userName: string | null;
+              }[]
+            >(Prisma.sql`
       SELECT k.id, o.user_id AS "userId", u.email AS "userEmail", u.name AS "userName" FROM apikey k JOIN api_key_owner o ON o.key_id=k.id
       LEFT JOIN "user" u ON u.id=o.user_id
       WHERE o.organization_id=${caller.organizationId} AND k."referenceId"=o.organization_id
       ${own ? Prisma.sql`AND o.user_id=${caller.userId}` : parsed.filters.user_id ? Prisma.sql`AND o.user_id=${parsed.filters.user_id}` : Prisma.empty}
       ${parsed.filters.enabled === undefined ? Prisma.empty : Prisma.sql`AND k.enabled=${parsed.filters.enabled}`}
       ORDER BY ${Prisma.raw(sort[parsed.sort ?? "created_at"])} ${Prisma.raw(parsed.order.toUpperCase())}, k.id ASC
-      OFFSET ${offset} LIMIT ${parsed.limit + 1}`);
-        const keys = await this.prisma.apikey.findMany({
-          where: {
-            id: { in: ids.slice(0, parsed.limit).map((row) => row.id) },
+      OFFSET ${offset} LIMIT ${take}`);
+            const keys = new Map(
+              (
+                await this.prisma.apikey.findMany({
+                  where: { id: { in: owners.map((row) => row.id) } },
+                })
+              ).map((key) => [key.id, key]),
+            );
+            return owners.flatMap((owner) => {
+              const key = keys.get(owner.id);
+              return key
+                ? [
+                    mapKey(
+                      key,
+                      {
+                        organizationId: caller.organizationId,
+                        userId: owner.userId,
+                      },
+                      owner.userEmail !== null && owner.userName !== null
+                        ? { email: owner.userEmail, name: owner.userName }
+                        : null,
+                    ),
+                  ]
+                : [];
+            });
           },
-        });
-        const keyMap = new Map(keys.map((key) => [key.id, key]));
-        const items = ids.slice(0, parsed.limit).flatMap((owner) => {
-          const key = keyMap.get(owner.id);
-          return key
-            ? [
-                mapKey(
-                  key,
-                  {
-                    organizationId: caller.organizationId,
-                    userId: owner.userId,
-                  },
-                  owner.userEmail !== null && owner.userName !== null
-                    ? { email: owner.userEmail, name: owner.userName }
-                    : null,
-                ),
-              ]
-            : [];
-        });
+        );
         const result = keysOutputSchema.parse({
-          items,
-          cursor:
-            ids.length > parsed.limit
-              ? this.cursors.encode(binding, offset + parsed.limit)
-              : null,
+          items: page.items,
+          cursor: page.cursor,
         });
         const audit = await this.audit.write(context, {
           action: "keys.list",
           resourceType: "key",
-          detail: { ...query, row_count: items.length },
+          detail: { ...query, row_count: page.items.length },
         });
         return { result, audit };
       },
@@ -939,13 +976,10 @@ export class AuthService {
       context,
       { action: "keys.reveal", resourceType: "key", resourceIds: [keyId] },
       async () => {
-        const caller = requireCaller(context);
-        if (caller.authMethod !== "cookie")
-          throw new ServiceError(
-            403,
-            "KEY_REVEAL_SESSION_REQUIRED",
-            "Sign in to the dashboard to copy an API key.",
-          );
+        const caller = requireCookie(context, {
+          code: "KEY_REVEAL_SESSION_REQUIRED",
+          message: "Sign in to the dashboard to copy an API key.",
+        });
         const secret = await this.prisma.apiKeySecret.findFirst({
           where: {
             apiKeyId: keyId,

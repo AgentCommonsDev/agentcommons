@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm build:reference && tsc",
+    "build": "pnpm build:reference",
     "typecheck": "tsc --noEmit",
     "dev": "pnpm build:reference && tsx watch --env-file-if-exists=../../.env src/main.ts",
     "start": "tsx src/main.ts",

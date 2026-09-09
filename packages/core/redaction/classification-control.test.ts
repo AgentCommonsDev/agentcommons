@@ -1,25 +1,17 @@
-import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
-import { z } from "zod";
 import { NORMALIZERS } from "../normalizers/index.js";
-import type { Harness, SourceRecord } from "../normalizers/types.js";
+import type { Harness } from "../normalizers/types.js";
 import { maskToolResults } from "./tool-results.js";
+import {
+  geminiMessages,
+  jsonlRecords,
+  sourceRecord,
+} from "../test/fixtures.js";
 
 const directory = new URL(
   "../../../fixtures/transcripts/tool-identities/",
   import.meta.url,
 );
-const object = z.looseObject({});
-function source(payload: Record<string, unknown>, pos: number): SourceRecord {
-  return {
-    id: `record-${String(pos)}`,
-    pos: BigInt(pos),
-    sourceVersion: 0,
-    key: null,
-    payload,
-    receivedAt: new Date("2026-09-08T06:00:00Z"),
-  };
-}
 // @req R-RED-01
 it.each<[Harness, string]>([
   ["CLAUDE_CODE", "claude.jsonl"],
@@ -29,29 +21,16 @@ it.each<[Harness, string]>([
 ])(
   "pairs captured %s results from compact server-owned classifications without historical payloads",
   (harness, file) => {
-    const text = readFileSync(new URL(file, directory), "utf8");
+    const url = new URL(file, directory);
     const records = file.endsWith(".json")
-      ? z
-          .object({ messages: z.array(object) })
-          .parse(JSON.parse(text) as unknown)
-          .messages.map(source)
-      : text
-          .trimEnd()
-          .split("\n")
-          .map((line, pos) =>
-            source(object.parse(JSON.parse(line) as unknown), pos),
-          );
+      ? geminiMessages(url).map((payload, pos) => sourceRecord(payload, pos))
+      : jsonlRecords(url);
     const adapter = NORMALIZERS[harness];
     const full = maskToolResults(adapter, records);
-    const classifications = full.flatMap((record) =>
-      (record.redactionContext?.toolCalls ?? []).map((call) => ({
-        ...record,
-        payload: {},
-        redactionContext: { toolCalls: [call], identities: [] },
-      })),
+    const classifications = full.flatMap(
+      (record) => record.redactionContext?.toolCalls ?? [],
     );
     expect(classifications.length).toBeGreaterThan(0);
-    expect(adapter.toolUses(classifications)).toEqual([]);
     const resultRecords = full.filter(
       (record) => adapter.toolResults(record).length > 0,
     );

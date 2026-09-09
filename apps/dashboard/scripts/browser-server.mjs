@@ -1,9 +1,8 @@
-import { waitForTracePublication } from "../../../packages/traces/test/support.ts";
-import { TraceAuditProjectionService } from "../../api/src/services/trace-audit-projection.ts";
 import {
   startTraceDatabase,
-  traceEnvironment,
+  waitForTracePublication,
 } from "../../../packages/traces/test/support.ts";
+import { TraceAuditProjectionService } from "../../api/src/services/trace-audit-projection.ts";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { writeFile, unlink, readFile } from "node:fs/promises";
@@ -12,10 +11,9 @@ import {
   provisionMember,
   testAuthConfiguration,
 } from "../../api/test/support.ts";
-import { createRuntime } from "../../api/src/main.ts";
-import { createApp } from "../../api/src/app.ts";
+import { startApp } from "../../api/test/app.ts";
+import { testEnvelope } from "../../api/test/envelopes.ts";
 import { startBrowserOidc } from "./browser-oidc.mjs";
-import { environment } from "../../api/src/env.ts";
 
 const browserCookies = (cookie) =>
   cookie.split("; ").map((entry) => {
@@ -41,8 +39,7 @@ const basePort = z.coerce
 const publicUrl = `http://localhost:${String(basePort)}`;
 const authConfiguration = { ...testAuthConfiguration, publicUrl };
 const database = await startTraceDatabase(authConfiguration);
-let runtime;
-let app;
+let server;
 let closeOidc;
 const statePath =
   process.env.DASHBOARD_BROWSER_STATE ??
@@ -56,20 +53,25 @@ try {
       embeddingsEnabled: true,
     },
   });
-  const env = environment({
-    ...traceEnvironment(database.traceConfig),
-    PUBLIC_URL: publicUrl,
-    DATABASE_URL: database.urls.app,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    LOG_LEVEL: "silent",
-    TRUST_PROXY: "loopback",
-    // Embeddings default on with the deterministic provider; an operator-off
-    // fixture sets EMBEDDINGS_ENABLED=false to exercise the disabled surface.
-    EMBEDDINGS_ENABLED: process.env.EMBEDDINGS_ENABLED ?? "true",
-    EMBEDDINGS_PROVIDER: process.env.EMBEDDINGS_PROVIDER ?? "fake",
-  });
-  runtime = await createRuntime(env);
-  await runtime.jobs.start();
+  // The server listens only once the fixture below is seeded (see the end of this block).
+  server = await startApp(
+    database,
+    {
+      PUBLIC_URL: publicUrl,
+      TRUST_PROXY: "loopback",
+      // Embeddings default on with the deterministic provider; an operator-off
+      // fixture sets EMBEDDINGS_ENABLED=false to exercise the disabled surface.
+      EMBEDDINGS_ENABLED: process.env.EMBEDDINGS_ENABLED ?? "true",
+      EMBEDDINGS_PROVIDER: process.env.EMBEDDINGS_PROVIDER ?? "fake",
+    },
+    {
+      jobs: true,
+      ...(process.env.DASHBOARD_BROWSER_ASSETS
+        ? { dashboardDirectory: process.env.DASHBOARD_BROWSER_ASSETS }
+        : { static: true }),
+    },
+  );
+  const { runtime, app } = server;
   await runtime.services.members.add(secondary.owner, {
     emails: [primary.email],
     role: "member",
@@ -145,32 +147,19 @@ try {
         uuid: "oversized-browser",
         text: "Long raw record browser verification. ".repeat(4000),
       });
-    const envelope = {
-      envelopeVersion: 2,
-      hook: { sha256: "a".repeat(64), extensionSha256: null },
-      harness: "CLAUDE_CODE",
+    const envelope = testEnvelope({
       harnessSessionId,
-      behavior: "sync",
-      nativeEvent: "Stop",
-      batchId: randomUUID(),
       installationId,
-      sentAt: new Date().toISOString(),
       sourcePos: records.length - 1,
+      cursor: `${String(records.length)}:0`,
       context: {
-        cwd: "/repo",
-        installation: {
-          hostname: "browser-workstation",
-          osUser: "developer",
-          platform: "linux",
-          arch: "x64",
-        },
+        installation: { hostname: "browser-workstation" },
         git: {
           root: "/repo",
           remoteUrl: "git@github.com:rek7/agentcommons.git",
           branch: "browser-verification",
           head: "abc123",
         },
-        parentHint: null,
       },
       records: records.map((record, pos) => ({
         pos,
@@ -178,9 +167,7 @@ try {
         key: record.uuid,
         line: JSON.stringify(record),
       })),
-      cursor: `${String(records.length)}:0`,
-      end: null,
-    };
+    });
     const result = await runtime.services.ingest.execute(
       index === 52 ? secondary.context : primary.context,
       envelope,
@@ -511,13 +498,6 @@ try {
     primary.owner,
     basePort,
   );
-  app = await createApp({
-    env,
-    services: runtime.services,
-    ...(process.env.DASHBOARD_BROWSER_ASSETS
-      ? { dashboardDirectory: process.env.DASHBOARD_BROWSER_ASSETS }
-      : {}),
-  });
   const reader = await provisionMember(
     database,
     primary.owner,
@@ -762,15 +742,13 @@ try {
   process.stdout.write(`Dashboard browser server ready at ${publicUrl}\n`);
 } catch (error) {
   await closeOidc?.();
-  await app?.close();
-  await runtime?.close();
+  await server?.close();
   await database.close();
   throw error;
 }
 async function close() {
   await closeOidc?.();
-  await app?.close();
-  await runtime?.close();
+  await server?.close();
   await database.close();
   await unlink(statePath).catch(() => {});
 }

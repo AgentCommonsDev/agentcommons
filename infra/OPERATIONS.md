@@ -107,7 +107,7 @@ Provision, release and bootstrap in that order:
 ```sh
 pulumi -C infra up --stack "$PULUMI_STACK"
 infra/scripts/single-node-release.sh <commit>
-infra/scripts/single-node-bootstrap.sh --admin owner@example.com \
+infra/scripts/single-node-run.sh bootstrap.sh --admin owner@example.com \
   --organization team --name "Team" --domain example.com --domain example.org
 ```
 
@@ -120,7 +120,7 @@ command is the update path: run it with a newer commit. After a configuration ch
 run `pulumi up` and then the release script with the current commit to re-render `.env`
 and restart. The first build takes about ten to fifteen minutes on a `t4g.large`.
 
-The bootstrap wrapper copies this checkout's `infra/scripts/single-node/bootstrap.sh`
+`single-node-run.sh` copies this checkout's `infra/scripts/single-node/bootstrap.sh`
 to the release bucket and runs it on the host, so bootstrap tooling follows the operator's
 checkout while the application stays the released code. It seeds the owner and organization with `db:seed` (idempotent),
 completes the owner's one-time setup link with a generated password through the native

@@ -1,16 +1,16 @@
 import { LockKeyhole } from "lucide-react";
 import { useState } from "react";
-import { LoadingState, RequestError } from "../../components/app/states";
-import { ProviderSignIn } from "../../components/provider-sign-in";
+import { useMutation } from "@tanstack/react-query";
+import { QueryState } from "../../components/app/states";
+import { AuthMethods } from "../../components/provider-sign-in";
 import { Button } from "../../components/ui/button";
-import { Alert, Spinner } from "../../components/ui/feedback";
+import { Spinner } from "../../components/ui/feedback";
 import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { copy } from "../../copy";
-import { authClient } from "../../lib/auth-client";
+import { authClient, authResult } from "../../lib/auth-client";
 import { useBillingConfig } from "../../lib/billing-config";
-import { errorMessage } from "../../lib/display";
-import { paths } from "../../lib/routes";
+import { paths, returnPath, withReturn } from "../../lib/routes";
 import { useAuthConfig } from "../../lib/use-auth-config";
 import {
   AccountForm,
@@ -20,41 +20,32 @@ import {
   AccountPrompt,
 } from "./layout";
 
-export function LoginPage() {
+/** `next` is the application page the visitor asked for before signing in, if any. */
+export function LoginPage({ next }: { next: string | undefined }) {
   const billing = useBillingConfig();
   const config = useAuthConfig();
-  /* Hosted accounts pass through onboarding, which forwards ready users to the workspace. */
-  const callbackPath = billing.enabled ? paths.onboarding : paths.home;
+  /* Hosted accounts pass through onboarding, which forwards ready users to the requested page or the workspace. */
+  const callbackPath = billing.enabled
+    ? withReturn(paths.onboarding, next)
+    : (returnPath(next) ?? paths.home);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // With a provider configured, that is the one path shown; the password form is a switch away.
-  const [usePassword, setUsePassword] = useState(false);
-  const signIn = async () => {
-    setPending(true);
-    setError(null);
-    try {
+  const signIn = useMutation({
+    mutationFn: async () => {
       /* Relative callback paths resolve against the server's public URL, so they stay valid on any dev port. */
-      const response = await authClient.signIn.email({
-        email,
-        password,
-        callbackURL: callbackPath,
-      });
-      if (response.error)
-        throw new Error(response.error.message ?? copy.auth.signInFailed);
+      authResult(
+        await authClient.signIn.email({
+          email,
+          password,
+          callbackURL: callbackPath,
+        }),
+        copy.auth.signInFailed,
+      );
       window.location.assign(callbackPath);
-    } catch (caught) {
-      setError(errorMessage(caught));
-      setPending(false);
-    }
-  };
-  const provider = config.data
-    ? config.data.oidc_enabled || config.data.social_provider
-    : false;
-  const passwordEnabled = config.data?.email_password_enabled ?? false;
-  const showPassword = passwordEnabled && (!provider || usePassword);
-  const showProvider = Boolean(provider) && !usePassword;
+    },
+  });
+  // Success navigates away, so the form stays disabled until the new page loads.
+  const pending = signIn.isPending || signIn.isSuccess;
   return (
     <>
       <AccountHeading
@@ -62,119 +53,88 @@ export function LoginPage() {
         title={billing.enabled ? copy.auth.welcomeBack : copy.auth.nativeTitle}
         description={
           billing.enabled
-            ? copy.signup.signInDescription
+            ? copy.site.signup.signInDescription
             : copy.auth.nativeDescription
         }
       />
-      {config.isPending ? (
-        <LoadingState rows={2} />
-      ) : config.error ? (
-        <RequestError
-          title={copy.auth.configError}
-          error={config.error}
-          retry={() => {
-            void config.refetch();
-          }}
-        />
-      ) : (
-        <>
-          {showPassword && (
-            <AccountForm
-              onSubmit={(event) => {
-                event.preventDefault();
-                void signIn();
-              }}
-            >
-              <Field label={copy.auth.email}>
-                {(props) => (
-                  <Input
-                    {...props}
-                    data-testid="login-email"
-                    type="email"
-                    name="email"
-                    autoComplete="username"
-                    required
-                    value={email}
-                    onChange={(event) => {
-                      setEmail(event.target.value);
-                    }}
-                    disabled={pending}
-                  />
-                )}
-              </Field>
-              <Field label={copy.auth.password}>
-                {(props) => (
-                  <Input
-                    {...props}
-                    data-testid="login-password"
-                    type="password"
-                    name="password"
-                    autoComplete="current-password"
-                    required
-                    value={password}
-                    onChange={(event) => {
-                      setPassword(event.target.value);
-                    }}
-                    disabled={pending}
-                  />
-                )}
-              </Field>
-              <Button
-                type="submit"
-                data-testid="login-submit"
-                className="w-full"
-                disabled={pending}
+      <QueryState query={config} rows={2} title={copy.auth.configError}>
+        {(methods) => (
+          <AuthMethods
+            config={methods}
+            callbackPath={callbackPath}
+            toggleLabel={copy.auth.passwordInstead}
+            toggleTestId="login-use-password"
+            disabled={pending}
+            error={signIn.error}
+            passwordForm={
+              <AccountForm
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  signIn.mutate();
+                }}
               >
-                {pending && <Spinner className="text-current" />}
-                {pending ? copy.auth.signingIn : copy.auth.signIn}
-              </Button>
-            </AccountForm>
-          )}
-          {showProvider && (
-            <ProviderSignIn
-              config={config.data}
-              callbackPath={callbackPath}
-              disabled={pending}
-              onError={setError}
-            />
-          )}
-          {passwordEnabled && provider && (
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              data-testid="login-use-password"
-              className="self-center"
-              disabled={pending}
-              onClick={() => {
-                setUsePassword((prior) => !prior);
-              }}
-            >
-              {usePassword
-                ? copy.auth.providerInstead
-                : copy.auth.passwordInstead}
-            </Button>
-          )}
-          {!passwordEnabled && !provider && (
-            <Alert variant="danger">{copy.auth.noMethods}</Alert>
-          )}
-          {error && <Alert variant="danger">{error}</Alert>}
-        </>
-      )}
+                <Field label={copy.auth.email}>
+                  {(props) => (
+                    <Input
+                      {...props}
+                      data-testid="login-email"
+                      type="email"
+                      name="email"
+                      autoComplete="username"
+                      required
+                      value={email}
+                      onChange={(event) => {
+                        setEmail(event.target.value);
+                      }}
+                      disabled={pending}
+                    />
+                  )}
+                </Field>
+                <Field label={copy.auth.password}>
+                  {(props) => (
+                    <Input
+                      {...props}
+                      data-testid="login-password"
+                      type="password"
+                      name="password"
+                      autoComplete="current-password"
+                      required
+                      value={password}
+                      onChange={(event) => {
+                        setPassword(event.target.value);
+                      }}
+                      disabled={pending}
+                    />
+                  )}
+                </Field>
+                <Button
+                  type="submit"
+                  data-testid="login-submit"
+                  className="w-full"
+                  disabled={pending}
+                >
+                  {pending && <Spinner className="text-current" />}
+                  {pending ? copy.auth.signingIn : copy.auth.signIn}
+                </Button>
+              </AccountForm>
+            }
+          />
+        )}
+      </QueryState>
       {billing.enabled ? (
         <AccountLinks>
           <AccountPrompt
             text={copy.auth.noAccountYet}
-            href={paths.signup}
+            href={withReturn(paths.signup, next)}
             link={copy.auth.signupLink}
           />
           {config.data?.email_password_enabled && (
-            <AccountLink href={paths.forgotPassword}>
-              {copy.signup.forgot}
+            <AccountLink href={withReturn(paths.forgotPassword, next)}>
+              {copy.site.signup.forgot}
             </AccountLink>
           )}
-          <AccountLink href={paths.verifyEmail}>
-            {copy.signup.verifyEmail}
+          <AccountLink href={withReturn(paths.verifyEmail, next)}>
+            {copy.site.signup.verifyEmail}
           </AccountLink>
         </AccountLinks>
       ) : (

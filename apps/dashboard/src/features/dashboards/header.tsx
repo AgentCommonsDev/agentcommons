@@ -137,7 +137,7 @@ export function DashboardHeader({
   const isDefault = dashboard.id === defaultId;
   const author =
     dashboard.created_by?.name ?? dashboard.created_by?.email ?? null;
-  const duplicateHref = `${paths.dashboardNew}?from=${encodeURIComponent(dashboard.id)}`;
+  const duplicateHref = paths.dashboardDuplicate(dashboard.id);
   return (
     <>
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

@@ -4,8 +4,8 @@ import {
   PolicyCache,
   policyDefinitionSchema,
   sanitizeRecord,
-  byteLength,
 } from "./index.js";
+import { jsonByteLength } from "../schemas/common.js";
 import type { RedactionPolicy } from "./policy.js";
 
 const custom: RedactionPolicy = {
@@ -151,7 +151,7 @@ describe("redaction before persistence", () => {
     };
     const redacted = await new Redactor().json(input);
     const sanitized = sanitizeRecord(redacted.value);
-    expect(byteLength(sanitized)).toBeLessThan(1024 * 1024);
+    expect(jsonByteLength(sanitized)).toBeLessThan(1024 * 1024);
     expect(JSON.stringify(sanitized)).toMatch(
       /bytes omitted, sha256 [a-f0-9]{64}/,
     );

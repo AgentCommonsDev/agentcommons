@@ -1,6 +1,7 @@
 import { publicCopy } from "./copy/public";
 import { appCopy } from "./copy/app";
 import { authCopy } from "./copy/auth";
+import { billingCopy } from "./copy/billing";
 import { dashboardsCopy } from "./copy/dashboards";
 import { sessionsCopy } from "./copy/sessions";
 import { installCopy } from "./copy/install";
@@ -14,13 +15,14 @@ export { links } from "./copy/public";
 export type { LegalDocument } from "./copy/legal";
 
 /**
- * Every string a person reads in the dashboard. Marketing and account strings live in
- * `copy/public.ts`; the authenticated app is split per area under `copy/`.
+ * Every string a person reads in the dashboard, one namespace per area. The public site
+ * and hosted-account strings live under `site`; the authenticated app is split per area.
  */
 export const copy = {
-  ...publicCopy,
+  site: publicCopy,
   app: appCopy,
   auth: authCopy,
+  billing: billingCopy,
   dashboards: dashboardsCopy,
   sessions: sessionsCopy,
   install: installCopy,

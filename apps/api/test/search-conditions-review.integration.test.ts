@@ -1,20 +1,19 @@
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
-import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { cleanup } from "../../../scripts/cleanup.js";
 import { SearchService } from "../src/services/search.js";
 import { PolicyService } from "../src/services/policies.js";
 import { CursorCodec } from "../src/services/cursor.js";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { testEnvelope, toolUseRecord } from "./envelopes.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let org: Awaited<ReturnType<typeof provisionOrganization>>;
 let search: SearchService;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   org = await provisionOrganization(db, "conditions-review");
   const dependencies = {
     ...db,
@@ -23,55 +22,21 @@ beforeAll(async () => {
   };
   search = new SearchService(dependencies);
   const native = traceServices(db);
-  release.unshift(() => native.jobs.stop());
-  await native.publish(org.context, {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    batchId: randomUUID(),
-    installationId: randomUUID(),
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
-    sentAt: new Date().toISOString(),
-    sourcePos: 0,
-    cursor: "initial",
-    end: null,
-    context: {
-      cwd: "/review",
-      installation: {
-        hostname: "review",
-        osUser: "developer",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [
-      {
-        pos: 0,
-        key: randomUUID(),
-        sourceVersion: 0,
-        line: JSON.stringify({
-          type: "assistant",
-          uuid: randomUUID(),
-          message: {
-            role: "assistant",
-            content: [
-              {
-                type: "tool_use",
-                id: "review-call",
-                name: "Search",
-                input: { needle: "literal-search-marker" },
-              },
-            ],
-          },
+  defer(() => native.close());
+  await native.publish(
+    org.context,
+    testEnvelope({
+      cursor: "initial",
+      context: { cwd: "/review", installation: { hostname: "review" } },
+      records: [
+        toolUseRecord(0, {
+          id: "review-call",
+          name: "Search",
+          input: { needle: "literal-search-marker" },
         }),
-      },
-    ],
-  });
+      ],
+    }),
+  );
   await new PolicyService({ ...dependencies, cache: db.policies }).save(
     org.owner,
     null,
@@ -85,9 +50,7 @@ beforeAll(async () => {
     },
   );
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-SRCH-13 @req R-AUD-03
 it("keeps declared condition syntax in the actual search audit while redacting parameter paths and values", async () => {

@@ -1,10 +1,14 @@
 import { z } from "zod";
 import {
+  errorSchema,
   identityIdSchema,
+  jsonByteLength,
   jsonValueSchema,
   metricUnitSchema,
+  nonnegativeIntegerSchema,
   sessionIdSchema,
   utcDateTimeSchema,
+  uuidParamsSchema,
 } from "./common.js";
 import { sqlInputSchema, sqlOutputSchema } from "./sql.js";
 
@@ -66,13 +70,9 @@ export const dashboardVariableSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type DashboardVariable = z.infer<typeof dashboardVariableSchema>;
-export const dashboardVariableTypes = [
-  "time_range",
-  "repo",
-  "harness",
-  "user",
-  "text",
-] as const;
+/** Variable types in declaration order, read from the schema so pickers cannot drift from it. */
+export const dashboardVariableTypes: readonly DashboardVariable["type"][] =
+  dashboardVariableSchema.options.map((option) => option.shape.type.value);
 
 export const dashboardLayoutSchema = z
   .strictObject({
@@ -217,13 +217,6 @@ export const dashboardTileSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type DashboardTile = z.infer<typeof dashboardTileSchema>;
-export const dashboardTileTypes = [
-  "stat",
-  "chart",
-  "table",
-  "text",
-  "control",
-] as const;
 export const dashboardDefinitionMaxBytes = 64 * 1024;
 
 export const dashboardDefinitionSchema = z
@@ -259,10 +252,7 @@ export const dashboardDefinitionSchema = z
           message: "A control tile must name a declared variable.",
         });
     });
-    if (
-      new TextEncoder().encode(JSON.stringify(value)).length >
-      dashboardDefinitionMaxBytes
-    )
+    if (jsonByteLength(value) > dashboardDefinitionMaxBytes)
       context.addIssue({
         code: "custom",
         path: ["tiles"],
@@ -323,7 +313,7 @@ export const dashboardDefinitionToolSchema = z
 
 const saveInputShape = {
   id: sessionIdSchema.optional(),
-  revision: z.number().int().nonnegative().optional(),
+  revision: nonnegativeIntegerSchema.optional(),
   name: dashboardNameSchema,
   description: dashboardDescriptionSchema.default(""),
 };
@@ -348,7 +338,7 @@ export const dashboardSaveToolInputSchema = z
     definition: dashboardDefinitionToolSchema,
   })
   .superRefine(saveInputCheck);
-export const dashboardIdInputSchema = z.strictObject({ id: sessionIdSchema });
+export const dashboardIdInputSchema = uuidParamsSchema;
 const dashboardAuthorSchema = z
   .strictObject({
     user_id: identityIdSchema,
@@ -361,12 +351,12 @@ export const dashboardSummarySchema = z.strictObject({
   organization_id: identityIdSchema,
   name: dashboardNameSchema,
   description: z.string(),
-  revision: z.number().int().nonnegative(),
+  revision: nonnegativeIntegerSchema,
   builtin: z.boolean(),
   is_default: z.boolean(),
   can_edit: z.boolean(),
   created_by: dashboardAuthorSchema,
-  tile_count: z.number().int().nonnegative(),
+  tile_count: nonnegativeIntegerSchema,
   created_at: utcDateTimeSchema,
   updated_at: utcDateTimeSchema,
 });
@@ -396,9 +386,14 @@ export const dashboardDefaultOutputSchema = z.strictObject({
   default_id: sessionIdSchema,
 });
 
+/** An explicit UTC window, as a caller supplies it and as the renderer reports it. */
+const utcWindowSchema = z.strictObject({
+  from: utcDateTimeSchema,
+  to: utcDateTimeSchema,
+});
 const timeRangeValueSchema = z.union([
   dashboardTimePresetSchema,
-  z.strictObject({ from: utcDateTimeSchema, to: utcDateTimeSchema }),
+  utcWindowSchema,
 ]);
 export const dashboardVariableValueSchema = z.union([
   timeRangeValueSchema,
@@ -445,14 +440,14 @@ export const dashboardRenderToolInputSchema = z
   })
   .refine(renderInputCheck, renderInputError);
 export const dashboardResolvedVariableSchema = z.union([
-  z.strictObject({ from: utcDateTimeSchema, to: utcDateTimeSchema }),
+  utcWindowSchema,
   z.array(z.string()),
   z.string(),
 ]);
 export const dashboardTileResultSchema = z.strictObject({
   id: dashboardIdentifierSchema,
   result: sqlOutputSchema.nullable(),
-  error: z.strictObject({ code: z.string(), message: z.string() }).nullable(),
+  error: errorSchema.pick({ code: true, message: true }).nullable(),
 });
 export const dashboardRenderOutputSchema = z.strictObject({
   tiles: z.array(dashboardTileResultSchema),
@@ -466,7 +461,6 @@ export const dashboardRenderOutputSchema = z.strictObject({
 });
 export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
 export type Dashboard = z.infer<typeof dashboardSchema>;
-export type DashboardRenderInput = z.infer<typeof dashboardRenderInputSchema>;
 export type DashboardRenderOutput = z.infer<typeof dashboardRenderOutputSchema>;
 export type DashboardTileResult = z.infer<typeof dashboardTileResultSchema>;
 export type DashboardVariableValue = z.infer<

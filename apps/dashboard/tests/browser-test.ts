@@ -108,6 +108,11 @@ export async function signInAsMember(context: BrowserContext) {
   await context.addCookies(state.reuse.storageState.cookies);
   return state;
 }
+/** The page's pathname and decoded `next` search parameter, for return-address assertions. */
+export function accountLocation(page: Page) {
+  const url = new URL(page.url());
+  return { path: url.pathname, next: url.searchParams.get("next") };
+}
 /** Touch projects tap; the desktop project clicks. */
 export async function activate(locator: Locator, isMobile: boolean) {
   if (isMobile) await locator.tap();

@@ -11,6 +11,25 @@ export const DialogClose = DialogPrimitive.Close;
 export const DialogTitle = DialogPrimitive.Title;
 export const DialogDescription = DialogPrimitive.Description;
 
+function Overlay() {
+  return (
+    <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=open]:fade-in" />
+  );
+}
+function CloseButton({ label = copy.app.common.close }: { label?: string }) {
+  return (
+    <DialogPrimitive.Close asChild>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="absolute top-3 right-3 text-muted"
+        aria-label={label}
+      >
+        <X aria-hidden />
+      </Button>
+    </DialogPrimitive.Close>
+  );
+}
 export function DialogContent({
   className,
   children,
@@ -21,7 +40,7 @@ export function DialogContent({
 }) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=open]:fade-in" />
+      <Overlay />
       <DialogPrimitive.Content
         className={cn(
           "fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-4 overflow-y-auto rounded-xl border border-line bg-surface p-5 text-fg shadow-2xl focus:outline-none",
@@ -34,16 +53,7 @@ export function DialogContent({
         {...props}
       >
         {children}
-        <DialogPrimitive.Close asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="absolute top-3 right-3 text-muted"
-            aria-label={copy.app.common.close}
-          >
-            <X aria-hidden />
-          </Button>
-        </DialogPrimitive.Close>
+        <CloseButton />
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );
@@ -86,24 +96,30 @@ export function DialogFooter({ className, ...props }: ComponentProps<"div">) {
   );
 }
 
-/** Side panel: slides from the right on desktop and from the bottom on phones. */
+/**
+ * Side panel. `right` slides in from the right on desktop and from the bottom on phones;
+ * `left` is the navigation drawer; `bottom` is a phone-sized form sheet.
+ */
 export function SheetContent({
   className,
   children,
   side = "right",
+  closeLabel,
   ...props
 }: ComponentProps<typeof DialogPrimitive.Content> & {
   side?: "right" | "left" | "bottom";
+  /** Name of the close control when "Close" alone would be ambiguous. */
+  closeLabel?: string;
 }) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 backdrop-blur-[2px]" />
+      <Overlay />
       <DialogPrimitive.Content
         className={cn(
           "fixed z-50 flex flex-col gap-4 overflow-y-auto border-line bg-surface p-5 text-fg shadow-2xl focus:outline-none",
           side === "right" &&
             "inset-x-0 bottom-0 max-h-[85dvh] rounded-t-xl border-t sm:inset-x-auto sm:inset-y-0 sm:right-0 sm:max-h-none sm:w-[420px] sm:max-w-[92vw] sm:rounded-none sm:border-t-0 sm:border-l",
-          side === "left" && "inset-y-0 left-0 w-[300px] max-w-[88vw] border-r",
+          side === "left" && "inset-y-0 left-0 w-[280px] max-w-[88vw] border-r",
           side === "bottom" &&
             "inset-x-0 bottom-0 max-h-[85dvh] rounded-t-xl border-t",
           className,
@@ -111,16 +127,9 @@ export function SheetContent({
         {...props}
       >
         {children}
-        <DialogPrimitive.Close asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="absolute top-3 right-3 text-muted"
-            aria-label={copy.app.common.close}
-          >
-            <X aria-hidden />
-          </Button>
-        </DialogPrimitive.Close>
+        <CloseButton
+          {...(closeLabel === undefined ? {} : { label: closeLabel })}
+        />
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );

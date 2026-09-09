@@ -1,4 +1,3 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { readFile } from "node:fs/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -9,7 +8,8 @@ import { SessionService } from "../src/services/session.js";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
 import { requireCaller } from "../src/services/context.js";
-import { provisionOrganization, provisionMember } from "./support.js";
+import { provisionOrganization, provisionMember, releaser } from "./support.js";
+import { testEnvelope } from "./envelopes.js";
 import {
   projectionIdentity,
   type IngestEnvelope,
@@ -27,38 +27,22 @@ function envelope(
   harness: Harness = "CLAUDE_CODE",
   native = uuidv7(),
 ): IngestEnvelope {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
+  return testEnvelope({
     harness,
     harnessSessionId: native,
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
     batchId: uuidv7(),
     installationId: uuidv7(),
-    sentAt: new Date().toISOString(),
+    cursor: "0:0",
     context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "developer",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "developer", osUser: "test" },
       git: {
         root: "/repo",
         remoteUrl: "git@github.com:rek7/agentcommons.git",
         branch: "main",
         head: "commit-a",
       },
-      parentHint: null,
     },
-    records: [],
-    sourcePos: 0,
-    cursor: "0:0",
-    end: null,
-  };
+  });
 }
 function message(pos: number, text: string, role = "user") {
   return {
@@ -86,15 +70,15 @@ function next(value: IngestEnvelope, records = value.records): IngestEnvelope {
   };
 }
 
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   organization = await provisionOrganization(database, "ingest-primary");
   other = await provisionOrganization(database, "ingest-other");
   organizationId = requireCaller(organization.context).organizationId;
   services = traceServices(database);
-  release.unshift(() => services.close());
+  defer(() => services.close());
   ingest = services.ingest;
   policy = new PolicyService({
     prisma: database.prisma,
@@ -103,9 +87,7 @@ beforeAll(async () => {
     cursors: new CursorCodec("integration-cursor-secret"),
   });
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 describe("transactional ingest", () => {
   // @req R-ING-03 @req R-ING-04

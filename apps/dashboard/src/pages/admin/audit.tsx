@@ -8,7 +8,6 @@ import { dateTime, metricValue, textValue, truncate } from "../../lib/display";
 import type { AuditEvent } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
-import { RequestError } from "../../components/app/states";
 import { Button } from "../../components/ui/button";
 import { PageHeader } from "../../components/ui/feedback";
 import { Input, NativeSelect } from "../../components/ui/input";
@@ -78,21 +77,22 @@ const fields = copy.app.fields;
 export function AuditPage() {
   const { organization } = useWorkspace();
   const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [filters, setFilters] = useState<Filters>({});
   const [record, setRecord] = useState<AuditEvent | null>(null);
-  const list = useListPage<AuditEvent, (typeof auditSortKeys)[number]>({
-    queryKey: [organization.id, "admin", "audit", filters],
-    initialSort: "ts",
-    sortKeys: auditSortKeys,
-    csvName: text.csvName,
-    fetchPage: async (request, signal) =>
-      unwrap(
-        await api.GET("/api/v1/admin/audit", {
-          params: { query: { filters, ...request, format: "json" } },
-          signal,
-        }),
-      ),
-  });
+  const list = useListPage<AuditEvent, (typeof auditSortKeys)[number], Filters>(
+    {
+      queryKey: [organization.id, "admin", "audit"],
+      initialSort: "ts",
+      sortKeys: auditSortKeys,
+      csvName: text.csvName,
+      fetchPage: async (request, signal) =>
+        unwrap(
+          await api.GET("/api/v1/admin/audit", {
+            params: { query: { ...request, format: "json" } },
+            signal,
+          }),
+        ),
+    },
+  );
   const set = (key: keyof Draft) => (value: string) => {
     setDraft((prior) => ({ ...prior, [key]: value }));
   };
@@ -205,7 +205,7 @@ export function AuditPage() {
     ],
     [],
   );
-  const active = countActive(filters);
+  const active = countActive(list.filters);
   return (
     <>
       <PageHeader title={text.title} description={text.description} />
@@ -214,8 +214,7 @@ export function AuditPage() {
           className="flex flex-col gap-4"
           onSubmit={(event) => {
             event.preventDefault();
-            setFilters(toFilters(draft));
-            list.reset();
+            list.setFilters(toFilters(draft));
           }}
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -308,8 +307,7 @@ export function AuditPage() {
               disabled={active === 0 && countActive(draft) === 0}
               onClick={() => {
                 setDraft(emptyDraft);
-                setFilters({});
-                list.reset();
+                list.setFilters({});
               }}
             >
               {copy.app.common.clear}
@@ -317,38 +315,29 @@ export function AuditPage() {
           </div>
         </form>
       </FiltersCard>
-      {list.query.error ? (
-        <RequestError
-          error={list.query.error}
-          retry={() => {
-            void list.query.refetch();
-          }}
+      <div data-testid="admin-audit-table">
+        <DataTable
+          {...list.table}
+          columns={columns}
+          label={text.title}
+          compact
+          hiddenColumns={[
+            "api_key_id",
+            "installation_id",
+            "auth_method",
+            "ip",
+            "user_agent",
+            "request_id",
+            "resource_type",
+            "resource_ids",
+            "detail",
+          ]}
+          rowId={(row) => row.id}
+          onRowClick={setRecord}
+          emptyTitle={text.empty}
+          emptyDescription={text.emptyHint}
         />
-      ) : (
-        <div data-testid="admin-audit-table">
-          <DataTable
-            {...list.table}
-            columns={columns}
-            label={text.title}
-            compact
-            hiddenColumns={[
-              "api_key_id",
-              "installation_id",
-              "auth_method",
-              "ip",
-              "user_agent",
-              "request_id",
-              "resource_type",
-              "resource_ids",
-              "detail",
-            ]}
-            rowId={(row) => row.id}
-            onRowClick={setRecord}
-            emptyTitle={text.empty}
-            emptyDescription={text.emptyHint}
-          />
-        </div>
-      )}
+      </div>
       <AuditRecordDialog
         event={record}
         onClose={() => {

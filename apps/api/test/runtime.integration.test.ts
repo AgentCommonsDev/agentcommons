@@ -2,21 +2,22 @@ import {
   startTraceDatabase,
   traceEnvironment,
 } from "../../../packages/traces/test/support.js";
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { AuditService } from "../src/services/audit.js";
 import { createRuntime } from "../src/main.js";
 import { environment } from "../src/env.js";
-import { provisionOrganization, testAuthConfiguration } from "./support.js";
+import {
+  provisionOrganization,
+  releaser,
+  testAuthConfiguration,
+} from "./support.js";
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-RED-07 @req R-AUD-01
 it("seeds validated extra policies for every organization at boot, preserves them on restart, and rejects invalid configuration", async () => {

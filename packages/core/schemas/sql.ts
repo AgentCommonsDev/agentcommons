@@ -3,18 +3,32 @@ import {
   byteBoundedString,
   jsonValueSchema,
   nonnegativeIntegerSchema,
+  responseBytes,
 } from "./common.js";
 
+/** Bounds the query service enforces on one SQL run; the guard, the schema and the schema reference read them here. */
+export const sqlLimits = {
+  /** UTF-8 bytes of the submitted statement. */
+  sqlBytes: 20 * 1024,
+  /** Rows returned before the result is capped. */
+  rows: 500,
+  /** Bytes of the serialized result. */
+  responseBytes: responseBytes.page,
+  /** Wall-clock seconds before ClickHouse stops the query. */
+  seconds: 5,
+} as const;
+
 export const sqlInputSchema = z.strictObject({
-  sql: byteBoundedString(20 * 1024).refine((value) => value.trim().length > 0, {
-    error: "Enter a SELECT query.",
-  }),
+  sql: byteBoundedString(sqlLimits.sqlBytes).refine(
+    (value) => value.trim().length > 0,
+    { error: "Enter a SELECT query." },
+  ),
 });
 export const sqlOutputSchema = z
   .strictObject({
     columns: z.array(z.strictObject({ name: z.string(), type: z.string() })),
-    rows: z.array(z.array(jsonValueSchema)).max(500),
-    row_count: nonnegativeIntegerSchema.max(500),
+    rows: z.array(z.array(jsonValueSchema)).max(sqlLimits.rows),
+    row_count: nonnegativeIntegerSchema.max(sqlLimits.rows),
     capped: z.boolean(),
     truncated_cells: z.array(
       z.tuple([nonnegativeIntegerSchema, nonnegativeIntegerSchema]),
@@ -46,5 +60,4 @@ export const sqlOutputSchema = z
         message: "Truncated cells must refer to returned cells.",
       });
   });
-export type SqlInput = z.infer<typeof sqlInputSchema>;
 export type SqlOutput = z.infer<typeof sqlOutputSchema>;

@@ -17,11 +17,13 @@ import {
   dashboardSaveInputSchema,
   dashboardSavedLimit,
   dashboardSchema,
-  jsonValueSchema,
   type CallerContext,
   type DashboardDefinition,
   type DashboardRenderOutput,
+  type DashboardSummary,
+  type DashboardTile,
   type DashboardTileResult,
+  type DashboardVariableValue,
 } from "@agentcommons/core";
 import {
   builtinDashboard,
@@ -32,24 +34,144 @@ import {
   resolveDashboardVariables,
   type BuiltinDashboard,
 } from "@agentcommons/core/dashboards";
+import type { TraceParameters } from "@agentcommons/traces";
+import type { EmbeddingAvailability } from "../embeddings/settings.js";
 import { createPolicyCache } from "./policy-cache.js";
 import type { AuditService } from "./audit.js";
+import { lockOrganization } from "./auth.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import { mutationOperation } from "./mutation.js";
 import type { QueryService } from "./query.js";
+import { wireValue } from "./read-budget.js";
 import { readOperation } from "./read-operation.js";
 
 const builtinTimestamp = "2026-01-01T00:00:00.000Z";
-type Author = { user_id: string; email: string | null; name: string | null };
-type Client = PrismaClient | Prisma.TransactionClient;
+type Author = NonNullable<DashboardSummary["created_by"]>;
+type Client = Prisma.TransactionClient;
+/** One dashboard, shipped or saved, in the shape every presentation starts from. */
+interface Entry {
+  id: string;
+  organizationId: string;
+  name: string;
+  description: string;
+  revision: number;
+  builtin: boolean;
+  isDefault: boolean;
+  /** Null for a built-in, which nobody can edit. */
+  createdByUserId: string | null;
+  /** Parsed once; null when a saved row no longer matches the definition schema. */
+  definition: DashboardDefinition | null;
+  createdAt: string;
+  updatedAt: string;
+}
+function fromRow(
+  row: DashboardRow,
+  definition: DashboardDefinition | null = parseDefinition(row.definition),
+): Entry {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    name: row.name,
+    description: row.description,
+    revision: row.revision,
+    builtin: false,
+    isDefault: row.isDefault,
+    createdByUserId: row.createdByUserId,
+    definition,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+function fromBuiltin(
+  dashboard: BuiltinDashboard,
+  caller: CallerContext,
+): Entry {
+  return {
+    id: dashboard.id,
+    organizationId: caller.organizationId,
+    name: dashboard.name,
+    description: dashboard.description,
+    revision: 0,
+    builtin: true,
+    isDefault: false,
+    createdByUserId: null,
+    definition: dashboard.definition,
+    createdAt: builtinTimestamp,
+    updatedAt: builtinTimestamp,
+  };
+}
+function parseDefinition(value: unknown): DashboardDefinition | null {
+  const parsed = dashboardDefinitionSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+function canEdit(caller: CallerContext, entry: Entry): boolean {
+  return (
+    entry.createdByUserId !== null &&
+    (entry.createdByUserId === caller.userId || hasAdminAuthority(caller))
+  );
+}
+// Self-contained for agents (no $ref/$defs, which some model APIs reject): an empty
+// metadata registry keeps the OpenAPI component ids out of it.
+const definitionJsonSchema = z.toJSONSchema(dashboardDefinitionSchema, {
+  io: "input",
+  metadata: z.registry(),
+});
 
-/** Rendered results live at most an hour, keyed by organization, caller scope, revision, tiles, variables and data version. */
+/**
+ * Rendered tiles live at most an hour, keyed by organization, caller scope, dashboard
+ * revision and resolved variables, one entry per tile (§10). The organization's data
+ * version is not part of the key: it moves on every ingest, so keying by it made every
+ * working-hours render a miss (ADR 0058). The hourly pre-render job replaces entries
+ * before they expire.
+ */
 const RENDER_CACHE_TTL_MS = 60 * 60_000;
-const RENDER_CACHE_ENTRIES = 256;
+/** Dashboards kept at once; the earliest inserted is evicted first. */
+const RENDER_CACHE_DASHBOARDS = 256;
 const RENDER_CONCURRENCY = 4;
-interface RenderEntry {
-  output: DashboardRenderOutput;
+interface RenderedTile {
+  tile: DashboardTileResult;
+  renderedAt: string;
+}
+interface CachedTile extends RenderedTile {
   expiresAt: number;
+}
+interface CachedDashboard {
+  insertedAt: number;
+  tiles: Map<string, CachedTile>;
+}
+/** Per-tile results of saved and built-in dashboards; errored tiles are never stored. */
+class RenderCache {
+  private readonly dashboards = new Map<string, CachedDashboard>();
+  /** The unexpired tiles cached under `key`. */
+  get(key: string, now: number): ReadonlyMap<string, CachedTile> {
+    const entry = this.dashboards.get(key);
+    if (!entry) return new Map();
+    for (const [id, tile] of entry.tiles)
+      if (tile.expiresAt <= now) entry.tiles.delete(id);
+    if (!entry.tiles.size) this.dashboards.delete(key);
+    return entry.tiles;
+  }
+  /** Store or replace tiles under `key`; when full, the earliest inserted dashboard goes first. */
+  set(key: string, tiles: readonly CachedTile[], now: number): void {
+    if (!tiles.length) return;
+    let entry = this.dashboards.get(key);
+    if (!entry) {
+      if (this.dashboards.size >= RENDER_CACHE_DASHBOARDS) {
+        let oldest: [string, CachedDashboard] | undefined;
+        for (const candidate of this.dashboards)
+          if (!oldest || candidate[1].insertedAt < oldest[1].insertedAt)
+            oldest = candidate;
+        if (oldest) this.dashboards.delete(oldest[0]);
+      }
+      entry = { insertedAt: now, tiles: new Map() };
+      this.dashboards.set(key, entry);
+    }
+    for (const tile of tiles) entry.tiles.set(tile.tile.id, tile);
+  }
+}
+/** Admins share one cache scope; each member has their own because row policies show them their private sessions. */
+export function renderScope(caller: CallerContext): string {
+  return hasAdminAuthority(caller) ? "admin" : `user:${caller.userId}`;
 }
 /** Runs `task` over `items` with at most `limit` in flight, preserving order. */
 async function concurrently<T, R>(
@@ -71,29 +193,8 @@ async function concurrently<T, R>(
   );
   return results;
 }
-const dataVersionSchema = z.array(z.object({ version: z.string() })).length(1);
 export class DashboardService {
-  private readonly renderCache = new Map<string, RenderEntry>();
-  /**
-   * One indexed aggregate over the organization's session control rows. Any
-   * publication, redaction pass, purge, visibility change or session end changes it,
-   * so cached renders are served only while the underlying data is unchanged.
-   */
-  private async dataVersion(organizationId: string): Promise<string> {
-    const rows = dataVersionSchema.parse(
-      await this.dependencies.prisma.$queryRaw`SELECT md5(concat_ws('|',
-        count(*),
-        coalesce(sum(published_revision),0),
-        coalesce(sum(redaction_generation),0),
-        count(purged_at),
-        count(*) FILTER (WHERE visibility='PRIVATE'),
-        coalesce(sum(CASE WHEN visibility='PRIVATE' THEN hashtext(id::text) ELSE 0 END),0),
-        count(*) FILTER (WHERE status<>'ACTIVE'),
-        coalesce(max(last_activity_at),'epoch'::timestamptz)
-      )) AS version FROM trace_session_control WHERE organization_id=${organizationId}`,
-    );
-    return z.string().parse(rows[0]?.version);
-  }
+  private readonly cache = new RenderCache();
   constructor(
     private readonly dependencies: {
       prisma: PrismaClient;
@@ -102,13 +203,11 @@ export class DashboardService {
     },
   ) {}
 
-  private canEdit(caller: CallerContext, row: DashboardRow): boolean {
-    return row.createdByUserId === caller.userId || hasAdminAuthority(caller);
-  }
   private async authors(
     client: Client,
     ids: readonly string[],
   ): Promise<Map<string, Author>> {
+    if (!ids.length) return new Map();
     const users = await client.user.findMany({
       where: { id: { in: [...new Set(ids)] } },
       select: { id: true, email: true, name: true },
@@ -121,49 +220,31 @@ export class DashboardService {
     );
   }
   private summary(
-    row: DashboardRow,
+    entry: Entry,
     caller: CallerContext,
     defaultId: string,
     authors: Map<string, Author>,
-  ) {
-    const definition = dashboardDefinitionSchema.safeParse(row.definition);
+  ): DashboardSummary {
     return {
-      id: row.id,
-      organization_id: row.organizationId,
-      name: row.name,
-      description: row.description,
-      revision: row.revision,
-      builtin: false,
-      is_default: row.id === defaultId,
-      can_edit: this.canEdit(caller, row),
-      created_by: authors.get(row.createdByUserId) ?? {
-        user_id: row.createdByUserId,
-        email: null,
-        name: null,
-      },
-      tile_count: definition.success ? definition.data.tiles.length : 0,
-      created_at: row.createdAt.toISOString(),
-      updated_at: row.updatedAt.toISOString(),
-    };
-  }
-  private builtin(
-    dashboard: BuiltinDashboard,
-    caller: CallerContext,
-    defaultId: string,
-  ) {
-    return {
-      id: dashboard.id,
-      organization_id: caller.organizationId,
-      name: dashboard.name,
-      description: dashboard.description,
-      revision: 0,
-      builtin: true,
-      is_default: defaultId === dashboard.id,
-      can_edit: false,
-      created_by: null,
-      tile_count: dashboard.definition.tiles.length,
-      created_at: builtinTimestamp,
-      updated_at: builtinTimestamp,
+      id: entry.id,
+      organization_id: entry.organizationId,
+      name: entry.name,
+      description: entry.description,
+      revision: entry.revision,
+      builtin: entry.builtin,
+      is_default: entry.id === defaultId,
+      can_edit: canEdit(caller, entry),
+      created_by:
+        entry.createdByUserId === null
+          ? null
+          : (authors.get(entry.createdByUserId) ?? {
+              user_id: entry.createdByUserId,
+              email: null,
+              name: null,
+            }),
+      tile_count: entry.definition?.tiles.length ?? 0,
+      created_at: entry.createdAt,
+      updated_at: entry.updatedAt,
     };
   }
   /** The saved default, or the shipped default built-in when an organization has none. */
@@ -187,11 +268,23 @@ export class DashboardService {
   ): Promise<{ definition: DashboardDefinition; revision: number }> {
     if (request.definition !== undefined)
       return { definition: request.definition, revision: 0 };
-    const id = z.string().parse(request.id);
+    const entry = await this.entry(
+      this.dependencies.prisma,
+      caller,
+      z.string().parse(request.id),
+    );
+    return { definition: this.definitionOf(entry), revision: entry.revision };
+  }
+  /** A built-in by id, or the organization's saved row. */
+  private async entry(
+    client: Client,
+    caller: CallerContext,
+    id: string,
+  ): Promise<Entry> {
     const builtin = builtinDashboard(id);
-    if (builtin) return { definition: builtin.definition, revision: 0 };
-    const row = await this.find(this.dependencies.prisma, caller, id);
-    return { definition: this.definitionOf(row), revision: row.revision };
+    return builtin
+      ? fromBuiltin(builtin, caller)
+      : fromRow(await this.find(client, caller, id));
   }
   private async find(
     client: Client,
@@ -209,28 +302,26 @@ export class DashboardService {
       );
     return row;
   }
-  private definitionOf(row: DashboardRow): DashboardDefinition {
-    const parsed = dashboardDefinitionSchema.safeParse(row.definition);
-    if (!parsed.success)
+  private definitionOf(entry: Entry): DashboardDefinition {
+    if (entry.definition === null)
       throw new ServiceError(
         409,
         "DASHBOARD_INVALID",
         "This dashboard was saved in an older format. Delete it or ask an admin to recreate it.",
       );
-    return parsed.data;
+    return entry.definition;
   }
-  private async present(
-    client: Client,
-    caller: CallerContext,
-    row: DashboardRow,
-    definition: DashboardDefinition,
-  ) {
+  private async present(client: Client, caller: CallerContext, entry: Entry) {
+    const definition = this.definitionOf(entry);
     const [defaultId, authors] = await Promise.all([
       this.defaultId(client, caller.organizationId),
-      this.authors(client, [row.createdByUserId]),
+      this.authors(
+        client,
+        entry.createdByUserId === null ? [] : [entry.createdByUserId],
+      ),
     ]);
     return dashboardSchema.parse({
-      ...this.summary(row, caller, defaultId, authors),
+      ...this.summary(entry, caller, defaultId, authors),
       definition,
     });
   }
@@ -255,21 +346,18 @@ export class DashboardService {
         return dashboardListOutputSchema.parse({
           items: [
             ...builtinDashboards.map((dashboard) =>
-              this.builtin(dashboard, caller, defaultId),
+              fromBuiltin(dashboard, caller),
             ),
-            ...rows.map((row) => this.summary(row, caller, defaultId, authors)),
-          ],
+            ...rows.map((row) => fromRow(row)),
+          ].map((entry) => this.summary(entry, caller, defaultId, authors)),
           default_id: defaultId,
-          // Self-contained for agents (no $ref/$defs, which some model APIs reject):
-          // an empty metadata registry keeps the OpenAPI component ids out of it.
-          definition_schema: z.toJSONSchema(dashboardDefinitionSchema, {
-            io: "input",
-            metadata: z.registry(),
-          }),
+          definition_schema: definitionJsonSchema,
           templates: dashboardTileTemplates,
         });
       },
-      (result) => ({ dashboards: result.items.length }),
+      {
+        describeResult: (result) => ({ dashboards: result.items.length }),
+      },
     );
   }
 
@@ -280,30 +368,16 @@ export class DashboardService {
       { action: "dashboard.get", resourceType: "dashboard" },
       async (caller) => {
         const { id } = dashboardIdInputSchema.parse(input);
-        const builtin = builtinDashboard(id);
-        if (builtin)
-          return dashboardSchema.parse({
-            ...this.builtin(
-              builtin,
-              caller,
-              await this.defaultId(
-                this.dependencies.prisma,
-                caller.organizationId,
-              ),
-            ),
-            definition: builtin.definition,
-          });
-        const row = await this.find(this.dependencies.prisma, caller, id);
+        const client = this.dependencies.prisma;
         return this.present(
-          this.dependencies.prisma,
+          client,
           caller,
-          row,
-          this.definitionOf(row),
+          await this.entry(client, caller, id),
         );
       },
-      undefined,
-      "read",
-      (result) => [result.id],
+      {
+        describeResources: (result) => [result.id],
+      },
     );
   }
 
@@ -321,11 +395,11 @@ export class DashboardService {
             "DASHBOARD_BUILTIN",
             "Built-in dashboards are read-only. Duplicate one to make changes.",
           );
-        await tx.$queryRaw`SELECT id FROM public.organization WHERE id=${caller.organizationId} FOR UPDATE`;
+        await lockOrganization(tx, caller);
         const existing = request.id
-          ? await this.find(tx, caller, request.id)
+          ? fromRow(await this.find(tx, caller, request.id))
           : null;
-        if (existing && !this.canEdit(caller, existing))
+        if (existing && !canEdit(caller, existing))
           throw new ServiceError(
             403,
             "DASHBOARD_FORBIDDEN",
@@ -350,7 +424,7 @@ export class DashboardService {
           );
         const redactor = await createPolicyCache(tx).get(caller.organizationId);
         const cleaned = await redactor.json(
-          jsonValueSchema.parse({
+          wireValue({
             name: request.name,
             description: request.description,
             definition: request.definition,
@@ -361,20 +435,29 @@ export class DashboardService {
           ...z.record(z.string(), z.unknown()).parse(cleaned.value),
         });
         const types = dashboardParameterTypes(content.definition.variables);
-        for (const tile of content.definition.tiles)
-          if ("sql" in tile)
-            try {
-              await this.dependencies.query.guard(caller, tile.sql, types, tx);
-            } catch (error) {
-              if (error instanceof ServiceError)
-                throw new ServiceError(
-                  error.statusCode,
-                  error.code,
-                  `Tile "${tile.id}": ${error.message}`,
-                  { tile: tile.id, cause: error.detail },
-                );
-              throw error;
-            }
+        let embeddings: EmbeddingAvailability | undefined;
+        for (const tile of content.definition.tiles) {
+          if (!("sql" in tile)) continue;
+          embeddings ??= await this.dependencies.query.embeddingsEnabled(
+            caller,
+            tx,
+          );
+          try {
+            await this.dependencies.query.guard(caller, tile.sql, {
+              parameterTypes: types,
+              embeddings,
+            });
+          } catch (error) {
+            if (error instanceof ServiceError)
+              throw new ServiceError(
+                error.statusCode,
+                error.code,
+                `Tile "${tile.id}": ${error.message}`,
+                { tile: tile.id, cause: error.detail },
+              );
+            throw error;
+          }
+        }
         const data = {
           name: content.name,
           description: content.description,
@@ -392,7 +475,11 @@ export class DashboardService {
               },
             });
         return {
-          result: await this.present(tx, caller, row, content.definition),
+          result: await this.present(
+            tx,
+            caller,
+            fromRow(row, content.definition),
+          ),
           resourceIds: [row.id],
           detail: {
             revision: row.revision,
@@ -418,18 +505,18 @@ export class DashboardService {
             "DASHBOARD_BUILTIN",
             "Built-in dashboards cannot be deleted.",
           );
-        const row = await this.find(tx, caller, id);
-        if (!this.canEdit(caller, row))
+        const entry = fromRow(await this.find(tx, caller, id));
+        if (!canEdit(caller, entry))
           throw new ServiceError(
             403,
             "DASHBOARD_FORBIDDEN",
             "Only the person who created this dashboard or an organization admin can delete it.",
           );
-        await tx.dashboard.delete({ where: { id: row.id } });
+        await tx.dashboard.delete({ where: { id: entry.id } });
         return {
           result: dashboardDeleteOutputSchema.parse({ deleted: true }),
           resourceIds: [id],
-          detail: { was_default: row.isDefault },
+          detail: { was_default: entry.isDefault },
         };
       },
     );
@@ -452,7 +539,7 @@ export class DashboardService {
             "DASHBOARD_BUILTIN",
             `${builtin.name} cannot be the Home default. Duplicate it and make the copy the default, or choose ${teamOverviewDashboard.name}.`,
           );
-        await tx.$queryRaw`SELECT id FROM public.organization WHERE id=${caller.organizationId} FOR UPDATE`;
+        await lockOrganization(tx, caller);
         const row = builtin ? null : await this.find(tx, caller, id);
         await tx.dashboard.updateMany({
           where: { organizationId: caller.organizationId, isDefault: true },
@@ -472,33 +559,22 @@ export class DashboardService {
   }
 
   render(context: ServiceContext, input: unknown) {
-    const parsed = dashboardRenderInputSchema.safeParse(input);
+    let target: string | undefined;
     return readOperation(
       this.dependencies.audit,
       context,
       {
         action: "dashboard.render",
         resourceType: "dashboard",
-        detail: parsed.success
-          ? {
-              id: parsed.data.id ?? null,
-              inline: parsed.data.definition !== undefined,
-              tiles: parsed.data.tiles ?? null,
-              variables: parsed.data.variables,
-            }
-          : null,
+        detail: input ?? null,
       },
       async (caller) => {
-        if (!parsed.success)
-          throw new ServiceError(
-            400,
-            "DASHBOARD_INVALID_INPUT",
-            parsed.error.issues.map((issue) => issue.message).join(" "),
-          );
-        const request = parsed.data;
+        const request = dashboardRenderInputSchema.parse(input);
+        target = request.id;
         const { definition, revision } = await this.source(caller, request);
-        const selected = request.tiles
-          ? definition.tiles.filter((tile) => request.tiles?.includes(tile.id))
+        const wanted = request.tiles && new Set(request.tiles);
+        const selected = wanted
+          ? definition.tiles.filter((tile) => wanted.has(tile.id))
           : definition.tiles;
         const known = new Set(definition.tiles.map((tile) => tile.id));
         const unknown = request.tiles?.filter((id) => !known.has(id)) ?? [];
@@ -508,81 +584,173 @@ export class DashboardService {
             "DASHBOARD_TILE_UNKNOWN",
             `This dashboard has no tile named ${unknown.join(", ")}.`,
           );
-        const { parameters, resolved } = resolveDashboardVariables(
-          definition.variables,
-          request.variables,
-        );
-        const parameterTypes = dashboardParameterTypes(definition.variables);
-        // Saved dashboards cache per caller scope (admins share one entry; members get
-        // their own because row policies show them their private sessions) and per data
-        // version, so a hit is always current and a miss follows any change.
-        const cacheKey =
-          request.definition === undefined
-            ? JSON.stringify([
-                caller.organizationId,
-                hasAdminAuthority(caller) ? "admin" : `user:${caller.userId}`,
-                request.id,
-                revision,
-                request.tiles ?? null,
-                resolved,
-                await this.dataVersion(caller.organizationId),
-              ])
-            : null;
-        if (cacheKey !== null && !request.refresh) {
-          const hit = this.renderCache.get(cacheKey);
-          if (hit && hit.expiresAt > Date.now())
-            return { ...hit.output, cached: true };
-          if (hit) this.renderCache.delete(cacheKey);
-        }
-        const tiles = await concurrently(
-          selected.filter((tile) => "sql" in tile),
-          RENDER_CONCURRENCY,
-          async (tile): Promise<DashboardTileResult> => {
-            try {
-              return {
-                id: tile.id,
-                result: await this.dependencies.query.run(caller, {
-                  sql: tile.sql,
-                  parameters,
-                  parameterTypes,
-                }),
-                error: null,
-              };
-            } catch (error) {
-              if (!(error instanceof ServiceError)) throw error;
-              return {
-                id: tile.id,
-                result: null,
-                error: { code: error.code, message: error.message },
-              };
-            }
-          },
-        );
-        const output = dashboardRenderOutputSchema.parse({
-          tiles,
-          variables: resolved,
-          rendered_at: new Date().toISOString(),
-          cached: false,
+        return this.renderTiles(caller, {
+          definition,
+          tiles: selected,
+          variables: request.variables,
+          // Inline definitions (editor previews) are never cached.
+          cacheId:
+            request.id === undefined ? null : { id: request.id, revision },
+          refresh: request.refresh,
         });
-        if (cacheKey !== null) {
-          if (this.renderCache.size >= RENDER_CACHE_ENTRIES) {
-            const oldest = this.renderCache.keys().next().value;
-            if (oldest !== undefined) this.renderCache.delete(oldest);
-          }
-          this.renderCache.set(cacheKey, {
-            output,
-            expiresAt: Date.now() + RENDER_CACHE_TTL_MS,
-          });
-        }
-        return output;
       },
-      (result) => ({
-        tiles: result.tiles.length,
-        errors: result.tiles.filter((tile) => tile.error !== null).length,
-        cached: result.cached,
-      }),
-      "read",
-      () => (parsed.success && parsed.data.id ? [parsed.data.id] : []),
+      {
+        describeResult: (result) => ({
+          tiles: result.tiles.length,
+          errors: result.tiles.filter((tile) => tile.error !== null).length,
+          cached: result.cached,
+        }),
+        describeResources: () => (target ? [target] : []),
+      },
     );
+  }
+
+  /**
+   * Run the data tiles among `tiles` that the cache does not hold (all of them on
+   * `refresh` or for an inline definition), cache the successful runs under the
+   * dashboard's key and report `rendered_at` as the oldest returned tile's run time;
+   * `cached` is true when no tile ran. An errored tile is returned but never cached, so
+   * the next request retries it alone.
+   */
+  private async renderTiles(
+    caller: CallerContext,
+    plan: {
+      definition: DashboardDefinition;
+      tiles: readonly DashboardTile[];
+      variables: Readonly<Record<string, DashboardVariableValue>>;
+      /** The saved or built-in dashboard the entry belongs to; null for inline definitions. */
+      cacheId: { id: string; revision: number } | null;
+      refresh: boolean;
+    },
+  ): Promise<DashboardRenderOutput> {
+    const { parameters, resolved } = resolveDashboardVariables(
+      plan.definition.variables,
+      plan.variables,
+    );
+    const parameterTypes = dashboardParameterTypes(plan.definition.variables);
+    const cacheKey =
+      plan.cacheId === null
+        ? null
+        : JSON.stringify([
+            caller.organizationId,
+            renderScope(caller),
+            plan.cacheId.id,
+            plan.cacheId.revision,
+            resolved,
+          ]);
+    const now = Date.now();
+    const cached =
+      cacheKey === null || plan.refresh
+        ? new Map<string, CachedTile>()
+        : this.cache.get(cacheKey, now);
+    const data = plan.tiles.filter((tile) => "sql" in tile);
+    const pending = data.filter((tile) => !cached.has(tile.id));
+    const fresh = pending.length
+      ? await this.runTiles(caller, pending, parameters, parameterTypes)
+      : [];
+    const renderedAt = new Date().toISOString();
+    if (cacheKey !== null)
+      this.cache.set(
+        cacheKey,
+        fresh
+          .filter((tile) => tile.error === null)
+          .map((tile) => ({
+            tile,
+            renderedAt,
+            expiresAt: Date.now() + RENDER_CACHE_TTL_MS,
+          })),
+        now,
+      );
+    const results = new Map<string, RenderedTile>(cached);
+    for (const tile of fresh) results.set(tile.id, { tile, renderedAt });
+    const tiles = data.flatMap((tile) => {
+      const entry = results.get(tile.id);
+      return entry ? [entry] : [];
+    });
+    return dashboardRenderOutputSchema.parse({
+      tiles: tiles.map((entry) => entry.tile),
+      variables: resolved,
+      rendered_at: tiles.reduce(
+        (oldest, entry) =>
+          entry.renderedAt < oldest ? entry.renderedAt : oldest,
+        renderedAt,
+      ),
+      cached: data.length > 0 && pending.length === 0,
+    });
+  }
+
+  /** Run data tiles four at a time; a tile's error is its result, never the request's. */
+  private async runTiles(
+    caller: CallerContext,
+    tiles: readonly Extract<DashboardTile, { sql: string }>[],
+    parameters: TraceParameters,
+    parameterTypes: Readonly<Record<string, string>>,
+  ): Promise<DashboardTileResult[]> {
+    // Availability cannot change between the tiles of one request.
+    const embeddings = await this.dependencies.query.embeddingsEnabled(caller);
+    return concurrently(
+      tiles,
+      RENDER_CONCURRENCY,
+      async (tile): Promise<DashboardTileResult> => {
+        try {
+          return {
+            id: tile.id,
+            result: await this.dependencies.query.run(caller, {
+              sql: tile.sql,
+              parameters,
+              parameterTypes,
+              embeddings,
+            }),
+            error: null,
+          };
+        } catch (error) {
+          if (!(error instanceof ServiceError)) throw error;
+          return {
+            id: tile.id,
+            result: null,
+            error: { code: error.code, message: error.message },
+          };
+        }
+      },
+    );
+  }
+
+  /**
+   * Re-render the default dashboard and every saved dashboard for one caller with their
+   * default variables, the values a page opens with, replacing the cached tiles. The
+   * pre-render job calls this for recently active scopes and audits each run (§10).
+   */
+  async prerender(
+    caller: CallerContext,
+  ): Promise<{ dashboards: string[]; tiles: number; errors: number }> {
+    const rows = await this.dependencies.prisma.dashboard.findMany({
+      where: { organizationId: caller.organizationId },
+      orderBy: [{ isDefault: "desc" }, { name: "asc" }, { id: "asc" }],
+      take: dashboardSavedLimit,
+    });
+    const entries = [
+      ...(rows.some((row) => row.isDefault)
+        ? []
+        : [fromBuiltin(teamOverviewDashboard, caller)]),
+      ...rows.map((row) => fromRow(row)),
+    ];
+    const summary = { dashboards: new Array<string>(), tiles: 0, errors: 0 };
+    for (const entry of entries) {
+      // A row in an older format renders as DASHBOARD_INVALID; nothing to pre-render.
+      if (entry.definition === null) continue;
+      const output = await this.renderTiles(caller, {
+        definition: entry.definition,
+        tiles: entry.definition.tiles,
+        variables: {},
+        cacheId: { id: entry.id, revision: entry.revision },
+        refresh: true,
+      });
+      summary.dashboards.push(entry.id);
+      summary.tiles += output.tiles.length;
+      summary.errors += output.tiles.filter(
+        (tile) => tile.error !== null,
+      ).length;
+    }
+    return summary;
   }
 }

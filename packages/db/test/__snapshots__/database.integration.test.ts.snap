@@ -35,19 +35,10 @@ ALTER TABLE "organization_settings" DROP CONSTRAINT "organization_settings_organ
 ALTER TABLE "redaction_event" DROP CONSTRAINT "redaction_event_organization";
 
 -- DropForeignKey
-ALTER TABLE "redaction_event" DROP CONSTRAINT "redaction_event_organization_id_session_id_fkey";
-
--- DropForeignKey
-ALTER TABLE "redaction_event" DROP CONSTRAINT "redaction_event_organization_id_session_id_ingest_batch_id_fkey";
-
--- DropForeignKey
 ALTER TABLE "redaction_policy" DROP CONSTRAINT "redaction_policy_organization";
 
 -- DropForeignKey
 ALTER TABLE "redaction_run" DROP CONSTRAINT "redaction_run_organization_id_fkey";
-
--- DropForeignKey
-ALTER TABLE "trace_audit_outbox" DROP CONSTRAINT "trace_audit_outbox_audit_id_fkey";
 
 -- DropForeignKey
 ALTER TABLE "trace_outbox" DROP CONSTRAINT "trace_outbox_organization_id_session_id_fkey";
@@ -96,18 +87,6 @@ ALTER TABLE "trace_tool_call_control" DROP CONSTRAINT "trace_tool_call_control_o
 
 -- DropForeignKey
 ALTER TABLE "usage_admission" DROP CONSTRAINT "usage_admission_organization_id_fkey";
-
--- AddForeignKey
-ALTER TABLE "redaction_event" ADD CONSTRAINT "redaction_event_organization_id_session_id_ingest_batch_id_fkey" FOREIGN KEY ("organization_id", "session_id", "ingest_batch_id") REFERENCES "trace_receipt"("organization_id", "session_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "redaction_event" ADD CONSTRAINT "redaction_event_organization_id_session_id_fkey" FOREIGN KEY ("organization_id", "session_id") REFERENCES "trace_session_control"("organization_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "trace_audit_outbox" ADD CONSTRAINT "trace_audit_outbox_audit_id_fkey" FOREIGN KEY ("audit_id") REFERENCES "audit_event"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- RenameIndex
-ALTER INDEX "trace_audit_outbox_created_at_idx" RENAME TO "trace_audit_outbox_created_at_audit_id_idx";
 
 "
 `;

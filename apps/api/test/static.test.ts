@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultBillingConfig } from "@agentcommons/core/schemas/billing";
 import { registerStaticRoutes } from "../src/routes/static.js";
 let directory: string;
 const apps: FastifyInstance[] = [];
@@ -49,7 +50,7 @@ async function application(mode: "customer" | "public") {
   apps.push(app);
   await registerStaticRoutes(app, {
     publicUrl: "https://sessions.example.test",
-    mode,
+    billingConfig: { ...defaultBillingConfig, mode, enabled: false },
     dashboardDirectory: directory,
     artifactDirectory: directory,
   });

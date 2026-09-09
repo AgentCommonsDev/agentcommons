@@ -4,16 +4,18 @@ import {
 } from "../embeddings/settings.js";
 import { ClickHouseError, type TraceParameters } from "@agentcommons/traces";
 import {
+  jsonByteLength,
   sqlInputSchema,
+  sqlLimits,
   sqlOutputSchema,
-  utf8Slice,
+  truncateUtf8,
   type CallerContext,
   type SqlOutput,
 } from "@agentcommons/core";
 import type { Prisma } from "@agentcommons/db";
-import { guardSql } from "../repositories/sql-guard.js";
+import { guardSql, sqlError } from "../repositories/sql-guard.js";
 import { ServiceError, type ServiceContext } from "./context.js";
-import { bytes, wireValue } from "./read-budget.js";
+import { wireValue } from "./read-budget.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 
 interface QueryRun {
@@ -22,7 +24,19 @@ interface QueryRun {
   parameters?: TraceParameters;
   /** Declared parameter names and ClickHouse types the guard must accept. */
   parameterTypes?: Readonly<Record<string, string>>;
+  /** Availability a caller running several queries resolved once; resolved here when absent. */
+  embeddings?: EmbeddingAvailability;
 }
+interface GuardOptions {
+  parameterTypes?: Readonly<Record<string, string>> | undefined;
+  /** Resolve availability inside this transaction instead of the pool. */
+  client?: Prisma.TransactionClient | undefined;
+  embeddings?: EmbeddingAvailability | undefined;
+}
+/** Longest cell text returned before it is cut. */
+const CELL_BYTES = 2048;
+/** Slack the row loop leaves for `duration_ms` and `capped` in the serialized result. */
+const RESULT_SLACK_BYTES = 100;
 
 export class QueryService {
   constructor(
@@ -45,36 +59,47 @@ export class QueryService {
   async guard(
     caller: CallerContext,
     sql: string,
-    parameterTypes: Readonly<Record<string, string>> = {},
-    client?: Prisma.TransactionClient,
+    options: GuardOptions = {},
   ): Promise<string> {
     return guardSql(
       sql,
-      await this.embeddingsEnabled(caller, client),
-      parameterTypes,
+      options.embeddings ??
+        (await this.embeddingsEnabled(caller, options.client)),
+      options.parameterTypes ?? {},
     );
   }
   /** Guard and execute one bounded SELECT under the caller's authority; the SQL tool and dashboards share it. */
   async run(caller: CallerContext, input: QueryRun): Promise<SqlOutput> {
-    const validated = await this.guard(caller, input.sql, input.parameterTypes);
+    const validated = await this.guard(caller, input.sql, {
+      parameterTypes: input.parameterTypes,
+      embeddings: input.embeddings,
+    });
     const started = performance.now();
     try {
       return await this.dependencies.readers.read(caller, async (client) => {
         const result = await client.query(
           `SELECT * FROM (
 ${validated}
-) q LIMIT 501`,
+) q LIMIT ${String(sqlLimits.rows + 1)}`,
           input.parameters ?? {},
         );
         const output: SqlOutput = {
           columns: result.fields,
           rows: [],
           row_count: 0,
-          capped: result.data.length > 500,
+          capped: result.data.length > sqlLimits.rows,
           truncated_cells: [],
           duration_ms: 0,
         };
-        for (const row of result.data.slice(0, 500)) {
+        // Running size of `output` as compact JSON: the envelope, then each row, each
+        // truncated cell, their separating commas, and the digits row_count grows by.
+        let bytes = jsonByteLength(output);
+        const joined = (items: readonly unknown[], existing: number) =>
+          items.reduce<number>(
+            (sum, item) => sum + jsonByteLength(item),
+            existing ? items.length : Math.max(0, items.length - 1),
+          );
+        for (const row of result.data.slice(0, sqlLimits.rows)) {
           const truncated: [number, number][] = [];
           const converted = row.map((cell, columnIndex) => {
             const value = wireValue(cell);
@@ -84,60 +109,53 @@ ${validated}
                 : typeof value === "object" && value !== null
                   ? JSON.stringify(value)
                   : null;
-            if (serialized !== null && Buffer.byteLength(serialized) > 2048) {
+            if (
+              serialized !== null &&
+              Buffer.byteLength(serialized) > CELL_BYTES
+            ) {
               truncated.push([output.rows.length, columnIndex]);
-              return utf8Slice(serialized, 0, 2048).content;
+              return truncateUtf8(serialized, CELL_BYTES);
             }
             return value;
           });
-          output.rows.push(converted);
-          output.truncated_cells.push(...truncated);
-          output.row_count++;
-          if (bytes(output) > 256 * 1024 - 100) {
-            output.rows.pop();
-            output.row_count--;
-            output.truncated_cells.splice(
-              output.truncated_cells.length - truncated.length,
-              truncated.length,
-            );
+          const added =
+            joined([converted], output.rows.length) +
+            joined(truncated, output.truncated_cells.length) +
+            String(output.row_count + 1).length -
+            String(output.row_count).length;
+          if (bytes + added > sqlLimits.responseBytes - RESULT_SLACK_BYTES) {
             output.capped = true;
             break;
           }
+          output.rows.push(converted);
+          output.truncated_cells.push(...truncated);
+          output.row_count++;
+          bytes += added;
         }
         output.duration_ms =
           Math.round((performance.now() - started) * 1000) / 1000;
-        if (bytes(output) > 256 * 1024)
-          throw new ServiceError(
+        if (jsonByteLength(output) > sqlLimits.responseBytes)
+          throw sqlError(
             400,
             "SQL_RESULT_TOO_WIDE",
             "Select fewer columns. The column metadata exceeds the response limit.",
-            { position: null },
           );
         return sqlOutputSchema.parse(output);
       });
     } catch (error) {
       if (error instanceof ServiceError) throw error;
-      if (!(error instanceof ClickHouseError))
-        throw new ServiceError(
+      const code = error instanceof ClickHouseError ? error.code : null;
+      const failure = code === null ? undefined : queryFailures[code];
+      if (code === null || failure === undefined)
+        throw sqlError(
           503,
           "TRACE_QUERY_UNAVAILABLE",
           "The trace database did not complete the query. Try again.",
-          { position: null },
         );
-      const code = error.code;
-      const failure = queryFailures[code];
-      if (!failure)
-        throw new ServiceError(
-          503,
-          "TRACE_QUERY_UNAVAILABLE",
-          "The trace database did not complete the query. Try again.",
-          { position: null },
-        );
-      throw new ServiceError(
+      throw sqlError(
         400,
         code,
         `${failure} Query schema_columns for available columns.`,
-        { position: null },
       );
     }
   }
@@ -147,21 +165,16 @@ ${validated}
       context,
       { action: "sql", resourceType: "query", detail: input ?? null },
       async (caller) => {
-        const parsed = sqlInputSchema.safeParse(input);
-        if (!parsed.success)
-          throw new ServiceError(
-            400,
-            "SQL_INVALID_INPUT",
-            `${parsed.error.issues.map((issue) => issue.message).join(" ")} Query schema_columns for the available columns.`,
-            { position: null },
-          );
-        return this.run(caller, { sql: parsed.data.sql });
+        const request = sqlInputSchema.parse(input);
+        return this.run(caller, { sql: request.sql });
       },
-      (result) => ({
-        row_count: result.row_count,
-        capped: result.capped,
-        duration_ms: result.duration_ms,
-      }),
+      {
+        describeResult: (result) => ({
+          row_count: result.row_count,
+          capped: result.capped,
+          duration_ms: result.duration_ms,
+        }),
+      },
     );
   }
 }

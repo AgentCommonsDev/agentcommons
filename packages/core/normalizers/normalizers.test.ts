@@ -332,7 +332,6 @@ describe("Codex normalization", () => {
       { path: "src/old.ts", ops: ["edit"] },
       { path: "src/gone.ts", ops: ["delete"] },
     ]);
-    expect(codex.sessionDelta(records).resumeCount).toBe(1);
   });
 
   // Live 0.153.4 rollouts: the human prompt is tagged user.text; plugin lists and

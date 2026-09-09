@@ -1,6 +1,7 @@
 import { Outlet } from "@tanstack/react-router";
 import type { ComponentProps, ReactNode } from "react";
-import { Brand, ThemeToggle } from "../../components/app/shell";
+import { Brand } from "../../components/app/shell";
+import { ThemeToggle } from "../../components/app/theme-toggle";
 import { Card } from "../../components/ui/card";
 import { Alert } from "../../components/ui/feedback";
 import { copy } from "../../copy";
@@ -15,7 +16,7 @@ export function AccountLayout() {
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-fg"
       >
-        {copy.skip}
+        {copy.site.skip}
       </a>
       <header className="flex h-14 shrink-0 items-center justify-between px-4 sm:px-6">
         <Brand href={paths.site} />
@@ -150,7 +151,7 @@ export function AccountUnavailable({ title }: { title: string }) {
   return (
     <>
       <AccountHeading title={title} />
-      <Alert variant="info">{copy.saas.unavailable}</Alert>
+      <Alert variant="info">{copy.site.saas.unavailable}</Alert>
       <AccountLinks>
         <AccountLink href={paths.login}>{copy.auth.backToSignIn}</AccountLink>
       </AccountLinks>

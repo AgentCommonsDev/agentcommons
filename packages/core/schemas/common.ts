@@ -1,5 +1,5 @@
 import * as z from "zod";
-import { traceViewCatalog } from "../schema-catalog.js";
+import { traceViewCatalog, type TraceViewName } from "../schema-catalog.js";
 
 export const harnessSchema = /* @__PURE__ */ z.enum([
   "CLAUDE_CODE",
@@ -38,7 +38,6 @@ export const fileOperationSchema = /* @__PURE__ */ z.enum([
   "write",
   "delete",
 ]);
-export type FileOperation = z.infer<typeof fileOperationSchema>;
 /** Display units shared by metric rows and dashboard stat tiles. */
 export const metricUnitSchema = /* @__PURE__ */ z.enum([
   "count",
@@ -85,28 +84,73 @@ export const opaqueCursorSchema = /* @__PURE__ */ z
   .min(1)
   .nullable()
   .default(null);
+/** Names of the row fields `compactMetadata` shortened to fit the response. */
+export const truncatedFieldsSchema = /* @__PURE__ */ z
+  .array(z.string())
+  .default([])
+  .describe("Fields shortened to fit the response");
 
 export function scalarOrArray<T extends z.ZodType>(
   schema: T,
-  arrayError?: () => string,
+  arrayError: () => string,
 ) {
-  return z.union([
-    schema,
-    z.array(schema).min(1, arrayError ? { error: arrayError } : undefined),
-  ]);
+  return z.union([schema, z.array(schema).min(1, { error: arrayError })]);
 }
+const utf8 = /* @__PURE__ */ new TextEncoder();
 export function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
+  return utf8.encode(value).byteLength;
+}
+/** UTF-8 width of one code point; a lone surrogate encodes as U+FFFD, three bytes, as `TextEncoder` does. */
+export function utf8CodePointLength(codePoint: number): number {
+  return codePoint < 0x80
+    ? 1
+    : codePoint < 0x800
+      ? 2
+      : codePoint < 0x10000
+        ? 3
+        : 4;
+}
+/** Bytes of the compact JSON serialization, the size every response budget is measured in. */
+export function jsonByteLength(value: unknown): number {
+  return utf8ByteLength(JSON.stringify(value));
 }
 export function byteBoundedString(maximum: number) {
   return z.string().refine((value) => utf8ByteLength(value) <= maximum, {
     error: `Use at most ${String(maximum)} UTF-8 bytes.`,
   });
 }
+/** Total order on positions, for sorts that cannot subtract bigints. */
+export function compareBigInt(a: bigint, b: bigint): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+/** The first item for each distinct key, in input order. */
+export function uniqueBy<T>(
+  items: readonly T[],
+  key: (item: T) => string,
+): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const identity = key(item);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+/** Byte budgets the read services hold one response to (§7, §8). */
+export const responseBytes = {
+  /** One REST page or SQL result. */
+  page: 256 * 1024,
+  /** One search or get result, in both its structured and text forms. */
+  read: 32 * 1024,
+} as const;
 export const keyPermissionsSchema = /* @__PURE__ */ z.strictObject({
   sessions: z.array(z.enum(["ingest", "read"])).optional(),
   admin: z.array(z.literal("*")).optional(),
 });
+/** Stored key permissions are JSON text; a key created without any is an empty object. */
+export function parseKeyPermissions(raw: string | null | undefined) {
+  return keyPermissionsSchema.parse(raw ? (JSON.parse(raw) as unknown) : {});
+}
 export const callerContextSchema = /* @__PURE__ */ z.strictObject({
   organizationId: identityIdSchema,
   userId: identityIdSchema,
@@ -117,12 +161,14 @@ export const callerContextSchema = /* @__PURE__ */ z.strictObject({
   authMethod: z.enum(["cookie", "key"]),
   permissions: keyPermissionsSchema,
 });
+export const paginationSchema = /* @__PURE__ */ z.strictObject({
+  limit: z.number().int().min(1).max(100).default(50),
+  cursor: opaqueCursorSchema,
+});
 export function createListInputSchema<
   const T extends readonly [string, ...string[]],
 >(sortKeys: T) {
-  return z.strictObject({
-    limit: z.number().int().min(1).max(100).default(50),
-    cursor: opaqueCursorSchema,
+  return paginationSchema.extend({
     sort: z.enum(sortKeys).optional(),
     order: z.enum(["asc", "desc"]).default("desc"),
     format: z.enum(["json", "csv"]).default("json"),
@@ -134,7 +180,8 @@ export const errorSchema = /* @__PURE__ */ z.strictObject({
   position: nonnegativeIntegerSchema.nullable().optional(),
   detail: jsonValueSchema.optional(),
 });
-export const sessionParamsSchema = /* @__PURE__ */ z.strictObject({
+/** Route params of every resource addressed by a UUID: sessions, dashboards, installations. */
+export const uuidParamsSchema = /* @__PURE__ */ z.strictObject({
   id: sessionIdSchema,
 });
 export const identityParamsSchema = /* @__PURE__ */ z.strictObject({
@@ -143,10 +190,6 @@ export const identityParamsSchema = /* @__PURE__ */ z.strictObject({
 export function paginatedOutput<T extends z.ZodType>(item: T) {
   return z.strictObject({ items: z.array(item), cursor: opaqueCursorSchema });
 }
-export const paginationSchema = /* @__PURE__ */ z.strictObject({
-  limit: z.number().int().min(1).max(100).default(50),
-  cursor: opaqueCursorSchema,
-});
 export type Harness = z.infer<typeof harnessSchema>;
 export type JsonValue = z.infer<typeof jsonValueSchema>;
 export type CallerContext = z.infer<typeof callerContextSchema>;
@@ -162,7 +205,7 @@ export type NormalizerContext = z.infer<typeof normalizerContextSchema>;
 
 /** The catalog meaning of an `api_ro` column, so schema descriptions and `schema_columns` read one text. */
 export function catalogDescription(
-  view: "sessions" | "messages" | "session_files",
+  view: TraceViewName,
   column: string,
 ): string {
   const text: string | undefined = traceViewCatalog[view].columns[column];

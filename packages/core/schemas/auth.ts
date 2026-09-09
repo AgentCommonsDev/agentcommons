@@ -1,9 +1,11 @@
 import { z } from "zod";
 import {
   callerContextSchema,
+  createListInputSchema,
   emailSchema,
   identityIdSchema,
   organizationRoleSchema,
+  paginatedOutput,
 } from "./common.js";
 
 export const organizationSchema = z.strictObject({
@@ -101,15 +103,21 @@ export const domainOutputSchema = z.strictObject({
   provider_id: z.string(),
   verified: z.boolean(),
 });
-export const domainsInputSchema = z.strictObject({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  cursor: z.string().optional(),
-  domain: z.string().trim().toLowerCase().max(253).optional(),
-  sort: z.enum(["domain"]).default("domain"),
-  order: z.enum(["asc", "desc"]).default("asc"),
-});
+/** The shared list contract without a CSV form; the route coerces query strings. */
+export const domainsInputSchema = createListInputSchema(["domain"])
+  .omit({ format: true })
+  .extend({
+    domain: z.string().trim().toLowerCase().max(253).optional(),
+    sort: z.enum(["domain"]).default("domain"),
+    order: z.enum(["asc", "desc"]).default("asc"),
+  });
 export const domainsOutputSchema = z.strictObject({
   enabled: z.boolean(),
-  items: z.array(domainOutputSchema),
-  cursor: z.string().nullable(),
+  ...paginatedOutput(domainOutputSchema).shape,
 });
+
+export type OnboardingState = z.infer<typeof meOutputSchema>["onboarding"];
+/** Whether the account still has a hosted onboarding step to finish before the workspace opens. */
+export function onboardingPending(state: OnboardingState): boolean {
+  return state !== "ready" && state !== "not_applicable";
+}

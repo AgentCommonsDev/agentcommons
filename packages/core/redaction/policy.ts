@@ -83,6 +83,10 @@ export const policyDefinitionShapeSchema = z.discriminatedUnion("kind", [
       .default({}),
   }),
 ]);
+/** The policy kinds, read from the definition so admin schemas and the dashboard list one set. */
+export const policyKindSchema = z.enum(
+  policyDefinitionShapeSchema.options.map((option) => option.shape.kind.value),
+);
 /** Definition plus the bounded backtracking analysis; use it wherever a pattern is saved. */
 export const policyDefinitionSchema = policyDefinitionShapeSchema.superRefine(
   (policy, context) => {
@@ -139,8 +143,6 @@ export const policyDefinitionSchema = policyDefinitionShapeSchema.superRefine(
     }
   },
 );
-/** Analyse a single expression; exported for the shipped-pattern verification test. */
-export const expressionSafety = safeExpression;
 
 export type PolicyDefinition = z.output<typeof policyDefinitionSchema>;
 export type RedactionPolicy = PolicyDefinition & {

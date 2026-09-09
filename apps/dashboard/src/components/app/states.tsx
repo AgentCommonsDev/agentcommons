@@ -1,5 +1,6 @@
 import { Check, Copy, RefreshCw } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import type { UseQueryResult } from "@tanstack/react-query";
 import { copy } from "../../copy";
 import { errorMessage, statusLabel } from "../../lib/display";
 import { cn } from "../../lib/utils";
@@ -11,11 +12,9 @@ import type { VariantProps } from "class-variance-authority";
 export function LoadingState({
   rows = 3,
   className,
-  label,
 }: {
   rows?: number | undefined;
   className?: string | undefined;
-  label?: string | undefined;
 }) {
   return (
     <div
@@ -25,7 +24,7 @@ export function LoadingState({
     >
       <span className="flex items-center gap-2 text-sm text-muted">
         <Spinner />
-        {label ?? copy.app.common.loading}
+        {copy.app.common.loading}
       </span>
       <div aria-hidden className="flex flex-col gap-2">
         {Array.from({ length: rows }, (_, index) => (
@@ -68,6 +67,31 @@ export function RequestError({
     </Alert>
   );
 }
+/** The one query lifecycle: skeleton while pending, error with retry, then the data. */
+export function QueryState<T>({
+  query,
+  rows,
+  title,
+  children,
+}: {
+  query: Pick<UseQueryResult<T>, "isPending" | "error" | "data" | "refetch">;
+  rows?: number | undefined;
+  title?: string | undefined;
+  children: (data: T) => ReactNode;
+}) {
+  if (query.isPending) return <LoadingState rows={rows} />;
+  if (query.error)
+    return (
+      <RequestError
+        error={query.error}
+        title={title}
+        retry={() => {
+          void query.refetch();
+        }}
+      />
+    );
+  return <>{children(query.data as T)}</>;
+}
 export function CopyButton({
   value,
   label,
@@ -79,8 +103,8 @@ export function CopyButton({
   value: string;
   label?: string | undefined;
   showLabel?: boolean | undefined;
-  size?: "icon-sm" | "icon" | "sm" | "md" | undefined;
-  variant?: "ghost" | "secondary" | "outline" | undefined;
+  size?: "icon-sm" | "sm" | undefined;
+  variant?: "ghost" | "secondary" | undefined;
   className?: string | undefined;
 }) {
   const [state, setState] = useState<"idle" | "copied" | "error">("idle");
@@ -100,13 +124,7 @@ export function CopyButton({
     <span className={cn("inline-flex items-center gap-2", className)}>
       <Button
         variant={variant}
-        size={
-          showLabel
-            ? size === "icon-sm" || size === "icon"
-              ? "sm"
-              : size
-            : size
-        }
+        size={showLabel ? "sm" : size}
         aria-label={state === "copied" ? copy.app.common.copied : text}
         onClick={() => {
           void perform();
@@ -185,13 +203,12 @@ export function DefinitionList({
 }: {
   items: { label: ReactNode; value: ReactNode; wide?: boolean | undefined }[];
   className?: string | undefined;
-  columns?: 1 | 2 | 3 | 4 | undefined;
+  columns?: 2 | 3 | 4 | undefined;
 }) {
   return (
     <dl
       className={cn(
         "grid gap-x-6 gap-y-3",
-        columns === 1 && "grid-cols-1",
         columns === 2 && "grid-cols-1 sm:grid-cols-2",
         columns === 3 && "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3",
         columns === 4 && "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4",

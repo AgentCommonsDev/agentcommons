@@ -149,74 +149,58 @@ export const receiptRedactionColumns = {
   policy_id: "UUID",
   count: "UInt32",
 } as const;
+/** Vector width of every stored embedding; the provider, the HNSW index and the row validators share it. */
+export const EMBEDDING_DIMENSIONS = 1024;
+/** Byte budget of one native page: read pages and insert batches both stay under it. */
+export const TRACE_PAGE_BYTES = 8 * 1024 * 1024;
+
+export interface TraceTableDefinition<
+  Columns extends Record<string, string> = Record<string, string>,
+> {
+  readonly columns: Columns;
+  /** Column that identifies a row within its session; the highest revision per identity is current. */
+  readonly identity: keyof Columns & string;
+  /** Declared ClickHouse type of `identity`; keyset cursors over it carry the same type so comparison and ORDER BY agree. */
+  readonly identityType: string;
+  /** Vector tables publish per embedding epoch and need the embeddings entitlement to read. */
+  readonly vector: boolean;
+  /** ReplacingMergeTree sorting key: the identity within a session, then generation and revision. */
+  readonly keys: readonly string[];
+}
+function table<Columns extends Record<string, string>>(
+  columns: Columns,
+  identity: keyof Columns & string,
+  options: { vector?: boolean } = {},
+): TraceTableDefinition<Columns> {
+  const identityType = columns[identity];
+  if (identityType === undefined)
+    throw new Error(`Unknown identity column ${identity}.`);
+  return {
+    columns,
+    identity,
+    identityType,
+    vector: options.vector ?? false,
+    keys: [
+      ...new Set([
+        "organization_id",
+        "session_id",
+        identity,
+        "generation",
+        "revision",
+      ]),
+    ],
+  };
+}
 export const traceTables = {
-  ingest_receipts: {
-    columns: receiptColumns,
-    keys: [
-      "organization_id",
-      "session_id",
-      "receipt_id",
-      "generation",
-      "revision",
-    ],
-  },
-  receipt_redactions: {
-    columns: receiptRedactionColumns,
-    keys: [
-      "organization_id",
-      "session_id",
-      "redaction_id",
-      "generation",
-      "revision",
-    ],
-  },
-  sessions: {
-    columns: sessionColumns,
-    keys: ["organization_id", "session_id", "generation", "revision"],
-  },
-  messages: {
-    columns: messageColumns,
-    keys: [
-      "organization_id",
-      "session_id",
-      "message_id",
-      "generation",
-      "revision",
-    ],
-  },
-  raw_records: {
-    columns: rawColumns,
-    keys: [
-      "organization_id",
-      "session_id",
-      "raw_record_id",
-      "generation",
-      "revision",
-    ],
-  },
-  session_files: {
-    columns: fileColumns,
-    keys: [
-      "organization_id",
-      "session_id",
-      "file_id",
-      "generation",
-      "revision",
-    ],
-  },
-  message_chunks: {
-    columns: chunkColumns,
-    keys: [
-      "organization_id",
-      "session_id",
-      "chunk_id",
-      "generation",
-      "revision",
-    ],
-  },
-  session_embeddings: {
-    columns: sessionEmbeddingColumns,
-    keys: ["organization_id", "session_id", "generation", "revision"],
-  },
-} as const;
+  ingest_receipts: table(receiptColumns, "receipt_id"),
+  receipt_redactions: table(receiptRedactionColumns, "redaction_id"),
+  sessions: table(sessionColumns, "session_id"),
+  messages: table(messageColumns, "message_id"),
+  raw_records: table(rawColumns, "raw_record_id"),
+  session_files: table(fileColumns, "file_id"),
+  message_chunks: table(chunkColumns, "chunk_id", { vector: true }),
+  session_embeddings: table(sessionEmbeddingColumns, "session_id", {
+    vector: true,
+  }),
+};
 export type TraceTable = keyof typeof traceTables;

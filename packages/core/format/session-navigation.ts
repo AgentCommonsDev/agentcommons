@@ -65,12 +65,8 @@ interface SpawnPlacements<Run extends SpawnedRun> {
   /** Runs whose spawning call is unknown, ambiguous, or not on a loaded page. */
   unplaced: Run[];
 }
-/** A run nests under its recorded spawning call only when exactly one loaded call has that id. */
-export function spawnPlacements<Run extends SpawnedRun>(
-  messages: readonly Message[],
-  runs: readonly Run[],
-  parentId: string,
-): SpawnPlacements<Run> {
+/** Loaded `TOOL_USE` messages by `tool_use_id`; a call is unambiguous when its group has one member. */
+function toolCallsById(messages: readonly Message[]): Map<string, Message[]> {
   const calls = new Map<string, Message[]>();
   for (const message of messages) {
     if (message.kind !== "TOOL_USE" || !message.tool_use_id) continue;
@@ -78,6 +74,15 @@ export function spawnPlacements<Run extends SpawnedRun>(
     group.push(message);
     calls.set(message.tool_use_id, group);
   }
+  return calls;
+}
+/** A run nests under its recorded spawning call only when exactly one loaded call has that id. */
+export function spawnPlacements<Run extends SpawnedRun>(
+  messages: readonly Message[],
+  runs: readonly Run[],
+  parentId: string,
+): SpawnPlacements<Run> {
+  const calls = toolCallsById(messages);
   const placed = new Map<string, Run[]>();
   const unplaced: Run[] = [];
   for (const run of runs) {
@@ -99,13 +104,7 @@ export function spawnPlacements<Run extends SpawnedRun>(
 
 /** A recorded tool ID supports nesting only when its call is unambiguous. */
 export function messageBranches(messages: readonly Message[]): MessageBranch[] {
-  const calls = new Map<string, Message[]>();
-  for (const message of messages) {
-    if (message.kind !== "TOOL_USE" || !message.tool_use_id) continue;
-    const group = calls.get(message.tool_use_id) ?? [];
-    group.push(message);
-    calls.set(message.tool_use_id, group);
-  }
+  const calls = toolCallsById(messages);
   const results = new Map<string, Message[]>();
   const nested = new Set<string>();
   for (const message of messages) {

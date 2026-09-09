@@ -1,12 +1,11 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { requireCaller } from "../src/services/context.js";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
-import { ingestEnvelopeSchema } from "@agentcommons/core";
 import { z } from "zod";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { sourceRecord, testEnvelope } from "./envelopes.js";
 import { SessionService } from "../src/services/session.js";
 import { CursorCodec } from "../src/services/cursor.js";
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
@@ -14,58 +13,35 @@ let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let services: ReturnType<typeof traceServices>;
 let organizationId: string;
-const record = (pos: number) => ({
-  pos,
-  key: `record-${String(pos)}`,
-  sourceVersion: 0,
-  line: JSON.stringify({
+const record = (pos: number) =>
+  sourceRecord(pos, {
     type: "user",
     uuid: `record-${String(pos)}`,
     message: { content: `Native message ${String(pos)}` },
-  }),
-});
+  });
 function envelope() {
-  return ingestEnvelopeSchema.parse({
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
+  return testEnvelope({
     behavior: "start",
     start: { resume: false },
     nativeEvent: "SessionStart",
-    batchId: randomUUID(),
-    installationId: randomUUID(),
     sentAt: "2026-09-01T00:00:00Z",
     sourcePos: 20,
-    context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "lifecycle",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [record(0), record(20)],
     cursor: "20",
-    end: null,
+    context: { installation: { hostname: "lifecycle", osUser: "test" } },
+    records: [record(0), record(20)],
   });
 }
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   organization = await provisionOrganization(database, "lifecycle");
   other = await provisionOrganization(database, "lifecycle-other");
   organizationId = requireCaller(organization.context).organizationId;
   services = traceServices(database);
-  release.unshift(() => services.close());
+  defer(() => services.close());
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-LNK-05
 // @req R-ING-07

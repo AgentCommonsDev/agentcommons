@@ -24,17 +24,29 @@ export interface TraceMigrationConfig {
   postgresControlUrl: string;
 }
 
+/** Environment variable per ClickHouse setting; the runtime reads them and test fixtures write them. */
+export const clickHouseEnvironmentKeys = {
+  url: "CLICKHOUSE_URL",
+  database: "CLICKHOUSE_DATABASE",
+  username: "CLICKHOUSE_WRITER_USER",
+  password: "CLICKHOUSE_WRITER_PASSWORD",
+  readerSecret: "CLICKHOUSE_READER_SECRET",
+  accessUsername: "CLICKHOUSE_ACCESS_USER",
+  accessPassword: "CLICKHOUSE_ACCESS_PASSWORD",
+} as const satisfies Record<keyof ClickHouseConfig, string>;
+
 /** Shared runtime/migration environment boundary; no fallback database or credentials. */
 export function clickHouseEnvironment(
   environment: Record<string, string | undefined>,
 ): ClickHouseConfig {
-  return clickHouseConfigSchema.parse({
-    url: environment.CLICKHOUSE_URL,
-    database: environment.CLICKHOUSE_DATABASE,
-    username: environment.CLICKHOUSE_WRITER_USER,
-    password: environment.CLICKHOUSE_WRITER_PASSWORD,
-    accessUsername: environment.CLICKHOUSE_ACCESS_USER,
-    accessPassword: environment.CLICKHOUSE_ACCESS_PASSWORD,
-    readerSecret: environment.CLICKHOUSE_READER_SECRET,
-  });
+  return clickHouseConfigSchema.parse(
+    Object.fromEntries(
+      clickHouseConfigSchema
+        .keyof()
+        .options.map((setting) => [
+          setting,
+          environment[clickHouseEnvironmentKeys[setting]],
+        ]),
+    ),
+  );
 }

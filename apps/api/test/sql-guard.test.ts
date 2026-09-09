@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { guardSql } from "../src/repositories/sql-guard.js";
+import { embeddingsUnavailable } from "../src/embeddings/settings.js";
 import { ServiceError } from "../src/services/context.js";
 import { z } from "zod";
 
@@ -16,7 +17,7 @@ describe("native read SQL guard", () => {
     "SELECT JSONExtractString(tool_input, 'command') FROM messages",
     "SELECT 1 UNION ALL SELECT 2",
   ])("accepts a composable native read: %s", (sql) => {
-    expect(guardSql(sql)).toContain("SELECT");
+    expect(guardSql(sql, embeddingsUnavailable)).toContain("SELECT");
   });
 
   // @req R-SQL-01 @req R-SQL-02 @req R-SEC-05
@@ -45,18 +46,19 @@ describe("native read SQL guard", () => {
     "SELECT search_messages(q='x')",
     "SELECT * FROM message_chunks",
   ])("rejects the injection or unavailable capability: %s", (sql) => {
-    expect(() => guardSql(sql)).toThrow();
+    expect(() => guardSql(sql, embeddingsUnavailable)).toThrow();
   });
 
   it("preserves literal precision and reports parse positions through the service error boundary", () => {
     const sql = guardSql(
       "SELECT toDecimal128('1.234567890123456789',18),9007199254740993,'; DROP TABLE x'; -- tail",
+      embeddingsUnavailable,
     );
     expect(sql).toContain("1.234567890123456789");
     expect(sql).toContain("9007199254740993");
     expect(sql).toContain("'; DROP TABLE x'");
     try {
-      guardSql("SELECT\n ???");
+      guardSql("SELECT\n ???", embeddingsUnavailable);
       throw new Error("Expected syntax rejection");
     } catch (error) {
       expect(error).toMatchObject({ code: "SQL_REJECTED" });

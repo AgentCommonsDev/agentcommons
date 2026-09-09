@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 import { copy } from "../copy";
 import { api, unwrap } from "../lib/api/client";
@@ -42,15 +42,17 @@ import {
 const labels = copy.sessions.detail;
 type Tab = "transcript" | "files" | "raw";
 /** One session page: header, reuse, transcript with inline subagent runs, files and raw records. */
-export function SessionPage({ id, child }: { id: string; child?: string }) {
+export function SessionPage({
+  id,
+  seq,
+  child,
+}: {
+  id: string;
+  /** The message the URL hash names, parsed by the route. */
+  seq: number | null;
+  child?: string;
+}) {
   const { organization } = useWorkspace();
-  const hash = useRouterState({
-    select: (state) => state.location.hash.replace(/^#/, ""),
-  });
-  const seq =
-    /^\d+$/.test(hash) && Number.isSafeInteger(Number(hash))
-      ? Number(hash)
-      : null;
   // With `child`, the hash names a message inside that nested run, not this transcript.
   const selected = child === undefined ? seq : null;
   const focus: RunFocus | null =

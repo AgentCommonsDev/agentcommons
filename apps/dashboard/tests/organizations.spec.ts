@@ -57,7 +57,7 @@ for (const theme of ["dark", "light"] as const)
     const nameInput = page.getByTestId("onboarding-organization-name");
     await expect(nameInput).toBeVisible();
     await expect(
-      page.getByLabel(copy.signup.slug, { exact: true }),
+      page.getByLabel(copy.site.signup.slug, { exact: true }),
     ).toHaveCount(0);
     await accessible(page);
     await expect(page).toHaveScreenshot(`saas-new-organization-${theme}.png`, {
@@ -86,7 +86,7 @@ for (const theme of ["dark", "light"] as const)
     expect(await keyIds(context.request)).toEqual([]);
     await page.goto(paths.billing);
     await expect(page.getByTestId("billing-plan")).toContainText(
-      copy.saas.free,
+      copy.site.saas.free,
     );
     await accessible(page);
     await selectOrganization(page, fixture.organizationId, isMobile);

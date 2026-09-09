@@ -8,6 +8,7 @@ import { expect, it } from "vitest";
 import { configure } from "../src/install.js";
 import { HARNESSES } from "../src/harnesses.js";
 import { hash } from "../src/files.js";
+import { intentFileName, intentSchema, journalPath } from "../src/state.js";
 const executable = resolve("packages/hook/dist/hook.js");
 // @req R-CAP-01 @req R-INST-05
 it("all hook events exit zero within 150 ms with a blackholed server and no hook-process network", async () => {
@@ -75,18 +76,21 @@ it("keeps the 150 ms callback budget with 5000 pending indexed intents", () => {
     file.endsWith(".json"),
   );
   if (!state) throw new Error("Missing state.");
-  const journal = join(directory, "state", `${state}.intents`);
+  const journal = journalPath(join(directory, "state", state));
   const first = readdirSync(journal)[0];
   if (!first) throw new Error("Missing intent.");
-  const original = JSON.parse(
-    readFileSync(join(journal, first), "utf8"),
-  ) as Record<string, unknown>;
+  const original = intentSchema.parse(
+    JSON.parse(readFileSync(join(journal, first), "utf8")),
+  );
   for (let index = 0; index < 5000; index++) {
-    const id = hash(String(index));
-    const timestamp = String(Date.now()).padStart(16, "0");
+    const intent = {
+      ...original,
+      id: hash(String(index)),
+      sentAt: new Date().toISOString(),
+    };
     writeFileSync(
-      join(journal, `0000000000000000.${timestamp}.sync.${id}.json`),
-      JSON.stringify({ ...original, id }),
+      join(journal, intentFileName(intent)),
+      JSON.stringify(intent),
     );
   }
   const started = performance.now();

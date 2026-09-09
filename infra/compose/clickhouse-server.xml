@@ -9,4 +9,9 @@
     <mark_cache_size>536870912</mark_cache_size>
     <uncompressed_cache_size>268435456</uncompressed_cache_size>
     <background_schedule_pool_size>8</background_schedule_pool_size>
+    <!-- Per-second asynchronous metrics and per-query processor profiles are never read
+         here and their merges cost more CPU than the trace data on two vCPUs; removed the
+         same way packages/traces/config/privacy.xml removes the query and text logs. -->
+    <asynchronous_metric_log remove="1" />
+    <processors_profile_log remove="1" />
 </clickhouse>

@@ -1,5 +1,4 @@
 import { createPolicyCache } from "./policy-cache.js";
-import { z } from "zod";
 import { v7 as uuidv7 } from "uuid";
 import {
   Prisma,
@@ -14,14 +13,15 @@ import {
   type RedactionCount,
 } from "@agentcommons/core/redaction";
 import {
+  reasonInputSchema,
   redactionPoliciesInputSchema,
   redactionPoliciesOutputSchema,
   redactionPolicySchema,
   redactionTestInputSchema,
   redactionTestOutputSchema,
-  reasonSchema,
+  type CallerContext,
 } from "@agentcommons/core";
-import type { AuditService } from "./audit.js";
+import type { AuditDescription, AuditService } from "./audit.js";
 import type { CursorCodec } from "./cursor.js";
 import {
   requirePermission,
@@ -31,7 +31,7 @@ import {
 import { lockOrganization } from "./auth.js";
 import { mutationOperation } from "./mutation.js";
 import { readOperation } from "./read-operation.js";
-import { wireValue } from "./read-budget.js";
+import { offsetPage, wireValue } from "./read-budget.js";
 
 function data(definition: PolicyDefinition) {
   return {
@@ -122,56 +122,72 @@ export class PolicyService {
           operation: "redaction.policies.list",
           query: { ...query, sort: query.sort ?? "name" },
         });
-        const offset = cursor
-          ? this.dependencies.cursors.decode(
-              cursor,
-              binding,
-              z.number().int().nonnegative(),
-            )
-          : 0;
         const filters = request.filters;
-        const items = await this.dependencies.prisma.redactionPolicy.findMany({
-          where: {
-            organizationId: caller.organizationId,
-            ...(filters.name
-              ? { name: { contains: filters.name, mode: "insensitive" } }
-              : {}),
-            ...(filters.kind ? { kind: filters.kind } : {}),
-            ...(filters.enabled === undefined
-              ? {}
-              : { enabled: filters.enabled }),
-            ...(filters.builtin === undefined
-              ? {}
-              : { builtin: filters.builtin }),
-          },
-          orderBy: [
-            { [sortFields[request.sort ?? "name"]]: request.order },
-            { id: "asc" },
-          ],
-          skip: offset,
-          take: request.limit + 1,
-        });
+        const page = await offsetPage(
+          this.dependencies.cursors,
+          binding,
+          cursor,
+          request.limit,
+          async (skip, take) =>
+            (
+              await this.dependencies.prisma.redactionPolicy.findMany({
+                where: {
+                  organizationId: caller.organizationId,
+                  ...(filters.name
+                    ? { name: { contains: filters.name, mode: "insensitive" } }
+                    : {}),
+                  ...(filters.kind ? { kind: filters.kind } : {}),
+                  ...(filters.enabled === undefined
+                    ? {}
+                    : { enabled: filters.enabled }),
+                  ...(filters.builtin === undefined
+                    ? {}
+                    : { builtin: filters.builtin }),
+                },
+                orderBy: [
+                  { [sortFields[request.sort ?? "name"]]: request.order },
+                  { id: "asc" },
+                ],
+                skip,
+                take,
+              })
+            ).map(output),
+        );
         return redactionPoliciesOutputSchema.parse({
-          items: items.slice(0, request.limit).map(output),
-          cursor:
-            items.length > request.limit
-              ? this.dependencies.cursors.encode(
-                  binding,
-                  offset + request.limit,
-                )
-              : null,
+          items: page.items,
+          cursor: page.cursor,
         });
       },
-      undefined,
-      "admin",
+      {
+        permission: "admin",
+      },
     );
   }
 
-  async save(context: ServiceContext, id: string | null, input: unknown) {
+  /** A policy mutation, then this process forgets the organization's cached policies. */
+  private async mutate<T>(
+    context: ServiceContext,
+    description: AuditDescription,
+    execute: (
+      tx: Prisma.TransactionClient,
+      caller: CallerContext,
+    ) => Promise<{ result: T; detail?: unknown; resourceIds?: string[] }>,
+  ) {
     const value = await mutationOperation(
       this.dependencies,
       context,
       "admin",
+      description,
+      execute,
+    );
+    if (context.caller)
+      this.dependencies.cache.invalidate(context.caller.organizationId);
+    return value;
+  }
+
+  save(context: ServiceContext, id: string | null, input: unknown) {
+    return this.mutate(
+      context,
       {
         action: id ? "redaction.policies.update" : "redaction.policies.create",
         resourceType: "redaction_policy",
@@ -259,16 +275,11 @@ export class PolicyService {
         };
       },
     );
-    if (context.caller)
-      this.dependencies.cache.invalidate(context.caller.organizationId);
-    return value;
   }
 
-  async remove(context: ServiceContext, id: string, input: unknown) {
-    const value = await mutationOperation(
-      this.dependencies,
+  remove(context: ServiceContext, id: string, input: unknown) {
+    return this.mutate(
       context,
-      "admin",
       {
         action: "redaction.policies.delete",
         resourceType: "redaction_policy",
@@ -291,9 +302,7 @@ export class PolicyService {
             "BUILTIN_POLICY",
             "Disable built-in policies instead of deleting them.",
           );
-        const { reason } = z
-          .strictObject({ reason: reasonSchema })
-          .parse(input);
+        const { reason } = reasonInputSchema.parse(input);
         const hits = await tx.redactionEvent.aggregate({
           where: { organizationId: caller.organizationId, policyId: id },
           _sum: { count: true },
@@ -312,9 +321,6 @@ export class PolicyService {
         };
       },
     );
-    if (context.caller)
-      this.dependencies.cache.invalidate(context.caller.organizationId);
-    return value;
   }
 
   test(context: ServiceContext, input: unknown) {
@@ -337,8 +343,10 @@ export class PolicyService {
           })),
         });
       },
-      (result) => ({ matches: result.matches }),
-      "admin",
+      {
+        describeResult: (result) => ({ matches: result.matches }),
+        permission: "admin",
+      },
     );
   }
 }

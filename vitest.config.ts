@@ -9,6 +9,7 @@ export default defineConfig({
       "e2e/**/*.test.ts",
     ],
     exclude: ["**/node_modules/**", "**/dist/**"],
+    setupFiles: ["./vitest.setup.ts"],
     testTimeout: 30_000,
     hookTimeout: 120_000,
     maxWorkers: 4,

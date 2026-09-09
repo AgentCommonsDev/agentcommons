@@ -1,4 +1,3 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { readFileSync } from "node:fs";
 import { v7 as uuidv7 } from "uuid";
 import { z } from "zod";
@@ -13,7 +12,8 @@ import type { IngestService } from "../src/services/ingest.js";
 import { SessionService } from "../src/services/session.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { requireCaller } from "../src/services/context.js";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { lineRecords, testEnvelope } from "./envelopes.js";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
@@ -45,52 +45,28 @@ function request(
   nativeId: string,
   lines: readonly string[] = [],
 ): IngestEnvelope {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
+  return testEnvelope({
     harness,
     harnessSessionId: nativeId,
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
     batchId: uuidv7(),
     installationId,
-    sentAt: new Date().toISOString(),
-    context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "links-host",
-        osUser: "user",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
     sourcePos: lines.length,
-    records: lines.map((line, pos) => ({
-      pos,
-      sourceVersion: 0,
-      key: String(pos),
-      line,
-    })),
+    records: lineRecords(lines),
     cursor: String(lines.length),
-    end: null,
-  };
+    context: { installation: { hostname: "links-host", osUser: "user" } },
+  });
 }
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   first = await provisionOrganization(db, "link-first");
   other = await provisionOrganization(db, "link-other");
   native = traceServices(db);
-  release.unshift(() => native.close());
+  defer(() => native.close());
   ingest = { execute: native.publish };
 });
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 describe("persisted explicit harness relationships", () => {
   it("creates the hinted Claude child at start and confirms the same edge from its live child transcript at stop @req R-LNK-01", async () => {

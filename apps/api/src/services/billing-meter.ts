@@ -1,11 +1,13 @@
 import type { Prisma, PrismaClient } from "@agentcommons/db";
 import type Stripe from "stripe";
-import { operatorContext } from "../auth/bootstrap.js";
+import { operatorContext, workerActor } from "../auth/bootstrap.js";
 import type { AuditService } from "./audit.js";
 
 const SAFE_RETRY_MS = 23 * 60 * 60 * 1000;
 const MAX_EVENT_AGE_MS = 35 * 24 * 60 * 60 * 1000;
 const LEASE_MS = 60_000;
+/** Pending events one sweep claims; the minute schedule keeps the backlog moving. */
+const SWEEP_SIZE = 100;
 
 /** Durable billing delivery; transcript storage is deliberately not a dependency. */
 export class BillingMeterService {
@@ -31,26 +33,21 @@ export class BillingMeterService {
         action: "billing.meter",
         resourceType: "billing_meter_event",
         resourceIds: [row.id],
-        actor: {
-          organizationId: row.organizationId,
-          userId: null,
-          apiKeyId: null,
-          authMethod: "worker",
-        },
+        actor: workerActor(row.organizationId),
         detail: { state },
       },
       tx,
     );
   }
   /** A bounded sweep is scheduled by pg-boss; independent workers share persisted leases. */
-  async flush(limit = 100): Promise<void> {
+  async flush(): Promise<void> {
     const rows = await this.dependencies.prisma.billingMeterEvent.findMany({
       where: {
         state: "pending",
         OR: [{ leaseUntil: null }, { leaseUntil: { lte: this.now() } }],
       },
       orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
-      take: Math.min(100, Math.max(1, limit)),
+      take: SWEEP_SIZE,
       select: { id: true },
     });
     for (const row of rows) await this.deliver(row.id);

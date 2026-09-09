@@ -1,19 +1,11 @@
 import type { DestinationStream } from "pino";
 import { loggerOptions } from "./logger.js";
-import Fastify, {
-  type FastifyInstance,
-  type FastifyRequest,
-  type FastifySchema,
-} from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
 import compress from "@fastify/compress";
-import swagger from "@fastify/swagger";
 import { registerApiReference } from "./routes/reference.js";
-import {
-  serializerCompiler,
-  hasZodFastifySchemaValidationErrors,
-} from "fastify-type-provider-zod";
+import { hasZodFastifySchemaValidationErrors } from "fastify-type-provider-zod";
 import { z } from "zod";
 import qs from "qs";
 import { randomUUID } from "node:crypto";
@@ -26,12 +18,7 @@ import {
   requestHeaders,
   setRequestContext,
 } from "./routes/context.js";
-import {
-  apiDefinition,
-  openApiTransform,
-  openApiTransformObject,
-} from "./routes/openapi.js";
-import { queryValidatorCompiler } from "./routes/query.js";
+import { registerContract } from "./routes/openapi.js";
 import {
   registerRequestDecompression,
   INFLATED_LIMIT,
@@ -44,55 +31,15 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerStaticRoutes } from "./routes/static.js";
 import { McpService } from "./services/mcp.js";
 import { registerMcpRoutes } from "./mcp/index.js";
-import { auditFailure } from "./services/audit.js";
+import { auditFailure, auditUnavailableError } from "./services/audit.js";
 import { ServiceError } from "./services/context.js";
 
-export function assertRouteContract(route: {
-  url: string;
-  method: string | string[];
-  schema?: FastifySchema;
-}): void {
-  if (route.url !== "/api" && !route.url.startsWith("/api/")) return;
-  // This namespace belongs to the native Scalar reference plugin, including its assets.
-  if (route.url === "/api/docs" || route.url.startsWith("/api/docs/")) return;
-  const contract = route.schema;
-  const methods = Array.isArray(route.method) ? route.method : [route.method];
-  if (
-    !contract?.summary?.trim() ||
-    !responseContract.safeParse(contract.response).success ||
-    !(contract.params instanceof z.ZodType) ||
-    !(contract.querystring instanceof z.ZodType) ||
-    (methods.some((method) => !["GET", "HEAD"].includes(method)) &&
-      !(contract.body instanceof z.ZodType))
-  )
-    throw new Error(
-      `Route ${methods.join(",")} ${route.url} must declare summary and complete Zod schemas.`,
-    );
+export { assertRouteContract } from "./routes/openapi.js";
+/** Declared on each route at registration; unmatched `/api/v1` paths stay protected. */
+function protectedRequest(request: FastifyRequest, path: string): boolean {
+  return request.routeOptions.config.protected ?? path.startsWith("/api/v1/");
 }
-const responseSchema = z.custom<z.ZodType>(
-  (value: unknown) => value instanceof z.ZodType,
-);
-const responseContract = z
-  .record(
-    z.string(),
-    z.union([
-      responseSchema,
-      z.object({
-        content: z
-          .record(z.string(), z.object({ schema: responseSchema }))
-          .refine((content) => Object.keys(content).length > 0),
-      }),
-    ]),
-  )
-  .refine((responses) => Object.keys(responses).length > 0);
-function protectedPath(path: string): boolean {
-  return (
-    path.startsWith("/api/v1/") &&
-    !["/api/v1/health", "/api/v1/ready", "/api/v1/billing/config"].includes(
-      path,
-    )
-  );
-}
+const statusSchema = z.looseObject({ statusCode: z.number().optional() });
 function nativePath(request: FastifyRequest): string {
   return new URL(request.url, "http://localhost").pathname;
 }
@@ -123,9 +70,7 @@ export async function createApp(options: {
         }),
     },
   });
-  app.setValidatorCompiler(queryValidatorCompiler);
-  app.setSerializerCompiler(serializerCompiler);
-  app.addHook("onRoute", assertRouteContract);
+  await registerContract(app, env.PUBLIC_URL);
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
     origin: env.PUBLIC_URL,
@@ -143,11 +88,6 @@ export async function createApp(options: {
     encodings: ["gzip", "deflate"],
     globalDecompression: false,
   });
-  await app.register(swagger, {
-    openapi: apiDefinition(env.PUBLIC_URL),
-    transform: openApiTransform,
-    transformObject: openApiTransformObject,
-  });
   await registerApiReference(app);
   const limit = await createRateLimiter(app);
   app.addHook("onRequest", async (request, reply) => {
@@ -162,21 +102,11 @@ export async function createApp(options: {
       headers: requestHeaders(request),
     };
     setRequestContext(request, context);
-    if (
-      env.INSTANCE_MODE === "customer" ||
-      ![
-        "/",
-        "/docs",
-        "/robots.txt",
-        "/sitemap.xml",
-        "/llms.txt",
-        "/llms-full.txt",
-      ].includes(path)
-    )
-      reply.header("X-Robots-Tag", "noindex, nofollow, noarchive");
+    // Nothing is indexable by default; the static routes lift this for public pages.
+    reply.header("X-Robots-Tag", "noindex, nofollow, noarchive");
     if (path.startsWith("/auth/")) await limit(request, "auth");
     if (path === "/mcp" && request.method !== "POST") return;
-    if (protectedPath(path) || path === "/mcp") {
+    if (protectedRequest(request, path)) {
       if (
         path === "/mcp" &&
         !/^Bearer \S+$/i.test(context.headers.get("authorization") ?? "")
@@ -190,17 +120,12 @@ export async function createApp(options: {
         context.headers,
         context,
       );
-      setRequestContext(request, { ...context, caller: identity.caller });
-      await limit(
-        request,
-        path === "/mcp"
-          ? "mcp"
-          : path.endsWith("/ingest")
-            ? "ingest"
-            : path.endsWith("/query")
-              ? "sql"
-              : "read",
-      );
+      setRequestContext(request, {
+        ...context,
+        caller: identity.caller,
+        principal: identity,
+      });
+      await limit(request, request.routeOptions.config.rate ?? "read");
     }
     if (
       !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
@@ -221,9 +146,7 @@ export async function createApp(options: {
   });
   registerRequestDecompression(app);
   app.setErrorHandler(async (error, request, reply) => {
-    const status = z
-      .looseObject({ statusCode: z.number().optional() })
-      .safeParse(error);
+    const status = statusSchema.safeParse(error);
     let failure =
       error instanceof ServiceError
         ? error
@@ -242,7 +165,12 @@ export async function createApp(options: {
                 : "The request could not be completed.",
             );
     const path = nativePath(request);
-    if (protectedPath(path) || path === "/mcp" || path.startsWith("/auth/")) {
+    // Every failure in the protected, MCP and native auth namespaces is audited.
+    if (
+      protectedRequest(request, path) ||
+      path === "/mcp" ||
+      path.startsWith("/auth/")
+    ) {
       try {
         await auditFailure(
           services.audit,
@@ -257,11 +185,7 @@ export async function createApp(options: {
         if (audited instanceof ServiceError) failure = audited;
         else {
           request.log.error("Failed to persist operation audit");
-          failure = new ServiceError(
-            503,
-            "AUDIT_UNAVAILABLE",
-            "The operation could not be recorded. Try again.",
-          );
+          failure = auditUnavailableError();
         }
       }
     }
@@ -289,7 +213,7 @@ export async function createApp(options: {
   registerPublicApiRoutes(app, services);
   registerApiRoutes(app, services, {
     embeddings: Boolean(services.similar),
-    saas: env.INSTANCE_MODE === "saas",
+    saas: env.saas,
     domainEnrollment: domainEnrollmentEnabled(env.auth),
   });
   registerAuthRoutes(app, services.auth, env.PUBLIC_URL);
@@ -297,7 +221,6 @@ export async function createApp(options: {
   if (options.static !== false)
     await registerStaticRoutes(app, {
       publicUrl: env.PUBLIC_URL,
-      mode: env.INSTANCE_MODE,
       billingConfig: services.billing.publicConfig(),
       dashboardDirectory:
         options.dashboardDirectory ??

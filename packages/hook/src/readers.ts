@@ -37,7 +37,6 @@ export interface SourceRead {
   records: IngestRecord[];
   cursor: SourceCursor;
   sourcePos: number;
-  complete: boolean;
   transcriptMetadata?: Record<string, z.infer<ReturnType<typeof z.json>>>;
 }
 const MAX_RECORD = 50 * 1024 * 1024;
@@ -90,7 +89,6 @@ export function readSource(
   previous: SourceCursor,
   definition: HarnessDefinition,
   watermark: number,
-  maximumBytes = TARGET_BATCH,
 ): SourceRead {
   if (previous.kind === "document") {
     const content = readFileSync(path, "utf8");
@@ -112,17 +110,14 @@ export function readSource(
     const entries = [...previous.entries];
     const records: IngestRecord[] = [];
     let bytes = 0;
-    let complete = true;
     for (const [pos, value] of parsed.messages.entries()) {
       const line = JSON.stringify(value);
       const digest = hash(line);
       const existing = previous.entries[pos];
       if (existing?.hash === digest) continue;
-      if (records.length && bytes + Buffer.byteLength(line) > maximumBytes) {
-        complete = false;
-        break;
-      }
-      if (Buffer.byteLength(line) > MAX_RECORD)
+      const lineBytes = Buffer.byteLength(line);
+      if (records.length && bytes + lineBytes > TARGET_BATCH) break;
+      if (lineBytes > MAX_RECORD)
         throw new OversizedSourceRecord(path, pos, line);
       const version = existing ? existing.version + 1 : 0;
       const id = nativeKey(value, definition.recordKeyFields) ?? String(pos);
@@ -133,13 +128,12 @@ export function readSource(
         line,
       });
       entries[pos] = { hash: digest, version };
-      bytes += Buffer.byteLength(line);
+      bytes += lineBytes;
     }
     return {
       records,
       cursor: { kind: "document", entries, documentHash, watermark: sourcePos },
       sourcePos,
-      complete,
       transcriptMetadata: {
         ...metadata,
         sourceRecordCount: parsed.messages.length,
@@ -179,7 +173,8 @@ export function readSource(
         const line = Buffer.concat(fragments, fragmentBytes)
           .toString("utf8")
           .replace(/\r$/, "");
-        if (records.length && bytes + Buffer.byteLength(line) > maximumBytes) {
+        const lineBytes = Buffer.byteLength(line);
+        if (records.length && bytes + lineBytes > TARGET_BATCH) {
           complete = false;
           break;
         }
@@ -196,7 +191,7 @@ export function readSource(
             sourceVersion: 0,
             line,
           });
-          bytes += Buffer.byteLength(line);
+          bytes += lineBytes;
         }
         offset += fragmentBytes + 1;
         fragments = [];
@@ -209,7 +204,6 @@ export function readSource(
       records,
       cursor: { kind: "jsonl", offset },
       sourcePos: Math.max(watermark, size),
-      complete,
     };
   } finally {
     closeSync(fd);
@@ -282,5 +276,5 @@ export function quarantineOversized(
     reason: "RECORD_TOO_LARGE",
     cursor,
   });
-  return { records: [], cursor, sourcePos: watermark, complete: false };
+  return { records: [], cursor, sourcePos: watermark };
 }

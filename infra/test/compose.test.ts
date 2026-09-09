@@ -72,6 +72,10 @@ describe("Compose configuration", () => {
       depends_on: { migrate: { condition: "service_completed_successfully" } },
       environment: { DATABASE_MIGRATION_URL: "", POSTGRES_PASSWORD: "" },
       ports: [{ host_ip: "127.0.0.1", target: 3000, published: "3000" }],
+      logging: {
+        driver: "json-file",
+        options: { "max-size": "50m", "max-file": "5" },
+      },
     });
     expect(services.migrate).toMatchObject({
       command: ["pnpm", "db:migrate"],
@@ -230,6 +234,9 @@ describe("Compose configuration", () => {
     expect(server).toContain(
       "<max_concurrent_queries>32</max_concurrent_queries>",
     );
+    // System logs nothing reads; their merges outweigh the trace data on two vCPUs.
+    expect(server).toContain('<asynchronous_metric_log remove="1" />');
+    expect(server).toContain('<processors_profile_log remove="1" />');
     expect(
       readFileSync(
         join(repository, "infra", "compose", "clickhouse-users.xml"),

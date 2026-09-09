@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { schemaOutputSchema } from "../schemas/rest.js";
+import { sqlLimits } from "../schemas/sql.js";
 import {
   traceEmbeddingViews,
   traceSqlFunctions,
@@ -15,13 +16,6 @@ import {
 } from "../dashboards/templates.js";
 
 type Schema = z.infer<typeof schemaOutputSchema>;
-
-/** Limits the query service enforces; the reference states them so an assistant writes bounded queries. */
-export const schemaContextLimits = {
-  rows: 500,
-  seconds: 5,
-  responseKb: 256,
-} as const;
 
 /** Worked queries an assistant can adapt; each parses under the standard dashboard parameters. */
 export const schemaContextExamples: readonly {
@@ -66,11 +60,11 @@ const oneLine = (value: string) => value.replaceAll(/\s*\r?\n\s*/g, " ").trim();
  */
 export function formatSchemaContext(schema: Schema): string {
   const views = new Map<string, Schema["columns"]>();
-  for (const column of schema.columns)
-    views.set(column.view_name, [
-      ...(views.get(column.view_name) ?? []),
-      column,
-    ]);
+  for (const column of schema.columns) {
+    const group = views.get(column.view_name) ?? [];
+    group.push(column);
+    views.set(column.view_name, group);
+  }
   const orderedViews = [...views.entries()].sort(([a], [b]) => {
     const rankA = canonicalOrder.get(a) ?? Number.MAX_SAFE_INTEGER;
     const rankB = canonicalOrder.get(b) ?? Number.MAX_SAFE_INTEGER;
@@ -84,12 +78,12 @@ export function formatSchemaContext(schema: Schema): string {
   );
   // Vector views and functions reach the schema only for embeddings-enabled callers.
   const hasVectors =
-    hasSimilar ||
-    (traceEmbeddingViews as readonly string[]).some((name) => views.has(name));
+    hasSimilar || traceEmbeddingViews.some((name) => views.has(name));
   const parameters = Object.entries(
     dashboardParameterTypes(standardDashboardVariables),
   ).map(([name, type]) => `\`{${name}:${type}}\``);
-  const { rows, seconds, responseKb } = schemaContextLimits;
+  const { rows, seconds } = sqlLimits;
+  const responseKb = sqlLimits.responseBytes / 1024;
   const lines: string[] = [
     "# AgentCommons schema reference",
     "",

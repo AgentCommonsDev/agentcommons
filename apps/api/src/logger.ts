@@ -7,17 +7,9 @@ export function loggerOptions(
   return {
     level,
     ...(stream ? { stream } : {}),
-    redact: {
-      paths: [
-        "body",
-        "req.body",
-        "records[*].line",
-        "req.headers.authorization",
-        "req.headers.cookie",
-        'req.headers["x-api-key"]',
-      ],
-      remove: true,
-    },
+    // The `req` serializer below is what keeps bodies and credentials out of request
+    // logs; these paths are defense in depth for any application log that names them.
+    redact: { paths: ["body", "records[*].line"], remove: true },
     serializers: {
       req: (request: { method: string; url: string; ip: string }) => ({
         method: request.method,

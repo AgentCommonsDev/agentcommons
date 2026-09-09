@@ -49,28 +49,32 @@ export async function verifyNativeTree(input: {
     assert.ok(index < 99, "Native tree exceeded 100 bounded pages.");
   }
 
-  /** Page through a session's `get` responses until one message matches. */
-  async function findMessage(
-    scope: { publicUrl: string; apiKey: string },
-    sessionId: string,
+  /** Page through bounded `get` reads until one message matches. */
+  async function pageGet(
+    read: (cursor: ContentCursor | null) => Promise<GetOutput>,
     predicate: (message: GetOutput["messages"][number]) => boolean,
+    options: { missing: string; onPage?: (result: GetOutput) => void },
   ) {
     let cursor: ContentCursor | null = null;
     for (let index = 0; index < 100; index++) {
-      const url = new URL(`/api/v1/sessions/${sessionId}`, scope.publicUrl);
-      if (cursor) url.searchParams.set("cursor", JSON.stringify(cursor));
-      const response = await fetch(url, {
-        headers: { authorization: `Bearer ${scope.apiKey}` },
-      });
-      assert.equal(response.status, 200, "Native session REST response.");
-      const result = getOutputSchema.parse(await response.json());
+      const result = await read(cursor);
+      options.onPage?.(result);
       const message = result.messages.find(predicate);
-      if (message) return message;
-      assert.ok(result.next, "The expected message is missing.");
+      if (message) return { message, pages: index + 1 };
+      assert.ok(result.next, options.missing);
+      assert.notDeepEqual(result.next, cursor, "Get cursor must advance.");
       cursor = result.next;
     }
     throw new Error("Native get exceeded 100 bounded pages.");
   }
+  const restGet =
+    (sessionId: string) => async (cursor: ContentCursor | null) => {
+      const url = new URL(`/api/v1/sessions/${sessionId}`, input.publicUrl);
+      if (cursor) url.searchParams.set("cursor", JSON.stringify(cursor));
+      const response = await fetch(url, { headers });
+      assert.equal(response.status, 200, "Native session REST response.");
+      return getOutputSchema.parse(await response.json());
+    };
   const evidence = [];
   const touch = await input.page.evaluate(() => navigator.maxTouchPoints > 0);
   const action = touch ? "tap" : "click";
@@ -92,43 +96,35 @@ export async function verifyNativeTree(input: {
       );
     else assert.equal(node.parent_tool_use_id, null);
 
-    async function findRead(
-      read: (cursor: ContentCursor | null) => Promise<GetOutput>,
-    ) {
-      let cursor: ContentCursor | null = null;
-      for (let index = 0; index < 100; index++) {
-        const result = await read(cursor);
+    const childRead = {
+      predicate: (item: GetOutput["messages"][number]) =>
+        item.session_id === childId &&
+        item.kind === "TOOL_RESULT" &&
+        item.content.includes(input.probe),
+      missing: "The child's own file-read result is missing.",
+      onPage: (result: GetOutput) => {
         assert.equal(result.header.session_id, childId);
         assert.equal(result.header.parent_session_id, input.parentId);
         assert.equal(result.header.parent_relation, input.relation);
-        const message = result.messages.find(
-          (item) =>
-            item.session_id === childId &&
-            item.kind === "TOOL_RESULT" &&
-            item.content.includes(input.probe),
-        );
-        if (message) return { message, pages: index + 1 };
-        assert.ok(result.next, "The child's own file-read result is missing.");
-        assert.notDeepEqual(result.next, cursor, "Get cursor must advance.");
-        cursor = result.next;
-      }
-      throw new Error("Native child get exceeded 100 bounded pages.");
-    }
-    const rest = await findRead(async (cursor) => {
-      const url = new URL(`/api/v1/sessions/${childId}`, input.publicUrl);
-      if (cursor) url.searchParams.set("cursor", JSON.stringify(cursor));
-      const response = await fetch(url, { headers });
-      assert.equal(response.status, 200, "Native child REST response.");
-      return getOutputSchema.parse(await response.json());
-    });
-    const mcp = await findRead(async (cursor) => {
-      const result = await input.client.callTool({
-        name: "get",
-        arguments: { session_id: childId, ...(cursor ? { cursor } : {}) },
-      });
-      assert.notEqual(result.isError, true, "Native child MCP get failed.");
-      return getOutputSchema.parse(result.structuredContent);
-    });
+      },
+    };
+    const rest = await pageGet(
+      restGet(childId),
+      childRead.predicate,
+      childRead,
+    );
+    const mcp = await pageGet(
+      async (cursor) => {
+        const result = await input.client.callTool({
+          name: "get",
+          arguments: { session_id: childId, ...(cursor ? { cursor } : {}) },
+        });
+        assert.notEqual(result.isError, true, "Native child MCP get failed.");
+        return getOutputSchema.parse(result.structuredContent);
+      },
+      childRead.predicate,
+      childRead,
+    );
     assert.equal(mcp.message.message_id, rest.message.message_id);
     const search = { query: input.probe, filters: { session_id: childId } };
     const searchResponse = await fetch(`${input.publicUrl}/api/v1/search`, {
@@ -167,13 +163,15 @@ export async function verifyNativeTree(input: {
     if ((await expandTools.getAttribute("aria-checked")) !== "true")
       await expandTools[action]();
     if (spawned) {
-      const spawningCall = await findMessage(
-        input,
-        input.parentId,
-        (item) =>
-          item.kind === "TOOL_USE" &&
-          item.tool_use_id === node.parent_tool_use_id,
-      );
+      const spawningCall = (
+        await pageGet(
+          restGet(input.parentId),
+          (item) =>
+            item.kind === "TOOL_USE" &&
+            item.tool_use_id === node.parent_tool_use_id,
+          { missing: "The spawning call is missing from the parent." },
+        )
+      ).message;
       // The parent page is byte-paged; load until the spawning call is on screen.
       const call = input.page.getByTestId(
         `session-message-${String(spawningCall.seq)}`,

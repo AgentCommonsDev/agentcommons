@@ -5,7 +5,11 @@ import {
   defaultBillingConfig,
   type PaidPlan,
 } from "@agentcommons/core/schemas/billing";
-import { createAuth, type AuthConfiguration } from "./config.js";
+import {
+  billingReturnUrl,
+  createAuth,
+  type AuthConfiguration,
+} from "./config.js";
 import { lockOrganization, requireCookie } from "../services/auth.js";
 import { ServiceError, type ServiceContext } from "../services/context.js";
 
@@ -51,7 +55,13 @@ export async function nativeCheckout(
       "This organization already has the selected plan.",
     );
   const priceId = plan === "pro" ? stripe.priceId : stripe.embeddingsPriceId;
-  const price = await stripe.client.prices.retrieve(priceId);
+  // The operator's price and meter configuration is independent of this request, so the
+  // Stripe reads run together while the organization lock is held.
+  const [price] = await Promise.all([
+    stripe.client.prices.retrieve(priceId),
+    validateMeter(stripe, "capture"),
+    ...(plan === "pro_embeddings" ? [validateMeter(stripe, "embedding")] : []),
+  ]);
   const monthlyCents =
     (defaultBillingConfig.plans.pro.monthly_price_usd +
       (plan === "pro_embeddings"
@@ -64,8 +74,7 @@ export async function nativeCheckout(
     price.recurring?.usage_type !== "licensed"
   )
     throw priceMismatch();
-  await validateMeter(stripe, "capture");
-  if (plan === "pro_embeddings") await validateMeter(stripe, "embedding");
+  const returnUrl = billingReturnUrl(config);
   const response = await createAuth(tx, config).api.upgradeSubscription({
     headers: context.headers,
     body: {
@@ -75,17 +84,15 @@ export async function nativeCheckout(
         : {}),
       customerType: "organization",
       referenceId: caller.organizationId,
-      successUrl: `${config.publicUrl}/app/billing`,
-      cancelUrl: `${config.publicUrl}/app/billing`,
-      returnUrl: `${config.publicUrl}/app/billing`,
+      successUrl: returnUrl,
+      cancelUrl: returnUrl,
+      returnUrl,
       disableRedirect: true,
     },
   });
-  const result = z.object({ url: z.url() }).parse(response);
+  const result = redirectSchema.parse(response);
   await lockTracePublication(tx, caller.organizationId, "write");
-  return {
-    url: result.url === `${config.publicUrl}/app/billing` ? null : result.url,
-  };
+  return { url: result.url === returnUrl ? null : result.url };
 }
 
 export async function nativeBillingPortal(
@@ -99,13 +106,14 @@ export async function nativeBillingPortal(
     body: {
       customerType: "organization",
       referenceId: caller.organizationId,
-      returnUrl: `${config.publicUrl}/app/billing`,
+      returnUrl: billingReturnUrl(config),
       disableRedirect: true,
     },
   });
-  return z.object({ url: z.url() }).parse(response);
+  return redirectSchema.parse(response);
 }
 
+const redirectSchema = z.object({ url: z.url() });
 function priceMismatch() {
   return new ServiceError(
     503,
@@ -137,10 +145,10 @@ async function validateMeter(
     (kind === "capture"
       ? stripe.captureCentsPer1000
       : stripe.embeddingCentsPer1000) / 1000;
-  const price = await stripe.client.prices.retrieve(priceId, {
-    expand: ["tiers"],
-  });
-  const meter = await stripe.client.billing.meters.retrieve(meterId);
+  const [price, meter] = await Promise.all([
+    stripe.client.prices.retrieve(priceId, { expand: ["tiers"] }),
+    stripe.client.billing.meters.retrieve(meterId),
+  ]);
   if (
     !monthly(price) ||
     price.recurring?.usage_type !== "metered" ||

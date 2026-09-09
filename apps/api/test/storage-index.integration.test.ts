@@ -1,51 +1,31 @@
-import { cleanup } from "../../../scripts/cleanup.js";
 import { z } from "zod";
 import { identityDigest } from "@agentcommons/core";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import type { IngestService } from "../src/services/ingest.js";
-import type { TraceProjectionService } from "../src/services/trace-projection.js";
 import { traceServices } from "./trace-services.js";
 import { requireCaller } from "../src/services/context.js";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { sourceRecord, testEnvelope } from "./envelopes.js";
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let org: Awaited<ReturnType<typeof provisionOrganization>>;
-let service: IngestService;
-let projection: TraceProjectionService;
-const release: Array<() => Promise<unknown>> = [];
+let services: ReturnType<typeof traceServices>;
+const { defer, release } = releaser();
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   org = await provisionOrganization(db, "storage-index");
-  const services = traceServices(db);
-  release.unshift(() => services.close());
-  projection = services.projection;
-  service = services.ingest;
+  services = traceServices(db);
+  defer(() => services.close());
 });
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
+/** Admits and projects one batch, then reads back the published session header. */
 async function publish(input: unknown) {
-  const accepted = await service.execute(org.context, input);
-  const caller = requireCaller(org.context);
-  await projection.process(caller.organizationId, accepted.result.sessionId);
-  const control = await db.prisma.traceSessionControl.findUniqueOrThrow({
-    where: {
-      organizationId_id: {
-        organizationId: caller.organizationId,
-        id: accepted.result.sessionId,
-      },
-    },
-  });
-  const row = await db.traces.readSession(
-    caller.organizationId,
-    control.id,
-    control.publishedRevision,
-    control.redactionGeneration,
+  const accepted = await services.publishQueued(org.context, input);
+  return services.header(
+    requireCaller(org.context).organizationId,
+    accepted.result.sessionId,
   );
-  if (!row) throw new Error("Expected a published native trace.");
-  return row;
 }
 function envelope(
   options: {
@@ -56,39 +36,27 @@ function envelope(
     file?: string;
   } = {},
 ) {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
+  return testEnvelope({
     harnessSessionId: options.nativeId ?? randomUUID(),
     behavior: "start",
     nativeEvent: "SessionStart",
     start: { resume: false },
-    batchId: randomUUID(),
-    installationId: randomUUID(),
-    sentAt: new Date().toISOString(),
     sourcePos: 1,
+    cursor: "1",
     context: {
       cwd: "/fixture",
-      installation: {
-        hostname: "fixture",
-        osUser: "fixture",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "fixture", osUser: "fixture" },
       git: {
         root: "/fixture",
         remoteUrl: `https://github.com/test/${options.repo ?? "fixture"}.git`,
         branch: options.branch ?? "main",
         head: "abc123",
       },
-      parentHint: null,
     },
     records: [
-      {
-        pos: 0,
-        key: randomUUID(),
-        line: JSON.stringify({
+      sourceRecord(
+        0,
+        {
           type: "assistant",
           message: {
             role: "assistant",
@@ -106,12 +74,11 @@ function envelope(
                 : []),
             ],
           },
-        }),
-      },
+        },
+        randomUUID(),
+      ),
     ],
-    cursor: "1",
-    end: null,
-  };
+  });
 }
 // @req R-ING-02 @req R-ING-15
 it("stores full large repository and branch metadata and remains exactly filterable", async () => {
@@ -162,24 +129,26 @@ it("keeps literal digest-looking file names distinct while deduplicating identic
     "plain.ts",
   ];
   const input = envelope();
-  input.records = names.map((path, index) => ({
-    pos: index,
-    key: randomUUID(),
-    line: JSON.stringify({
-      type: "assistant",
-      message: {
-        role: "assistant",
-        content: [
-          {
-            type: "tool_use",
-            id: `read-${String(index)}`,
-            name: "Read",
-            input: { file_path: `/fixture/${path}` },
-          },
-        ],
+  input.records = names.map((path, index) =>
+    sourceRecord(
+      index,
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: `read-${String(index)}`,
+              name: "Read",
+              input: { file_path: `/fixture/${path}` },
+            },
+          ],
+        },
       },
-    }),
-  }));
+      randomUUID(),
+    ),
+  );
   input.sourcePos = names.length;
   const row = await publish(input);
   const result = await db.traceReaders.read(

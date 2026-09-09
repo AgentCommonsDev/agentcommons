@@ -7,4 +7,5 @@ export const JOB_QUEUES = {
   billingMeter: "billing-meter-delivery",
   welcome: "welcome-email",
   maintenance: "maintenance",
+  dashboardPrerender: "dashboard-prerender",
 } as const;

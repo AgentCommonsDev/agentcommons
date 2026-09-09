@@ -1,7 +1,9 @@
 import { lockTracePublication, lockTraceSink } from "@agentcommons/db";
-import type {
-  TraceRepository,
-  TraceEmbeddingChunk,
+import {
+  EMBEDDING_DIMENSIONS,
+  type TraceRepository,
+  type TraceEmbeddingChunk,
+  type TraceScope,
 } from "@agentcommons/traces";
 import {
   admitUsage,
@@ -12,10 +14,14 @@ import { createPolicyCache } from "../services/policy-cache.js";
 import { createHash } from "node:crypto";
 import { v7 as uuidv7, v5 as uuidv5 } from "uuid";
 import { z } from "zod";
-import type { Prisma, PrismaClient } from "@agentcommons/db";
+import type {
+  Prisma,
+  PrismaClient,
+  TraceSessionControl,
+} from "@agentcommons/db";
 import type { PolicyCache } from "@agentcommons/core";
 import { requirePermission, type ServiceContext } from "../services/context.js";
-import { operatorContext } from "../auth/bootstrap.js";
+import { operatorContext, workerActor } from "../auth/bootstrap.js";
 import type { AuditService } from "../services/audit.js";
 import {
   chunks,
@@ -25,7 +31,7 @@ import {
   type TokenizedInput,
 } from "./chunker.js";
 import { EmbeddingBudget } from "./budget.js";
-import { EMBEDDING_DIMENSIONS, type EmbeddingProvider } from "./provider.js";
+import type { EmbeddingProvider } from "./provider.js";
 
 export const embeddingJobSchema = z.strictObject({
   organizationId: z.string().min(1),
@@ -46,13 +52,24 @@ interface Dependencies {
   traces: TraceRepository;
   billing?: BillingConfiguration;
 }
+/** The parts of an indexing plan that publication checks against the live rows. */
+interface PublicationPlan {
+  settingsRevision: number;
+  lease: string;
+  source: {
+    scope: Pick<TraceScope, "revision" | "generation">;
+    policyDigest: string;
+  };
+}
 export class EmbeddingService {
   readonly budget: EmbeddingBudget;
+  private readonly saas: boolean;
   constructor(private readonly dependencies: Dependencies) {
     if (dependencies.provider.dimensions !== EMBEDDING_DIMENSIONS)
       throw new Error(
         "The embedding provider dimensions do not match the database migration.",
       );
+    this.saas = dependencies.billing?.mode === "saas";
     this.budget = new EmbeddingBudget(
       dependencies.prisma,
       dependencies.dailyTokenBudget,
@@ -226,12 +243,67 @@ export class EmbeddingService {
     >`SELECT clock_timestamp() AS now FROM trace_session_control WHERE organization_id=${data.organizationId} AND id=${data.sessionId}::uuid FOR UPDATE`;
     return rows[0]?.now ?? new Date();
   }
+  /** One audit row for a worker step on the session, inside the caller's transaction. */
+  private workerAudit(
+    tx: Prisma.TransactionClient,
+    data: EmbeddingJob,
+    action: string,
+    detail: unknown,
+    statusCode?: number,
+  ) {
+    return this.dependencies.audit.write(
+      operatorContext(),
+      {
+        action,
+        resourceType: "session",
+        resourceIds: [data.sessionId],
+        actor: workerActor(data.organizationId),
+        detail,
+        ...(statusCode === undefined ? {} : { statusCode }),
+      },
+      tx,
+    );
+  }
+  /**
+   * Whether the source, lease or organization setting a plan was built from has moved
+   * since: the session was purged or republished, the policies or setting changed, or
+   * another worker took the lease.
+   */
+  private async stale(
+    tx: Prisma.TransactionClient,
+    plan: PublicationPlan,
+    data: EmbeddingJob,
+    setting: { enabled: boolean; revision: number },
+  ): Promise<{ stale: boolean; current: TraceSessionControl | null }> {
+    const current = await tx.traceSessionControl.findUnique({
+      where: {
+        organizationId_id: {
+          organizationId: data.organizationId,
+          id: data.sessionId,
+        },
+      },
+    });
+    const state = await tx.embeddingState.findUnique({
+      where: { organizationId_sessionId: data },
+    });
+    const stale =
+      !setting.enabled ||
+      setting.revision !== plan.settingsRevision ||
+      !current ||
+      current.purgedAt !== null ||
+      current.publishedRevision !== plan.source.scope.revision ||
+      current.redactionGeneration !== plan.source.scope.generation ||
+      state?.leaseToken !== plan.lease ||
+      (await this.policyDigest(tx, data.organizationId)) !==
+        plan.source.policyDigest;
+    return { stale, current };
+  }
   /** One provider batch; ClickHouse keeps completed vectors behind the publication fence. */
   async process(
     data: EmbeddingJob,
   ): Promise<{ complete: boolean; deferredUntil: Date | null }> {
-    const { prisma, provider, audit, traces } = this.dependencies;
-    const saas = this.dependencies.billing?.mode === "saas";
+    const { prisma, provider, traces } = this.dependencies;
+    const { saas } = this;
     const plan = await prisma.$transaction(
       async (tx) => {
         const setting = await organizationEmbeddingSetting(
@@ -306,22 +378,9 @@ export class EmbeddingService {
               targets.map((target) => target.input),
             )
           : null;
-        await audit.write(
-          operatorContext(),
-          {
-            action: "embeddings.reserve",
-            resourceType: "session",
-            resourceIds: [data.sessionId],
-            actor: {
-              organizationId: data.organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: { tokens: reservation?.reservation?.reservedTokens ?? 0 },
-          },
-          tx,
-        );
+        await this.workerAudit(tx, data, "embeddings.reserve", {
+          tokens: reservation?.reservation?.reservedTokens ?? 0,
+        });
         if (reservation && !reservation.reservation)
           return { wait: reservation.deferredUntil };
         const lease = uuidv7();
@@ -385,22 +444,12 @@ export class EmbeddingService {
           where: { ...data, leaseToken: plan.lease },
           data: { leaseToken: null, leaseUntil: null },
         });
-        await audit.write(
-          operatorContext(),
-          {
-            action: "embeddings.index",
-            statusCode: 502,
-            resourceType: "session",
-            resourceIds: [data.sessionId],
-            actor: {
-              organizationId: data.organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: { failed: true },
-          },
+        await this.workerAudit(
           tx,
+          data,
+          "embeddings.index",
+          { failed: true },
+          502,
         );
       });
       throw new Error("The embedding provider request failed.", {
@@ -411,24 +460,12 @@ export class EmbeddingService {
     if (reservation)
       await prisma.$transaction(async (tx) => {
         await this.budget.finish(tx, reservation.id, result.tokens);
-        await audit.write(
-          operatorContext(),
-          {
-            action: "embeddings.provider.complete",
-            resourceType: "session",
-            resourceIds: [data.sessionId],
-            actor: {
-              organizationId: data.organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: { tokens: result.tokens },
-          },
-          tx,
-        );
+        await this.workerAudit(tx, data, "embeddings.provider.complete", {
+          tokens: result.tokens,
+        });
       });
     const completed = new Map(plan.source.complete.map((row) => [row.id, row]));
+    const desired = new Map(plan.source.desired.map((row) => [row.id, row]));
     let summary = plan.source.session;
     for (const [index, target] of plan.targets.entries()) {
       const vector = result.vectors[index];
@@ -441,7 +478,7 @@ export class EmbeddingService {
           updatedAt: new Date(),
         };
       else {
-        const row = plan.source.desired.find((value) => value.id === target.id);
+        const row = desired.get(target.id);
         if (!row) throw new Error("The embedding target is missing.");
         completed.set(row.id, { ...row, embedding: vector });
       }
@@ -450,35 +487,13 @@ export class EmbeddingService {
       const written = await prisma.$transaction(
         async (tx) => {
           await lockTraceSink(tx, data.organizationId, data.sessionId, "read");
-          const current = await tx.traceSessionControl.findUnique({
-            where: {
-              organizationId_id: {
-                organizationId: data.organizationId,
-                id: data.sessionId,
-              },
-            },
-          });
-          const state = await tx.embeddingState.findUnique({
-            where: { organizationId_sessionId: data },
-          });
           const setting = await organizationEmbeddingSetting(
             tx,
             data.organizationId,
             false,
             saas,
           );
-          if (
-            !setting.enabled ||
-            setting.revision !== plan.settingsRevision ||
-            (await this.policyDigest(tx, data.organizationId)) !==
-              plan.source.policyDigest ||
-            !current ||
-            current.purgedAt ||
-            current.publishedRevision !== plan.source.scope.revision ||
-            current.redactionGeneration !== plan.source.scope.generation ||
-            state?.leaseToken !== plan.lease
-          )
-            return false;
+          if ((await this.stale(tx, plan, data, setting)).stale) return false;
           await traces.writeEmbeddings(plan.vectorScope, {
             chunks: [...completed.values()],
             session: summary,
@@ -499,28 +514,13 @@ export class EmbeddingService {
             saas,
           );
           await this.lock(tx, data);
-          const current = await tx.traceSessionControl.findUnique({
-            where: {
-              organizationId_id: {
-                organizationId: data.organizationId,
-                id: data.sessionId,
-              },
-            },
-          });
-          const state = await tx.embeddingState.findUnique({
-            where: { organizationId_sessionId: data },
-          });
-          const stale =
-            !written ||
-            !setting.enabled ||
-            setting.revision !== plan.settingsRevision ||
-            !current ||
-            current.purgedAt !== null ||
-            current.publishedRevision !== plan.source.scope.revision ||
-            current.redactionGeneration !== plan.source.scope.generation ||
-            state?.leaseToken !== plan.lease ||
-            (await this.policyDigest(tx, data.organizationId)) !==
-              plan.source.policyDigest;
+          const { stale: moved, current } = await this.stale(
+            tx,
+            plan,
+            data,
+            setting,
+          );
+          const stale = !written || moved;
           const complete =
             !stale &&
             completed.size === plan.source.desired.length &&
@@ -552,26 +552,11 @@ export class EmbeddingService {
             where: { ...data, leaseToken: plan.lease },
             data: { complete, leaseToken: null, leaseUntil: null },
           });
-          await audit.write(
-            operatorContext(),
-            {
-              action: "embeddings.index",
-              resourceType: "session",
-              resourceIds: [data.sessionId],
-              actor: {
-                organizationId: data.organizationId,
-                userId: null,
-                apiKeyId: null,
-                authMethod: "worker",
-              },
-              detail: {
-                vectors: stale ? 0 : plan.targets.length,
-                stale,
-                complete,
-              },
-            },
-            tx,
-          );
+          await this.workerAudit(tx, data, "embeddings.index", {
+            vectors: stale ? 0 : plan.targets.length,
+            stale,
+            complete,
+          });
           return {
             complete:
               !setting.enabled ||
@@ -589,22 +574,12 @@ export class EmbeddingService {
           where: { ...data, leaseToken: plan.lease },
           data: { leaseToken: null, leaseUntil: null },
         });
-        await audit.write(
-          operatorContext(),
-          {
-            action: "embeddings.index",
-            statusCode: 503,
-            resourceType: "session",
-            resourceIds: [data.sessionId],
-            actor: {
-              organizationId: data.organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: { retry: true },
-          },
+        await this.workerAudit(
           tx,
+          data,
+          "embeddings.index",
+          { retry: true },
+          503,
         );
       });
       throw new Error("Embedding publication must retry.", { cause: error });
@@ -619,7 +594,7 @@ export class EmbeddingService {
           this.dependencies.prisma,
           organizationId,
           false,
-          this.dependencies.billing?.mode === "saas",
+          this.saas,
         )
       ).enabled
     )
@@ -632,7 +607,7 @@ export class EmbeddingService {
         tx,
         organizationId,
         true,
-        this.dependencies.billing?.mode === "saas",
+        this.saas,
       );
       if (!setting.enabled) return null;
       const value = await this.budget.reserve(tx, organizationId, "query", [
@@ -667,7 +642,7 @@ export class EmbeddingService {
             tx,
             organizationId,
             true,
-            this.dependencies.billing?.mode === "saas",
+            this.saas,
           );
           await this.budget.finish(
             tx,

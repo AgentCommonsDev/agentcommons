@@ -1,5 +1,6 @@
 import Papa from "papaparse";
 import { z } from "zod";
+const recordSchema = z.record(z.string(), z.unknown());
 export function formatCsvTable(
   fields: readonly string[],
   rows: readonly (readonly unknown[])[],
@@ -19,9 +20,7 @@ export function formatCsvTable(
   );
 }
 export function formatCsv(rows: readonly unknown[]): string {
-  const records = rows.map((row) =>
-    z.record(z.string(), z.unknown()).parse(row),
-  );
+  const records = rows.map((row) => recordSchema.parse(row));
   const fields = Object.keys(records[0] ?? {});
   return formatCsvTable(
     fields,

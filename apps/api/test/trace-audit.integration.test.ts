@@ -2,33 +2,29 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { createTraceClient } from "@agentcommons/traces";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { drainTraceAudit } from "./trace-services.js";
 import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 import { requireCaller } from "../src/services/context.js";
-import { cleanup } from "../../../scripts/cleanup.js";
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let org: Awaited<ReturnType<typeof provisionOrganization>>;
 let projection: TraceAuditProjectionService;
 let writer: ReturnType<typeof createTraceClient>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   org = await provisionOrganization(db, "audit-projection");
   writer = createTraceClient(db.traceConfig);
-  release.unshift(() => writer.close());
+  defer(() => writer.close());
   projection = new TraceAuditProjectionService({
     prisma: db.prisma,
     audit: db.audit,
     traces: db.traces,
   });
-  while (await projection.flush()) {
-    /* drain native setup audit */
-  }
+  await drainTraceAudit(projection);
 });
-afterAll(async () => {
-  expect(await cleanup(release)).toEqual([]);
-});
+afterAll(release);
 async function event() {
   return db.audit.write(
     { ...org.context, requestId: randomUUID() },

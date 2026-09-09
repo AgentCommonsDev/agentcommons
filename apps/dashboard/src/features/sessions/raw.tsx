@@ -8,11 +8,7 @@ import { downloadBlob } from "../../lib/csv";
 import { dateTime, errorMessage, number } from "../../lib/display";
 import type { RawRecord } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
-import {
-  CopyButton,
-  LoadingState,
-  RequestError,
-} from "../../components/app/states";
+import { CopyButton, QueryState } from "../../components/app/states";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { EmptyState } from "../../components/ui/feedback";
@@ -233,63 +229,57 @@ export function RawTab({ sessionId }: { sessionId: string }) {
         }),
       ),
   });
-  if (raw.isPending) return <LoadingState />;
-  if (raw.error)
-    return (
-      <RequestError
-        error={raw.error}
-        retry={() => {
-          void raw.refetch();
-        }}
-      />
-    );
   return (
-    <div className="flex flex-col gap-3" aria-label={labels.label}>
-      <p className="text-sm text-muted">{labels.description}</p>
-      {raw.data.items.length === 0 ? (
-        <EmptyState
-          compact
-          title={labels.empty}
-          description={labels.emptyHint}
-        />
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {raw.data.items.map((record) => (
-            <RawRecordView
-              key={`${record.id}-${String(record.payload_fragment?.offset ?? 0)}`}
-              record={record}
-              cursor={raw.data.cursor}
+    <QueryState query={raw}>
+      {(data) => (
+        <div className="flex flex-col gap-3" aria-label={labels.label}>
+          <p className="text-sm text-muted">{labels.description}</p>
+          {data.items.length === 0 ? (
+            <EmptyState
+              compact
+              title={labels.empty}
+              description={labels.emptyHint}
             />
-          ))}
-        </ul>
-      )}
-      {(cursors.length > 1 || raw.data.cursor) && (
-        <div className="flex items-center justify-between gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={cursors.length === 1}
-            onClick={() => {
-              setCursors((prior) => prior.slice(0, -1));
-            }}
-          >
-            <ChevronLeft aria-hidden />
-            {labels.previous}
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={raw.data.cursor === null}
-            onClick={() => {
-              const next = raw.data.cursor;
-              if (next) setCursors((prior) => [...prior, next]);
-            }}
-          >
-            {labels.next}
-            <ChevronRight aria-hidden />
-          </Button>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {data.items.map((record) => (
+                <RawRecordView
+                  key={`${record.id}-${String(record.payload_fragment?.offset ?? 0)}`}
+                  record={record}
+                  cursor={data.cursor}
+                />
+              ))}
+            </ul>
+          )}
+          {(cursors.length > 1 || data.cursor) && (
+            <div className="flex items-center justify-between gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={cursors.length === 1}
+                onClick={() => {
+                  setCursors((prior) => prior.slice(0, -1));
+                }}
+              >
+                <ChevronLeft aria-hidden />
+                {labels.previous}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={data.cursor === null}
+                onClick={() => {
+                  const next = data.cursor;
+                  if (next) setCursors((prior) => [...prior, next]);
+                }}
+              >
+                {labels.next}
+                <ChevronRight aria-hidden />
+              </Button>
+            </div>
+          )}
         </div>
       )}
-    </div>
+    </QueryState>
   );
 }

@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
 import { requireCaller } from "../src/services/context.js";
 import { SearchService } from "../src/services/search.js";
 import { SessionService } from "../src/services/session.js";
@@ -14,32 +13,17 @@ let org: Awaited<ReturnType<typeof provisionOrganization>>;
 let fixtures: TraceFixtures;
 let service: SessionService;
 let id: string;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
+/** One installation shared by every fixture session of the organization. */
+const installationId = randomUUID();
 const content = "界🙂".repeat(75_000);
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   org = await provisionOrganization(db, "large-trace-read");
   fixtures = new TraceFixtures(db);
-  release.unshift(() => fixtures.close());
-  const caller = requireCaller(org.context);
-  const installation = await db.prisma.installation.create({
-    data: {
-      id: randomUUID(),
-      organizationId: caller.organizationId,
-      hostname: "fixture",
-      osUser: "fixture",
-      platform: "linux",
-      arch: "x64",
-    },
-  });
-  if (!caller.apiKeyId) throw new Error("Expected fixture key");
-  id = await fixtures.session({
-    organizationId: caller.organizationId,
-    userId: caller.userId,
-    keyId: caller.apiKeyId,
-    installationId: installation.id,
-  });
+  defer(() => fixtures.close());
+  ({ id } = await fixtures.sessionFor(org.context, { installationId }));
   for (let seq = 0; seq < 80; seq++)
     await fixtures.insert("messages", id, {
       message_id: randomUUID(),
@@ -59,9 +43,7 @@ beforeAll(async () => {
     cursors: new CursorCodec("large-read-cursor-fixture-long-secret"),
   });
 });
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 // @req R-GET-02
 it("reads a bounded UTF-8 page from eighty large tool outputs without fetching the entire transcript", async () => {
   await expect(
@@ -117,18 +99,10 @@ it("preserves exact UTF-8 continuations at large-message boundaries and rejects 
 
 // @req R-SRCH-08 @req R-SRCH-09
 it("bounds large context payload retrieval without losing a match near the end of tool output", async () => {
-  const caller = requireCaller(org.context);
-  if (!caller.apiKeyId) throw new Error("Expected fixture key");
-  const installation = await db.prisma.installation.findFirstOrThrow({
-    where: { organizationId: caller.organizationId },
-  });
   const text = " ".repeat(525_000) + "edgepayloadneedle";
   for (let index = 0; index < 12; index++) {
-    const sessionId = await fixtures.session({
-      organizationId: caller.organizationId,
-      userId: caller.userId,
-      keyId: caller.apiKeyId,
-      installationId: installation.id,
+    const { id: sessionId } = await fixtures.sessionFor(org.context, {
+      installationId,
     });
     for (let seq = 0; seq < 3; seq++)
       await fixtures.insert("messages", sessionId, {
@@ -168,15 +142,8 @@ it("bounds large context payload retrieval without losing a match near the end o
 // @req R-GET-02
 it("computes metadata before aggregating a thousand large message payloads", async () => {
   const caller = requireCaller(org.context);
-  if (!caller.apiKeyId) throw new Error("Expected fixture key");
-  const installation = await db.prisma.installation.findFirstOrThrow({
-    where: { organizationId: caller.organizationId },
-  });
-  const large = await fixtures.session({
-    organizationId: caller.organizationId,
-    userId: caller.userId,
-    keyId: caller.apiKeyId,
-    installationId: installation.id,
+  const { id: large } = await fixtures.sessionFor(org.context, {
+    installationId,
     fields: { message_count: 1000 },
   });
   await fixtures.client.command({

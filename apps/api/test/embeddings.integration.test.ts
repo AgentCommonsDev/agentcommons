@@ -1,23 +1,27 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
-import { setTimeout as delay } from "node:timers/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
-import { createApp } from "../src/app.js";
-import { createRuntime } from "../src/main.js";
-import { environment } from "../src/env.js";
-import { testAuthConfiguration } from "./support.js";
+import { JOB_QUEUES } from "@agentcommons/db";
 import { TraceReaders, createTraceClient } from "@agentcommons/traces";
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
-import { traceServices } from "./trace-services.js";
 import type { IngestEnvelope } from "@agentcommons/core";
-import { provisionOrganization as provisionNativeOrganization } from "./support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { EmbeddingService } from "../src/embeddings/service.js";
+import { FakeEmbeddingProvider } from "../src/embeddings/provider.js";
+import { tokenize } from "../src/embeddings/chunker.js";
+import { SearchService } from "../src/services/search.js";
+import { SimilarService } from "../src/services/similar.js";
+import { QueryService } from "../src/services/query.js";
+import { CursorCodec } from "../src/services/cursor.js";
+import { PolicyService } from "../src/services/policies.js";
+import { AdminService } from "../src/services/admin.js";
+import { mcpClient, startApp } from "./app.js";
+import { testEnvelope, textRecord } from "./envelopes.js";
+import {
+  provisionOrganization as provisionNativeOrganization,
+  releaser,
+} from "./support.js";
+import { traceServices } from "./trace-services.js";
+
 async function provisionOrganization(
   database: Awaited<ReturnType<typeof startTraceDatabase>>,
   slug: string,
@@ -31,15 +35,6 @@ async function provisionOrganization(
   });
   return account;
 }
-import { EmbeddingService } from "../src/embeddings/service.js";
-import { FakeEmbeddingProvider } from "../src/embeddings/provider.js";
-import { tokenize } from "../src/embeddings/chunker.js";
-import { SearchService } from "../src/services/search.js";
-import { SimilarService } from "../src/services/similar.js";
-import { QueryService } from "../src/services/query.js";
-import { CursorCodec } from "../src/services/cursor.js";
-import { PolicyService } from "../src/services/policies.js";
-import { AdminService } from "../src/services/admin.js";
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let first: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
@@ -48,44 +43,38 @@ const provider = new FakeEmbeddingProvider();
 let embeddings: EmbeddingService;
 let services: ReturnType<typeof traceServices>;
 const cursors = new CursorCodec("embedding-test-cursor-key");
+const { defer, release } = releaser();
 function request(text: string): IngestEnvelope {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
+  return testEnvelope({
     harnessSessionId: uuidv7(),
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
     batchId: uuidv7(),
     installationId: uuidv7(),
-    sentAt: new Date().toISOString(),
-    context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "host",
-        osUser: "user",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [
-      {
-        pos: 0,
-        sourceVersion: 0,
-        key: "0",
-        line: JSON.stringify({
-          type: "user",
-          message: { content: [{ type: "text", text }] },
-        }),
-      },
-    ],
+    context: { installation: { hostname: "host", osUser: "user" } },
+    records: [textRecord(0, text)],
     sourcePos: 1,
     cursor: "1",
-    end: null,
-  };
+  });
+}
+/** An embedding service over the shared database with the deterministic provider. */
+function embeddingService(
+  embeddingProvider: ConstructorParameters<
+    typeof EmbeddingService
+  >[0]["provider"],
+  dailyTokenBudget = 5_000_000,
+) {
+  return new EmbeddingService({
+    ...db,
+    provider: embeddingProvider,
+    dailyTokenBudget,
+  });
+}
+/** A search service with no context and the given page size, fused with an embedding service. */
+function searchService(limit: number, service: EmbeddingService = embeddings) {
+  return new SearchService(
+    { ...db, readers, cursors },
+    { context: 0, limit },
+    service,
+  );
 }
 async function corpus(text: string, account = first) {
   const envelope = request(text);
@@ -139,44 +128,32 @@ async function chunksFor(sessionId: string) {
 async function summaryFor(sessionId: string) {
   return db.traces.readSessionEmbedding(await vectorScope(sessionId));
 }
+/** A worker of its own; the caller closes it (which also surfaces its collected errors). */
 function worker(service?: EmbeddingService) {
-  const instance = traceServices(db, undefined, {
+  return traceServices(db, undefined, {
     auditRetentionDays: 30,
     ...(service ? { embeddings: service } : {}),
   });
-  release.unshift(() => instance.close());
-  return instance.jobs;
 }
-const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   first = await provisionOrganization(db, "embedding-first");
   other = await provisionOrganization(db, "embedding-other");
   readers = db.traceReaders;
 
-  embeddings = new EmbeddingService({
-    ...db,
-    provider,
-    dailyTokenBudget: 5_000_000,
-  });
+  embeddings = embeddingService(provider);
   await embeddings.initialize();
   services = traceServices(db);
-  release.unshift(() => services.close());
+  defer(() => services.close());
 });
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 describe("durable organization embedding index", () => {
   it("reserves concurrent query attempts atomically and keeps failed/uncertain reservations charged @req R-EMB-02 @req R-ORG-09", async () => {
     const account = await provisionOrganization(db, "embedding-budget");
     const org = account.context.caller?.organizationId ?? "";
-    const limited = new EmbeddingService({
-      ...db,
-      provider,
-      dailyTokenBudget: 10,
-    });
+    const limited = embeddingService(provider, 10);
     const reservations = await Promise.all(
       Array.from({ length: 8 }, () =>
         db.prisma.$transaction((tx) =>
@@ -229,6 +206,7 @@ describe("durable organization embedding index", () => {
     ).toBe(true);
     expect((await summaryFor(source.sessionId))?.embedding).toHaveLength(1024);
     const dependencies = { ...db, readers, cursors };
+    const query = new QueryService(dependencies, true);
     if (!first.context.caller) throw new Error("Missing caller");
     await readers.read(first.context.caller, (client) =>
       client.query(
@@ -236,7 +214,7 @@ describe("durable organization embedding index", () => {
         { source: source.sessionId },
       ),
     );
-    const similar = await new SimilarService(dependencies).execute(
+    const similar = await new SimilarService(dependencies, query).execute(
       first.context,
       source.sessionId,
       { max_rows: 50 },
@@ -258,7 +236,7 @@ describe("durable organization embedding index", () => {
         permissions: { sessions: ["read" as const] },
       },
     };
-    const visible = await new SimilarService(dependencies).execute(
+    const visible = await new SimilarService(dependencies, query).execute(
       user,
       source.sessionId,
       {},
@@ -267,9 +245,12 @@ describe("durable organization embedding index", () => {
       privateRow.sessionId,
     );
     await expect(
-      new SimilarService(dependencies).execute(user, privateRow.sessionId, {}),
+      new SimilarService(dependencies, query).execute(
+        user,
+        privateRow.sessionId,
+        {},
+      ),
     ).rejects.toMatchObject({ statusCode: 404 });
-    const query = new QueryService(dependencies, true);
     const sql = await query.execute(first.context, {
       sql: `SELECT * FROM similar_sessions(source='${source.sessionId}',max_rows=50)`,
     });
@@ -300,11 +281,7 @@ describe("durable organization embedding index", () => {
         )
         .map(([id]) => id);
     });
-    const search = new SearchService(
-      dependencies,
-      { context: 0, limit: 50 },
-      embeddings,
-    );
+    const search = searchService(50);
     const result = await search.execute(first.context, {
       query: "orchard",
       context: 0,
@@ -387,7 +364,7 @@ describe("durable organization embedding index", () => {
       sourcePos: 2,
       cursor: "2",
     });
-    expect(Number((await summaryFor(item.sessionId)) !== null)).toBe(0);
+    expect(await summaryFor(item.sessionId)).toBeNull();
     const pending = await corpus("remove me while provider is busy");
     let started: () => void = () => {};
     const began = new Promise<void>((resolve) => {
@@ -404,40 +381,50 @@ describe("durable organization embedding index", () => {
       await gate;
       return native(inputs);
     });
-    const service = new EmbeddingService({
-      ...db,
-      provider: slow,
-      dailyTokenBudget: 5_000_000,
-    });
+    const service = embeddingService(slow);
     const work = service.process({
       organizationId: pending.organizationId,
       sessionId: pending.sessionId,
     });
     await began;
-    const jobs = worker();
-    const admin = new AdminService({ ...db, readers, cursors, jobs });
+    const instance = worker();
+    const admin = new AdminService({
+      ...db,
+      readers,
+      cursors,
+      jobs: instance.jobs,
+    });
     await admin.purge(first.context, {
       session_id: pending.sessionId,
       reason: "Remove test session",
     });
     release();
     await work;
-    expect(Number((await summaryFor(pending.sessionId)) !== null)).toBe(0);
+    expect(await summaryFor(pending.sessionId)).toBeNull();
     expect((await chunksFor(pending.sessionId)).length).toBe(0);
     await index(item);
     expect((await chunksFor(item.sessionId)).length).toBe(2);
+    await instance.close();
   });
   it("native pg-boss catches up retained sessions when enabled and never indexes when disabled @req R-EMB-01 @req R-EMB-05", async () => {
     const retained = await corpus("retained corpus catchup");
     const off = worker();
-    await off.start();
-    await delay(1200);
-    await off.stop();
+    try {
+      await off.jobs.start();
+      await off.jobs.maintenance();
+    } finally {
+      await off.close();
+    }
+    expect(
+      await db.prisma.$queryRaw<
+        { count: number }[]
+      >`SELECT count(*)::int AS count FROM pgboss.job WHERE name=${JOB_QUEUES.embedding} AND data->>'sessionId'=${retained.sessionId}`,
+    ).toEqual([{ count: 0 }]);
     expect((await chunksFor(retained.sessionId)).length).toBe(0);
     const disabledReaders = new TraceReaders(db.traceConfig, db.prisma, {
       embeddings: false,
     });
-    release.unshift(() => disabledReaders.close());
+    defer(() => disabledReaders.close());
     const hidden = await disabledReaders.read(
       first.context.caller ??
         (() => {
@@ -461,28 +448,28 @@ describe("durable organization embedding index", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
     const on = worker(embeddings);
     try {
-      await on.start();
-      const deadline = Date.now() + 20_000;
-      while (
-        !(
-          await db.prisma.embeddingState.findUnique({
-            where: {
-              organizationId_sessionId: {
-                organizationId: retained.organizationId,
-                sessionId: retained.sessionId,
-              },
-            },
-          })
-        )?.complete
-      ) {
-        if (Date.now() > deadline) throw new Error("Native catchup timed out");
-        await delay(100);
-      }
+      await on.jobs.start();
+      await expect
+        .poll(
+          async () =>
+            (
+              await db.prisma.embeddingState.findUnique({
+                where: {
+                  organizationId_sessionId: {
+                    organizationId: retained.organizationId,
+                    sessionId: retained.sessionId,
+                  },
+                },
+              })
+            )?.complete,
+          { timeout: 20_000, interval: 100 },
+        )
+        .toBe(true);
       expect(
-        (await on.status(retained.organizationId)).embedding_daily_tokens,
+        (await on.jobs.status(retained.organizationId)).embedding_daily_tokens,
       ).not.toBe("0");
     } finally {
-      await on.stop();
+      await on.close();
     }
   });
   it("keeps exact matches beyond a noisy session's 500 messages and applies the three-hit cap @req R-EMB-03", async () => {
@@ -509,11 +496,7 @@ describe("durable organization embedding index", () => {
       `noisykeyword ${"padding ".repeat(40)}`,
       account,
     );
-    const service = new SearchService(
-      { ...db, readers, cursors },
-      { context: 0, limit: 50 },
-      embeddings,
-    );
+    const service = searchService(50);
     const result = (
       await service.execute(account.context, {
         query: "noisykeyword",
@@ -542,16 +525,7 @@ describe("durable organization embedding index", () => {
     await index(two);
     const tracked = new FakeEmbeddingProvider();
     const calls = vi.spyOn(tracked, "embed");
-    const service = new EmbeddingService({
-      ...db,
-      provider: tracked,
-      dailyTokenBudget: 5_000_000,
-    });
-    const search = new SearchService(
-      { ...db, readers, cursors },
-      { context: 0, limit: 1 },
-      service,
-    );
+    const search = searchService(1, embeddingService(tracked));
     await expect(
       search.execute(account.context, {
         query: "orchard",
@@ -622,12 +596,7 @@ describe("durable organization embedding index", () => {
     });
     const tracked = new FakeEmbeddingProvider();
     const calls = vi.spyOn(tracked, "embed");
-    const service = new EmbeddingService({
-      ...db,
-      provider: tracked,
-      dailyTokenBudget: 5_000_000,
-    });
-    await index(item, service);
+    await index(item, embeddingService(tracked));
     expect(
       calls.mock.calls
         .flatMap((call) => call[0])
@@ -649,11 +618,7 @@ describe("durable organization embedding index", () => {
     const item = await corpus("prepare audit corpus", account);
     const tracked = new FakeEmbeddingProvider();
     const calls = vi.spyOn(tracked, "embed");
-    const service = new EmbeddingService({
-      ...db,
-      provider: tracked,
-      dailyTokenBudget: 5_000_000,
-    });
+    const service = embeddingService(tracked);
     const write = db.audit.write.bind(db.audit);
     vi.spyOn(db.audit, "write").mockImplementation(
       async (context, description, tx) => {
@@ -680,7 +645,7 @@ describe("durable organization embedding index", () => {
       }),
     ).toBe(0);
     expect((await chunksFor(item.sessionId)).length).toBe(0);
-    expect(Number((await summaryFor(item.sessionId)) !== null)).toBe(0);
+    expect(await summaryFor(item.sessionId)).toBeNull();
     expect(
       await db.prisma.embeddingState.count({
         where: { sessionId: item.sessionId },
@@ -692,11 +657,7 @@ describe("durable organization embedding index", () => {
     const item = await corpus("retry checkpoint corpus", account);
     const tracked = new FakeEmbeddingProvider();
     const calls = vi.spyOn(tracked, "embed");
-    const service = new EmbeddingService({
-      ...db,
-      provider: tracked,
-      dailyTokenBudget: 5_000_000,
-    });
+    const service = embeddingService(tracked);
     const write = db.audit.write.bind(db.audit);
     let failAudit = true;
     vi.spyOn(db.audit, "write").mockImplementation(
@@ -763,67 +724,74 @@ describe("durable organization embedding index", () => {
       flags: "g",
       enabled: true,
     });
-    const jobs = worker(embeddings);
+    const instance = worker(embeddings);
     try {
-      await jobs.start();
-      const admin = new AdminService({ ...db, readers, cursors, jobs });
+      await instance.jobs.start();
+      const admin = new AdminService({
+        ...db,
+        readers,
+        cursors,
+        jobs: instance.jobs,
+      });
       const run = await admin.rescan(account.owner, {
         reason: "Redact derived embeddings",
       });
-      const deadline = Date.now() + 20_000;
-      for (;;) {
-        const progress = (await jobs.progress(account.owner, run.result.job_id))
-          .result;
-        const state = await db.prisma.embeddingState.findUnique({
-          where: {
-            organizationId_sessionId: {
-              organizationId: item.organizationId,
-              sessionId: item.sessionId,
-            },
+      // The run completes and the redacted projection is re-indexed without the phrase.
+      await expect
+        .poll(
+          async () => {
+            const progress = (
+              await instance.jobs.progress(account.owner, run.result.job_id)
+            ).result;
+            const state = await db.prisma.embeddingState.findUnique({
+              where: {
+                organizationId_sessionId: {
+                  organizationId: item.organizationId,
+                  sessionId: item.sessionId,
+                },
+              },
+            });
+            const rows = await chunksFor(item.sessionId);
+            return (
+              progress.state === "completed" &&
+              state?.complete === true &&
+              rows.length > 0 &&
+              rows.every((row) => !row.content.includes("classifiedphrase"))
+            );
           },
-        });
-        const rows = await chunksFor(item.sessionId);
-        if (
-          progress.state === "completed" &&
-          state?.complete &&
-          rows.length &&
-          rows.every((row) => !row.content.includes("classifiedphrase"))
+          { timeout: 20_000, interval: 100 },
         )
-          break;
-        if (Date.now() > deadline)
-          throw new Error("Native rescan did not reindex");
-        await delay(100);
-      }
+        .toBe(true);
     } finally {
-      await jobs.stop();
+      await instance.close();
     }
   });
   it("persists native next-day deferral without accumulating maintenance duplicates @req R-EMB-02", async () => {
     const account = await provisionOrganization(db, "embedding-deferral");
     const item = await corpus("daily budget deferred corpus", account);
-    const limited = new EmbeddingService({
-      ...db,
-      provider,
-      dailyTokenBudget: 1,
-    });
-    const jobs = worker(limited);
+    const limited = embeddingService(provider, 1);
+    const instance = worker(limited);
     try {
-      await jobs.start();
-      const deadline = Date.now() + 20_000;
-      for (;;) {
-        const future = await db.prisma.$queryRaw<
-          { count: bigint }[]
-        >`SELECT count(*) FROM pgboss.job WHERE name='session-embedding' AND data->>'sessionId'=${item.sessionId} AND state='created' AND start_after>now()`;
-        if (future[0]?.count) break;
-        if (Date.now() > deadline)
-          throw new Error("Missing native next-day delivery");
-        await delay(100);
-      }
+      await instance.jobs.start();
+      // The exhausted budget defers the session to a native delivery after midnight UTC.
+      await expect
+        .poll(
+          async () =>
+            Number(
+              (
+                await db.prisma.$queryRaw<
+                  { count: bigint }[]
+                >`SELECT count(*) FROM pgboss.job WHERE name='session-embedding' AND data->>'sessionId'=${item.sessionId} AND state='created' AND start_after>now()`
+              )[0]?.count ?? 0n,
+            ),
+          { timeout: 20_000, interval: 100 },
+        )
+        .toBeGreaterThan(0);
       const before = await db.prisma.$queryRaw<
         { count: bigint }[]
       >`SELECT count(*) FROM pgboss.job WHERE name='session-embedding' AND data->>'sessionId'=${item.sessionId} AND state IN ('created','retry','active')`;
-      await jobs.maintenance();
-      await jobs.maintenance();
+      await instance.jobs.maintenance();
+      await instance.jobs.maintenance();
       const after = await db.prisma.$queryRaw<
         { count: bigint }[]
       >`SELECT count(*) FROM pgboss.job WHERE name='session-embedding' AND data->>'sessionId'=${item.sessionId} AND state IN ('created','retry','active')`;
@@ -841,47 +809,10 @@ describe("durable organization embedding index", () => {
         }),
       ).toBeGreaterThan(0);
     } finally {
-      await jobs.stop();
+      await instance.close();
     }
   });
-  it("measures exact filtered cosine on a 500-message corpus and retains both HNSW indexes", async () => {
-    const account = await provisionOrganization(db, "embedding-plan");
-    for (let session = 0; session < 20; session++) {
-      const envelope = request("placeholder");
-      envelope.records = [
-        {
-          pos: 0,
-          sourceVersion: 0,
-          key: "0",
-          line: JSON.stringify({
-            type: "user",
-            message: {
-              content: Array.from({ length: 25 }, (_, message) => ({
-                type: "text",
-                text: `orchard citrus experiment ${String(session)} message ${String(message)} harvesting`,
-              })),
-            },
-          }),
-        },
-      ];
-      const accepted = await services.publish(account.context, envelope);
-      await index({
-        organizationId: account.context.caller?.organizationId ?? "",
-        sessionId: accepted.result.sessionId,
-      });
-    }
-    if (!account.context.caller) throw new Error("Missing caller");
-    const vector = (await provider.embed([tokenize("orchard citrus")]))
-      .vectors[0];
-    if (!vector) throw new Error("Missing vector");
-    const explain = await readers.read(account.context.caller, (client) =>
-      client.query(
-        "EXPLAIN SELECT message_id,min(cosineDistance(embedding,{vector:Array(Float32)})) AS distance FROM api_ro.message_chunks GROUP BY message_id ORDER BY distance LIMIT 500",
-        { vector },
-      ),
-    );
-    const plan = JSON.stringify(explain.rows);
-    expect(plan).toContain("Aggregating");
+  it("retains both HNSW indexes on the vector tables", async () => {
     const native = createTraceClient({
       ...db.traceConfig,
       username: db.traceMigration.username,
@@ -907,32 +838,70 @@ describe("durable organization embedding index", () => {
     } finally {
       await native.close();
     }
-    const search = new SearchService(
-      { ...db, readers, cursors },
-      { context: 0, limit: 5 },
-      embeddings,
-    );
-    await search.execute(account.context, {
-      query: "orchard citrus",
-      context: 0,
-      limit: 5,
-    });
-    const samples = [];
-    for (let count = 0; count < 20; count++) {
-      const start = performance.now();
-      const result = await search.execute(account.context, {
+  });
+  /** Wall-clock measurement on shared hardware: run with BENCHMARK=1. */
+  describe.skipIf(!process.env.BENCHMARK)("embedding search benchmark", () => {
+    it("measures exact filtered cosine on a 500-message corpus", async () => {
+      const account = await provisionOrganization(db, "embedding-plan");
+      for (let session = 0; session < 20; session++) {
+        const envelope = request("placeholder");
+        envelope.records = [
+          {
+            pos: 0,
+            sourceVersion: 0,
+            key: "0",
+            line: JSON.stringify({
+              type: "user",
+              message: {
+                content: Array.from({ length: 25 }, (_, message) => ({
+                  type: "text",
+                  text: `orchard citrus experiment ${String(session)} message ${String(message)} harvesting`,
+                })),
+              },
+            }),
+          },
+        ];
+        const accepted = await services.publish(account.context, envelope);
+        await index({
+          organizationId: account.context.caller?.organizationId ?? "",
+          sessionId: accepted.result.sessionId,
+        });
+      }
+      if (!account.context.caller) throw new Error("Missing caller");
+      const vector = (await provider.embed([tokenize("orchard citrus")]))
+        .vectors[0];
+      if (!vector) throw new Error("Missing vector");
+      const explain = await readers.read(account.context.caller, (client) =>
+        client.query(
+          "EXPLAIN SELECT message_id,min(cosineDistance(embedding,{vector:Array(Float32)})) AS distance FROM api_ro.message_chunks GROUP BY message_id ORDER BY distance LIMIT 500",
+          { vector },
+        ),
+      );
+      const plan = JSON.stringify(explain.rows);
+      expect(plan).toContain("Aggregating");
+      const search = searchService(5);
+      await search.execute(account.context, {
         query: "orchard citrus",
         context: 0,
         limit: 5,
       });
-      expect(result.result.blocks.length).toBeGreaterThan(0);
-      samples.push(performance.now() - start);
-    }
-    samples.sort((a, b) => a - b);
-    process.stdout.write(
-      `Embedding experiment ${JSON.stringify({ sessions: 20, messages: 500, native_plan: plan, warm_p50_ms: samples[10], warm_p95_ms: samples[18] })}\n`,
-    );
-  }, 120_000);
+      const samples = [];
+      for (let count = 0; count < 20; count++) {
+        const start = performance.now();
+        const result = await search.execute(account.context, {
+          query: "orchard citrus",
+          context: 0,
+          limit: 5,
+        });
+        expect(result.result.blocks.length).toBeGreaterThan(0);
+        samples.push(performance.now() - start);
+      }
+      samples.sort((a, b) => a - b);
+      process.stdout.write(
+        `Embedding experiment ${JSON.stringify({ sessions: 20, messages: 500, native_plan: plan, warm_p50_ms: samples[10], warm_p95_ms: samples[18] })}\n`,
+      );
+    }, 120_000);
+  });
   it("filters the live REST/OpenAPI surface and preserves the actual MCP tool schemas across flags @req R-EMB-01 @req R-EMB-03 @req R-EMB-04", async () => {
     const item = await corpus("route similarity source");
     const neighbor = await corpus("route similarity neighbor");
@@ -941,27 +910,13 @@ describe("durable organization embedding index", () => {
     const catalogs: unknown[] = [];
     const dispatches = vi.spyOn(FakeEmbeddingProvider.prototype, "embed");
     for (const enabled of [false, true]) {
-      const env = environment({
-        PUBLIC_URL: testAuthConfiguration.publicUrl,
-        BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-        DATABASE_URL: db.urls.app,
-        ...traceEnvironment(db.traceConfig),
-        EMBEDDINGS_ENABLED: String(enabled),
-        EMBEDDINGS_PROVIDER: "fake",
-        LOG_LEVEL: "silent",
-      });
-      const runtime = await createRuntime(env);
-      const app = await createApp({
-        env,
-        services: runtime.services,
-        static: false,
-      });
-      const client = new Client({
-        name: "embedding-contract-test",
-        version: "1",
-      });
+      const server = await startApp(
+        db,
+        { EMBEDDINGS_ENABLED: String(enabled), EMBEDDINGS_PROVIDER: "fake" },
+        { listen: true },
+      );
+      const { app } = server;
       try {
-        const address = await app.listen({ host: "127.0.0.1", port: 0 });
         const response = await app.inject({
           method: "GET",
           url: `/api/v1/sessions/${item.sessionId}/similar`,
@@ -1001,16 +956,16 @@ describe("durable organization embedding index", () => {
         expect(
           Object.keys(paths).includes("/api/v1/sessions/{id}/similar"),
         ).toBe(enabled);
-        await client.connect(
-          new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
-            requestInit: { headers: { authorization: `Bearer ${first.key}` } },
-          }) as Transport,
-        );
-        catalogs.push((await client.listTools()).tools);
+        const client = await mcpClient(server.address, first.key, {
+          name: "embedding-contract-test",
+        });
+        try {
+          catalogs.push((await client.listTools()).tools);
+        } finally {
+          await client.close();
+        }
       } finally {
-        await client.close();
-        await app.close();
-        await runtime.close();
+        await server.close();
       }
     }
     expect(catalogs[0]).toEqual(catalogs[1]);

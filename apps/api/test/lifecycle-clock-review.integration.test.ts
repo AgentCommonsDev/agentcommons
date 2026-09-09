@@ -1,4 +1,3 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -7,22 +6,21 @@ import type { IngestEnvelope } from "@agentcommons/core";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
 import { requireCaller } from "../src/services/context.js";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { testEnvelope } from "./envelopes.js";
 
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let services: ReturnType<typeof traceServices>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   organization = await provisionOrganization(database, "lifecycle-clock");
   services = traceServices(database);
-  release.unshift(() => services.close());
+  defer(() => services.close());
 });
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-ING-07 @req R-HRN-04
 it("a final source flush cannot suppress its earlier-captured end at the same source position", async () => {
@@ -35,33 +33,15 @@ it("a final source flush cannot suppress its earlier-captured end at the same so
         await readFile("fixtures/transcripts/gemini-cli/05-final.json", "utf8"),
       ),
     );
-  const base: IngestEnvelope = {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
+  const base = testEnvelope({
     harness: "GEMINI_CLI",
-    harnessSessionId: randomUUID(),
-    installationId: randomUUID(),
-    batchId: randomUUID(),
     behavior: "start",
     nativeEvent: "SessionStart",
     start: { resume: false },
-    end: null,
     sentAt: "2026-09-08T01:47:27.000Z",
-    sourcePos: 0,
     cursor: "initial",
-    context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "canary",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [],
-  };
+    context: { installation: { hostname: "canary", osUser: "test" } },
+  });
   const first = await services.publish(organization.context, base);
   const flush: IngestEnvelope = {
     ...base,

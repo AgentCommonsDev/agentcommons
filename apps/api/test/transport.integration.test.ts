@@ -5,14 +5,9 @@ import {
 import { traceServices } from "./trace-services.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import { OrganizationEmbeddingsService } from "../src/services/organization-embeddings.js";
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FastifyInstance } from "fastify";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import {
   dashboardSaveToolInputSchema,
@@ -26,8 +21,14 @@ import {
 import { formatSearch } from "@agentcommons/core/format";
 import { createAuth } from "../src/auth/config.js";
 import { createApp } from "../src/app.js";
-import { serverInstructions, toolJsonSchema } from "../src/services/mcp.js";
-import { environment } from "../src/env.js";
+import {
+  adminToolNames,
+  readToolNames,
+  serverInstructions,
+  toolJsonSchema,
+} from "../src/services/mcp.js";
+import { environment, type Env } from "../src/env.js";
+import { DashboardService } from "../src/services/dashboards.js";
 import { MembershipService } from "../src/services/membership.js";
 import { SearchService } from "../src/services/search.js";
 import { SessionService } from "../src/services/session.js";
@@ -40,69 +41,58 @@ import { SessionEventsService } from "../src/services/session-events.js";
 import { HealthService } from "../src/services/health.js";
 import type { Services } from "../src/routes/services.js";
 import { checkMcpFixture } from "./mcp-fixtures.js";
-import { provisionOrganization, testAuthConfiguration } from "./support.js";
+import { logCapture, mcpClient } from "./app.js";
+import { testEnvelope, textRecord } from "./envelopes.js";
+import {
+  provisionOrganization,
+  releaser,
+  testAccountPassword,
+  testAuthConfiguration,
+  testBillingConfig,
+} from "./support.js";
 
 let native: ReturnType<typeof traceServices>;
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
+let env: Env;
+let services: Services;
 let app: FastifyInstance;
 let address: string;
 let publicId: string;
 let readKey: string;
-const close: (() => Promise<unknown>)[] = [];
-const logs: string[] = [];
+const { defer, release } = releaser();
+const { logs, stream } = logCapture();
 function headers(key = organization.key) {
   return { authorization: `Bearer ${key}` };
 }
 function upload(text: string) {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    behavior: "sync",
-    nativeEvent: "Stop",
-    batchId: randomUUID(),
-    installationId: randomUUID(),
+  return testEnvelope({
     sentAt: "2026-09-07T01:00:00Z",
-    sourcePos: 0,
+    cursor: "1:0",
     context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "transport-fixture",
-        osUser: "developer",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "transport-fixture" },
       git: {
         root: "/repo",
         remoteUrl: "git@github.com:rek7/agentcommons.git",
         branch: "main",
         head: "abc123",
       },
-      parentHint: null,
     },
     records: [
       {
-        pos: 0,
-        sourceVersion: 0,
-        key: "transport-message",
-        line: JSON.stringify({
-          type: "user",
+        ...textRecord(0, text, {
           uuid: "transport-message",
           timestamp: "2026-09-07T01:00:00Z",
-          message: { content: [{ type: "text", text }] },
         }),
+        key: "transport-message",
       },
     ],
-    cursor: "1:0",
-    end: null,
-  };
+  });
 }
 beforeAll(async () => {
   database = await startTraceDatabase();
-  close.push(() => database.close());
+  defer(() => database.close());
   organization = await provisionOrganization(database, "transport-primary");
   other = await provisionOrganization(database, "transport-other");
   const cursors = new CursorCodec(testAuthConfiguration.secret);
@@ -114,9 +104,9 @@ beforeAll(async () => {
   };
   native = traceServices(database);
   const jobs = native.jobs;
-  close.push(() => jobs.stop());
+  defer(() => native.close());
   const query = new QueryService(deps);
-  const services: Services = {
+  services = {
     dashboards: new DashboardService({ ...deps, query }),
     organizationEmbeddings: new OrganizationEmbeddingsService({
       ...deps,
@@ -125,16 +115,7 @@ beforeAll(async () => {
     billing: new BillingService({
       ...deps,
       auth: testAuthConfiguration,
-      configuration: {
-        mode: "customer",
-        freeMonthlyRecords: 1000,
-        proIncludedRecords: 10000,
-        captureCentsPer1000: null,
-        embeddingCentsPer1000: null,
-        captureEventName: null,
-        embeddingEventName: null,
-        calComUrl: null,
-      },
+      configuration: testBillingConfig({ mode: "customer" }),
     }),
     auth: database.auth,
     members: new MembershipService(
@@ -157,7 +138,7 @@ beforeAll(async () => {
       intervalMs: 25,
     }),
   };
-  const env = environment({
+  env = environment({
     PUBLIC_URL: testAuthConfiguration.publicUrl,
     DATABASE_URL: database.urls.app,
     ...traceEnvironment(database.traceConfig),
@@ -165,17 +146,8 @@ beforeAll(async () => {
     LOG_LEVEL: "info",
     TRUST_PROXY: "loopback",
   });
-  app = await createApp({
-    env,
-    services,
-    static: false,
-    loggerStream: {
-      write(chunk: string) {
-        logs.push(chunk);
-      },
-    },
-  });
-  close.push(() => app.close());
+  app = await createApp({ env, services, static: false, loggerStream: stream });
+  defer(() => app.close());
   address = await app.listen({ host: "127.0.0.1", port: 0 });
   readKey = (
     await database.auth.createKey(organization.owner, {
@@ -213,9 +185,7 @@ beforeAll(async () => {
     z.object({ sessionId: z.uuid() }).parse(foreign.json()).sessionId,
   );
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(close.splice(0).reverse())).toEqual([]);
-});
+afterAll(release);
 
 // @req R-ARCH-03
 it("serves real persisted sessions through the same REST search/get/SQL schemas and bounded CSV page", async () => {
@@ -328,10 +298,7 @@ it("enforces browser security headers, the configured CORS origin, secure produc
     publicUrl: "https://sessions.example.test",
   });
   const signed = await native.api.signInEmail({
-    body: {
-      email: organization.email,
-      password: "Integration native password 1234!",
-    },
+    body: { email: organization.email, password: testAccountPassword },
     asResponse: true,
   });
   const cookies = signed.headers.getSetCookie();
@@ -485,16 +452,25 @@ it("streams initial and changed session snapshots, audits once, and closes after
       })
     ).statusCode,
   ).toBe(404);
+  // Restore the shared fixture for the contract tests that read this session.
+  await database.prisma.traceSessionControl.update({
+    where: {
+      organizationId_id: {
+        organizationId: z
+          .string()
+          .parse(organization.context.caller?.organizationId),
+        id: publicId,
+      },
+    },
+    data: { status: "ACTIVE" },
+  });
 });
 
 // @req R-MOD-01
 it("enforces private visibility through REST, SQL, MCP and the uploader's read-only key, then restores it", async () => {
-  const client = new Client({ name: "moderation-reader", version: "1" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
-      requestInit: { headers: headers(readKey) },
-    }) as Transport,
-  );
+  const client = await mcpClient(address, readKey, {
+    name: "moderation-reader",
+  });
   const change = await app.inject({
     method: "POST",
     url: `/api/v1/admin/sessions/${publicId}/visibility`,
@@ -587,36 +563,12 @@ it("enforces private visibility through REST, SQL, MCP and the uploader's read-o
 // @req R-MCP-05
 // @req R-MCP-09
 it("uses the official stateless MCP client with permission-filtered tools, structured results and immediate demotion", async () => {
-  // This contract also runs alone; the SSE test changes this shared session status.
-  await database.prisma.traceSessionControl.update({
-    where: {
-      organizationId_id: {
-        organizationId: z
-          .string()
-          .parse(organization.context.caller?.organizationId),
-        id: publicId,
-      },
-    },
-    data: { status: "ACTIVE" },
+  const client = await mcpClient(address, readKey, {
+    name: "transport-test",
+    defer,
   });
-  const client = new Client({ name: "transport-test", version: "1" });
-  const transport = new StreamableHTTPClientTransport(
-    new URL(`${address}/mcp`),
-    { requestInit: { headers: headers(readKey) } },
-  );
-  await client.connect(transport as Transport);
-  close.push(() => client.close());
   const tools = await client.listTools();
-  expect(tools.tools.map((tool) => tool.name)).toEqual([
-    "dashboard_list",
-    "dashboard_get",
-    "dashboard_render",
-    "dashboard_save",
-    "dashboard_delete",
-    "search",
-    "get",
-    "sql",
-  ]);
+  expect(tools.tools.map((tool) => tool.name)).toEqual([...readToolNames]);
   expect(
     tools.tools
       .filter((tool) => ["search", "get", "sql"].includes(tool.name))
@@ -628,7 +580,7 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   ).toBe(true);
   // The same guidance reaches clients that show server instructions (Claude Code).
   expect(client.getInstructions()).toBe(serverInstructions);
-  expect(transport.sessionId).toBeUndefined();
+  expect(client.transport?.sessionId).toBeUndefined();
   expect(tools.tools.map((tool) => tool.inputSchema)).toEqual(
     [
       z.strictObject({}),
@@ -670,28 +622,14 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
     arguments: { session_id: publicId, reason: "Not authorized" },
   });
   expect(denied.isError).toBe(true);
-  const adminClient = new Client({ name: "admin-test", version: "1" });
-  await adminClient.connect(
-    new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
-      requestInit: { headers: headers() },
-    }) as Transport,
-  );
-  close.push(() => adminClient.close());
+  const adminClient = await mcpClient(address, organization.key, {
+    name: "admin-test",
+    defer,
+  });
   const adminTools = await adminClient.listTools();
   expect(adminTools.tools.map((tool) => tool.name)).toEqual([
-    "dashboard_list",
-    "dashboard_get",
-    "dashboard_render",
-    "dashboard_save",
-    "dashboard_delete",
-    "search",
-    "get",
-    "sql",
-    "set_visibility",
-    "purge",
-    "audit",
-    "status",
-    "dashboard_set_default",
+    ...readToolNames,
+    ...adminToolNames,
   ]);
   expect(catalogBytes(adminTools)).toBeLessThan(25 * 1024);
   expect(JSON.stringify(adminTools.tools)).not.toMatch(
@@ -727,16 +665,7 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   expect(cachedCall.isError).toBe(true);
   expect(
     (await adminClient.listTools()).tools.map((tool) => tool.name),
-  ).toEqual([
-    "dashboard_list",
-    "dashboard_get",
-    "dashboard_render",
-    "dashboard_save",
-    "dashboard_delete",
-    "search",
-    "get",
-    "sql",
-  ]);
+  ).toEqual([...readToolNames]);
   for (const method of ["GET", "DELETE"] as const)
     expect((await app.inject({ method, url: "/mcp" })).statusCode).toBe(405);
   expect(
@@ -854,12 +783,9 @@ it("applies the same typed live tool conditions through REST, MCP and session CS
   expect(response.statusCode, response.body).toBe(200);
   const result = searchOutputSchema.parse(response.json());
   expect(result.blocks.map((block) => block.session_id)).toEqual([sessionId]);
-  const client = new Client({ name: "structured-search-test", version: "1" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
-      requestInit: { headers: headers(readKey) },
-    }) as Transport,
-  );
+  const client = await mcpClient(address, readKey, {
+    name: "structured-search-test",
+  });
   try {
     const mcp = await client.callTool({
       name: "search",
@@ -964,14 +890,16 @@ it("serves concurrent dashboard detail requests over HTTP on a populated native 
 });
 
 it("closes active event streams during server shutdown", async () => {
+  // A second server over the same services, so shutting it down leaves the shared app up.
+  const closing = await createApp({ env, services, static: false });
+  const closingAddress = await closing.listen({ host: "127.0.0.1", port: 0 });
   const response = await fetch(
-    `${address}/api/v1/sessions/${publicId}/events`,
+    `${closingAddress}/api/v1/sessions/${publicId}/events`,
     { headers: headers(readKey) },
   );
   const reader = response.body?.getReader();
   if (!reader) throw new Error("The event response has no body.");
   expect((await reader.read()).done).toBe(false);
-  await app.close();
+  await closing.close();
   expect((await reader.read()).done).toBe(true);
 });
-import { DashboardService } from "../src/services/dashboards.js";

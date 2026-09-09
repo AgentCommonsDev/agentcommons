@@ -11,8 +11,6 @@
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run --root ../.. packages/db/test",
-    "db:generate": "prisma generate",
-    "db:migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts",
     "db:auth-generate": "auth generate --adapter prisma --dialect postgresql --config ./auth-schema.ts --output ./prisma/auth.prisma --yes",
     "generate": "prisma generate",
     "validate": "DATABASE_URL=${DATABASE_URL:-postgresql://schema:validation@127.0.0.1:1/agentcommons} prisma validate",

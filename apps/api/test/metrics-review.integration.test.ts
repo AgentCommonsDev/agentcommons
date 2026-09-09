@@ -1,155 +1,71 @@
 import { queryTrace } from "@agentcommons/traces";
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { testEnvelope } from "./envelopes.js";
+import {
+  MetricsFixtures,
+  metricsAt as at,
+  metricsFilters as filters,
+} from "./metrics-fixtures.js";
+import { traceServices } from "./trace-services.js";
 import { requireCaller } from "../src/services/context.js";
 import { MetricsService } from "../src/services/metrics.js";
 import { CursorCodec } from "../src/services/cursor.js";
-import { IngestService } from "../src/services/ingest.js";
-import { JobService } from "../src/services/jobs.js";
-import { TraceProjectionService } from "../src/services/trace-projection.js";
-import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let org: Awaited<ReturnType<typeof provisionOrganization>>;
 let fixture: TraceFixtures;
+let metricsFixtures: MetricsFixtures;
 let service: MetricsService;
-let ingest: IngestService;
-let projection: TraceProjectionService;
-const cleanup: (() => Promise<unknown>)[] = [];
-const workerErrors: Error[] = [];
-const at = (day: number, hour = 0, minute = 0) =>
-  new Date(Date.UTC(2026, 8, day, hour, minute));
-const filters = {
-  date_from: at(7).toISOString(),
-  date_to: at(14).toISOString(),
-};
-async function session(repoName: string) {
-  const caller = requireCaller(org.context);
-  const installationId = randomUUID();
-  await db.prisma.installation.create({
-    data: {
-      id: installationId,
-      organizationId: caller.organizationId,
-      hostname: repoName,
-      osUser: "test",
-      platform: "linux",
-      arch: "x64",
-    },
+let services: ReturnType<typeof traceServices>;
+const { defer, release } = releaser();
+function session(repoName: string) {
+  return metricsFixtures.session(org.context, {
+    repo: repoName,
+    hostname: repoName,
   });
-  const id = await fixture.session({
-    organizationId: caller.organizationId,
-    userId: caller.userId,
-    keyId: z.string().parse(caller.apiKeyId),
-    installationId,
-    fields: {
-      harness: "CLAUDE_CODE",
-      repo_name: repoName,
-      started_at: at(7, 9),
-      ended_at: at(7, 10),
-      last_activity_at: at(7, 10),
-      status: "ENDED",
-    },
-  });
-  await db.prisma.traceSessionControl.update({
-    where: { organizationId_id: { organizationId: caller.organizationId, id } },
-    data: {
-      startedAt: at(7, 9),
-      lastActivityAt: at(7, 10),
-      endedAt: at(7, 10),
-      status: "ENDED",
-    },
-  });
-  return {
-    id,
-    organizationId: caller.organizationId,
-    userId: caller.userId,
-    installationId,
-    ingestApiKeyId: z.string().parse(caller.apiKeyId),
-    repoName,
-  };
 }
-async function receipt(
+function receipt(
   row: Awaited<ReturnType<typeof session>>,
   behavior: string,
   sentAt: Date,
   sourcePos: number,
   id: string,
-  receivedAt = sentAt,
-  lifecycleApplied = behavior !== "sync",
+  receivedAt?: Date,
+  lifecycleApplied?: boolean,
 ) {
-  await fixture.insert("ingest_receipts", row.id, {
-    receipt_id: id,
-    installation_id: row.installationId,
-    api_key_id: row.ingestApiKeyId,
-    user_id: row.userId,
-    source_pos: BigInt(sourcePos),
-    sent_at: sentAt,
-    received_at: receivedAt,
+  return metricsFixtures.receipt(row, {
     behavior,
-    native_event: behavior,
-    lifecycle_applied: lifecycleApplied,
+    sentAt,
+    sourcePos,
+    id,
+    ...(receivedAt ? { receivedAt } : {}),
+    ...(lifecycleApplied === undefined ? {} : { lifecycleApplied }),
   });
-  return { id };
 }
-async function windows(id: string) {
-  return db.traceReaders.read(requireCaller(org.context), async (client) => {
-    const rows = (
-      await client.query(
-        "SELECT active_from,active_to FROM api_ro.metrics_active_windows WHERE session_id={id:UUID}",
-        { id },
-      )
-    ).rows;
-    return z
-      .array(
-        z.object({ active_from: z.coerce.date(), active_to: z.coerce.date() }),
-      )
-      .parse(rows);
-  });
+function windows(id: string) {
+  return metricsFixtures.windows(org.context, id);
 }
 beforeAll(async () => {
   db = await startTraceDatabase();
-  cleanup.unshift(() => db.close());
+  defer(() => db.close());
   fixture = new TraceFixtures(db);
-  cleanup.unshift(() => fixture.close());
+  defer(() => fixture.close());
+  metricsFixtures = new MetricsFixtures(db, fixture);
   org = await provisionOrganization(db, "metrics-review");
   service = new MetricsService({
     ...db,
     readers: db.traceReaders,
     cursors: new CursorCodec("metrics-independent-review"),
   });
-  projection = new TraceProjectionService({
-    prisma: db.prisma,
-    audit: db.audit,
-    repository: db.traces,
-  });
-  const jobs = new JobService({
-    prisma: db.prisma,
-    audit: db.audit,
-    traces: projection,
-    traceAudit: new TraceAuditProjectionService({
-      prisma: db.prisma,
-      audit: db.audit,
-      traces: db.traces,
-    }),
-    connectionString: db.urls.app,
-    auditRetentionDays: 365,
-    allowedEmailDomains: [],
-    onError: (error) => {
-      workerErrors.push(error);
-    },
-  });
-  cleanup.unshift(() => jobs.stop());
-  ingest = new IngestService({ ...db, traces: jobs });
+  services = traceServices(db);
+  defer(() => services.close());
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(cleanup.splice(0))).toEqual([]);
-  expect(workerErrors).toEqual([]);
-});
+afterAll(release);
 
 it("reports consistent persisted aggregate totals and denominators across sessions", async () => {
   const known = await session("review-known-tokens");
@@ -279,41 +195,26 @@ it("counts historical capture receipts even when the same session ingests again 
 
 // @req R-ING-07
 it("persists the actual lifecycle decision when opposite events share native and receipt clocks", async () => {
-  const base = {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    installationId: randomUUID(),
+  const base = testEnvelope({
+    cursor: "0:0",
     context: {
       cwd: "/review",
-      git: null,
-      parentHint: null,
-      installation: {
-        hostname: "equal-clock-review",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "equal-clock-review", osUser: "test" },
     },
-    records: [],
-    cursor: "0:0",
-    start: null,
-    end: null,
-  };
+  });
   const ids = [
     "00000000-0000-4000-8000-000000000011",
     "00000000-0000-4000-8000-000000000013",
     "00000000-0000-4000-8000-000000000012",
     "00000000-0000-4000-8000-000000000014",
   ];
-  const send = async (
+  const send = (
     index: number,
     behavior: string,
     sourcePos: number,
     sentAt: Date,
-  ) => {
-    const accepted = await ingest.execute(org.context, {
+  ) =>
+    services.publishQueued(org.context, {
       ...base,
       batchId: ids[index],
       behavior,
@@ -321,12 +222,6 @@ it("persists the actual lifecycle decision when opposite events share native and
       sourcePos,
       sentAt: sentAt.toISOString(),
     });
-    await projection.process(
-      requireCaller(org.context).organizationId,
-      accepted.result.sessionId,
-    );
-    return accepted;
-  };
   await send(0, "start", 0, at(7, 9));
   await send(1, "end", 10, at(7, 10));
   await send(2, "start", 10, at(7, 10));

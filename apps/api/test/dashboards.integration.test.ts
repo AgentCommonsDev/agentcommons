@@ -1,14 +1,10 @@
 import {
   startTraceDatabase,
-  traceEnvironment,
   waitForTracePublication,
 } from "../../../packages/traces/test/support.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   builtinDashboardId,
   builtinDashboardIds,
@@ -24,25 +20,19 @@ import {
   teamActivityDashboard,
   teamOverviewDashboard,
 } from "@agentcommons/core/dashboards";
-import {
-  provisionOrganization,
-  provisionMember,
-  testAuthConfiguration,
-} from "./support.js";
-import { createRuntime } from "../src/main.js";
-import { createApp } from "../src/app.js";
-import { environment } from "../src/env.js";
-import { cleanup } from "../../../scripts/cleanup.js";
+import { provisionOrganization, provisionMember, releaser } from "./support.js";
+import { mcpClient as connectMcp, startApp } from "./app.js";
+import { sourceRecord, testEnvelope } from "./envelopes.js";
+import { ServiceError } from "../src/services/context.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let first: Awaited<ReturnType<typeof provisionOrganization>>;
 let second: typeof first;
 let member: Awaited<ReturnType<typeof provisionMember>>;
 let other: typeof member;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
+let runtime: Awaited<ReturnType<typeof startApp>>["runtime"];
 let address: string;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 type Account = { key: string };
 type Ingester = Awaited<ReturnType<typeof provisionMember>>;
 
@@ -147,57 +137,33 @@ async function ingestSession(remoteUrl: string, by: Ingester = first) {
       },
     },
   ];
-  const result = await runtime.services.ingest.execute(by.context, {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    behavior: "end",
-    nativeEvent: "SessionEnd",
-    batchId: randomUUID(),
-    installationId: randomUUID(),
-    sentAt: new Date().toISOString(),
-    sourcePos: records.length - 1,
-    context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "dashboard-fixture",
-        osUser: "developer",
-        platform: "linux",
-        arch: "x64",
+  const result = await runtime.services.ingest.execute(
+    by.context,
+    testEnvelope({
+      behavior: "end",
+      nativeEvent: "SessionEnd",
+      context: {
+        installation: { hostname: "dashboard-fixture" },
+        git: { root: "/repo", remoteUrl, branch: "main", head: "abc123" },
       },
-      git: { root: "/repo", remoteUrl, branch: "main", head: "abc123" },
-      parentHint: null,
-    },
-    records: records.map((record, pos) => ({
-      pos,
-      sourceVersion: 0,
-      key: record.uuid,
-      line: JSON.stringify(record),
-    })),
-    cursor: `${String(records.length)}:0`,
-    end: null,
-  });
+      records: records.map((record, pos) =>
+        sourceRecord(pos, record, record.uuid),
+      ),
+      cursor: `${String(records.length)}:0`,
+    }),
+  );
   const sessionId = z
     .object({ sessionId: z.uuid() })
     .parse(result.result).sessionId;
   await waitForTracePublication(db.prisma, [sessionId]);
   return sessionId;
 }
-async function mcpClient(account: Account) {
-  const client = new Client({ name: "dashboard-test", version: "1" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
-      requestInit: { headers: headers(account) },
-    }) as Transport,
-  );
-  release.unshift(() => client.close());
-  return client;
-}
+const mcpClient = (account: Account) =>
+  connectMcp(address, account.key, { name: "dashboard-test", defer });
 
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   first = await provisionOrganization(db, "dashboard-first");
   second = await provisionOrganization(db, "dashboard-second");
   member = await provisionMember(
@@ -206,24 +172,11 @@ beforeAll(async () => {
     "dashboard-member@example.com",
   );
   other = await provisionMember(db, first.owner, "dashboard-other@example.com");
-  const env = environment({
-    ...traceEnvironment(db.traceConfig),
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    LOG_LEVEL: "silent",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  await runtime.jobs.start();
-  app = await createApp({ env, services: runtime.services, static: false });
-  release.unshift(() => app.close());
-  address = await app.listen({ host: "127.0.0.1", port: 0 });
+  const server = await startApp(db, {}, { listen: true, jobs: true });
+  defer(server.close);
+  ({ runtime, address } = server);
 });
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-DASH-15 @req R-DASH-16 @req R-DASH-25
 it("ships the built-in Team overview as the default and renders its tiles with typed time and repository variables over real trace data", async () => {
@@ -556,12 +509,12 @@ it("saves organization-visible dashboards with creator/admin editing, revision c
 });
 
 // @req R-DASH-32
-it("serves saved dashboard renders from the cache while the organization's data is unchanged, per caller scope, re-runs on refresh or new data, and never caches inline definitions", async () => {
+it("serves saved dashboard renders from the cache for an hour per caller scope, revision and variables, keeps serving them across new data until a refresh, and never caches inline definitions", async () => {
   const body = { id: builtinDashboardId, variables: { time_range: "30d" } };
   const initial = await render(member, body);
   expect(initial.cached, "first render").toBe(false);
   const second = await render(member, body);
-  expect(second.cached, "same scope, unchanged data").toBe(true);
+  expect(second.cached, "same scope").toBe(true);
   expect(second.rendered_at).toBe(initial.rendered_at);
   expect(second.tiles).toEqual(initial.tiles);
   // Another member has their own scope: private sessions differ per user.
@@ -571,13 +524,14 @@ it("serves saved dashboard renders from the cache while the organization's data 
   const admin = await render(first, body);
   expect(admin.cached, "admin scope").toBe(false);
   expect((await render(first, body)).cached, "admin hit").toBe(true);
-  // Different variables or a tile subset are separate entries (an earlier test may
-  // already have warmed them, so compare the runs rather than the cached flag).
+  // Different variables are separate entries (an earlier test may already have warmed
+  // them, so compare the runs rather than the cached flag).
   const weekly = await render(member, {
     ...body,
     variables: { time_range: "7d" },
   });
   expect(weekly.rendered_at, "other variables").not.toBe(second.rendered_at);
+  // A tile subset is served from the same per-tile entries.
   const subset = await render(member, {
     ...body,
     tiles: ["captured_sessions"],
@@ -586,15 +540,24 @@ it("serves saved dashboard renders from the cache while the organization's data 
     subset.tiles.map((tile) => tile.id),
     "tile subset",
   ).toEqual(["captured_sessions"]);
-  expect(subset.rendered_at, "tile subset run").not.toBe(second.rendered_at);
+  expect(subset.cached, "tile subset hit").toBe(true);
+  expect(subset.rendered_at, "tile subset run").toBe(second.rendered_at);
+  // New data does not invalidate: the entry stays valid until it is refreshed,
+  // pre-rendered or expires, so the new session shows only after a refresh.
+  await ingestSession("https://github.com/rek7/agentcommons-cache.git");
+  const stale = await render(member, body);
+  expect(stale.cached, "after new data").toBe(true);
+  expect(tileValue(stale, "captured_sessions")).toBe(
+    tileValue(initial, "captured_sessions"),
+  );
   // refresh re-runs and replaces the entry.
   const refreshed = await render(member, { ...body, refresh: true });
   expect(refreshed.cached, "refresh").toBe(false);
-  expect(refreshed.rendered_at >= initial.rendered_at).toBe(true);
+  expect(refreshed.rendered_at > initial.rendered_at).toBe(true);
+  expect(Number(tileValue(refreshed, "captured_sessions"))).toBe(
+    Number(tileValue(initial, "captured_sessions")) + 1,
+  );
   expect((await render(member, body)).rendered_at).toBe(refreshed.rendered_at);
-  // New data (a publication) changes the organization's data version and misses.
-  await ingestSession("https://github.com/rek7/agentcommons-cache.git");
-  expect((await render(member, body)).cached, "after new data").toBe(false);
   // Inline definitions are never cached.
   const inline = {
     definition: teamOverviewDashboard.definition,
@@ -788,4 +751,179 @@ it("ships the built-in Team activity as a second read-only, non-default dashboar
     (tool) => tool.name === "dashboard_list",
   );
   expect(described?.description).toContain("Team activity");
+});
+
+// @req R-DASH-36
+it("caches saved dashboards per tile: an errored tile is returned but not cached and is retried alone, a single-tile refresh replaces only its entry, rendered_at is the oldest tile's run and a save misses", async () => {
+  const tiles = [
+    template("captured_sessions", { x: 0, y: 0, w: 3, h: 2 }),
+    template("sessions_per_day", { x: 0, y: 2, w: 8, h: 5 }),
+  ];
+  const failing = tiles[1];
+  const failingSql = failing && "sql" in failing ? failing.sql : "";
+  expect(failingSql).not.toBe("");
+  const created = await request("/dashboards", first, {
+    method: "POST",
+    body: {
+      name: "Per tile",
+      description: "",
+      definition: { ...definition, tiles },
+    },
+  });
+  expect(created.status, await created.clone().text()).toBe(200);
+  const saved = dashboardSchema.parse(await created.json());
+  const run = runtime.services.query.run.bind(runtime.services.query);
+  const calls: string[] = [];
+  let failOnce = true;
+  const spy = vi
+    .spyOn(runtime.services.query, "run")
+    .mockImplementation(async (caller, input) => {
+      calls.push(input.sql);
+      if (failOnce && input.sql === failingSql) {
+        failOnce = false;
+        throw new ServiceError(
+          400,
+          "159",
+          "The query exceeded its time limit. Narrow the query and try again.",
+        );
+      }
+      return run(caller, input);
+    });
+  try {
+    const body = { id: saved.id, variables: { time_range: "14d" } };
+    const initial = await render(first, body);
+    expect(initial.cached).toBe(false);
+    expect(
+      initial.tiles.map((tile) => [tile.id, tile.error?.code ?? null]),
+    ).toEqual([
+      ["captured_sessions", null],
+      ["sessions_per_day", "159"],
+    ]);
+    expect(initial.tiles[1]?.error?.message).toContain(
+      "exceeded its time limit",
+    );
+    expect(calls).toHaveLength(2);
+    // The next request re-runs only the errored tile; the other comes from the cache.
+    const retried = await render(first, body);
+    expect(retried.cached, "one tile ran").toBe(false);
+    expect(retried.tiles.map((tile) => tile.error)).toEqual([null, null]);
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toBe(failingSql);
+    expect(retried.rendered_at, "oldest tile's run").toBe(initial.rendered_at);
+    // Now every tile is cached.
+    expect((await render(first, body)).cached).toBe(true);
+    expect(calls).toHaveLength(3);
+    // A single-tile refresh re-runs only that tile and replaces its entry.
+    const one = await render(first, {
+      ...body,
+      tiles: ["captured_sessions"],
+      refresh: true,
+    });
+    expect(one.cached).toBe(false);
+    expect(one.tiles.map((tile) => tile.id)).toEqual(["captured_sessions"]);
+    expect(calls).toHaveLength(4);
+    const after = await render(first, body);
+    expect(after.cached).toBe(true);
+    expect(after.rendered_at > initial.rendered_at, "oldest is the retry").toBe(
+      true,
+    );
+    expect(calls).toHaveLength(4);
+    // A save bumps the revision, which is part of the key.
+    const updated = await request("/dashboards", first, {
+      method: "POST",
+      body: {
+        id: saved.id,
+        revision: saved.revision,
+        name: "Per tile v2",
+        description: "",
+        definition: { ...definition, tiles },
+      },
+    });
+    expect(updated.status, await updated.clone().text()).toBe(200);
+    expect((await render(first, body)).cached, "new revision").toBe(false);
+    expect(calls).toHaveLength(6);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// @req R-DASH-35
+it("pre-renders the default and saved dashboards for callers who rendered one recently, replaces their cached tiles, skips a scope whose membership was removed and audits each run as the worker", async () => {
+  const viewer = await provisionMember(
+    db,
+    first.owner,
+    "dashboard-viewer@example.com",
+  );
+  const departed = await provisionMember(
+    db,
+    first.owner,
+    "dashboard-departed@example.com",
+  );
+  const created = await request("/dashboards", first, {
+    method: "POST",
+    body: { name: "Pre-rendered", description: "", definition },
+  });
+  expect(created.status, await created.clone().text()).toBe(200);
+  const saved = dashboardSchema.parse(await created.json());
+  const home = { id: builtinDashboardId, variables: {} };
+  // Both scopes become "recently active" through their dashboard.render audit rows.
+  const before = await render(viewer, home);
+  expect(before.cached).toBe(false);
+  expect((await render(departed, home)).cached).toBe(false);
+  const viewerUserId = z.string().parse(viewer.owner.caller?.userId);
+  const departedUserId = z.string().parse(departed.owner.caller?.userId);
+  const organizationId = z.string().parse(first.owner.caller?.organizationId);
+  await db.prisma.member.updateMany({
+    where: { userId: departedUserId },
+    data: { removedAt: new Date() },
+  });
+
+  await runtime.jobs.prerenderDashboards();
+
+  // The viewer's Home entry was replaced by a newer run, and the saved dashboard they
+  // never opened is already cached with the default variables a page opens with.
+  const after = await render(viewer, home);
+  expect(after.cached, "pre-rendered default").toBe(true);
+  expect(after.rendered_at > before.rendered_at).toBe(true);
+  const savedRender = await render(viewer, { id: saved.id, variables: {} });
+  expect(savedRender.cached, "pre-rendered saved dashboard").toBe(true);
+  expect(savedRender.tiles.filter((tile) => tile.error !== null)).toEqual([]);
+  const detailSchema = z.object({
+    user_id: z.string(),
+    scope: z.string().optional(),
+    skipped: z.string().optional(),
+    dashboards: z.number().optional(),
+    errors: z.number().optional(),
+  });
+  const runs = (
+    await db.prisma.auditEvent.findMany({
+      where: { action: "dashboard.prerender", organizationId },
+      orderBy: { ts: "asc" },
+    })
+  ).map((row) => ({ ...row, detail: detailSchema.parse(row.detail) }));
+  const forViewer = runs.filter((row) => row.detail.user_id === viewerUserId);
+  expect(forViewer).toHaveLength(1);
+  // The shipped default plus every saved dashboard (earlier tests leave some behind);
+  // the list holds two built-ins, of which only the default is pre-rendered.
+  const expectedDashboards = (await list(viewer)).items.length - 1;
+  expect(forViewer[0]).toMatchObject({
+    statusCode: 200,
+    authMethod: "worker",
+    userId: null,
+    apiKeyId: null,
+    detail: {
+      scope: `user:${viewerUserId}`,
+      dashboards: expectedDashboards,
+      errors: 0,
+    },
+  });
+  expect(forViewer[0]?.resourceIds).toEqual(
+    expect.arrayContaining([builtinDashboardId, saved.id]),
+  );
+  const forDeparted = runs.filter(
+    (row) => row.detail.user_id === departedUserId,
+  );
+  expect(
+    forDeparted.map((row) => [row.statusCode, row.detail.skipped]),
+  ).toEqual([[403, "MEMBERSHIP_REQUIRED"]]);
 });

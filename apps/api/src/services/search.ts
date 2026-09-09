@@ -1,5 +1,5 @@
 import type { EmbeddingService } from "../embeddings/service.js";
-import { formatSearch, messageContent } from "@agentcommons/core/format";
+import { formatSearch } from "@agentcommons/core/format";
 import {
   createSearchInputSchema,
   searchOutputSchema,
@@ -8,34 +8,79 @@ import {
   type SearchBlock,
 } from "@agentcommons/core";
 import { hasAdminAuthority } from "@agentcommons/db";
+import {
+  protocolArray,
+  protocolLiterals,
+  protocolObject,
+} from "@agentcommons/core/redaction";
+import {
+  searchConditionFields,
+  searchConditionSchema,
+  searchFilterKeys,
+  searchInputSchema,
+} from "@agentcommons/core/schemas";
 import { z } from "zod";
 import {
   filterSql,
   Parameters,
   rootSessionIds,
-  traceJson,
 } from "../repositories/read-model.js";
 import {
   messagePayloadBatches,
+  messageText,
   readMessagePayloads,
 } from "../repositories/message-payload.js";
 import { ServiceError, type ServiceContext } from "./context.js";
-import { bytes, compactMetadata, wireRow, wireValue } from "./read-budget.js";
+import {
+  compactMetadata,
+  fitsToolBudget,
+  wireRow,
+  wireValue,
+} from "./read-budget.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 
+/** Search protocol syntax (filter keys, condition fields and operators) is not free text. */
+const conditionStructure = protocolObject(
+  [
+    ...new Set(
+      searchConditionSchema.options.flatMap((option) =>
+        Object.keys(option.shape),
+      ),
+    ),
+  ],
+  {
+    field: protocolLiterals(...Object.keys(searchConditionFields)),
+    op: protocolLiterals(
+      ...searchConditionSchema.options.flatMap((option) => [
+        ...option.shape.op.values,
+      ]),
+    ),
+  },
+);
+/** Passed as the search audit `structure`; tests that write search rows directly reuse it. */
+export const searchAuditStructure = protocolObject(["input", "result"], {
+  input: protocolObject(Object.keys(searchInputSchema.shape), {
+    filters: protocolObject(searchFilterKeys, {
+      where: protocolArray(conditionStructure),
+    }),
+  }),
+  result: protocolObject(["hits", "truncated_response"]),
+});
 const positionSchema = z.strictObject({
-  strategy: z.enum(["lexical", "rrf"]).default("lexical"),
+  strategy: z.enum(["lexical", "rrf"]),
   rank: z.number(),
   session_id: z.uuid(),
   seq: z.number().int(),
   time: z.string(),
 });
 type Position = z.infer<typeof positionSchema>;
-interface Hit extends Position {
-  ordinal: number;
-}
+const searchHeaderSchema = searchBlockSchema.omit({ messages: true });
+type SearchHeader = z.infer<typeof searchHeaderSchema>;
+const searchMessageSchema = searchBlockSchema.shape.messages.element;
+type Excerpt = ReturnType<typeof excerpt>;
+/** One hit with its surrounding context rows, as message ordinals within the session. */
 interface Window {
-  hit: Hit;
+  hit: Pick<Position, "session_id" | "seq">;
   first: number;
   last: number;
   rows: Record<string, unknown>[];
@@ -43,13 +88,11 @@ interface Window {
 function excerpt(
   value: string,
   query: string,
-  headline: string,
 ): { content: string; truncated: boolean } {
   const points = Array.from(value);
   if (points.length <= 300) return { content: value, truncated: false };
   const lower = value.toLocaleLowerCase("en-US");
-  const match = /ACSTARTMARK([\s\S]*?)ACENDMARK/u.exec(headline)?.[1];
-  const terms = match ? [match] : (query.match(/[\p{L}\p{N}_]+/gu) ?? []);
+  const terms = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
   const matches = terms
     .filter((term) => term.toLowerCase() !== "or")
     .map((term) => lower.indexOf(term.toLocaleLowerCase("en-US")))
@@ -63,11 +106,59 @@ function excerpt(
     truncated: true,
   };
 }
-function fits(output: SearchOutput): boolean {
-  return (
-    bytes(output) <= 32768 &&
-    Buffer.byteLength(formatSearch(output).text) <= 32768
+/** Windows of one session whose ordinal ranges touch or overlap merge into one group, in hit order. */
+function groupWindows(windows: readonly Window[]): Window[][] {
+  const groups: Window[][] = [];
+  for (const next of windows) {
+    const overlapping = groups.filter((group) =>
+      group.some(
+        (member) =>
+          member.hit.session_id === next.hit.session_id &&
+          member.first <= next.last + 1 &&
+          next.first <= member.last + 1,
+      ),
+    );
+    if (!overlapping.length) groups.push([next]);
+    else {
+      const first = overlapping[0];
+      if (first) first.push(next, ...overlapping.slice(1).flat());
+      for (const other of overlapping.slice(1))
+        groups.splice(groups.indexOf(other), 1);
+    }
+  }
+  return groups;
+}
+/** One block per group: the session header plus its distinct context rows in seq order. */
+function blockFor(
+  group: readonly Window[],
+  header: SearchHeader,
+  excerpts: ReadonlyMap<unknown, Excerpt>,
+): SearchBlock {
+  const matched = new Set(group.map((item) => item.hit.seq));
+  const rows = new Map(
+    group.flatMap((item) => item.rows).map((row) => [Number(row.seq), row]),
   );
+  return {
+    ...header,
+    messages: [...rows.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([seq, row]) =>
+        searchMessageSchema.parse(
+          compactMetadata(
+            {
+              seq,
+              role: row.role,
+              kind: row.kind,
+              tool_name: row.tool_name,
+              tool_use_id: row.tool_use_id,
+              ...excerpts.get(row.message_id),
+              hit: matched.has(seq),
+            },
+            ["tool_name", "tool_use_id"],
+          ),
+        ),
+      ),
+  };
 }
 export class SearchService {
   private readonly inputSchema: ReturnType<typeof createSearchInputSchema>;
@@ -82,7 +173,12 @@ export class SearchService {
     return readOperation(
       this.dependencies.audit,
       context,
-      { action: "search", resourceType: "session", detail: input ?? null },
+      {
+        action: "search",
+        resourceType: "session",
+        detail: input ?? null,
+        structure: searchAuditStructure,
+      },
       async (caller) => {
         const request = this.inputSchema.parse(input);
         const binding = wireValue({
@@ -114,7 +210,11 @@ export class SearchService {
           );
         return this.dependencies.readers.read(caller, async (client) => {
           const params = new Parameters();
-          const conditions = await filterSql(client, request.filters, params);
+          const { sql: conditions } = await filterSql(
+            client,
+            request.filters,
+            params,
+          );
           const query = params.add(request.query);
           const lexical = request.query.trim().length > 0;
           const order = lexical
@@ -166,7 +266,7 @@ export class SearchService {
             truncated_response: false,
           };
           const windows: Window[] = [];
-          const headers = new Map<string, Omit<SearchBlock, "messages">>();
+          const headers = new Map<string, SearchHeader>();
           const pageHits = hits.slice(0, request.limit);
           const ids = [...new Set(pageHits.map((hit) => hit.session_id))];
           // Fetch all context, headers and tree roots in three queries for the whole page.
@@ -203,7 +303,7 @@ export class SearchService {
           for (const row of values.rows)
             headers.set(
               String(row.session_id),
-              searchBlockSchema.omit({ messages: true }).parse(
+              searchHeaderSchema.parse(
                 compactMetadata(
                   {
                     ...wireRow(row),
@@ -215,11 +315,18 @@ export class SearchService {
                 ),
               ),
             );
+          const contextByAnchor = new Map<string, Record<string, unknown>[]>();
+          for (const row of neighbours.rows) {
+            const anchor = `${String(row.session_id)}:${String(Number(row.anchor_seq))}`;
+            const rows = contextByAnchor.get(anchor) ?? [];
+            rows.push(row);
+            contextByAnchor.set(anchor, rows);
+          }
           const payloadBatches = messagePayloadBatches(
             neighbours.rows,
             2 * 1024 * 1024,
           );
-          const excerpts = new Map<unknown, ReturnType<typeof excerpt>>();
+          const excerpts = new Map<unknown, Excerpt>();
           async function ensureExcerpts(
             rows: readonly Record<string, unknown>[],
           ) {
@@ -238,13 +345,8 @@ export class SearchService {
                 excerpts.set(
                   payload.message_id,
                   excerpt(
-                    messageContent(
-                      String(payload.content),
-                      String(row?.kind),
-                      traceJson(payload.tool_input),
-                    ),
+                    messageText({ ...payload, kind: row?.kind }),
                     request.query,
-                    "",
                   ),
                 );
               }
@@ -252,77 +354,27 @@ export class SearchService {
           }
           let consumed: Position | null = null;
           for (const hit of pageHits) {
-            const rows = neighbours.rows.filter(
-              (row) =>
-                row.session_id === hit.session_id &&
-                Number(row.anchor_seq) === hit.seq,
-            );
+            const rows =
+              contextByAnchor.get(`${hit.session_id}:${String(hit.seq)}`) ?? [];
             const ordinal = Number(rows[0]?.anchor_ordinal);
             if (!rows.length || !headers.has(hit.session_id)) continue;
             await ensureExcerpts(rows);
-            const window: Window = {
-              hit: { ...hit, ordinal },
+            windows.push({
+              hit,
               first: Math.max(1, ordinal - request.context),
               last: ordinal + request.context,
               rows,
-            };
-            windows.push(window);
-            const blocks: SearchBlock[] = [];
-            const groups: Window[][] = [];
-            for (const next of windows) {
-              const overlapping = groups.filter((group) =>
-                group.some(
-                  (member) =>
-                    member.hit.session_id === next.hit.session_id &&
-                    member.first <= next.last + 1 &&
-                    next.first <= member.last + 1,
-                ),
-              );
-              if (!overlapping.length) groups.push([next]);
-              else {
-                const first = overlapping[0];
-                if (first) first.push(next, ...overlapping.slice(1).flat());
-                for (const other of overlapping.slice(1))
-                  groups.splice(groups.indexOf(other), 1);
-              }
-            }
-            for (const group of groups) {
-              const first = group[0];
-              if (!first) continue;
-              const header = headers.get(first.hit.session_id);
-              if (!header) continue;
-              const matched = new Set(group.map((item) => item.hit.seq));
-              const rows = new Map(
-                group
-                  .flatMap((item) => item.rows)
-                  .map((row) => [Number(row.seq), row]),
-              );
-              blocks.push({
-                ...header,
-                messages: [...rows.entries()]
-                  .sort(([a], [b]) => a - b)
-                  .map(([seq, row]) => ({
-                    seq,
-                    role: row.role,
-                    kind: row.kind,
-                    tool_name: row.tool_name,
-                    tool_use_id: row.tool_use_id,
-                    ...excerpts.get(row.message_id),
-                    hit: matched.has(seq),
-                  }))
-                  .map((message) =>
-                    searchBlockSchema.shape.messages.element.parse(
-                      compactMetadata(message, ["tool_name", "tool_use_id"]),
-                    ),
-                  ),
-              });
-            }
+            });
+            const blocks = groupWindows(windows).flatMap((group) => {
+              const header = group[0] && headers.get(group[0].hit.session_id);
+              return header ? [blockFor(group, header, excerpts)] : [];
+            });
             const candidate: SearchOutput = {
               blocks,
               cursor: this.dependencies.cursors.encode(binding, hit),
               truncated_response: false,
             };
-            if (!fits(candidate)) {
+            if (!fitsToolBudget(candidate, formatSearch)) {
               windows.pop();
               output.truncated_response = true;
               break;
@@ -344,14 +396,17 @@ export class SearchService {
           return searchOutputSchema.parse(output);
         });
       },
-      (result) => ({
-        hits: result.blocks
-          .flatMap((block) => block.messages)
-          .filter((message) => message.hit).length,
-        truncated_response: result.truncated_response,
-      }),
-      "read",
-      (result) => [...new Set(result.blocks.map((block) => block.session_id))],
+      {
+        describeResult: (result) => ({
+          hits: result.blocks
+            .flatMap((block) => block.messages)
+            .filter((message) => message.hit).length,
+          truncated_response: result.truncated_response,
+        }),
+        describeResources: (result) => [
+          ...new Set(result.blocks.map((block) => block.session_id)),
+        ],
+      },
     );
   }
 }

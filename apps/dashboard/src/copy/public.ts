@@ -1,4 +1,4 @@
-/** Marketing site, SaaS offering and shared account strings. */
+/** Public site, SaaS offering and hosted-account strings, nested under `copy.site`. */
 export const publicCopy = {
   saas: {
     signup: "Start free",
@@ -39,8 +39,6 @@ export const publicCopy = {
     calendarLoading: "Loading booking calendar…",
     status: "History, governance, and observability for your team’s agents.",
     principlesTitle: "Your team’s history, with organization controls.",
-    principlesDescription:
-      "Members and scoped API keys control who can read and contribute. Custom redaction policies apply before server storage.",
     madeIn: "Made in San Francisco",
     securityEyebrow: "ORGANIZATION ACCESS",
     securityHeading: "Agent history with\norganization governance.",
@@ -96,46 +94,12 @@ export const publicCopy = {
       "Your organization keeps its sessions, members, and API keys together.",
     organizationName: "Organization name",
     slug: "Organization slug",
-    slugHint:
-      "Use lowercase letters, numbers, and single hyphens between words.",
     organizationSubmit: "Create organization",
     organizationPending: "Creating organization…",
     contactTitle: "Contact your organization owner",
     contactDescription:
       "This account has already created an organization. Ask its owner to restore access.",
     continue: "Continue to your workspace",
-  },
-  billing: {
-    title: "Usage and billing",
-    description:
-      "Your organization's captured records and embedding usage for the current billing period.",
-    plan: "Current plan",
-    period: "UTC usage period",
-    periodEnd: "Next reset",
-    used: "Captured records",
-    limit: "Monthly allowance",
-    remaining: "Included records remaining",
-    unmetered: "Unmetered",
-    upgrade: "Upgrade to Pro",
-    portal: "Manage billing",
-    planChoice: "Paid plan",
-    changePlan: "Change plan",
-    overage: "Additional captured records",
-    embedded: "Indexed messages",
-    captureEstimate: "Estimated capture usage charge",
-    embeddingEstimate: "Estimated embedding usage charge",
-    estimates:
-      "Usage estimates exclude monthly plan fees and taxes. Your billing invoice is authoritative.",
-    meteringPending: "Usage awaiting billing delivery",
-    reconciliation: "Usage requiring operator review",
-
-    opening: "Opening billing…",
-    ownerOnly: "An organization owner can manage the plan.",
-    cap: "This month's free record allowance has been reached. Your team's saved history remains searchable.",
-    pending:
-      "Pending captures retry after an upgrade or the next monthly reset.",
-    returnHint: "Your plan updates after payment is confirmed.",
-    progress: "Included records used",
   },
   startup: {
     failed: "The application configuration could not be loaded.",
@@ -157,13 +121,9 @@ export const publicCopy = {
     product: "How it works",
     principles: "Your data",
     docs: "Documentation",
-    github: "GitHub",
     login: "Sign in",
     home: "AgentCommons home",
-    menu: "Open navigation",
-    close: "Close navigation",
   },
-  theme: { light: "Switch to light theme", dark: "Switch to dark theme" },
   hero: {
     eyebrow: "HISTORY, GOVERNANCE, AND OBSERVABILITY",
     title: "Give your next agent",
@@ -184,9 +144,7 @@ export const publicCopy = {
     label: "Example MCP tools",
     address: "workspace / payments-api",
     prompt: "Has anyone worked on webhook retries?",
-    promptLabel: "Example question",
     commandLabel: "Example MCP request",
-    responseLabel: "Illustrative response",
     source: "Illustrative session data",
     tabs: [
       { id: "search", label: "search", caption: "Find prior work" },
@@ -343,7 +301,6 @@ export const publicCopy = {
       security: "Security",
       license: "License",
     },
-    copyright: "AgentCommons",
   },
   notFound: {
     title: "This page is not available.",
@@ -370,7 +327,6 @@ export const publicCopy = {
 
 export const links = {
   repository: "https://github.com/rek7/agentcommons",
-  documentation: "/docs",
   specification: "https://github.com/rek7/agentcommons/blob/main/docs/SPEC.md",
   security: "https://github.com/rek7/agentcommons/blob/main/SECURITY.md",
   license: "https://github.com/rek7/agentcommons/blob/main/LICENSE",

@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { organizationRoleSchema } from "@agentcommons/core/schemas/common";
 import { copy } from "../../copy";
@@ -18,10 +18,29 @@ import { Field } from "../../components/ui/field";
 import { Alert, Spinner } from "../../components/ui/feedback";
 import { NativeSelect, Textarea } from "../../components/ui/input";
 import { CopyButton, DefinitionList } from "../../components/app/states";
-import { CodeBlock } from "./display";
+import { CodeBlock } from "../../components/app/markdown";
+import { useWorkspace } from "../../components/app/workspace";
 
 export type Role = Member["role"];
 export const roles = organizationRoleSchema.options;
+/** Members as dropdown choices, for filters that pick one person. */
+export function useMemberOptions() {
+  const { organization } = useWorkspace();
+  return useQuery({
+    queryKey: [organization.id, "admin", "users", "options"],
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET("/api/v1/admin/users", {
+          params: {
+            query: { limit: 100, sort: "email", order: "asc", format: "json" },
+          },
+          signal,
+        }),
+      ),
+    staleTime: 60_000,
+    select: (page) => page.items,
+  });
+}
 
 export function RoleSelect({
   value,
@@ -258,7 +277,7 @@ function PasswordSetupBody({ member }: { member: Member }) {
       )}
       {setup.data && (
         <CodeBlock
-          text={setup.data.setup_url}
+          content={setup.data.setup_url}
           copyLabel={text.setupLink}
           maxHeight="max-h-40"
         />

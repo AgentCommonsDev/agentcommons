@@ -1,66 +1,53 @@
-import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { billingUsageSchema } from "../packages/core/schemas/billing.js";
-import { ingestEnvelopeSchema } from "../packages/core/schemas/ingest.js";
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../packages/traces/test/support.js";
+import { startTraceDatabase } from "../packages/traces/test/support.js";
 import {
   provisionOrganization,
   provisionMember,
+  releaser,
   testAuthConfiguration,
 } from "../apps/api/test/support.js";
+import { startApp } from "../apps/api/test/app.js";
+import { testEnvelope, textRecord } from "../apps/api/test/envelopes.js";
 import { startMailpit } from "../apps/api/test/mailpit.js";
-import { createRuntime } from "../apps/api/src/main.js";
-import { createApp } from "../apps/api/src/app.js";
-import { environment } from "../apps/api/src/env.js";
 import { verifyCanaryEmail } from "../scripts/canary-auth.js";
 import { requireCaller } from "../apps/api/src/services/context.js";
-import { cleanup } from "../scripts/cleanup.js";
 
 const origin = "http://localhost:3905";
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let mail: Awaited<ReturnType<typeof startMailpit>>;
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
 let member: Awaited<ReturnType<typeof provisionMember>>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase({
     ...testAuthConfiguration,
     publicUrl: origin,
   });
-  release.unshift(() => database.close());
+  defer(() => database.close());
   mail = await startMailpit();
-  release.unshift(() => mail.close());
+  defer(() => mail.close());
   owner = await provisionOrganization(database, "native-saas-canary");
   member = await provisionMember(
     database,
     owner.owner,
     "native-saas-canary-member@example.com",
   );
-  const env = environment({
-    ...traceEnvironment(database.traceConfig),
-    PUBLIC_URL: origin,
-    DATABASE_URL: database.urls.app,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    INSTANCE_MODE: "saas",
-    EMAIL_TRANSPORT: "smtp",
-    EMAIL_FROM: "no-reply@agentcommons.test",
-    SMTP_URL: mail.smtpUrl,
-    LOG_LEVEL: "silent",
-    TRUST_PROXY: "loopback",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  const runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  const app = await createApp({ env, services: runtime.services });
-  release.unshift(() => app.close());
-  await app.listen({ port: 3905, host: "127.0.0.1" });
+  const started = await startApp(
+    database,
+    {
+      PUBLIC_URL: origin,
+      INSTANCE_MODE: "saas",
+      EMAIL_TRANSPORT: "smtp",
+      EMAIL_FROM: "no-reply@agentcommons.test",
+      SMTP_URL: mail.smtpUrl,
+      TRUST_PROXY: "loopback",
+    },
+    { listen: true, port: 3905, static: true },
+  );
+  defer(() => started.close());
 });
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-HRN-08 @req R-SAAS-01 @req R-SAAS-03
 it("verifies retained canary identities through native SMTP and charges actual SaaS capture once", async () => {
@@ -89,43 +76,13 @@ it("verifies retained canary identities through native SMTP and charges actual S
       },
     }),
   ).toBe(2);
-  const input = ingestEnvelopeSchema.parse({
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    installationId: randomUUID(),
-    batchId: randomUUID(),
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
-    sentAt: new Date().toISOString(),
-    sourcePos: 0,
+  const input = testEnvelope({
     cursor: "0",
-    end: null,
     context: {
       cwd: "/canary",
-      git: null,
-      parentHint: null,
-      installation: {
-        hostname: "native-canary",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "native-canary", osUser: "test" },
     },
-    records: [
-      {
-        pos: 0,
-        key: randomUUID(),
-        sourceVersion: 0,
-        line: JSON.stringify({
-          type: "user",
-          uuid: randomUUID(),
-          message: { content: "A real canary admission" },
-        }),
-      },
-    ],
+    records: [textRecord(0, "A real canary admission")],
   });
   for (let replay = 0; replay < 2; replay++)
     expect(

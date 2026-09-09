@@ -12,9 +12,9 @@ import { Alert } from "../../components/ui/feedback";
 import { CheckboxField, Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { copy } from "../../copy";
-import { createPersonalKey } from "../../lib/api/keys";
 import { errorMessage } from "../../lib/display";
 import { buildPermissions, permissionOrder } from "./permissions";
+import { createPersonalKey } from "./queries";
 
 /** Name, permissions and optional expiry; the secret is handed to the caller exactly once. */
 export function CreateKeyDialog({

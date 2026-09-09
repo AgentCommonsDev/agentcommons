@@ -1,17 +1,17 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
-import { Client } from "pg";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { seedPolicies } from "../src/services/policies.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { SearchService } from "../src/services/search.js";
 import { SessionService } from "../src/services/session.js";
-import type { ServiceContext } from "../src/services/context.js";
+import {
+  releaser,
+  syntheticContext,
+  syntheticOrganization,
+} from "./support.js";
 
-/** Released newest first, so clients close before the containers they talk to. */
-const cleanup: (() => Promise<unknown>)[] = [];
+const { defer, release } = releaser();
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let fixtures: TraceFixtures;
 let search: SearchService;
@@ -23,24 +23,7 @@ const ids = {
   readAuthEditedDocs: randomUUID(),
   noFiles: randomUUID(),
 };
-function context(): ServiceContext {
-  return {
-    caller: {
-      organizationId: "org-files",
-      userId: "owner",
-      apiKeyId: null,
-      role: "admin",
-      authMethod: "key",
-      permissions: { sessions: ["read"] },
-    },
-    requestId: randomUUID(),
-    transport: "rest",
-    ip: "127.0.0.1",
-    userAgent: "search-files-test",
-    startedAt: Date.now(),
-    headers: new Headers(),
-  };
-}
+const context = () => syntheticContext("org-files");
 async function session(
   id: string,
   title: string,
@@ -85,30 +68,15 @@ async function found(filters: Record<string, unknown>): Promise<string[]> {
 }
 beforeAll(async () => {
   db = await startTraceDatabase();
-  cleanup.unshift(() => db.close());
+  defer(() => db.close());
   fixtures = new TraceFixtures(db);
-  cleanup.unshift(() => fixtures.close());
-  const writer = new Client({ connectionString: db.urls.migration });
-  await writer.connect();
-  cleanup.unshift(() => writer.end());
-  await writer.query(
-    `INSERT INTO "user"(id,name,email,"updatedAt") VALUES('owner','Owner','owner@example.test',now()); INSERT INTO organization(id,name,slug,"createdAt") VALUES('org-files','Files','files',now()); INSERT INTO member(id,"organizationId","userId",role,"createdAt") VALUES('member-files','org-files','owner','admin',now()); INSERT INTO api_key_owner(key_id,organization_id,user_id) VALUES('key-files','org-files','owner')`,
-  );
-  await seedPolicies(db.prisma, "org-files", "owner");
-  await db.prisma.apikey.create({
-    data: {
-      id: "key-files",
-      referenceId: "org-files",
-      key: "fixture-hash-files",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      permissions: JSON.stringify({ sessions: ["read"] }),
-    },
+  defer(() => fixtures.close());
+  await syntheticOrganization(db, {
+    organizationId: "org-files",
+    keyId: "key-files",
+    installationId,
+    permissions: { sessions: ["read"] },
   });
-  await writer.query(
-    "INSERT INTO installation(organization_id,id,hostname,os_user,platform,arch) VALUES($1,$2,'files-host','files-user','linux','x64')",
-    ["org-files", installationId],
-  );
   const dependencies = {
     prisma: db.prisma,
     readers: db.traceReaders,
@@ -126,9 +94,7 @@ beforeAll(async () => {
   ]);
   await session(ids.noFiles, "Talked only", []);
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(cleanup.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-SRCH-03 @req R-SRCH-14
 it("selects sessions by file operation, and by operation on the same file as the path prefix", async () => {

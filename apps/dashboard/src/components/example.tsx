@@ -9,8 +9,32 @@ import {
   Search,
   Terminal,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { copy } from "../copy";
 
+const preview = copy.site.preview;
+/** Each example tab's icon, by the tool it shows. */
+const tabIcons: Record<(typeof preview.tabs)[number]["id"], LucideIcon> = {
+  search: Search,
+  get: Terminal,
+  sql: Database,
+};
+/** The MCP request line that opens every example tab. */
+function ExampleCommand({ command }: { command: string }) {
+  return (
+    <div
+      className="example-command"
+      tabIndex={0}
+      role="region"
+      aria-label={preview.commandLabel}
+    >
+      <span className="command-prefix" aria-hidden>
+        <CornerDownRight size={15} />
+      </span>
+      <code>{command}</code>
+    </div>
+  );
+}
 export function Example() {
   return (
     <div className="example-window">
@@ -20,18 +44,18 @@ export function Example() {
           <i />
           <i />
         </div>
-        <span>{copy.preview.address}</span>
+        <span>{preview.address}</span>
         <span className="example-badge">
           <span className="status-dot" />
-          {copy.preview.badge}
+          {preview.badge}
         </span>
       </div>
       <Tabs.Root defaultValue="search" className="example-tabs">
         <div className="example-sidebar">
-          <span className="sidebar-label">{copy.preview.label}</span>
-          <Tabs.List aria-label={copy.preview.label}>
-            {copy.preview.tabs.map((tab, index) => {
-              const Icon = [Search, Terminal, Database][index] ?? Search;
+          <span className="sidebar-label">{preview.label}</span>
+          <Tabs.List aria-label={preview.label}>
+            {preview.tabs.map((tab) => {
+              const Icon = tabIcons[tab.id];
               return (
                 <Tabs.Trigger value={tab.id} key={tab.id}>
                   <Icon size={17} aria-hidden />
@@ -50,32 +74,22 @@ export function Example() {
           </Tabs.List>
           <div className="sidebar-foot">
             <Braces size={15} aria-hidden />
-            <span>{copy.preview.source}</span>
+            <span>{preview.source}</span>
           </div>
         </div>
         <div className="example-main">
           <Tabs.Content value="search">
-            <div
-              className="example-command"
-              tabIndex={0}
-              role="region"
-              aria-label={copy.preview.commandLabel}
-            >
-              <span className="command-prefix" aria-hidden>
-                <CornerDownRight size={15} />
-              </span>
-              <code>{copy.preview.search.command}</code>
-            </div>
+            <ExampleCommand command={preview.search.command} />
             <div className="search-query">
               <Search size={18} aria-hidden />
-              <span>{copy.preview.prompt}</span>
+              <span>{preview.prompt}</span>
             </div>
             <div className="result-heading">
-              <span>{copy.preview.search.count}</span>
+              <span>{preview.search.count}</span>
               <Check size={13} aria-hidden />
             </div>
             <div className="example-results">
-              {copy.preview.search.results.map((result, index) => (
+              {preview.search.results.map((result, index) => (
                 <article className="example-result" key={result.title}>
                   <div className="result-top">
                     <span
@@ -102,21 +116,13 @@ export function Example() {
             </div>
           </Tabs.Content>
           <Tabs.Content value="get">
-            <div
-              className="example-command"
-              tabIndex={0}
-              role="region"
-              aria-label={copy.preview.commandLabel}
-            >
-              <CornerDownRight size={15} aria-hidden />
-              <code>{copy.preview.get.command}</code>
-            </div>
+            <ExampleCommand command={preview.get.command} />
             <div className="get-title">
-              <h3>{copy.preview.get.title}</h3>
-              <p>{copy.preview.get.meta}</p>
+              <h3>{preview.get.title}</h3>
+              <p>{preview.get.meta}</p>
             </div>
             <div className="example-transcript">
-              {copy.preview.get.rows.map((row) => (
+              {preview.get.rows.map((row) => (
                 <div className="transcript-row" key={row.number}>
                   <span>{row.number}</span>
                   <div>
@@ -128,18 +134,10 @@ export function Example() {
             </div>
           </Tabs.Content>
           <Tabs.Content value="sql">
-            <div
-              className="example-command"
-              tabIndex={0}
-              role="region"
-              aria-label={copy.preview.commandLabel}
-            >
-              <CornerDownRight size={15} aria-hidden />
-              <code>{copy.preview.sql.command}</code>
-            </div>
+            <ExampleCommand command={preview.sql.command} />
             <div className="example-query">
               <pre>
-                <code>{copy.preview.sql.query}</code>
+                <code>{preview.sql.query}</code>
               </pre>
             </div>
             <div className="query-divider">
@@ -148,7 +146,7 @@ export function Example() {
             <table className="example-table">
               <thead>
                 <tr>
-                  {copy.preview.sql.columns.map((column) => (
+                  {preview.sql.columns.map((column) => (
                     <th key={column} scope="col">
                       {column}
                     </th>
@@ -156,7 +154,7 @@ export function Example() {
                 </tr>
               </thead>
               <tbody>
-                {copy.preview.sql.rows.map((row) => (
+                {preview.sql.rows.map((row) => (
                   <tr key={row[0]}>
                     {row.map((cell) => (
                       <td key={cell}>{cell}</td>
@@ -165,13 +163,13 @@ export function Example() {
                 ))}
               </tbody>
             </table>
-            <p className="query-note">{copy.preview.sql.note}</p>
+            <p className="query-note">{preview.sql.note}</p>
           </Tabs.Content>
         </div>
       </Tabs.Root>
       <div className="window-footer">
         <span className="status-dot" />
-        <span>{copy.preview.footer}</span>
+        <span>{preview.footer}</span>
       </div>
     </div>
   );

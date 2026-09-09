@@ -1,10 +1,4 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
-import { createApp } from "../src/app.js";
-import { createRuntime } from "../src/main.js";
-import { environment } from "../src/env.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,8 +7,14 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { z } from "zod";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { provisionOrganization, testAuthConfiguration } from "./support.js";
+import {
+  cookieHeader,
+  provisionOrganization,
+  releaser,
+  setupToken,
+  testAuthConfiguration,
+} from "./support.js";
+import { startApp } from "./app.js";
 import { AuthService } from "../src/services/auth.js";
 import { MembershipService } from "../src/services/membership.js";
 import { enrollDomain } from "../src/auth/domain.js";
@@ -41,12 +41,12 @@ const configuration: AuthConfiguration = {
     },
   },
 };
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 const nativeFetch = globalThis.fetch;
 const tokens = new Map<string, string>();
 beforeAll(async () => {
   database = await startTraceDatabase(configuration);
-  release.unshift(() => database.close());
+  defer(() => database.close());
   owner = await provisionOrganization(database, "domain-primary");
   foreign = await provisionOrganization(database, "domain-foreign");
   service = database.auth;
@@ -60,17 +60,23 @@ beforeAll(async () => {
 afterEach(() => {
   vi.restoreAllMocks();
 });
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 const input = { organization: "domain-primary", domain: "example.com" };
 
+/** A Google sign-in with a signed id token, against `service` unless another is given. */
 async function google(
   email: string,
-  verified = true,
-  beforeCallback?: () => void,
-  selectedService: AuthService = service,
-  displayName = email,
+  {
+    verified = true,
+    service: selectedService = service,
+    name: displayName = email,
+    beforeCallback,
+  }: {
+    verified?: boolean;
+    service?: AuthService;
+    name?: string;
+    beforeCallback?: () => void;
+  } = {},
 ) {
   const started = await selectedService.handle(
     new Request(`${configuration.publicUrl}/auth/sign-in/social`, {
@@ -143,25 +149,12 @@ async function google(
     await selectedService.handle(
       new Request(
         `${configuration.publicUrl}/auth/callback/google?code=${code}&state=${encodeURIComponent(state)}`,
-        {
-          headers: {
-            cookie: started.result.headers
-              .getSetCookie()
-              .map((value) => value.split(";")[0])
-              .join("; "),
-          },
-        },
+        { headers: { cookie: cookieHeader(started.result) } },
       ),
       operatorContext(),
     )
   ).result;
-  const headers = new Headers({
-    cookie: response.headers
-      .getSetCookie()
-      .map((value) => value.split(";")[0])
-      .join("; "),
-  });
-  return { response, headers };
+  return { response, headers: new Headers({ cookie: cookieHeader(response) }) };
 }
 
 // @req R-ORG-11 @req R-AUD-01
@@ -266,7 +259,7 @@ it("admits only verified Google identities and preserves durable removal, suspen
     reauthorizeJob(
       database.prisma,
       { ...context, caller: keyIdentity.caller },
-      configuration.allowedEmailDomains,
+      configuration,
     ),
   ).rejects.toMatchObject({ code: "MEMBERSHIP_REQUIRED" });
   const repeated = await google(identity.user.email);
@@ -302,7 +295,7 @@ it("admits only verified Google identities and preserves durable removal, suspen
     ["unverified@example.com", false],
     ["outsider@elsewhere.test", true],
   ] as const) {
-    const rejected = await google(email, verified);
+    const rejected = await google(email, { verified });
     expect(rejected.response.headers.get("location")).toContain("error=");
     expect(
       await database.prisma.user.findUnique({ where: { email } }),
@@ -333,10 +326,12 @@ it("rolls back native registration and callback membership when the audit fails"
   ).toBe(0);
   expect(await database.prisma.verification.count()).toBe(before);
   await expect(
-    google("audit-rollback@example.com", true, () => {
-      vi.spyOn(AuditService.prototype, "write").mockRejectedValueOnce(
-        new Error("injected callback audit failure"),
-      );
+    google("audit-rollback@example.com", {
+      beforeCallback: () => {
+        vi.spyOn(AuditService.prototype, "write").mockRejectedValueOnce(
+          new Error("injected callback audit failure"),
+        );
+      },
     }),
   ).rejects.toBeDefined();
   expect(
@@ -354,7 +349,7 @@ it("rolls back native registration and callback membership when the audit fails"
 // @req R-ORG-11
 it("runs the operator CLI with a private real cookie file and rejects permissive file modes without exposing cookies", async () => {
   const directory = await mkdtemp(join(tmpdir(), "agentcommons-domain-cli-"));
-  release.unshift(() => rm(directory, { recursive: true, force: true }));
+  defer(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, "owner.cookie");
   const cookie = z.string().parse(owner.owner.headers.get("cookie"));
   await writeFile(file, cookie, { mode: 0o600 });
@@ -452,9 +447,7 @@ it("invalidates initial setup on removal before an unclaimed identity joins anot
     emails: ["removed-placeholder@example.com"],
     role: "member",
   });
-  const oldToken = z
-    .string()
-    .parse(new URL(first.setup_url).pathname.split("/").at(-1));
+  const oldToken = setupToken(first.setup_url);
   await expect(
     service.native.api.resetPassword({
       body: {
@@ -467,9 +460,7 @@ it("invalidates initial setup on removal before an unclaimed identity joins anot
     await database.prisma.account.count({ where: { userId: first.user_id } }),
   ).toBe(0);
   const fresh = await members.passwordSetup(foreign.owner, first.user_id);
-  const freshToken = z
-    .string()
-    .parse(new URL(fresh.result.setup_url).pathname.split("/").at(-1));
+  const freshToken = setupToken(fresh.result.setup_url);
   await service.native.api.resetPassword({
     body: {
       token: freshToken,
@@ -516,7 +507,7 @@ it("refuses Google implicit linking to an unverified public password preclaim an
     name: "Unverified preclaim",
     password: "Unverified claimant password 1234!",
   });
-  const rejected = await google(email, true, undefined, saas);
+  const rejected = await google(email, { service: saas });
   expect(rejected.response.headers.get("location")).toContain(
     "account_not_linked",
   );
@@ -537,9 +528,9 @@ it("refuses Google implicit linking to an unverified public password preclaim an
     body: { email: placeholderEmail, name: "Invited placeholder" },
   });
   expect(
-    (
-      await google(placeholderEmail, true, undefined, saas)
-    ).response.headers.get("location"),
+    (await google(placeholderEmail, { service: saas })).response.headers.get(
+      "location",
+    ),
   ).toContain("account_not_linked");
   await request("send-verification-email", {
     email: placeholderEmail,
@@ -555,7 +546,7 @@ it("refuses Google implicit linking to an unverified public password preclaim an
       })
     ).emailVerified,
   ).toBe(true);
-  const linked = await google(placeholderEmail, true, undefined, saas);
+  const linked = await google(placeholderEmail, { service: saas });
   expect(linked.response.headers.get("location")).not.toContain("error=");
   expect(
     await database.prisma.account.count({
@@ -568,13 +559,7 @@ it("refuses Google implicit linking to an unverified public password preclaim an
 it("redacts native provider and profile names while preserving customer identity and bootstrap behavior", async () => {
   const secret = "ghp_" + "a".repeat(36);
   const email = `profile-${crypto.randomUUID()}@example.com`;
-  const signed = await google(
-    email,
-    true,
-    undefined,
-    service,
-    `Provider ${secret}`,
-  );
+  const signed = await google(email, { name: `Provider ${secret}` });
   const user = await database.prisma.user.findUniqueOrThrow({
     where: { email },
   });
@@ -623,7 +608,7 @@ it("lets organization administrators manage native domain access under invite wh
     database.audit,
   );
   const domain = "invite-members.example.org";
-  const denied = await google(`early@${domain}`, true, undefined, invite);
+  const denied = await google(`early@${domain}`, { service: invite });
   expect(denied.response.headers.get("location")).toContain(
     "account_not_provisioned",
   );
@@ -632,7 +617,7 @@ it("lets organization administrators manage native domain access under invite wh
   ).toBe(0);
   const allowed = await invite.domain(owner.owner, { domain });
   expect(allowed.result.verified).toBe(true);
-  const admitted = await google(`member@${domain}`, true, undefined, invite);
+  const admitted = await google(`member@${domain}`, { service: invite });
   const identity = await invite.authenticate(
     admitted.headers,
     operatorContext(),
@@ -659,21 +644,14 @@ it("lets organization administrators manage native domain access under invite wh
   await expect(invite.domain(keyContext, { domain })).rejects.toMatchObject({
     code: "COOKIE_REQUIRED",
   });
-  const unverified = await google(
-    `unverified@${domain}`,
-    false,
-    undefined,
-    invite,
-  );
+  const unverified = await google(`unverified@${domain}`, {
+    verified: false,
+    service: invite,
+  });
   expect(unverified.response.headers.get("location")).toContain(
     "provider_email_unverified",
   );
-  const subdomain = await google(
-    `member@sub.${domain}`,
-    true,
-    undefined,
-    invite,
-  );
+  const subdomain = await google(`member@sub.${domain}`, { service: invite });
   expect(subdomain.response.headers.get("location")).toContain(
     "account_not_provisioned",
   );
@@ -684,7 +662,7 @@ it("lets organization administrators manage native domain access under invite wh
   );
   expect(
     (
-      await google(`closed@${domain}`, true, undefined, closed)
+      await google(`closed@${domain}`, { service: closed })
     ).response.headers.get("location"),
   ).toContain("account_not_provisioned");
   expect((await closed.domains(owner.owner, {})).result.enabled).toBe(false);
@@ -698,7 +676,7 @@ it("lets organization administrators manage native domain access under invite wh
   );
   expect(
     (
-      await google(`restricted@${domain}`, true, undefined, restricted)
+      await google(`restricted@${domain}`, { service: restricted })
     ).response.headers.get("location"),
   ).toContain("email_domain_not_allowed");
   await expect(
@@ -717,26 +695,13 @@ it("lets organization administrators manage native domain access under invite wh
 
 // @req R-ORG-11 @req R-DASH-29 @req R-AUD-01
 it("serves scoped domain allowlisting through generated REST routes with bounded domain pagination", async () => {
-  const env = environment({
-    PUBLIC_URL: configuration.publicUrl,
-    BETTER_AUTH_SECRET: configuration.secret,
-    DATABASE_URL: database.urls.app,
-    ...traceEnvironment(database.traceConfig),
+  const { app, close } = await startApp(database, {
     AUTH_SOCIAL_PROVIDER: "google",
     AUTH_GOOGLE_CLIENT_ID: "google-test-client",
     AUTH_GOOGLE_CLIENT_SECRET: "google-test-secret",
     AUTH_SIGNUP_MODE: "invite",
-    LOG_LEVEL: "silent",
   });
-  const runtime = await createRuntime(env);
-  const close: Array<() => Promise<unknown>> = [() => runtime.close()];
   try {
-    const app = await createApp({
-      env,
-      services: runtime.services,
-      static: false,
-    });
-    close.unshift(() => app.close());
     const headers = {
       cookie: z.string().parse(owner.owner.headers.get("cookie")),
       origin: configuration.publicUrl,
@@ -809,7 +774,7 @@ it("serves scoped domain allowlisting through generated REST routes with bounded
     });
     expect(invalidDomain.statusCode).toBe(400);
   } finally {
-    expect(await cleanup(close)).toEqual([]);
+    await close();
   }
 });
 
@@ -860,12 +825,9 @@ it("keeps the native Google-only eligibility predicate consistent for mixed prov
   await expect(
     mixed.domain(owner.owner, { domain: "mixed.example.org" }),
   ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
-  const signed = await google(
-    "mixed-provider@invite-members.example.org",
-    true,
-    undefined,
-    mixed,
-  );
+  const signed = await google("mixed-provider@invite-members.example.org", {
+    service: mixed,
+  });
   expect(signed.response.headers.get("location")).toContain(
     "account_not_provisioned",
   );

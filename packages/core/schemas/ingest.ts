@@ -1,5 +1,4 @@
 import { ingestContextSchema } from "./ingest-context.js";
-export { gitContextSchema, parentHintSchema } from "./ingest-context.js";
 import * as z from "zod";
 import {
   harnessSchema,

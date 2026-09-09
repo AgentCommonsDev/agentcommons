@@ -1,16 +1,17 @@
 import { KeyRound, MailCheck, UserPlus } from "lucide-react";
 import { useState } from "react";
-import { LoadingState, RequestError } from "../../components/app/states";
-import { ProviderSignIn } from "../../components/provider-sign-in";
+import { useMutation } from "@tanstack/react-query";
+import { QueryState } from "../../components/app/states";
+import { AuthMethods } from "../../components/provider-sign-in";
 import { Button } from "../../components/ui/button";
 import { Alert, Spinner } from "../../components/ui/feedback";
 import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { copy } from "../../copy";
-import { authClient } from "../../lib/auth-client";
+import { authClient, authResult } from "../../lib/auth-client";
 import { useBillingConfig } from "../../lib/billing-config";
 import { errorMessage } from "../../lib/display";
-import { paths } from "../../lib/routes";
+import { paths, withReturn } from "../../lib/routes";
 import { useAuthConfig } from "../../lib/use-auth-config";
 import {
   AccountAgreement,
@@ -22,35 +23,38 @@ import {
   AccountUnavailable,
 } from "./layout";
 
+const text = copy.site.signup;
+/** The application page the visitor asked for before signing up, carried through every link. */
+type ReturnTo = string | undefined;
 /**
  * The two "send me a link" requests share one form; only the copy and the call differ.
  * Callback paths are relative: the server resolves them against its public URL.
  */
 const emailRequests = {
   verification: {
-    title: copy.signup.verifyEmail,
-    description: copy.signup.verifyRequestDescription,
-    submit: copy.signup.verifySubmit,
+    title: text.verifyEmail,
+    description: text.verifyRequestDescription,
+    submit: text.verifySubmit,
     sent: copy.auth.verificationSent,
-    resent: copy.signup.sent,
+    resent: text.sent,
     Icon: MailCheck,
-    send: (email: string) =>
+    send: (email: string, next: ReturnTo) =>
       authClient.sendVerificationEmail({
         email,
-        callbackURL: paths.onboarding,
+        callbackURL: withReturn(paths.onboarding, next),
       }),
   },
   reset: {
-    title: copy.signup.resetTitle,
-    description: copy.signup.resetDescription,
-    submit: copy.signup.resetSubmit,
-    sent: copy.signup.resetSent,
-    resent: copy.signup.resetSent,
+    title: text.resetTitle,
+    description: text.resetDescription,
+    submit: text.resetSubmit,
+    sent: text.resetSent,
+    resent: text.resetSent,
     Icon: KeyRound,
-    send: (email: string) =>
+    send: (email: string, next: ReturnTo) =>
       authClient.requestPasswordReset({
         email,
-        redirectTo: paths.setupPassword,
+        redirectTo: withReturn(paths.setupPassword, next),
       }),
   },
 } as const;
@@ -59,38 +63,26 @@ type EmailRequestKind = keyof typeof emailRequests;
 function EmailLinkRequest({
   kind,
   initialEmail,
+  next,
 }: {
   kind: EmailRequestKind;
   /** When given, the address is fixed and the button re-sends the link. */
   initialEmail?: string | undefined;
+  next: ReturnTo;
 }) {
   const request = emailRequests[kind];
   const resend = initialEmail !== undefined;
   const [email, setEmail] = useState(initialEmail ?? "");
-  const [pending, setPending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async () => {
-    setPending(true);
-    setError(null);
-    setSent(false);
-    try {
-      const response = await request.send(email);
-      if (response.error)
-        throw new Error(response.error.message ?? copy.signup.emailFailed);
-      setSent(true);
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setPending(false);
-    }
-  };
+  const send = useMutation({
+    mutationFn: async () =>
+      authResult(await request.send(email, next), text.emailFailed),
+  });
   return (
     <>
       <AccountForm
         onSubmit={(event) => {
           event.preventDefault();
-          void submit();
+          send.mutate();
         }}
       >
         {resend ? (
@@ -110,7 +102,7 @@ function EmailLinkRequest({
                 onChange={(event) => {
                   setEmail(event.target.value);
                 }}
-                disabled={pending}
+                disabled={send.isPending}
               />
             )}
           </Field>
@@ -119,213 +111,186 @@ function EmailLinkRequest({
           type="submit"
           variant={resend ? "secondary" : "primary"}
           className="w-full"
-          disabled={pending}
+          disabled={send.isPending}
         >
-          {pending && <Spinner className="text-current" />}
-          {pending
-            ? copy.signup.sending
+          {send.isPending && <Spinner className="text-current" />}
+          {send.isPending
+            ? text.sending
             : resend
-              ? copy.signup.resend
+              ? text.resend
               : request.submit}
         </Button>
       </AccountForm>
-      {sent && (
+      {send.isSuccess && (
         <Alert variant="success">
           {resend ? request.resent : request.sent}
         </Alert>
       )}
-      {error && <Alert variant="danger">{error}</Alert>}
+      {send.error && <Alert variant="danger">{errorMessage(send.error)}</Alert>}
     </>
   );
 }
 /** Shown after signup and while onboarding waits for a verified address. */
-export function VerificationNotice({ email }: { email: string }) {
+export function VerificationNotice({
+  email,
+  next,
+}: {
+  email: string;
+  next: ReturnTo;
+}) {
   return (
     <>
       <AccountHeading
         icon={<MailCheck aria-hidden />}
-        title={copy.signup.verifyTitle}
-        description={copy.signup.verifyDescription}
+        title={text.verifyTitle}
+        description={text.verifyDescription}
       />
-      <EmailLinkRequest kind="verification" initialEmail={email} />
+      <EmailLinkRequest kind="verification" initialEmail={email} next={next} />
     </>
   );
 }
 
-export function SignupPage() {
+export function SignupPage({ next }: { next: ReturnTo }) {
   const billing = useBillingConfig();
   const config = useAuthConfig();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [pending, setPending] = useState(false);
-  const [created, setCreated] = useState<string | null>(null);
-  // With a provider configured, that is the one path shown; the password form is a switch away.
-  const [usePassword, setUsePassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async () => {
-    setPending(true);
-    setError(null);
-    try {
-      const response = await authClient.signUp.email({
-        name,
-        email,
-        password,
-        callbackURL: paths.onboarding,
-      });
-      if (response.error)
-        throw new Error(response.error.message ?? copy.signup.failed);
-      setCreated(email);
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setPending(false);
-    }
-  };
-  if (!billing.enabled) return <AccountUnavailable title={copy.signup.title} />;
-  if (created !== null) return <VerificationNotice email={created} />;
-  const provider = config.data
-    ? config.data.oidc_enabled || config.data.social_provider
-    : false;
-  const passwordEnabled = config.data?.email_password_enabled ?? false;
-  const showPassword = passwordEnabled && (!provider || usePassword);
-  const showProvider = Boolean(provider) && !usePassword;
+  /* The verification link and the provider callback both end in onboarding, which opens `next` once the account is ready. */
+  const callbackPath = withReturn(paths.onboarding, next);
+  const submit = useMutation({
+    mutationFn: async () => {
+      authResult(
+        await authClient.signUp.email({
+          name,
+          email,
+          password,
+          callbackURL: callbackPath,
+        }),
+        text.failed,
+      );
+      return email;
+    },
+  });
+  if (!billing.enabled) return <AccountUnavailable title={text.title} />;
+  if (submit.isSuccess)
+    return <VerificationNotice email={submit.data} next={next} />;
+  const pending = submit.isPending;
   return (
     <>
       <AccountHeading
         icon={<UserPlus aria-hidden />}
-        title={copy.signup.title}
-        description={copy.signup.description}
+        title={text.title}
+        description={text.description}
       />
-      {config.isPending ? (
-        <LoadingState rows={3} />
-      ) : config.error ? (
-        <RequestError
-          title={copy.auth.configError}
-          error={config.error}
-          retry={() => {
-            void config.refetch();
-          }}
-        />
-      ) : config.data.signup_mode !== "open" ? (
-        <Alert variant="info">{copy.signup.unavailable}</Alert>
-      ) : (
-        <>
-          {showPassword && (
-            <AccountForm
-              onSubmit={(event) => {
-                event.preventDefault();
-                void submit();
-              }}
-            >
-              <Field label={copy.signup.name}>
-                {(props) => (
-                  <Input
-                    {...props}
-                    name="name"
-                    autoComplete="name"
-                    required
-                    value={name}
-                    onChange={(event) => {
-                      setName(event.target.value);
-                    }}
-                    disabled={pending}
-                  />
-                )}
-              </Field>
-              <Field label={copy.auth.email}>
-                {(props) => (
-                  <Input
-                    {...props}
-                    type="email"
-                    name="email"
-                    autoComplete="username"
-                    required
-                    value={email}
-                    onChange={(event) => {
-                      setEmail(event.target.value);
-                    }}
-                    disabled={pending}
-                  />
-                )}
-              </Field>
-              <Field label={copy.auth.password} hint={copy.auth.passwordHint}>
-                {(props) => (
-                  <Input
-                    {...props}
-                    type="password"
-                    name="password"
-                    autoComplete="new-password"
-                    minLength={8}
-                    required
-                    value={password}
-                    onChange={(event) => {
-                      setPassword(event.target.value);
-                    }}
-                    disabled={pending}
-                  />
-                )}
-              </Field>
-              <Button
-                type="submit"
-                data-testid="signup-submit"
-                className="w-full"
-                disabled={pending}
-              >
-                {pending && <Spinner className="text-current" />}
-                {pending ? copy.signup.submitting : copy.signup.submit}
-              </Button>
-            </AccountForm>
-          )}
-          {showProvider && (
-            <ProviderSignIn
-              config={config.data}
-              callbackPath={paths.onboarding}
+      <QueryState query={config} rows={3} title={copy.auth.configError}>
+        {(methods) =>
+          methods.signup_mode !== "open" ? (
+            <Alert variant="info">{text.unavailable}</Alert>
+          ) : (
+            <AuthMethods
+              config={methods}
+              callbackPath={callbackPath}
+              toggleLabel={copy.auth.signupPasswordInstead}
+              toggleTestId="signup-use-password"
               disabled={pending}
-              onError={setError}
-            />
-          )}
-          {passwordEnabled && provider && (
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              data-testid="signup-use-password"
-              className="self-center"
-              disabled={pending}
-              onClick={() => {
-                setUsePassword((prior) => !prior);
-              }}
+              error={submit.error}
+              passwordForm={
+                <AccountForm
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submit.mutate();
+                  }}
+                >
+                  <Field label={text.name}>
+                    {(props) => (
+                      <Input
+                        {...props}
+                        name="name"
+                        autoComplete="name"
+                        required
+                        value={name}
+                        onChange={(event) => {
+                          setName(event.target.value);
+                        }}
+                        disabled={pending}
+                      />
+                    )}
+                  </Field>
+                  <Field label={copy.auth.email}>
+                    {(props) => (
+                      <Input
+                        {...props}
+                        type="email"
+                        name="email"
+                        autoComplete="username"
+                        required
+                        value={email}
+                        onChange={(event) => {
+                          setEmail(event.target.value);
+                        }}
+                        disabled={pending}
+                      />
+                    )}
+                  </Field>
+                  <Field
+                    label={copy.auth.password}
+                    hint={copy.auth.passwordHint}
+                  >
+                    {(props) => (
+                      <Input
+                        {...props}
+                        type="password"
+                        name="password"
+                        autoComplete="new-password"
+                        minLength={8}
+                        required
+                        value={password}
+                        onChange={(event) => {
+                          setPassword(event.target.value);
+                        }}
+                        disabled={pending}
+                      />
+                    )}
+                  </Field>
+                  <Button
+                    type="submit"
+                    data-testid="signup-submit"
+                    className="w-full"
+                    disabled={pending}
+                  >
+                    {pending && <Spinner className="text-current" />}
+                    {pending ? text.submitting : text.submit}
+                  </Button>
+                </AccountForm>
+              }
             >
-              {usePassword
-                ? copy.auth.providerInstead
-                : copy.auth.signupPasswordInstead}
-            </Button>
-          )}
-          {!passwordEnabled && !provider && (
-            <Alert variant="danger">{copy.auth.noMethods}</Alert>
-          )}
-          {error && <Alert variant="danger">{error}</Alert>}
-          {(config.data.email_password_enabled || provider) && (
-            <AccountAgreement />
-          )}
-        </>
-      )}
+              <AccountAgreement />
+            </AuthMethods>
+          )
+        }
+      </QueryState>
       <AccountLinks>
         <AccountPrompt
-          text={copy.signup.already}
-          href={paths.login}
-          link={copy.signup.signIn}
+          text={text.already}
+          href={withReturn(paths.login, next)}
+          link={text.signIn}
         />
-        <AccountLink href={paths.verifyEmail}>
-          {copy.signup.verifyEmail}
+        <AccountLink href={withReturn(paths.verifyEmail, next)}>
+          {text.verifyEmail}
         </AccountLink>
       </AccountLinks>
     </>
   );
 }
 
-function AccountEmailPage({ kind }: { kind: EmailRequestKind }) {
+function AccountEmailPage({
+  kind,
+  next,
+}: {
+  kind: EmailRequestKind;
+  next: ReturnTo;
+}) {
   const billing = useBillingConfig();
   const request = emailRequests[kind];
   if (!billing.enabled) return <AccountUnavailable title={request.title} />;
@@ -337,16 +302,18 @@ function AccountEmailPage({ kind }: { kind: EmailRequestKind }) {
         title={request.title}
         description={request.description}
       />
-      <EmailLinkRequest kind={kind} />
+      <EmailLinkRequest kind={kind} next={next} />
       <AccountLinks>
-        <AccountLink href={paths.login}>{copy.auth.backToSignIn}</AccountLink>
+        <AccountLink href={withReturn(paths.login, next)}>
+          {copy.auth.backToSignIn}
+        </AccountLink>
       </AccountLinks>
     </>
   );
 }
-export function ForgotPasswordPage() {
-  return <AccountEmailPage kind="reset" />;
+export function ForgotPasswordPage({ next }: { next: ReturnTo }) {
+  return <AccountEmailPage kind="reset" next={next} />;
 }
-export function VerifyEmailPage() {
-  return <AccountEmailPage kind="verification" />;
+export function VerifyEmailPage({ next }: { next: ReturnTo }) {
+  return <AccountEmailPage kind="verification" next={next} />;
 }

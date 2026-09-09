@@ -4,7 +4,6 @@ import { z } from "zod";
 import {
   builtinPolicies,
   composePolicies,
-  expressionSafety,
   policyDefinitionSchema,
   policyDefinitionShapeSchema,
 } from "./policy.js";
@@ -86,10 +85,7 @@ it("retains supported backreferences and lookbehind without an invented regex su
 it("verifies every shipped pattern once here so reads never re-run the backtracking analysis", () => {
   for (const policy of builtinPolicies) {
     if (policy.kind !== "REGEX") continue;
-    expect(
-      expressionSafety(new RegExp(policy.pattern, policy.flags)),
-      policy.name,
-    ).toBe("safe");
+    // The saving schema runs the analysis; a shipped pattern must pass it as an admin's would.
     const { id, builtin, ...definition } = policy;
     expect(policyDefinitionSchema.safeParse(definition).success, id).toBe(true);
     expect(builtin).toBe(true);

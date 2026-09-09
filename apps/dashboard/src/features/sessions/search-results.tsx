@@ -1,4 +1,10 @@
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -15,8 +21,7 @@ import { cn } from "../../lib/utils";
 import { useWorkspace } from "../../components/app/workspace";
 import {
   CopyButton,
-  LoadingState,
-  RequestError,
+  QueryState,
   StatusBadge,
 } from "../../components/app/states";
 import { Badge } from "../../components/ui/badge";
@@ -25,6 +30,18 @@ import { Alert, EmptyState } from "../../components/ui/feedback";
 import type { ApiFilters } from "./search-state";
 
 const seqLabel = (seq: number) => `#${String(seq)}`;
+async function fetchSearch(
+  body: { query: string; filters: ApiFilters; cursor: string | null },
+  signal: AbortSignal,
+) {
+  return unwrap(
+    await api.POST("/api/v1/search", {
+      body: { ...body, context: 1, limit: 10 },
+      signal,
+    }),
+  );
+}
+type SearchOutput = Awaited<ReturnType<typeof fetchSearch>>;
 const escapeRegExp = (value: string) =>
   value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** Wrap query words in <mark>; the server already ranked, this only shows why a row matched. */
@@ -53,7 +70,6 @@ export function MessageResults({
   filters: ApiFilters;
 }) {
   const { organization } = useWorkspace();
-  const labels = copy.sessions.results;
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const cursor = cursors.at(-1) ?? null;
   // A new query or filter set starts from the first page again.
@@ -65,29 +81,41 @@ export function MessageResults({
   }
   const search = useQuery({
     queryKey: [organization.id, "search", query, filters, cursor],
-    queryFn: async ({ signal }) =>
-      unwrap(
-        await api.POST("/api/v1/search", {
-          body: { query, filters, cursor, context: 1, limit: 10 },
-          signal,
-        }),
-      ),
+    queryFn: ({ signal }) => fetchSearch({ query, filters, cursor }, signal),
   });
   const formatted = useMemo(
     () => (search.data ? formatSearch(search.data) : null),
     [search.data],
   );
-  if (search.isPending) return <LoadingState rows={4} />;
-  if (search.error)
-    return (
-      <RequestError
-        error={search.error}
-        retry={() => {
-          void search.refetch();
-        }}
-      />
-    );
-  const { blocks, cursor: next, truncated_response } = search.data;
+  return (
+    <QueryState query={search} rows={4}>
+      {(data) => (
+        <Results
+          data={data}
+          query={query}
+          text={formatted?.text ?? null}
+          cursors={cursors}
+          setCursors={setCursors}
+        />
+      )}
+    </QueryState>
+  );
+}
+function Results({
+  data,
+  query,
+  text,
+  cursors,
+  setCursors,
+}: {
+  data: SearchOutput;
+  query: string;
+  text: string | null;
+  cursors: (string | null)[];
+  setCursors: Dispatch<SetStateAction<(string | null)[]>>;
+}) {
+  const labels = copy.sessions.results;
+  const { blocks, cursor: next, truncated_response } = data;
   const sessionCount = new Set(blocks.map((block) => block.session_id)).size;
   if (blocks.length === 0)
     return <EmptyState title={labels.empty} description={labels.emptyHint} />;
@@ -98,13 +126,8 @@ export function MessageResults({
           {number(sessionCount)}{" "}
           {sessionCount === 1 ? labels.sessionCountOne : labels.sessionCount}
         </span>
-        {formatted && (
-          <CopyButton
-            value={formatted.text}
-            label={labels.copy}
-            showLabel
-            size="sm"
-          />
+        {text !== null && (
+          <CopyButton value={text} label={labels.copy} showLabel size="sm" />
         )}
       </div>
       {blocks.map((block, index) => {
@@ -125,7 +148,7 @@ export function MessageResults({
                   search={search}
                   className="text-[15px] font-semibold text-fg hover:underline"
                 >
-                  {block.title ?? copy.sessions.list.untitled}
+                  {block.title ?? copy.app.common.untitledSession}
                 </Link>
                 {block.parent_relation && (
                   <StatusBadge value={block.parent_relation} />

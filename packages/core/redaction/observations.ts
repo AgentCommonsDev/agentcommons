@@ -1,7 +1,13 @@
 import { z } from "zod";
 import { observedCommitSchema } from "../schemas/ingest.js";
+import { normalizerContextSchema } from "../schemas/common.js";
+import {
+  ingestContextSchema,
+  parentHintSchema,
+} from "../schemas/ingest-context.js";
 import {
   protocolArray,
+  protocolLiterals,
   protocolObject,
   protocolTimestamp,
 } from "./structure.js";
@@ -13,6 +19,26 @@ export const gitContextStructure = protocolObject([
   "branch",
   "head",
 ]);
+export const parentHintStructure = protocolObject(
+  Object.keys(parentHintSchema.shape),
+  { relation: protocolLiterals(...parentHintSchema.shape.relation.options) },
+);
+/**
+ * The upload context minus its normalizer fields (`activeLeafId`, `transcriptMetadata`),
+ * which `redactNormalizerContext` redacts with identity canonicalization.
+ */
+export const ingestContextStructure = protocolObject(
+  Object.keys(ingestContextSchema.shape).filter(
+    (key) => !(key in normalizerContextSchema.shape),
+  ),
+  {
+    installation: protocolObject(
+      Object.keys(ingestContextSchema.shape.installation.shape),
+    ),
+    git: gitContextStructure,
+    parentHint: parentHintStructure,
+  },
+);
 export const observedCommitStructure = protocolObject(
   ["sha", "subject", "author"],
   { timestamp: protocolTimestamp },

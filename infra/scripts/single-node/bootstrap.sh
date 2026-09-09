@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs on the host as root (shipped and invoked by infra/scripts/single-node-bootstrap.sh).
+# Runs on the host as root (ship it with infra/scripts/single-node-run.sh).
 # Seeds the first owner and organization with the operator seed command, then enrolls
 # Google sign-in domains with the operator domain command, which requires an owner
 # session: the owner's one-time setup link is completed with a generated password
@@ -10,6 +10,7 @@
 # are mode 600 and are never printed.
 # Re-running reuses the stored credential and skips keys that already exist.
 set -euo pipefail
+. "$(dirname "$0")/host-lib.sh"
 usage() {
   echo "Usage: $0 --admin EMAIL --organization SLUG --name NAME [--domain DOMAIN]... [--key NAME]..." >&2
   exit 2
@@ -35,11 +36,8 @@ for key in ${keys[@]+"${keys[@]}"}; do
 done
 [ -n "$admin" ] && [ -n "$organization" ] && [ -n "$display" ] || usage
 
-app=${AGENTCOMMONS_APP_DIR:-/opt/agentcommons/app}
-state_dir=/root/agentcommons
 # One state file per organization, so further organizations never overwrite the first.
 state="$state_dir/owner-$organization.json"
-local_api=http://127.0.0.1:3000
 cd "$app"
 # Only the api service is addressed, so the base file suffices whatever the release's
 # override set is.
@@ -49,8 +47,8 @@ compose() {
 operator() {
   compose exec -T api pnpm --filter @agentcommons/api exec tsx "$@" </dev/null | tail -n 1
 }
-# The API accepts credential requests only from its own origin. On failure the error
-# body (which carries no credential) is shown; successful bodies are never printed.
+# On failure the error body (which carries no credential) is shown; successful bodies
+# are never printed.
 post() {
   local path=$1 body=$2 response status
   shift 2
@@ -65,11 +63,7 @@ post() {
   cat "$response"
   rm -f "$response"
 }
-public_url=$(sed -n "s/^PUBLIC_URL='\(.*\)'$/\1/p" .env)
-[ -n "$public_url" ] || {
-  echo "PUBLIC_URL is missing from $app/.env" >&2
-  exit 1
-}
+require_public_url
 curl -fsS "$local_api/ready" >/dev/null || {
   echo "The API is not ready; run the release first." >&2
   exit 1
@@ -104,14 +98,7 @@ jq -n --arg email "$admin" --arg organization "$organization" --argjson seed "$s
     password: $password, updated_at: $updated_at}' >"$state.new"
 mv "$state.new" "$state"
 
-headers=$(mktemp)
-trap 'rm -f "$headers"' EXIT
-post /auth/sign-in/email "$(jq -cn --arg email "$admin" --arg password "$password" '$ARGS.named')" -D "$headers" >/dev/null
-cookie=$(awk 'tolower($1) == "set-cookie:" { sub(/;.*/, "", $2); printf "%s%s", (n++ ? "; " : ""), $2 }' "$headers")
-[ -n "$cookie" ] || {
-  echo "Owner sign-in returned no session." >&2
-  exit 1
-}
+cookie=$(owner_sign_in "$organization")
 for domain in ${domains[@]+"${domains[@]}"}; do
   result=$(printf '%s' "$cookie" | compose exec -T api sh -c '
     umask 077 && cat >/tmp/owner.cookie &&
@@ -132,6 +119,6 @@ for key in ${keys[@]+"${keys[@]}"}; do
   mv "$target.new" "$target"
   echo "API key $key (sessions read and ingest) is in $target on this host (root only)."
 done
-post /auth/sign-out '{}' -H "Cookie: $cookie" >/dev/null || true
+sign_out "$cookie"
 echo "Organization $organization ($(jq -r .organization_id <<<"$seed")) has owner $admin."
 echo "The owner setup link and password are in $state on this host (root only)."

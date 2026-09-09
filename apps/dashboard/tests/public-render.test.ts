@@ -4,7 +4,7 @@ import { publicConfigElementId } from "@agentcommons/core/format/public-config";
 import { renderDocument, offeringText } from "../src/entry-server";
 import { copy } from "../src/copy";
 const template =
-  '<html><head><title>AgentCommons</title><meta name="description" content="AgentCommons"><meta property="og:title" content="AgentCommons"><meta property="og:description" content="AgentCommons"><meta property="og:type" content="website"><link rel="canonical" href="__PUBLIC_URL__/"><script type="application/ld+json">{}</script></head><body><div id="root"></div></body></html>';
+  '<html><head><!--app-head--></head><body><div id="root"></div></body></html>';
 
 // @req R-SAAS-07 @req R-WEB-03
 it("renders runtime plan allowances into actual React HTML and identical hydration configuration", async () => {
@@ -28,7 +28,7 @@ it("renders runtime plan allowances into actual React HTML and identical hydrati
   expect(html).toContain(">42<");
   expect(html).toContain(">840<");
   expect(html).toContain("$100");
-  expect(html).toContain(copy.saas.calendarUnavailable);
+  expect(html).toContain(copy.site.saas.calendarUnavailable);
   const serialized = new RegExp(
     `<script id="${publicConfigElementId}" type="application/json">(.*?)</script>`,
   ).exec(html)?.[1];
@@ -63,7 +63,9 @@ it("prerenders the Privacy Policy and Terms of Service and links them from every
   for (const { path, file, document } of documents) {
     expect(publicRoutes).toContainEqual({ path, file });
     const html = await renderDocument(template, path, config);
-    expect(html).toContain(`<title>${document.title} · ${copy.brand}</title>`);
+    expect(html).toContain(
+      `<title>${document.title} · ${copy.site.brand}</title>`,
+    );
     expect(html).toContain(`content="${document.description}"`);
     expect(html).toContain(`<h1>${document.title}</h1>`);
     expect(html).toContain(`<time dateTime="${document.effective}">`);
@@ -84,7 +86,7 @@ it("prerenders the Privacy Policy and Terms of Service and links them from every
     defaultBillingConfig,
   );
   expect(customer).not.toContain('href="/tos"');
-  expect(customer).toContain(copy.notFound.title);
+  expect(customer).toContain(copy.site.notFound.title);
 });
 
 // @req R-WEB-08

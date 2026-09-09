@@ -1,4 +1,3 @@
-import { cleanup as cleanupAll } from "../scripts/cleanup.js";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -7,17 +6,16 @@ import type { IngestEnvelope } from "../packages/core/schemas/ingest.js";
 import { completedNativeSessions } from "../scripts/canary-completion.js";
 import { traceServices } from "../apps/api/test/trace-services.js";
 import { startTraceDatabase } from "../packages/traces/test/support.js";
-import { provisionOrganization } from "../apps/api/test/support.js";
+import { provisionOrganization, releaser } from "../apps/api/test/support.js";
+import { testEnvelope } from "../apps/api/test/envelopes.js";
 
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
 });
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-HRN-08
 it("waits past a valid earlier end and the final source sync until both native shutdowns and their projections commit", async () => {
@@ -29,7 +27,7 @@ it("waits past a valid earlier end and the final source sync until both native s
     .string()
     .parse(organization.context.caller?.organizationId);
   const native = traceServices(database);
-  release.unshift(() => native.close());
+  defer(() => native.close());
   const ingest = { execute: native.publish };
   const source = await readFile(
     "fixtures/transcripts/pi/tree-and-resume.jsonl",
@@ -53,34 +51,22 @@ it("waits past a valid earlier end and the final source sync until both native s
     activeLeafId: "30b52614",
   }));
   let clock = Date.parse("2026-09-08T00:00:00.000Z");
-  const envelope = (sessionId: string): IngestEnvelope => ({
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "PI",
-    harnessSessionId: sessionId,
-    installationId: randomUUID(),
-    batchId: randomUUID(),
-    behavior: "end",
-    nativeEvent: "session_shutdown",
-    start: null,
-    end: null,
-    sentAt: new Date((clock += 1000)).toISOString(),
-    cursor: String(Buffer.byteLength(source)),
-    sourcePos: Buffer.byteLength(source),
-    context: {
-      cwd: "/canary",
-      installation: {
-        hostname: "canary",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
+  const envelope = (sessionId: string): IngestEnvelope =>
+    testEnvelope({
+      harness: "PI",
+      harnessSessionId: sessionId,
+      behavior: "end",
+      nativeEvent: "session_shutdown",
+      sentAt: new Date((clock += 1000)).toISOString(),
+      cursor: String(Buffer.byteLength(source)),
+      sourcePos: Buffer.byteLength(source),
+      context: {
+        cwd: "/canary",
+        installation: { hostname: "canary", osUser: "test" },
+        activeLeafId: "30b52614",
       },
-      git: null,
-      parentHint: null,
-      activeLeafId: "30b52614",
-    },
-    records,
-  });
+      records,
+    });
   const ready = () =>
     completedNativeSessions(database.prisma, organizationId, "PI", checkpoints);
   const earlier = envelope(parent);

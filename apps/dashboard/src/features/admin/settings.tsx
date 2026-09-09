@@ -6,16 +6,17 @@ import {
 } from "@agentcommons/core/schemas/dashboards";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
+import { authConfigQuery } from "../../lib/api/queries";
 import { useBillingConfig } from "../../lib/billing-config";
 import { errorMessage, number } from "../../lib/display";
 import { paths } from "../../lib/routes";
 import { useWorkspace } from "../../components/app/workspace";
 import { ConfirmDialog } from "../../components/app/confirm-dialog";
+import { ProgressBar } from "../../components/app/display";
 import {
   CopyButton,
   DefinitionList,
-  LoadingState,
-  RequestError,
+  QueryState,
   StatusBadge,
 } from "../../components/app/states";
 import { Badge } from "../../components/ui/badge";
@@ -30,7 +31,6 @@ import {
 import { Field, Label, Switch } from "../../components/ui/field";
 import { Alert, EmptyState } from "../../components/ui/feedback";
 import { Input, NativeSelect } from "../../components/ui/input";
-import { ProgressBar } from "./display";
 
 export function GeneralCard() {
   const { organization } = useWorkspace();
@@ -116,69 +116,62 @@ export function EmbeddingsCard() {
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {query.isPending && <LoadingState rows={2} />}
-        {query.error && (
-          <RequestError
-            error={query.error}
-            retry={() => {
-              void query.refetch();
-            }}
-          />
-        )}
-        {data && (
-          <>
-            {!data.available && (
-              <Alert variant="info">{text.unavailable}</Alert>
-            )}
-            {data.available && billing.enabled && !data.entitled && (
-              <Alert
-                variant="warning"
-                action={
-                  <Button asChild variant="secondary" size="sm">
-                    <a href={paths.billing}>{text.viewPlans}</a>
-                  </Button>
-                }
-              >
-                {text.notEntitled}
-              </Alert>
-            )}
-            {data.last_attempt === "failed" && (
-              <Alert variant="danger">{text.failed}</Alert>
-            )}
-            {data.available && data.enabled && data.last_attempt === null && (
-              <Alert variant="info">{text.unchecked}</Alert>
-            )}
-            {data.provider === "fake" && (
-              <Alert variant="info">{text.fake}</Alert>
-            )}
-            <p className="text-sm leading-relaxed text-muted">
-              {data.effective ? text.enabledHint : text.disabledHint}
-            </p>
-            <DefinitionList
-              columns={3}
-              items={[
-                {
-                  label: text.provider,
-                  value: data.provider ?? copy.app.common.unavailable,
-                },
-                {
-                  label: text.model,
-                  value: data.model ?? copy.app.common.unavailable,
-                },
-                { label: text.total, value: number(data.sessions_total) },
-                { label: text.indexed, value: number(data.sessions_indexed) },
-                { label: text.pending, value: number(data.sessions_pending) },
-              ]}
-            />
-            {data.effective && data.sessions_total > 0 && (
-              <ProgressBar
-                value={data.sessions_indexed}
-                max={data.sessions_total}
-                label={text.indexed}
+        <QueryState query={query} rows={2}>
+          {(data) => (
+            <>
+              {!data.available && (
+                <Alert variant="info">{text.unavailable}</Alert>
+              )}
+              {data.available && billing.enabled && !data.entitled && (
+                <Alert
+                  variant="warning"
+                  action={
+                    <Button asChild variant="secondary" size="sm">
+                      <a href={paths.billing}>{text.viewPlans}</a>
+                    </Button>
+                  }
+                >
+                  {text.notEntitled}
+                </Alert>
+              )}
+              {data.last_attempt === "failed" && (
+                <Alert variant="danger">{text.failed}</Alert>
+              )}
+              {data.available && data.enabled && data.last_attempt === null && (
+                <Alert variant="info">{text.unchecked}</Alert>
+              )}
+              {data.provider === "fake" && (
+                <Alert variant="info">{text.fake}</Alert>
+              )}
+              <p className="text-sm leading-relaxed text-muted">
+                {data.effective ? text.enabledHint : text.disabledHint}
+              </p>
+              <DefinitionList
+                columns={3}
+                items={[
+                  {
+                    label: text.provider,
+                    value: data.provider ?? copy.app.common.unavailable,
+                  },
+                  {
+                    label: text.model,
+                    value: data.model ?? copy.app.common.unavailable,
+                  },
+                  { label: text.total, value: number(data.sessions_total) },
+                  { label: text.indexed, value: number(data.sessions_indexed) },
+                  { label: text.pending, value: number(data.sessions_pending) },
+                ]}
               />
-            )}
-          </>
-        )}
+              {data.effective && data.sessions_total > 0 && (
+                <ProgressBar
+                  value={data.sessions_indexed}
+                  max={data.sessions_total}
+                  label={text.indexed}
+                />
+              )}
+            </>
+          )}
+        </QueryState>
       </CardContent>
       <ConfirmDialog
         open={confirm !== null}
@@ -199,7 +192,7 @@ export function EmbeddingsCard() {
           client.setQueryData(queryKey, value);
           await Promise.all([
             client.invalidateQueries({ queryKey: [organization.id] }),
-            client.invalidateQueries({ queryKey: ["auth-config"] }),
+            client.invalidateQueries({ queryKey: authConfigQuery.queryKey }),
           ]);
         }}
       />
@@ -285,32 +278,31 @@ export function DomainsCard() {
         </form>
         {add.error && <Alert variant="danger">{errorMessage(add.error)}</Alert>}
         {added && <Alert variant="success">{text.added(added)}</Alert>}
-        {query.isPending ? (
-          <LoadingState rows={2} />
-        ) : query.error ? (
-          <RequestError
-            error={query.error}
-            retry={() => {
-              void query.refetch();
-            }}
-          />
-        ) : query.data.items.length === 0 ? (
-          <EmptyState compact title={text.empty} description={text.emptyHint} />
-        ) : (
-          <ul className="divide-y divide-line-soft rounded-md border border-line">
-            {query.data.items.map((item) => (
-              <li
-                key={item.domain}
-                className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-              >
-                <span className="min-w-0 truncate font-mono">
-                  {item.domain}
-                </span>
-                <Badge variant="success">{text.allowed}</Badge>
-              </li>
-            ))}
-          </ul>
-        )}
+        <QueryState query={query} rows={2}>
+          {(data) =>
+            data.items.length === 0 ? (
+              <EmptyState
+                compact
+                title={text.empty}
+                description={text.emptyHint}
+              />
+            ) : (
+              <ul className="divide-y divide-line-soft rounded-md border border-line">
+                {data.items.map((item) => (
+                  <li
+                    key={item.domain}
+                    className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                  >
+                    <span className="min-w-0 truncate font-mono">
+                      {item.domain}
+                    </span>
+                    <Badge variant="success">{text.allowed}</Badge>
+                  </li>
+                ))}
+              </ul>
+            )
+          }
+        </QueryState>
       </CardContent>
     </Card>
   );
@@ -361,69 +353,62 @@ export function DefaultDashboardCard() {
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {query.isPending && <LoadingState rows={1} />}
-        {query.error && (
-          <RequestError
-            error={query.error}
-            retry={() => {
-              void query.refetch();
-            }}
-          />
-        )}
-        {query.data && (
-          <form
-            className="flex flex-col gap-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              save.mutate();
-            }}
-          >
-            <Field label={text.select} hint={text.builtinHint}>
-              {(props) => (
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <NativeSelect
-                    {...props}
-                    className="sm:max-w-md"
-                    value={value}
-                    disabled={save.isPending}
-                    onChange={(event) => {
-                      setChoice(event.target.value);
-                    }}
-                  >
-                    {eligible.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {optionLabel(item)}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                  <Button
-                    type="submit"
-                    disabled={save.isPending || value === current}
-                  >
-                    {save.isPending
-                      ? copy.app.common.saving
-                      : copy.app.common.save}
-                  </Button>
+        <QueryState query={query} rows={1}>
+          {() => (
+            <form
+              className="flex flex-col gap-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                save.mutate();
+              }}
+            >
+              <Field label={text.select} hint={text.builtinHint}>
+                {(props) => (
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <NativeSelect
+                      {...props}
+                      className="sm:max-w-md"
+                      value={value}
+                      disabled={save.isPending}
+                      onChange={(event) => {
+                        setChoice(event.target.value);
+                      }}
+                    >
+                      {eligible.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {optionLabel(item)}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                    <Button
+                      type="submit"
+                      disabled={save.isPending || value === current}
+                    >
+                      {save.isPending
+                        ? copy.app.common.saving
+                        : copy.app.common.save}
+                    </Button>
+                  </div>
+                )}
+              </Field>
+              {selected && (
+                <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
+                  {selected.builtin && <Badge>{text.builtin}</Badge>}
+                  <Badge variant="outline">
+                    {text.tiles(selected.tile_count)}
+                  </Badge>
+                  {selected.description && <span>{selected.description}</span>}
                 </div>
               )}
-            </Field>
-            {selected && (
-              <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
-                {selected.builtin && <Badge>{text.builtin}</Badge>}
-                <Badge variant="outline">
-                  {text.tiles(selected.tile_count)}
-                </Badge>
-                {selected.description && <span>{selected.description}</span>}
-              </div>
-            )}
-            {save.error && (
-              <Alert variant="danger">{errorMessage(save.error)}</Alert>
-            )}
-            {save.isSuccess && choice === null && (
-              <Alert variant="success">{text.saved}</Alert>
-            )}
-          </form>
-        )}
+              {save.error && (
+                <Alert variant="danger">{errorMessage(save.error)}</Alert>
+              )}
+              {save.isSuccess && choice === null && (
+                <Alert variant="success">{text.saved}</Alert>
+              )}
+            </form>
+          )}
+        </QueryState>
       </CardContent>
     </Card>
   );

@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { organizationRoleSchema } from "@agentcommons/core/schemas/common";
 import { KeyRound, Plus, UserCheck, UserMinus, UserX } from "lucide-react";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
@@ -11,13 +10,19 @@ import type { Member } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
 import { ConfirmDialog } from "../../components/app/confirm-dialog";
-import { CopyButton, RequestError } from "../../components/app/states";
+import { CopyButton } from "../../components/app/states";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { PageHeader } from "../../components/ui/feedback";
-import { Input, NativeSelect } from "../../components/ui/input";
+import { Input } from "../../components/ui/input";
 import { useListPage } from "../../features/admin/list";
-import { FilterBar, countActive, without } from "../../features/admin/filters";
+import {
+  BooleanFilterSelect,
+  EnumFilterSelect,
+  FilterBar,
+  countActive,
+  without,
+} from "../../features/admin/filters";
 import { RowMenu, actionsHeader } from "../../features/admin/row-menu";
 import {
   AddPeopleDialog,
@@ -79,28 +84,23 @@ export function UsersPage() {
   const { organization, me } = useWorkspace();
   const client = useQueryClient();
   const [emailDraft, setEmailDraft] = useState("");
-  const [filters, setFilters] = useState<Filters>({});
   const [addOpen, setAddOpen] = useState(false);
   const [setupMember, setSetupMember] = useState<Member | null>(null);
   const [action, setAction] = useState<Action | null>(null);
   const queryKey = [organization.id, "admin", "users"];
-  const list = useListPage<Member, (typeof memberSortKeys)[number]>({
-    queryKey: [...queryKey, filters],
+  const list = useListPage<Member, (typeof memberSortKeys)[number], Filters>({
+    queryKey,
     initialSort: "created_at",
     sortKeys: memberSortKeys,
     csvName: text.csvName,
     fetchPage: async (request, signal) =>
       unwrap(
         await api.GET("/api/v1/admin/users", {
-          params: { query: { filters, ...request, format: "json" } },
+          params: { query: { ...request, format: "json" } },
           signal,
         }),
       ),
   });
-  const update = (next: Filters) => {
-    setFilters(next);
-    list.reset();
-  };
   const refresh = () => client.invalidateQueries({ queryKey });
   const columns = useMemo<ColumnDef<Member>[]>(
     () => [
@@ -231,122 +231,86 @@ export function UsersPage() {
           </Button>
         }
       />
-      {list.query.error ? (
-        <RequestError
-          error={list.query.error}
-          retry={() => {
-            void list.query.refetch();
-          }}
+      <div data-testid="admin-users-table">
+        <DataTable
+          {...list.table}
+          columns={columns}
+          label={text.title}
+          hiddenColumns={["user_id"]}
+          rowId={(row) => row.id}
+          emptyTitle={text.empty}
+          emptyDescription={text.emptyHint}
+          toolbar={
+            <FilterBar
+              label={copy.app.common.filters}
+              activeCount={countActive(list.filters)}
+              onApply={() => {
+                const rest = without(list.filters, "email");
+                const email = emailDraft.trim();
+                list.setFilters(email ? { ...rest, email } : rest);
+              }}
+              onClear={() => {
+                setEmailDraft("");
+                list.setFilters({});
+              }}
+              controls={[
+                {
+                  id: "email",
+                  label: text.filterEmail,
+                  width: "sm:w-56",
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="email"
+                      placeholder={text.filterEmail}
+                      value={emailDraft}
+                      onChange={(event) => {
+                        setEmailDraft(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "role",
+                  label: text.filterRole,
+                  width: "sm:w-36",
+                  render: (props) => (
+                    <EnumFilterSelect
+                      {...props}
+                      value={list.filters.role}
+                      options={roles}
+                      optionLabel={statusLabel}
+                      allLabel={text.allRoles}
+                      onChange={(next) => {
+                        list.setFilter("role", next);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "status",
+                  label: text.filterStatus,
+                  width: "sm:w-36",
+                  render: (props) => (
+                    <BooleanFilterSelect
+                      {...props}
+                      value={list.filters.suspended}
+                      labels={{
+                        all: text.allStatuses,
+                        on: text.suspended,
+                        off: text.active,
+                      }}
+                      onChange={(next) => {
+                        list.setFilter("suspended", next);
+                      }}
+                    />
+                  ),
+                },
+              ]}
+            />
+          }
         />
-      ) : (
-        <div data-testid="admin-users-table">
-          <DataTable
-            {...list.table}
-            columns={columns}
-            label={text.title}
-            hiddenColumns={["user_id"]}
-            rowId={(row) => row.id}
-            emptyTitle={text.empty}
-            emptyDescription={text.emptyHint}
-            toolbar={
-              <FilterBar
-                label={copy.app.common.filters}
-                activeCount={countActive(filters)}
-                onApply={() => {
-                  const rest = without(filters, "email");
-                  const email = emailDraft.trim();
-                  update(email ? { ...rest, email } : rest);
-                }}
-                onClear={() => {
-                  setEmailDraft("");
-                  update({});
-                }}
-                controls={[
-                  {
-                    id: "email",
-                    label: text.filterEmail,
-                    width: "sm:w-56",
-                    render: (props) => (
-                      <Input
-                        {...props}
-                        type="email"
-                        placeholder={text.filterEmail}
-                        value={emailDraft}
-                        onChange={(event) => {
-                          setEmailDraft(event.target.value);
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    id: "role",
-                    label: text.filterRole,
-                    width: "sm:w-36",
-                    render: (props) => (
-                      <NativeSelect
-                        {...props}
-                        value={filters.role ?? ""}
-                        onChange={(event) => {
-                          const rest = without(filters, "role");
-                          update(
-                            event.target.value
-                              ? {
-                                  ...rest,
-                                  role: organizationRoleSchema.parse(
-                                    event.target.value,
-                                  ),
-                                }
-                              : rest,
-                          );
-                        }}
-                      >
-                        <option value="">{text.allRoles}</option>
-                        {roles.map((role) => (
-                          <option key={role} value={role}>
-                            {statusLabel(role)}
-                          </option>
-                        ))}
-                      </NativeSelect>
-                    ),
-                  },
-                  {
-                    id: "status",
-                    label: text.filterStatus,
-                    width: "sm:w-36",
-                    render: (props) => (
-                      <NativeSelect
-                        {...props}
-                        value={
-                          filters.suspended === undefined
-                            ? ""
-                            : filters.suspended
-                              ? "suspended"
-                              : "active"
-                        }
-                        onChange={(event) => {
-                          const rest = without(filters, "suspended");
-                          update(
-                            event.target.value
-                              ? {
-                                  ...rest,
-                                  suspended: event.target.value === "suspended",
-                                }
-                              : rest,
-                          );
-                        }}
-                      >
-                        <option value="">{text.allStatuses}</option>
-                        <option value="active">{text.active}</option>
-                        <option value="suspended">{text.suspended}</option>
-                      </NativeSelect>
-                    ),
-                  },
-                ]}
-              />
-            }
-          />
-        </div>
-      )}
+      </div>
       <AddPeopleDialog
         open={addOpen}
         onOpenChange={setAddOpen}

@@ -7,7 +7,7 @@ import {
 } from "@agentcommons/core/schemas";
 import { Prisma, type PrismaClient } from "@agentcommons/db";
 import { createAuth, type AuthConfiguration } from "./config.js";
-import { identityFromHeaders } from "./identity.js";
+import { identityFromHeaders, type AuthIdentity } from "./identity.js";
 import { membershipTransaction } from "./transaction.js";
 import { seedPolicies } from "../services/policies.js";
 import { auditedOperation, type AuditService } from "../services/audit.js";
@@ -18,6 +18,7 @@ export function onboard(
   config: AuthConfiguration,
   audit: AuditService,
   context: ServiceContext,
+  identify: () => Promise<AuthIdentity>,
   input: z.input<typeof onboardingInputSchema>,
   welcome?: WelcomeJobs,
   intent: "initial" | "explicit" = "initial",
@@ -31,26 +32,26 @@ export function onboard(
         "Organization signup is not available.",
       );
     const parsed = onboardingInputSchema.parse(input);
+    const candidate = await identify();
+    if (!candidate.sessionId)
+      throw new ServiceError(
+        403,
+        "COOKIE_REQUIRED",
+        "Use a signed-in browser session for this operation.",
+      );
     return membershipTransaction(
       prisma,
       async (tx) => {
         const native = createAuth(tx, config);
-        const identify = () =>
-          identityFromHeaders(
-            tx,
-            native,
-            context.headers,
-            config.allowedEmailDomains,
-          );
-        const candidate = await identify();
-        if (!candidate.sessionId)
-          throw new ServiceError(
-            403,
-            "COOKIE_REQUIRED",
-            "Use a signed-in browser session for this operation.",
-          );
         await tx.$queryRaw`SELECT id FROM "user" WHERE id=${candidate.user.id} FOR UPDATE`;
-        const identity = await identify();
+        // The identity is read again under the user lock so the membership decisions
+        // below see the rows this transaction holds.
+        const identity = await identityFromHeaders(
+          tx,
+          native,
+          context.headers,
+          config,
+        );
         const user = await tx.user.findUniqueOrThrow({
           where: { id: identity.user.id },
         });

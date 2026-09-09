@@ -21,25 +21,69 @@ const WorkspaceLayout = lazyRouteComponent(
   () => import("./components/app/workspace"),
   "WorkspaceLayout",
 );
-const page = <T extends Record<string, unknown>, K extends keyof T & string>(
-  load: () => Promise<T>,
-  name: K,
-) => lazyRouteComponent<T, K>(load, name);
-
-const PasswordSetupPage = page(
+const PasswordSetupPage = lazyRouteComponent(
   () => import("./pages/auth/password-setup"),
   "PasswordSetupPage",
 );
-const DashboardPage = page(() => import("./pages/home"), "DashboardPage");
-const DashboardEditPage = page(
+const LoginPage = lazyRouteComponent(
+  () => import("./pages/auth/login"),
+  "LoginPage",
+);
+const SignupPage = lazyRouteComponent(
+  () => import("./pages/auth/signup"),
+  "SignupPage",
+);
+const ForgotPasswordPage = lazyRouteComponent(
+  () => import("./pages/auth/signup"),
+  "ForgotPasswordPage",
+);
+const VerifyEmailPage = lazyRouteComponent(
+  () => import("./pages/auth/signup"),
+  "VerifyEmailPage",
+);
+const OnboardingPage = lazyRouteComponent(
+  () => import("./pages/auth/onboarding"),
+  "OnboardingPage",
+);
+const DashboardPage = lazyRouteComponent(
+  () => import("./pages/home"),
+  "DashboardPage",
+);
+const DashboardNewPage = lazyRouteComponent(
+  () => import("./pages/home"),
+  "DashboardNewPage",
+);
+const DashboardEditPage = lazyRouteComponent(
   () => import("./pages/home"),
   "DashboardEditPage",
 );
-const SessionPage = page(() => import("./pages/session"), "SessionPage");
-const RedactionPage = page(
+const SessionPage = lazyRouteComponent(
+  () => import("./pages/session"),
+  "SessionPage",
+);
+const RedactionPage = lazyRouteComponent(
   () => import("./pages/admin/redaction"),
   "RedactionPage",
 );
+/** Optional string search parameters; anything but a string reads as absent. */
+function optionalStrings<Key extends string>(...keys: Key[]) {
+  return (
+    search: Record<string, unknown>,
+  ): { [Name in Key]: string | undefined } =>
+    Object.fromEntries(
+      keys.map((key) => {
+        const value = search[key];
+        return [key, typeof value === "string" ? value : undefined];
+      }),
+    ) as { [Name in Key]: string | undefined };
+}
+/** The message sequence a URL hash names, or null for anything else. */
+function hashSequence(hash: string): number | null {
+  const text = hash.replace(/^#/, "");
+  return /^\d+$/.test(text) && Number.isSafeInteger(Number(text))
+    ? Number(text)
+    : null;
+}
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -69,17 +113,17 @@ const publicRoute = createRoute({
 });
 const indexRoute = createRoute({
   getParentRoute: () => publicRoute,
-  path: "/",
+  path: paths.site,
   component: LandingPage,
 });
 const docsRoute = createRoute({
   getParentRoute: () => publicRoute,
-  path: "/docs",
+  path: paths.docs,
   component: DocsPage,
 });
 const blogRoute = createRoute({
   getParentRoute: () => publicRoute,
-  path: "/blog",
+  path: paths.blog,
   component: BlogPage,
 });
 const blogPostRoute = createRoute({
@@ -110,59 +154,82 @@ const tosRoute = createRoute({
 const accountRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: "account",
-  component: page(() => import("./pages/auth/layout"), "AccountLayout"),
+  component: lazyRouteComponent(
+    () => import("./pages/auth/layout"),
+    "AccountLayout",
+  ),
 });
+// Every account page reads `next`, the application page a signed-out visitor asked for,
+// and hands it on until the account is ready (`returnPath` in lib/routes.ts validates it).
 const loginRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/login",
-  component: page(() => import("./pages/auth/login"), "LoginPage"),
+  path: paths.login,
+  validateSearch: optionalStrings("next"),
+  component: () => {
+    return <LoginPage next={loginRoute.useSearch().next} />;
+  },
 });
 const setupRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/setup-password",
-  validateSearch: (search: Record<string, unknown>) => ({
-    token: typeof search.token === "string" ? search.token : undefined,
-  }),
+  path: paths.setupPassword,
+  validateSearch: optionalStrings("token", "next"),
   component: () => {
-    return <PasswordSetupPage token={setupRoute.useSearch().token} />;
+    const { token, next } = setupRoute.useSearch();
+    return <PasswordSetupPage token={token} next={next} />;
   },
 });
 const signupRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/signup",
-  component: page(() => import("./pages/auth/signup"), "SignupPage"),
+  path: paths.signup,
+  validateSearch: optionalStrings("next"),
+  component: () => {
+    return <SignupPage next={signupRoute.useSearch().next} />;
+  },
 });
 const forgotRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/forgot-password",
-  component: page(() => import("./pages/auth/signup"), "ForgotPasswordPage"),
+  path: paths.forgotPassword,
+  validateSearch: optionalStrings("next"),
+  component: () => {
+    return <ForgotPasswordPage next={forgotRoute.useSearch().next} />;
+  },
 });
 const verifyEmailRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/verify-email",
-  component: page(() => import("./pages/auth/signup"), "VerifyEmailPage"),
+  path: paths.verifyEmail,
+  validateSearch: optionalStrings("next"),
+  component: () => {
+    return <VerifyEmailPage next={verifyEmailRoute.useSearch().next} />;
+  },
 });
 const onboardingRoute = createRoute({
   getParentRoute: () => accountRoute,
-  path: "/onboarding",
-  component: page(() => import("./pages/auth/onboarding"), "OnboardingPage"),
+  path: paths.onboarding,
+  validateSearch: optionalStrings("next"),
+  component: () => {
+    return <OnboardingPage next={onboardingRoute.useSearch().next} />;
+  },
 });
 
 /* ---------- Authenticated app under /app ---------- */
 const appRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/app",
+  path: paths.home,
   component: WorkspaceLayout,
 });
 const homeRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/",
-  component: page(() => import("./pages/home"), "HomePage"),
+  component: lazyRouteComponent(() => import("./pages/home"), "HomePage"),
 });
 const dashboardNewRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/dashboards/new",
-  component: page(() => import("./pages/home"), "DashboardNewPage"),
+  // `from` starts the editor with a copy of that dashboard.
+  validateSearch: optionalStrings("from"),
+  component: () => {
+    return <DashboardNewPage from={dashboardNewRoute.useSearch().from} />;
+  },
 });
 const dashboardRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -181,7 +248,10 @@ const dashboardEditRoute = createRoute({
 const sessionsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/sessions",
-  component: page(() => import("./pages/sessions"), "SessionsPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/sessions"),
+    "SessionsPage",
+  ),
 });
 const sessionRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -200,6 +270,7 @@ const sessionRoute = createRoute({
       <SessionPage
         key={`${id}-${child ?? ""}-${hash}`}
         id={id}
+        seq={hashSequence(hash)}
         {...(child === undefined ? {} : { child })}
       />
     );
@@ -208,32 +279,35 @@ const sessionRoute = createRoute({
 const sqlRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/sql",
-  component: page(() => import("./pages/sql"), "SqlPage"),
+  component: lazyRouteComponent(() => import("./pages/sql"), "SqlPage"),
 });
 const installRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/install",
-  component: page(() => import("./pages/install"), "InstallPage"),
+  component: lazyRouteComponent(() => import("./pages/install"), "InstallPage"),
 });
 const keysRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/keys",
-  component: page(() => import("./pages/keys"), "KeysPage"),
+  component: lazyRouteComponent(() => import("./pages/keys"), "KeysPage"),
 });
 const apiReferenceRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/api",
-  component: page(() => import("./pages/api"), "ApiReferencePage"),
+  component: lazyRouteComponent(
+    () => import("./pages/api"),
+    "ApiReferencePage",
+  ),
 });
 const billingRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/billing",
-  component: page(() => import("./pages/billing"), "BillingPage"),
+  component: lazyRouteComponent(() => import("./pages/billing"), "BillingPage"),
 });
 const newOrganizationRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/organizations/new",
-  component: page(
+  component: lazyRouteComponent(
     () => import("./pages/auth/onboarding"),
     "NewOrganizationPage",
   ),
@@ -241,29 +315,39 @@ const newOrganizationRoute = createRoute({
 const adminUsersRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/users",
-  component: page(() => import("./pages/admin/users"), "UsersPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/admin/users"),
+    "UsersPage",
+  ),
 });
 const adminKeysRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/keys",
-  component: page(() => import("./pages/admin/keys"), "AdminKeysPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/admin/keys"),
+    "AdminKeysPage",
+  ),
 });
 const adminAuditRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/audit",
-  component: page(() => import("./pages/admin/audit"), "AuditPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/admin/audit"),
+    "AuditPage",
+  ),
 });
 const adminModerationRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/moderation",
-  component: page(() => import("./pages/admin/moderation"), "ModerationPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/admin/moderation"),
+    "ModerationPage",
+  ),
 });
 const adminRedactionRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/redaction",
-  validateSearch: (search: Record<string, unknown>) => ({
-    job: typeof search.job === "string" ? search.job : undefined,
-  }),
+  validateSearch: optionalStrings("job"),
   component: () => {
     return <RedactionPage jobId={adminRedactionRoute.useSearch().job} />;
   },
@@ -271,12 +355,18 @@ const adminRedactionRoute = createRoute({
 const adminStatusRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/status",
-  component: page(() => import("./pages/admin/status"), "StatusPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/admin/status"),
+    "StatusPage",
+  ),
 });
 const adminSettingsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/settings",
-  component: page(() => import("./pages/admin/settings"), "SettingsPage"),
+  component: lazyRouteComponent(
+    () => import("./pages/admin/settings"),
+    "SettingsPage",
+  ),
 });
 
 const routeTree = rootRoute.addChildren([

@@ -6,6 +6,7 @@ import { workspaceOrigin } from "../playwright.shared";
 import { testAccountPassword } from "../../api/test/support";
 import {
   accessible,
+  accountLocation,
   activate,
   openPasswordSignIn,
   fixture,
@@ -175,15 +176,15 @@ test("hosted-only account pages explain that signup, verification and reset are 
   isMobile,
 }) => {
   for (const [path, title] of [
-    [paths.signup, copy.signup.title],
-    [paths.forgotPassword, copy.signup.resetTitle],
-    [paths.verifyEmail, copy.signup.verifyEmail],
-    [paths.onboarding, copy.signup.onboardingTitle],
+    [paths.signup, copy.site.signup.title],
+    [paths.forgotPassword, copy.site.signup.resetTitle],
+    [paths.verifyEmail, copy.site.signup.verifyEmail],
+    [paths.onboarding, copy.site.signup.onboardingTitle],
   ] as const) {
     await page.goto(path);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(title);
     await expect(
-      page.getByText(copy.saas.unavailable, { exact: true }),
+      page.getByText(copy.site.saas.unavailable, { exact: true }),
     ).toBeVisible();
     await expect(page.getByRole("textbox")).toHaveCount(0);
     await expect(
@@ -194,4 +195,38 @@ test("hosted-only account pages explain that signup, verification and reset are 
   await activate(themeToggle(page, "dark"), isMobile);
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await accessible(page);
+});
+
+// @req R-DASH-34 @req R-DASH-03
+test("a signed-out deep link comes back after sign-in, and a return address outside the application falls back to Home", async ({
+  page,
+  context,
+  isMobile,
+}) => {
+  const state = await fixture();
+  const target = paths.session(state.sessionId, 0);
+  await page.goto(target);
+  await expect
+    .poll(() => accountLocation(page))
+    .toEqual({ path: paths.login, next: target });
+  await expect(page.getByTestId("auth-card")).toBeVisible();
+  await openPasswordSignIn(page, isMobile);
+  await page.getByTestId("login-email").fill(state.ownerEmail);
+  await page.getByTestId("login-password").fill(testAccountPassword);
+  await activate(page.getByTestId("login-submit"), isMobile);
+  // The hash survives, so the linked message is selected on arrival.
+  await expect(page).toHaveURL(`${workspaceOrigin}${target}`);
+  await expect(page.getByTestId("session-message-0")).toHaveClass(
+    /border-accent/,
+  );
+  await context.clearCookies();
+  await page.goto(
+    `${paths.login}?next=${encodeURIComponent("https://evil.example/app")}`,
+  );
+  await openPasswordSignIn(page, isMobile);
+  await page.getByTestId("login-email").fill(state.ownerEmail);
+  await page.getByTestId("login-password").fill(testAccountPassword);
+  await activate(page.getByTestId("login-submit"), isMobile);
+  await expect(page).toHaveURL(new RegExp(`${paths.home}$`));
+  await expect(page.getByTestId("dashboard-picker")).toBeVisible();
 });

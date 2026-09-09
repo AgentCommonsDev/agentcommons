@@ -1,7 +1,7 @@
 import { copyFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { dataDirectory } from "./config.js";
 import { configure, doctor, install } from "./install.js";
+import { dataDirectory } from "./paths.js";
 
 const key = process.env.AGENTCOMMONS_API_KEY;
 if (!key)

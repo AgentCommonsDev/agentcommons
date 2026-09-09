@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { NORMALIZERS } from "../normalizers/index.js";
-import type { SourceRecord } from "../normalizers/types.js";
 import {
   Redactor,
   canonicalIdentity,
@@ -10,17 +9,8 @@ import {
   redactNormalizerContext,
   redactSourceRecord,
 } from "./index.js";
+import { sourceRecord } from "../test/fixtures.js";
 
-function record(payload: Record<string, unknown>, pos = 0): SourceRecord {
-  return {
-    id: `record-${String(pos)}`,
-    pos: BigInt(pos),
-    sourceVersion: 0,
-    key: null,
-    receivedAt: new Date("2026-09-07T00:00:00Z"),
-    payload,
-  };
-}
 function policy(pattern: string) {
   return new Redactor([
     {
@@ -42,7 +32,7 @@ describe("redaction preserves protocol without exempting content", () => {
     const redactor = policy(
       "assistant|tool_use|message|content|type|text|Read",
     );
-    const source = record({
+    const source = sourceRecord({
       type: "assistant",
       message: {
         content: [
@@ -82,7 +72,7 @@ describe("redaction preserves protocol without exempting content", () => {
 
   it("keeps typed timestamps and identity references usable under matching policies", async () => {
     const redactor = policy("2026|leaf|parent");
-    const original = record({
+    const original = sourceRecord({
       type: "message",
       id: "leaf",
       parentId: "parent",
@@ -127,7 +117,7 @@ describe("redaction preserves protocol without exempting content", () => {
 
   it("pairs a newly redacted result with its old input even before a policy rescan", async () => {
     const normalizer = NORMALIZERS.CLAUDE_CODE;
-    const input = record({
+    const input = sourceRecord({
       type: "assistant",
       message: {
         content: [
@@ -145,7 +135,7 @@ describe("redaction preserves protocol without exempting content", () => {
       maskToolResults(normalizer, [input])[0] ?? input,
       new Redactor(),
     );
-    const result = record(
+    const result = sourceRecord(
       {
         type: "user",
         message: {
@@ -160,7 +150,11 @@ describe("redaction preserves protocol without exempting content", () => {
       },
       1,
     );
-    const masked = maskToolResults(normalizer, [result], [initial.value]);
+    const masked = maskToolResults(
+      normalizer,
+      [result],
+      initial.value.redactionContext?.toolCalls ?? [],
+    );
     const safe = await redactSourceRecord(
       normalizer,
       masked[0] ?? result,
@@ -175,7 +169,7 @@ describe("redaction preserves protocol without exempting content", () => {
   it("removes unknown mirrors inside Codex and Gemini sensitive result containers", () => {
     const privateText = "private plain text with no credential pattern";
     const codex = NORMALIZERS.CODEX;
-    const use = record({
+    const use = sourceRecord({
       type: "response_item",
       payload: {
         type: "custom_tool_call",
@@ -184,7 +178,7 @@ describe("redaction preserves protocol without exempting content", () => {
         input: "*** Update File: /repo/.env\n+hidden",
       },
     });
-    const output = record(
+    const output = sourceRecord(
       {
         type: "response_item",
         payload: {
@@ -201,7 +195,7 @@ describe("redaction preserves protocol without exempting content", () => {
         maskToolResults(codex, [use, output]).map((item) => item.payload),
       ),
     ).not.toContain(privateText);
-    const gemini = record({
+    const gemini = sourceRecord({
       type: "gemini",
       toolCalls: [
         {
@@ -251,7 +245,7 @@ it("treats exact configured replacement strings as terminal output across rescan
 });
 
 it("keeps configured structural output markers idempotent and bounds oversized identities", async () => {
-  const source = record({
+  const source = sourceRecord({
     type: "assistant",
     message: {
       id: "x".repeat(1024),
@@ -279,7 +273,7 @@ it("keeps configured structural output markers idempotent and bounds oversized i
 });
 
 it("drops identity paths removed by whole-record sanitization without weakening sensitive classification", async () => {
-  const source = record({
+  const source = sourceRecord({
     type: "assistant",
     message: {
       id: "message-a",

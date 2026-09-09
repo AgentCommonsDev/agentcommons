@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { execFileSync } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { isCode } from "./files.js";
 import type { HarnessDefinition } from "./harnesses.js";
 
@@ -12,6 +13,15 @@ interface ProcessInfo extends ProcessIdentity {
   parent: number;
   command: string[];
 }
+let cachedBootId: string | undefined;
+/** Fixed for the life of the machine, so the ancestor walk and liveness polls read it once. */
+function bootId(): string {
+  cachedBootId ??= readFileSync(
+    "/proc/sys/kernel/random/boot_id",
+    "utf8",
+  ).trim();
+  return cachedBootId;
+}
 function processInfo(pid: number): ProcessInfo | null {
   try {
     if (process.platform === "linux") {
@@ -19,13 +29,9 @@ function processInfo(pid: number): ProcessInfo | null {
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       const birth = fields[19];
       if (!birth || fields[0] === "Z") return null;
-      const boot = readFileSync(
-        "/proc/sys/kernel/random/boot_id",
-        "utf8",
-      ).trim();
       return {
         pid,
-        birth: `${boot}:${birth}`,
+        birth: `${bootId()}:${birth}`,
         parent: Number(fields[1]),
         command: readFileSync(`/proc/${String(pid)}/cmdline`, "utf8")
           .split("\0")
@@ -100,8 +106,7 @@ export async function terminateExpiredOwner(
     if (!isCode(error, "ESRCH")) throw error;
   }
   const deadline = Date.now() + 1000;
-  while (isAlive(identity) && Date.now() < deadline)
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  while (isAlive(identity) && Date.now() < deadline) await sleep(10);
   if (isAlive(identity)) {
     try {
       process.kill(identity.pid, "SIGKILL");
@@ -110,8 +115,7 @@ export async function terminateExpiredOwner(
     }
   }
   const finalDeadline = Date.now() + 1000;
-  while (isAlive(identity) && Date.now() < finalDeadline)
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  while (isAlive(identity) && Date.now() < finalDeadline) await sleep(10);
   if (isAlive(identity))
     throw new Error("The previous uploader has not exited.");
 }

@@ -14,6 +14,7 @@ import {
 } from "@agentcommons/core/schemas/dashboards";
 import { standardDashboardVariables } from "@agentcommons/core/dashboards";
 import { copy } from "../src/copy";
+import { metricColumnLabel } from "../src/lib/display";
 import { paths } from "../src/lib/routes";
 import { workspaceOrigin } from "../playwright.shared";
 import {
@@ -187,13 +188,13 @@ test("All keys: filters narrow the list and revoking a key requires a reason and
   await applyFilters(page, copy.app.common.filters, async (scope) => {
     await scope
       .getByRole("combobox", { name: copy.admin.keys.state, exact: true })
-      .selectOption("revoked");
+      .selectOption({ label: copy.keys.list.revoked });
   });
   await expect(row).toHaveCount(0);
   await applyFilters(page, copy.app.common.filters, async (scope) => {
     await scope
       .getByRole("combobox", { name: copy.admin.keys.state, exact: true })
-      .selectOption("enabled");
+      .selectOption({ label: copy.keys.list.active });
   });
   await expect(row).toBeVisible();
   await showColumn(page, fields.prefix);
@@ -214,7 +215,7 @@ test("All keys: filters narrow the list and revoking a key requires a reason and
   await applyFilters(page, copy.app.common.filters, async (scope) => {
     await scope
       .getByRole("combobox", { name: copy.admin.keys.state, exact: true })
-      .selectOption("revoked");
+      .selectOption({ label: copy.keys.list.revoked });
   });
   await expect(row).toContainText(copy.keys.list.revoked);
   await expect(await rowAction(row, copy.admin.keys.revoke)).toHaveAttribute(
@@ -402,7 +403,7 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
   await expect(row).toHaveCount(0);
   // Purge keeps the identity skeleton (spec §9.5): the row stays, its content is gone.
   const tombstone = tableRow(table, sessionId);
-  await expect(tombstone).toContainText(copy.admin.moderation.untitled);
+  await expect(tombstone).toContainText(copy.app.common.untitledSession);
   await expect(tombstone).not.toContainText(textLine);
   const raw = await request.get(`/api/v1/sessions/${sessionId}/raw`, {
     headers: { authorization: `Bearer ${state.ingestKey}` },
@@ -563,7 +564,21 @@ test("Status: the health chart follows the metric and date filters, snapshots sh
   });
   await expect(observations.locator("tbody tr").first()).toBeVisible();
   const csv = await exportCsv(page, health);
-  expect(csv.fields).toEqual(Object.values(text.dimensions));
+  expect(csv.fields).toEqual(
+    [
+      "date",
+      "value",
+      "repo_name",
+      "harness",
+      "user_id",
+      "tool",
+      "policy_id",
+      "tools_enabled",
+      "numerator",
+      "denominator",
+      "unit",
+    ].map(metricColumnLabel),
+  );
   expect(csv.rows.length).toBeGreaterThan(0);
   const metrics = page.waitForResponse(
     (response) =>
@@ -831,14 +846,14 @@ test("Billing and new organizations show the hosted-only state on a customer ins
     copy.billing.title,
   );
   await expect(
-    page.getByText(copy.saas.unavailable, { exact: true }),
+    page.getByText(copy.site.saas.unavailable, { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: copy.billing.upgrade }),
   ).toHaveCount(0);
   await page.goto(paths.organizationsNew);
   await expect(
-    page.getByText(copy.saas.unavailable, { exact: true }),
+    page.getByText(copy.site.saas.unavailable, { exact: true }),
   ).toBeVisible();
   await expect(page.getByTestId("onboarding-organization-name")).toHaveCount(0);
   await expect(

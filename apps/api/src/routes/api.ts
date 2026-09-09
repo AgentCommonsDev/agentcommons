@@ -4,12 +4,17 @@ import { z } from "zod";
 import * as schema from "@agentcommons/core/schemas";
 import { formatCsv } from "@agentcommons/core/format";
 import type { ServiceContext, ServiceResult } from "../services/context.js";
-import { requestContext } from "./context.js";
-import type { Services } from "./services.js";
+import { hijackRaw, requestContext } from "./context.js";
+import { requireServices, type Services } from "./services.js";
 
-const empty = z.strictObject({});
+const empty = schema.emptySchema;
 // Fastify represents an omitted DELETE body as null; GET arrives as undefined.
-const noBody = z.strictObject({}).nullish();
+const noBody = empty.nullish();
+const csvFormatSchema = z.looseObject({ format: z.literal("csv") });
+const pageSchema = z.looseObject({
+  items: z.array(z.unknown()),
+  cursor: z.string().nullable(),
+});
 /**
  * Optional route groups. The build-time OpenAPI artifact registers every group so the
  * dashboard client is complete; a running instance registers only the groups its mode and
@@ -33,11 +38,7 @@ export function registerApiRoutes(
     for (const stream of streams) stream.abort();
     done();
   });
-  const runtime = (): Services => {
-    if (!services)
-      throw new Error("This instance only generates the API contract.");
-    return services;
-  };
+  const runtime = (): Services => requireServices(services);
   function route<B extends z.ZodType, Q extends z.ZodType, P extends z.ZodType>(
     method: "GET" | "POST" | "PATCH" | "DELETE",
     path: string,
@@ -49,6 +50,8 @@ export function registerApiRoutes(
       output: z.ZodType;
       status?: number;
       csv?: boolean;
+      /** Rate-limit category when the route is not an ordinary read. */
+      rate?: "ingest" | "sql";
     },
     execute: (
       context: ServiceContext,
@@ -58,6 +61,7 @@ export function registerApiRoutes(
     app.route({
       method,
       url: `/api/v1${path}`,
+      config: { protected: true, rate: contract.rate ?? "read" },
       schema: {
         summary,
         security: [{ bearerAuth: [] }, { cookieAuth: [] }],
@@ -86,16 +90,8 @@ export function registerApiRoutes(
           params: contract.params.parse(request.params),
         });
         reply.code(contract.status ?? 200);
-        if (
-          contract.csv &&
-          z.looseObject({ format: z.literal("csv") }).safeParse(query).success
-        ) {
-          const page = z
-            .looseObject({
-              items: z.array(z.unknown()),
-              cursor: z.string().nullable(),
-            })
-            .parse(value.result);
+        if (contract.csv && csvFormatSchema.safeParse(query).success) {
+          const page = pageSchema.parse(value.result);
           if (page.cursor) reply.header("X-Next-Cursor", page.cursor);
           return reply
             .type("text/csv; charset=utf-8")
@@ -141,7 +137,7 @@ export function registerApiRoutes(
     "Read a dashboard and its definition",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       output: schema.dashboardSchema,
     },
     (ctx, input) => runtime().dashboards.get(ctx, input.params),
@@ -152,7 +148,7 @@ export function registerApiRoutes(
     "Delete a dashboard",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       output: schema.dashboardDeleteOutputSchema,
     },
     (ctx, input) => runtime().dashboards.delete(ctx, input.params),
@@ -164,7 +160,7 @@ export function registerApiRoutes(
     {
       ...read,
       body: empty,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       output: schema.dashboardDefaultOutputSchema,
     },
     (ctx, input) => runtime().dashboards.setDefault(ctx, input.params),
@@ -230,6 +226,7 @@ export function registerApiRoutes(
       body: schema.ingestEnvelopeSchema,
       output: schema.ingestOutputSchema,
       status: 202,
+      rate: "ingest",
     },
     (ctx, input) => runtime().ingest.execute(ctx, input.body),
   );
@@ -248,7 +245,12 @@ export function registerApiRoutes(
     "POST",
     "/query",
     "Query the caller-visible SQL schema",
-    { ...read, body: schema.sqlInputSchema, output: schema.sqlOutputSchema },
+    {
+      ...read,
+      body: schema.sqlInputSchema,
+      output: schema.sqlOutputSchema,
+      rate: "sql",
+    },
     (ctx, input) => runtime().query.execute(ctx, input.body),
   );
   route(
@@ -278,7 +280,7 @@ export function registerApiRoutes(
       {
         body: noBody,
         query: schema.similarInputSchema,
-        params: z.strictObject({ id: schema.sessionIdSchema }),
+        params: schema.uuidParamsSchema,
         output: schema.similarOutputSchema,
       },
       (context, { params, query }) => {
@@ -294,7 +296,7 @@ export function registerApiRoutes(
     "Read a session",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       query: schema.getQuerySchema,
       output: schema.getOutputSchema,
     },
@@ -310,8 +312,8 @@ export function registerApiRoutes(
     "Read redacted source records",
     {
       ...read,
-      params: schema.sessionParamsSchema,
-      query: schema.rawInputSchema,
+      params: schema.uuidParamsSchema,
+      query: schema.paginationSchema,
       output: schema.rawOutputSchema,
     },
     (ctx, input) => runtime().sessions.raw(ctx, input.params.id, input.query),
@@ -322,8 +324,8 @@ export function registerApiRoutes(
     "Read the visible session tree",
     {
       ...read,
-      params: schema.sessionParamsSchema,
-      query: schema.treeInputSchema,
+      params: schema.uuidParamsSchema,
+      query: schema.paginationSchema,
       output: schema.treeOutputSchema,
     },
     (ctx, input) => runtime().sessions.tree(ctx, input.params.id, input.query),
@@ -331,10 +333,11 @@ export function registerApiRoutes(
   app.get(
     "/api/v1/sessions/:id/events",
     {
+      config: { protected: true, rate: "read" },
       schema: {
         summary: "Watch session status changes",
         security: [{ bearerAuth: [] }, { cookieAuth: [] }],
-        params: schema.sessionParamsSchema,
+        params: schema.uuidParamsSchema,
         querystring: empty,
         response: {
           200: { content: { "text/event-stream": { schema: z.string() } } },
@@ -344,7 +347,7 @@ export function registerApiRoutes(
       },
     },
     async (request, reply) => {
-      const { id } = schema.sessionParamsSchema.parse(request.params);
+      const { id } = schema.uuidParamsSchema.parse(request.params);
       const stream = await runtime().events.open(requestContext(request), id);
       const controller = new AbortController();
       streams.add(controller);
@@ -356,9 +359,7 @@ export function registerApiRoutes(
         .header("Connection", "close")
         .header("Cache-Control", "no-cache")
         .header("X-Accel-Buffering", "no");
-      for (const [name, value] of Object.entries(reply.getHeaders()))
-        if (value !== undefined) reply.raw.setHeader(name, value);
-      reply.hijack();
+      hijackRaw(reply);
       // A comment line every 30 s keeps proxies with idle timeouts (Cloudflare closes
       // idle responses after 100 s) from cutting a quiet live session's stream.
       const heartbeat = setInterval(() => {
@@ -414,7 +415,7 @@ export function registerApiRoutes(
     "List sessions that reused or were reused by this session",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       query: schema.sessionReuseInputSchema,
       output: schema.sessionReuseOutputSchema,
     },
@@ -640,7 +641,7 @@ export function registerApiRoutes(
     "Change session visibility",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       body: schema.visibilityInputSchema.omit({ session_id: true }),
       output: schema.mutationOutputSchema,
     },
@@ -656,8 +657,8 @@ export function registerApiRoutes(
     "Enable or disable installation MCP tools",
     {
       ...read,
-      params: schema.sessionParamsSchema,
-      body: schema.installationToolsInputSchema,
+      params: schema.uuidParamsSchema,
+      body: schema.enabledInputSchema,
       output: schema.installationToolsOutputSchema,
     },
     (ctx, input) =>
@@ -669,7 +670,7 @@ export function registerApiRoutes(
     "Purge session contents",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       body: schema.purgeInputSchema.omit({ session_id: true }),
       output: schema.purgeOutputSchema,
     },
@@ -741,7 +742,7 @@ export function registerApiRoutes(
     "Update a redaction policy",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       body: schema.redactionPolicyInputSchema,
       output: schema.redactionPolicySchema,
     },
@@ -753,7 +754,7 @@ export function registerApiRoutes(
     "Remove a redaction policy",
     {
       ...read,
-      params: schema.sessionParamsSchema,
+      params: schema.uuidParamsSchema,
       body: schema.reasonInputSchema,
       output: schema.mutationOutputSchema,
     },

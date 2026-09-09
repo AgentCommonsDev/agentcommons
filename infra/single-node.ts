@@ -3,8 +3,16 @@ import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
 import { z } from "zod";
 import type { Secrets, SingleNodeSettings } from "./config.js";
+import {
+  type AlarmDefinition,
+  alertTopic,
+  dailySnapshots,
+  ec2InstanceRole,
+  metricAlarms,
+  quote,
+  traceNames,
+} from "./shared.js";
 
-const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 /** Canonical's public parameter for the current Ubuntu 24.04 arm64 image. */
 const ubuntuImageParameter =
   "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id";
@@ -129,17 +137,8 @@ export function singleNodeStack(
   const address = new aws.ec2.Eip(name, { domain: "vpc", tags });
   const cloud =
     settings.traceStore === "clickhouse-cloud"
-      ? z
-          .object({
-            origin: z.string(),
-            provider: z.string(),
-            region: z.string(),
-          })
-          .parse(settings.clickhouseCloudUrl)
+      ? settings.clickhouseCloudUrl
       : undefined;
-  const cloudEgress = cloud
-    ? clickhouseCloudEgress(cloud.provider, cloud.region)
-    : [];
   // ClickHouse Cloud accepts only passwords with an uppercase letter and a special
   // character; the migration creates the writer and access users with these values.
   const cloudPolicy = z
@@ -173,10 +172,8 @@ export function singleNodeStack(
     TRACE_STORE: settings.traceStore,
     CLICKHOUSE_URL: cloud?.origin ?? "http://clickhouse:8123",
     CLICKHOUSE_POSTGRES_PORT: "5432",
-    CLICKHOUSE_DATABASE: "ac_trace",
-    CLICKHOUSE_MIGRATION_USER: "default",
-    CLICKHOUSE_WRITER_USER: "ac_trace_writer",
-    CLICKHOUSE_ACCESS_USER: "ac_trace_access",
+    ...traceNames.runtime,
+    ...traceNames.migration,
   };
   const generated = [
     "CLICKHOUSE_POSTGRES_HOST",
@@ -195,9 +192,7 @@ export function singleNodeStack(
       master: secrets.masterPassword,
       app: secrets.appPassword,
       traceControl: secrets.traceControlPassword,
-      authSecret: secrets.authSecret.apply((value) =>
-        z.string().min(32).parse(value),
-      ),
+      authSecret: secrets.authSecret,
       clickhouseAdmin: secrets.clickhouseAdminPassword,
       clickhouseWriter: policed(secrets.clickhouseWriterPassword),
       clickhouseAccess: policed(secrets.clickhouseAccessPassword),
@@ -258,14 +253,17 @@ export function singleNodeStack(
         ipv6CidrBlocks: ["::/0"],
       })),
       // ClickHouse Cloud reads the PostgreSQL control tables and dictionaries over TLS.
-      ...(cloudEgress.length
+      ...(cloud
         ? [
             {
               protocol: "tcp",
               fromPort: 5432,
               toPort: 5432,
-              cidrBlocks: cloudEgress.map((ip) => `${ip}/32`),
-              description: `PostgreSQL control reads from ClickHouse Cloud ${z.string().parse(cloud?.provider)}/${z.string().parse(cloud?.region)}`,
+              cidrBlocks: clickhouseCloudEgress(
+                cloud.provider,
+                cloud.region,
+              ).map((ip) => `${ip}/32`),
+              description: `PostgreSQL control reads from ClickHouse Cloud ${cloud.provider}/${cloud.region}`,
             },
           ]
         : []),
@@ -281,21 +279,11 @@ export function singleNodeStack(
     ],
     tags,
   });
-  const role = new aws.iam.Role(name, {
-    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
-      Service: "ec2.amazonaws.com",
-    }),
-    tags,
-  });
-  const management = new aws.iam.RolePolicyAttachment(`${name}-ssm`, {
-    role: role.name,
-    policyArn: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-  });
-  // The CloudWatch agent (installed by the release step) publishes memory and root disk
-  // usage for the alarms below.
-  const metrics = new aws.iam.RolePolicyAttachment(`${name}-metrics`, {
-    role: role.name,
-    policyArn: "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
+  // SSM manages the host; the CloudWatch agent (installed by the release step)
+  // publishes memory and root disk usage for the alarms below.
+  const { role, profile, attachments } = ec2InstanceRole(name, tags, {
+    ssm: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+    metrics: "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy",
   });
   const parameterKey = aws.kms.getKeyOutput({ keyId: "alias/aws/ssm" });
   const access = new aws.iam.RolePolicy(`${name}-instance`, {
@@ -338,7 +326,6 @@ export function singleNodeStack(
       ],
     }),
   });
-  const profile = new aws.iam.InstanceProfile(name, { role: role.name });
   const userData = pulumi
     .all([releases.bucket, region])
     .apply(([bucket, regionName]) =>
@@ -374,7 +361,7 @@ export function singleNodeStack(
       // replace or restart the host. Recovery is a snapshot restore.
       protect: true,
       ignoreChanges: ["ami", "userData"],
-      dependsOn: [management, metrics, access, ...parameters],
+      dependsOn: [...attachments, access, ...parameters],
     },
   );
   new aws.ec2.EipAssociation(name, {
@@ -382,63 +369,24 @@ export function singleNodeStack(
     allocationId: address.id,
   });
 
-  const backupRole = new aws.iam.Role(`${name}-backup`, {
-    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
-      Service: "dlm.amazonaws.com",
-    }),
-    tags,
+  dailySnapshots(name, tags, {
+    description: "Daily snapshots of the AgentCommons host",
+    resourceTypes: ["INSTANCE"],
+    targetTags: { Backup: name },
+    retain: settings.snapshotRetention,
+    grant: (role) =>
+      new aws.iam.RolePolicyAttachment(`${name}-backup`, {
+        role: role.name,
+        policyArn:
+          "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole",
+      }),
   });
-  const backupPolicy = new aws.iam.RolePolicyAttachment(`${name}-backup`, {
-    role: backupRole.name,
-    policyArn:
-      "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole",
-  });
-  new aws.dlm.LifecyclePolicy(
-    `${name}-backup`,
-    {
-      executionRoleArn: backupRole.arn,
-      description: "Daily snapshots of the AgentCommons host",
-      state: "ENABLED",
-      policyDetails: {
-        resourceTypes: ["INSTANCE"],
-        targetTags: { Backup: name },
-        schedules: [
-          {
-            name: "daily",
-            copyTags: true,
-            createRule: { interval: 24, intervalUnit: "HOURS", times: "03:00" },
-            retainRule: { count: settings.snapshotRetention },
-          },
-        ],
-      },
-      tags,
-    },
-    { dependsOn: [backupPolicy] },
-  );
-  const alerts = new aws.sns.Topic(`${name}-alerts`, { tags });
-  if (settings.alarmEmail !== undefined)
-    new aws.sns.TopicSubscription(`${name}-alerts`, {
-      topic: alerts.arn,
-      protocol: "email",
-      endpoint: settings.alarmEmail,
-    });
+  const alerts = alertTopic(name, tags, settings.alarmEmail);
   // Status-check alarms also self-heal: a failed system check recovers the instance
   // onto new hardware (same volume, same address); a failed instance check reboots it.
   const automate = pulumi.interpolate`arn:aws:automate:${region}:ec2`;
   const host = { InstanceId: instance.id };
-  const alarms: {
-    suffix: string;
-    namespace: string;
-    metricName: string;
-    statistic: string;
-    threshold: number;
-    comparisonOperator: string;
-    period: number;
-    evaluationPeriods: number;
-    treatMissingData: string;
-    description: string;
-    actions?: pulumi.Input<string>[];
-  }[] = [
+  const alarms: AlarmDefinition[] = [
     {
       suffix: "system-check",
       namespace: "AWS/EC2",
@@ -517,15 +465,12 @@ export function singleNodeStack(
       description: "Memory above 90% for 10 minutes",
     },
   ];
-  for (const { suffix, description, actions, ...args } of alarms)
-    new aws.cloudwatch.MetricAlarm(`${name}-${suffix}`, {
-      ...args,
-      alarmDescription: `${name}: ${description}`,
-      dimensions: host,
-      alarmActions: [alerts.arn, ...(actions ?? [])],
-      okActions: [alerts.arn],
-      tags,
-    });
+  metricAlarms(
+    name,
+    tags,
+    alerts,
+    alarms.map((alarm) => ({ ...alarm, dimensions: host })),
+  );
   return {
     url: publicUrl,
     alarmTopicArn: alerts.arn,

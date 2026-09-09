@@ -34,6 +34,11 @@ export interface AuthConfiguration {
     includedRecords: number;
   };
 }
+/** The configuration request authentication and job re-authorization read. */
+export type IdentityPolicy = Pick<
+  AuthConfiguration,
+  "allowedEmailDomains" | "instanceMode"
+>;
 export interface PasswordDelivery {
   userId: string;
   email: string;
@@ -41,6 +46,14 @@ export interface PasswordDelivery {
   url: string;
 }
 export const PASSWORD_SETUP_SECONDS = 3600;
+/** Where Stripe checkout, the portal and the subscription return redirect land. */
+export function billingReturnUrl(config: Pick<AuthConfiguration, "publicUrl">) {
+  return `${config.publicUrl}/app/billing`;
+}
+/** The dashboard page a native reset token opens for first password setup. */
+export function passwordSetupUrl(config: Pick<AuthConfiguration, "publicUrl">) {
+  return `${config.publicUrl}/setup-password`;
+}
 const identityRedactor = new Redactor();
 async function redactUserName<T extends { name?: string }>(
   user: T,
@@ -55,11 +68,16 @@ async function redactUserName<T extends { name?: string }>(
   };
 }
 
+/** The lowercase domain part of an email address. */
+function emailDomain(email: string): string | undefined {
+  return email.toLowerCase().split("@").at(-1);
+}
+
 export function emailDomainAllowed(
   email: string,
   allowedDomains: readonly string[],
 ): boolean {
-  const domain = email.toLowerCase().split("@").at(-1);
+  const domain = emailDomain(email);
   return (
     allowedDomains.length === 0 ||
     (domain !== undefined && allowedDomains.includes(domain))
@@ -162,7 +180,7 @@ export function createAuth(
           if (user.emailVerified !== true)
             return { error: "provider_email_unverified" };
           if (source.action === "create-user" && config.signupMode !== "open") {
-            const domain = user.email.toLowerCase().split("@").at(-1);
+            const domain = emailDomain(user.email);
             const providers =
               domain &&
               config.signupMode === "invite" &&

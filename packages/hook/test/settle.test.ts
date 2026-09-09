@@ -1,69 +1,27 @@
-import { appendFileSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { appendFileSync, statSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { configure } from "../src/install.js";
-import { recordHook } from "../src/hook.js";
-import { hash } from "../src/files.js";
 import { HARNESSES, type CliHarness } from "../src/harnesses.js";
 import { intents, loadState } from "../src/state.js";
-import { upload } from "../src/upload.js";
 import {
-  ingestEnvelopeSchema,
-  type IngestEnvelope,
-} from "@agentcommons/core/schemas/ingest";
+  SETTLE_MAX_POLLS,
+  SETTLE_POLL_MS,
+  SETTLE_QUIET_POLLS,
+  upload,
+} from "../src/upload.js";
+import type { IngestEnvelope } from "@agentcommons/core/schemas/ingest";
+import { fixture, SHIM } from "./fixture.js";
 
 // Live captures (Appendix A): Claude Code appends the final assistant record up to
 // 400 ms after `Stop` fires and the child's final record 15–20 ms after `SubagentStop`.
-const POLL_MS = 250;
-const QUIET_POLLS = 8;
-const MAX_POLLS = 20;
-
-function fixture(harness: CliHarness, transcriptName: string, initial: string) {
-  const directory = mkdtempSync(join(tmpdir(), "agentcommons-settle-"));
-  const config = configure(directory, {
-    server: "http://127.0.0.1:3000",
-    key: "test",
-    organizationId: "019939c0-0000-7000-8000-000000000001",
-    credentialHash: hash("test"),
-  });
-  const transcript = join(directory, transcriptName);
-  writeFileSync(transcript, initial);
-  const event = {
-    session_id: randomUUID(),
-    transcript_path: transcript,
-    cwd: directory,
+function settleFixture(
+  harness: CliHarness,
+  transcriptName: string,
+  initial: string,
+) {
+  return {
+    ...fixture({ harness, transcriptName, initial }),
+    sleeps: [] as number[],
   };
-  const hook = (hook_event_name: string) => {
-    const path = recordHook(
-      directory,
-      "/nonexistent-test-shim.js",
-      config,
-      harness,
-      { ...event, hook_event_name },
-      "launch",
-    );
-    if (!path) throw new Error("Missing state.");
-    return path;
-  };
-  const received: IngestEnvelope[] = [];
-  const fetcher: typeof fetch = (_url, options) => {
-    if (options?.method !== "POST")
-      return Promise.resolve(
-        Response.json({ organization: { id: config.organizationId } }),
-      );
-    received.push(
-      ingestEnvelopeSchema.parse(
-        JSON.parse(
-          typeof options.body === "string" ? options.body : "null",
-        ) as unknown,
-      ),
-    );
-    return Promise.resolve(new Response(null, { status: 202 }));
-  };
-  const sleeps: number[] = [];
-  return { directory, config, transcript, hook, received, fetcher, sleeps };
 }
 const keysOf = (received: readonly IngestEnvelope[]) =>
   received.flatMap((body) => body.records.map((record) => record.key));
@@ -78,8 +36,8 @@ describe("post-turn settle", () => {
     "%s: uploads records appended after %s in the same run, then stops after 2 s of quiet",
     async (harness, turnEnd, keyField) => {
       const line = (key: string) => `${JSON.stringify({ [keyField]: key })}\n`;
-      const f = fixture(harness, "transcript.jsonl", line("prompt"));
-      const path = f.hook(turnEnd);
+      const f = settleFixture(harness, "transcript.jsonl", line("prompt"));
+      const path = f.hook({ hook_event_name: turnEnd });
       const sleep = (milliseconds: number) => {
         f.sleeps.push(milliseconds);
         // The harness finishes writing while the uploader waits.
@@ -87,7 +45,7 @@ describe("post-turn settle", () => {
         if (f.sleeps.length === 4) appendFileSync(f.transcript, line("after"));
         return Promise.resolve();
       };
-      await upload(f.directory, "/nonexistent-test-shim.js", path, f.config, {
+      await upload(f.directory, SHIM, path, f.config, {
         fetch: f.fetcher,
         sleep,
         sweep: false,
@@ -96,7 +54,7 @@ describe("post-turn settle", () => {
       expect(f.received.map((body) => body.records.length)).toEqual([1, 1, 1]);
       // Growth restarts the quiet window; the run ends 8 quiet polls after the last append.
       expect(f.sleeps).toEqual(
-        Array<number>(2 + 2 + QUIET_POLLS).fill(POLL_MS),
+        Array<number>(2 + 2 + SETTLE_QUIET_POLLS).fill(SETTLE_POLL_MS),
       );
       expect(loadState(path).ackedCursor).toEqual({
         kind: "jsonl",
@@ -111,12 +69,12 @@ describe("post-turn settle", () => {
   it("gemini: re-reads a rewritten document after AfterAgent and emits only the new message", async () => {
     const document = (messages: { id: string; content: string }[]) =>
       JSON.stringify({ sessionId: "native", messages });
-    const f = fixture(
+    const f = settleFixture(
       "gemini",
       "session.json",
       document([{ id: "a", content: "prompt" }]),
     );
-    const path = f.hook("AfterAgent");
+    const path = f.hook({ hook_event_name: "AfterAgent" });
     const sleep = (milliseconds: number) => {
       f.sleeps.push(milliseconds);
       if (f.sleeps.length === 1)
@@ -129,7 +87,7 @@ describe("post-turn settle", () => {
         );
       return Promise.resolve();
     };
-    await upload(f.directory, "/nonexistent-test-shim.js", path, f.config, {
+    await upload(f.directory, SHIM, path, f.config, {
       fetch: f.fetcher,
       sleep,
       sweep: false,
@@ -140,25 +98,29 @@ describe("post-turn settle", () => {
       sessionId: "native",
       sourceRecordCount: 2,
     });
-    expect(f.sleeps).toHaveLength(1 + QUIET_POLLS);
+    expect(f.sleeps).toHaveLength(1 + SETTLE_QUIET_POLLS);
   });
 
   // @req R-CAP-15 @req R-CAP-03
   it("does not wait after hooks that cannot precede a final record, and caps a busy settle at 5 s", async () => {
-    const f = fixture("claude", "transcript.jsonl", '{"uuid":"prompt"}\n');
-    const path = f.hook("UserPromptSubmit");
+    const f = settleFixture(
+      "claude",
+      "transcript.jsonl",
+      '{"uuid":"prompt"}\n',
+    );
+    const path = f.hook({ hook_event_name: "UserPromptSubmit" });
     const sleep = (milliseconds: number) => {
       f.sleeps.push(milliseconds);
       return Promise.resolve();
     };
-    await upload(f.directory, "/nonexistent-test-shim.js", path, f.config, {
+    await upload(f.directory, SHIM, path, f.config, {
       fetch: f.fetcher,
       sleep,
       sweep: false,
     });
     expect(f.sleeps).toEqual([]);
     expect(keysOf(f.received)).toEqual(["prompt"]);
-    f.hook("Stop");
+    f.hook({ hook_event_name: "Stop" });
     let appended = 0;
     const busy = (milliseconds: number) => {
       f.sleeps.push(milliseconds);
@@ -166,14 +128,14 @@ describe("post-turn settle", () => {
       appendFileSync(f.transcript, `{"uuid":"stream-${String(++appended)}"}\n`);
       return Promise.resolve();
     };
-    await upload(f.directory, "/nonexistent-test-shim.js", path, f.config, {
+    await upload(f.directory, SHIM, path, f.config, {
       fetch: f.fetcher,
       sleep: busy,
       sweep: false,
     });
-    expect(f.sleeps).toHaveLength(MAX_POLLS);
+    expect(f.sleeps).toHaveLength(SETTLE_MAX_POLLS);
     expect(f.sleeps.reduce((sum, value) => sum + value, 0)).toBe(5000);
-    expect(keysOf(f.received)).toHaveLength(1 + MAX_POLLS);
+    expect(keysOf(f.received)).toHaveLength(1 + SETTLE_MAX_POLLS);
     expect(loadState(path).ackedCursor).toEqual({
       kind: "jsonl",
       offset: statSync(f.transcript).size,
@@ -182,11 +144,15 @@ describe("post-turn settle", () => {
 
   // @req R-CAP-15 @req R-CAP-05
   it("acknowledges uploaded records before waiting, so a kill during the settle loses nothing and duplicates nothing", async () => {
-    const f = fixture("claude", "transcript.jsonl", '{"uuid":"prompt"}\n');
-    const path = f.hook("Stop");
+    const f = settleFixture(
+      "claude",
+      "transcript.jsonl",
+      '{"uuid":"prompt"}\n',
+    );
+    const path = f.hook({ hook_event_name: "Stop" });
     const uploaded = statSync(f.transcript).size;
     await expect(
-      upload(f.directory, "/nonexistent-test-shim.js", path, f.config, {
+      upload(f.directory, SHIM, path, f.config, {
         fetch: f.fetcher,
         sleep: () => Promise.reject(new Error("killed during settle")),
         sweep: false,
@@ -203,8 +169,8 @@ describe("post-turn settle", () => {
     expect(intents(path, interrupted)).toHaveLength(0);
     // The final record lands after the kill; the next hook ships exactly that record.
     appendFileSync(f.transcript, '{"uuid":"final"}\n');
-    f.hook("SessionEnd");
-    await upload(f.directory, "/nonexistent-test-shim.js", path, f.config, {
+    f.hook({ hook_event_name: "SessionEnd" });
+    await upload(f.directory, SHIM, path, f.config, {
       fetch: f.fetcher,
       sleep: () => Promise.resolve(),
       sweep: false,

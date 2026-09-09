@@ -4,8 +4,18 @@ import {
   keyPermissionsSchema,
   type CallerContext,
 } from "@agentcommons/core/schemas";
-import type { Prisma, PrismaClient } from "@agentcommons/db";
-import { emailDomainAllowed, type NativeAuth } from "./config.js";
+import type {
+  Apikey,
+  Member,
+  Prisma,
+  PrismaClient,
+  User,
+} from "@agentcommons/db";
+import {
+  emailDomainAllowed,
+  type IdentityPolicy,
+  type NativeAuth,
+} from "./config.js";
 import { ServiceError } from "../services/context.js";
 import { keyInstallation } from "./installation.js";
 
@@ -13,6 +23,7 @@ export const userIdentitySchema = z.object({
   id: z.string(),
   email: z.email(),
   name: z.string(),
+  emailVerified: z.boolean(),
 });
 export interface AuthIdentity {
   user: z.infer<typeof userIdentitySchema>;
@@ -29,12 +40,75 @@ const cookieIdentitySchema = z.looseObject({
   }),
 });
 
+/** SaaS identities must verify their email before they can act for an organization. */
+function requiresVerifiedEmail(
+  config: Pick<IdentityPolicy, "instanceMode">,
+): boolean {
+  return config.instanceMode === "saas";
+}
+
+/** Whether a stored key row can still act for `organizationId` at `now`. */
+export function keyIsActive(
+  key: Pick<Apikey, "enabled" | "referenceId" | "expiresAt"> | null,
+  organizationId: string,
+  now = new Date(),
+): boolean {
+  return (
+    key !== null &&
+    key.enabled === true &&
+    key.referenceId === organizationId &&
+    !(key.expiresAt && key.expiresAt <= now)
+  );
+}
+
+/** Which gate stops a user/member pair from acting for an organization, if any. */
+type MembershipGate = "membership" | "domain" | "verification";
+/**
+ * Narrow a user/member pair to an active membership under `config`, or throw the
+ * caller's error for the gate that is closed: missing, banned or suspended
+ * (`membership`), an email domain outside the allowlist (`domain`), or an unverified
+ * SaaS email (`verification`).
+ */
+export function activeMembership<
+  U extends Pick<User, "banned" | "email" | "emailVerified">,
+  M extends Pick<Member, "suspended">,
+>(
+  user: U | null,
+  member: M | null,
+  config: IdentityPolicy,
+  failure: (gate: MembershipGate) => ServiceError,
+): { user: U; member: M } {
+  if (!user || user.banned || !member || member.suspended)
+    throw failure("membership");
+  if (!emailDomainAllowed(user.email, config.allowedEmailDomains))
+    throw failure("domain");
+  if (requiresVerifiedEmail(config) && !user.emailVerified)
+    throw failure("verification");
+  return { user, member };
+}
+
+/** Browser sessions act with their membership role; owners and admins also hold admin authority. */
+export function cookieCaller(
+  member: Pick<Member, "organizationId" | "userId" | "role">,
+): CallerContext {
+  return callerContextSchema.parse({
+    organizationId: member.organizationId,
+    userId: member.userId,
+    role: member.role,
+    apiKeyId: null,
+    authMethod: "cookie",
+    permissions: {
+      sessions: ["read", "ingest"],
+      ...(["owner", "admin"].includes(member.role) ? { admin: ["*"] } : {}),
+    },
+  });
+}
+
 export async function identityFromHeaders(
   db: PrismaClient | Prisma.TransactionClient,
   auth: NativeAuth,
   headers: Headers,
-  allowedDomains: readonly string[] = [],
-  requireVerifiedEmail = false,
+  config: IdentityPolicy,
 ): Promise<AuthIdentity> {
   const authorization = headers.get("authorization");
   const alternate = headers.get("x-api-key");
@@ -73,37 +147,39 @@ export async function identityFromHeaders(
         "INVALID_API_KEY",
         "The API key is not bound to an organization.",
       );
-    const user = await db.user.findUnique({ where: { id: owner.userId } });
-    const member = await db.member.findFirst({
-      where: {
-        organizationId: owner.organizationId,
-        userId: owner.userId,
-        removedAt: null,
-      },
-    });
-    if (!user || user.banned || !member || member.suspended)
-      throw new ServiceError(
-        403,
-        "MEMBERSHIP_REQUIRED",
-        "This key's issuing user no longer has active membership.",
-      );
-    if (!emailDomainAllowed(user.email, allowedDomains))
-      throw new ServiceError(
-        403,
-        "EMAIL_DOMAIN_NOT_ALLOWED",
-        "This email domain is not allowed.",
-      );
-    if (requireVerifiedEmail && !user.emailVerified)
-      throw new ServiceError(
-        403,
-        "EMAIL_VERIFICATION_REQUIRED",
-        "Verify your email before accessing an organization.",
-      );
-    const permissions = keyPermissionsSchema.parse(key.permissions ?? {});
-    const installation = await keyInstallation(
-      db,
-      owner.organizationId,
-      key.id,
+    const [issuer, membership, installation] = await Promise.all([
+      db.user.findUnique({ where: { id: owner.userId } }),
+      db.member.findFirst({
+        where: {
+          organizationId: owner.organizationId,
+          userId: owner.userId,
+          removedAt: null,
+        },
+      }),
+      keyInstallation(db, owner.organizationId, key.id),
+    ]);
+    const { user, member } = activeMembership(
+      issuer,
+      membership,
+      config,
+      (gate) =>
+        gate === "domain"
+          ? new ServiceError(
+              403,
+              "EMAIL_DOMAIN_NOT_ALLOWED",
+              "This email domain is not allowed.",
+            )
+          : gate === "verification"
+            ? new ServiceError(
+                403,
+                "EMAIL_VERIFICATION_REQUIRED",
+                "Verify your email before accessing an organization.",
+              )
+            : new ServiceError(
+                403,
+                "MEMBERSHIP_REQUIRED",
+                "This key's issuing user no longer has active membership.",
+              ),
     );
     return {
       user: userIdentitySchema.parse(user),
@@ -116,7 +192,7 @@ export async function identityFromHeaders(
         installationId: installation?.id ?? null,
         toolsEnabled: installation?.toolsEnabled ?? true,
         authMethod: "key",
-        permissions,
+        permissions: keyPermissionsSchema.parse(key.permissions ?? {}),
       }),
     };
   }
@@ -124,7 +200,7 @@ export async function identityFromHeaders(
   if (!native)
     throw new ServiceError(401, "SIGN_IN_REQUIRED", "Sign in to continue.");
   const identity = cookieIdentitySchema.parse(native);
-  if (!emailDomainAllowed(identity.user.email, allowedDomains))
+  if (!emailDomainAllowed(identity.user.email, config.allowedEmailDomains))
     throw new ServiceError(
       403,
       "EMAIL_DOMAIN_NOT_ALLOWED",
@@ -136,11 +212,8 @@ export async function identityFromHeaders(
       "ACCOUNT_DISABLED",
       "This account is disabled.",
     );
-  const currentUser = requireVerifiedEmail
-    ? await db.user.findUniqueOrThrow({ where: { id: identity.user.id } })
-    : null;
   const members =
-    requireVerifiedEmail && !currentUser?.emailVerified
+    requiresVerifiedEmail(config) && !identity.user.emailVerified
       ? []
       : await db.member.findMany({
           where: {
@@ -159,20 +232,6 @@ export async function identityFromHeaders(
   return {
     user: userIdentitySchema.parse(identity.user),
     sessionId: identity.session.id,
-    caller: member
-      ? callerContextSchema.parse({
-          organizationId: member.organizationId,
-          userId: member.userId,
-          role: member.role,
-          apiKeyId: null,
-          authMethod: "cookie",
-          permissions: {
-            sessions: ["read", "ingest"],
-            ...(["owner", "admin"].includes(member.role)
-              ? { admin: ["*"] }
-              : {}),
-          },
-        })
-      : null,
+    caller: member ? cookieCaller(member) : null,
   };
 }

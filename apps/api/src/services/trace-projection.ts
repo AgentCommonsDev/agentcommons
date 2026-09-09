@@ -1,20 +1,24 @@
 import {
+  completeRunSession,
   redactTraceSnapshot,
   traceRescanPayloadSchema,
 } from "./trace-rescan.js";
 import { createPolicyCache } from "./policy-cache.js";
 import { reauthorizeJob } from "../auth/jobs.js";
+import type { IdentityPolicy } from "../auth/config.js";
 import { requirePermission, ServiceError } from "./context.js";
 import { persistRedactionCounts } from "./policies.js";
-import { wireValue } from "./read-budget.js";
-import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { v7 as uuidv7 } from "uuid";
+import type { z } from "zod";
 import {
   lockTracePublication,
+  lockTraceSessionControl,
   lockTraceSink,
   type PrismaClient,
   type Prisma,
+  type TraceOutbox,
+  type TraceReceipt,
   type TraceSessionControl,
 } from "@agentcommons/db";
 import {
@@ -26,31 +30,85 @@ import {
   redactNormalizerContext,
   canonicalIdentity,
   type IngestEnvelope,
+  type Redactor,
 } from "@agentcommons/core";
-import type {
-  TraceRepository,
-  TraceSession,
-  TraceMessageDelta,
-  TraceFileDelta,
-  TraceScope,
-  TraceRawRecord,
+import {
+  fingerprint,
+  type TraceRepository,
+  type TraceSession,
+  type TraceMessageDelta,
+  type TraceFileDelta,
+  type TraceScope,
+  type TraceRawRecord,
 } from "@agentcommons/traces";
-import type { AuditService } from "./audit.js";
-import { operatorContext } from "../auth/bootstrap.js";
+import type { AuditDescription, AuditService } from "./audit.js";
+import { operatorContext, workerActor } from "../auth/bootstrap.js";
 import { sourceFromOutbox, traceOutboxPayloadSchema } from "./trace-outbox.js";
 
-const fingerprint = (value: unknown) =>
-  createHash("sha256")
-    .update(JSON.stringify(wireValue(value)))
-    .digest("hex");
+type RescanPayload = z.infer<typeof traceRescanPayloadSchema>;
+/** One reserved publication: the outbox rows it covers and the lease that fences its writes. */
+interface Plan {
+  organizationId: string;
+  sessionId: string;
+  control: TraceSessionControl;
+  rescan: RescanPayload | null;
+  redactor: Redactor | null;
+  outboxes: TraceOutbox[];
+  resumes: TraceReceipt[];
+  receipts: Prisma.TraceReceiptGetPayload<{ include: { redactions: true } }>[];
+  lease: string;
+  revision: bigint;
+}
+/** What the sink now holds for a plan, awaiting the control-row commit that publishes it. */
+interface Build {
+  target: TraceScope;
+  snapshot: TraceSession;
+  rewritten: Awaited<ReturnType<typeof redactTraceSnapshot>> | null;
+  projection: ReturnType<typeof projectTrace>;
+  messages: TraceMessageDelta[];
+  files: TraceFileDelta[];
+}
+/** Rows written to the sink per statement. */
+const SINK_BATCH = 500;
+/**
+ * Superseded rows are reclaimed after a publish that changed rows when its revision is a
+ * multiple of this, or when it changed more rows than the second bound (§5.2). The six
+ * mutations scan the session's parts, so a busy session does not pay them on every
+ * eight-second ingest.
+ */
+const SUPERSEDED_CLEANUP_EVERY_REVISIONS = 10n;
+const SUPERSEDED_CLEANUP_ROWS = 1000;
+
+/** Serializes publication of one session: organization row, publication fence, then its control row. */
+async function lockSession(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  sessionId: string,
+): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM organization WHERE id=${organizationId} FOR NO KEY UPDATE`;
+  await lockTracePublication(tx, organizationId, "write");
+  await lockTraceSessionControl(tx, organizationId, sessionId);
+}
+/** Reads every page of a keyset-paged repository read. */
+async function drainPages<P extends { after: string | null }>(
+  page: (after: string | null) => Promise<P>,
+  consume: (value: P) => void,
+): Promise<void> {
+  let after: string | null = null;
+  do {
+    const value = await page(after);
+    consume(value);
+    after = value.after;
+  } while (after);
+}
 export class TraceProjectionService {
   constructor(
     private readonly dependencies: {
       prisma: PrismaClient;
       audit: AuditService;
       repository: TraceRepository;
-      allowedEmailDomains?: readonly string[];
-      saas?: boolean;
+      /** Domain and instance policy the rescan initiator is re-checked against. */
+      auth: IdentityPolicy;
       scheduleEmbeddings?: (
         tx: Prisma.TransactionClient,
         data: { organizationId: string; sessionId: string },
@@ -58,55 +116,91 @@ export class TraceProjectionService {
     },
   ) {}
   async process(organizationId: string, sessionId: string): Promise<void> {
-    const { prisma, repository, audit } = this.dependencies;
-    const purged = await prisma.traceSessionControl.findUnique({
-      where: { organizationId_id: { organizationId, id: sessionId } },
-      select: { purgedAt: true, purgeCompletedAt: true },
-    });
-    if (purged?.purgedAt) {
-      if (!purged.purgeCompletedAt) {
-        try {
-          await this.purge(organizationId, sessionId);
-        } catch (error) {
-          await prisma.$transaction(async (tx) => {
-            await tx.traceSessionControl.update({
-              where: { organizationId_id: { organizationId, id: sessionId } },
-              data: {
-                projectionState: "failed",
-                projectionError:
-                  "Physical cleanup failed. The purge remains active and cleanup will retry.",
-              },
-            });
-            await audit.write(
-              operatorContext(),
-              {
-                action: "session.purge.complete",
-                statusCode: 503,
-                resourceType: "session",
-                resourceIds: [sessionId],
-                actor: {
-                  organizationId,
-                  userId: null,
-                  apiKeyId: null,
-                  authMethod: "worker",
-                },
-                detail: { failed: true, retained: true },
-              },
-              tx,
-            );
-          });
-          throw new Error("Physical trace cleanup must retry.", {
-            cause: error,
-          });
-        }
-      }
+    const control =
+      await this.dependencies.prisma.traceSessionControl.findUnique({
+        where: { organizationId_id: { organizationId, id: sessionId } },
+      });
+    if (control?.purgedAt) {
+      if (!control.purgeCompletedAt)
+        await this.completePurge(organizationId, sessionId);
       return;
     }
-    await this.cleanupGenerations(organizationId, sessionId);
-    const plan = await prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM organization WHERE id=${organizationId} FOR NO KEY UPDATE`;
-      await lockTracePublication(tx, organizationId, "write");
-      await tx.$queryRaw`SELECT id FROM trace_session_control WHERE organization_id=${organizationId} AND id=${sessionId}::uuid FOR UPDATE`;
+    await this.cleanupGenerations(organizationId, sessionId, control);
+    const plan = await this.reserve(organizationId, sessionId);
+    if (!plan) return;
+    try {
+      const build = await this.build(plan);
+      if (!build) return;
+      await this.publish(plan, build);
+      await this.cleanupSuperseded(plan, build);
+      await this.cleanupGenerations(organizationId, sessionId);
+    } catch (error) {
+      await this.fail(plan, error);
+    }
+  }
+  /** Audit one worker step on the organization's behalf, inside its transaction. */
+  private audit(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    description: Omit<AuditDescription, "actor">,
+  ) {
+    return this.dependencies.audit.write(
+      operatorContext(),
+      { ...description, actor: workerActor(organizationId) },
+      tx,
+    );
+  }
+  /** The rescan's initiator must still hold admin authority when its work is reserved and when it publishes. */
+  private async reauthorizeRescan(
+    tx: Prisma.TransactionClient,
+    rescan: RescanPayload,
+  ): Promise<void> {
+    const context = await reauthorizeJob(
+      tx,
+      {
+        ...operatorContext(),
+        caller: rescan.caller,
+        requestId: rescan.requestId,
+      },
+      this.dependencies.auth,
+    );
+    requirePermission(context, "admin");
+  }
+  /** Physical cleanup of a purged session; a failure marks the row and rethrows so the job retries. */
+  private async completePurge(
+    organizationId: string,
+    sessionId: string,
+  ): Promise<void> {
+    try {
+      await this.purge(organizationId, sessionId);
+    } catch (error) {
+      await this.dependencies.prisma.$transaction(async (tx) => {
+        await tx.traceSessionControl.update({
+          where: { organizationId_id: { organizationId, id: sessionId } },
+          data: {
+            projectionState: "failed",
+            projectionError:
+              "Physical cleanup failed. The purge remains active and cleanup will retry.",
+          },
+        });
+        await this.audit(tx, organizationId, {
+          action: "session.purge.complete",
+          statusCode: 503,
+          resourceType: "session",
+          resourceIds: [sessionId],
+          detail: { failed: true, retained: true },
+        });
+      });
+      throw new Error("Physical trace cleanup must retry.", { cause: error });
+    }
+  }
+  /** Reserve the pending outbox rows up to the next rescan boundary under a lease, or nothing to do. */
+  private reserve(
+    organizationId: string,
+    sessionId: string,
+  ): Promise<Plan | null> {
+    return this.dependencies.prisma.$transaction(async (tx) => {
+      await lockSession(tx, organizationId, sessionId);
       const control = await tx.traceSessionControl.findUnique({
         where: { organizationId_id: { organizationId, id: sessionId } },
       });
@@ -138,37 +232,27 @@ export class TraceProjectionService {
           : boundary > 0
             ? pending.slice(0, boundary)
             : pending;
+      const first = outboxes[0];
+      if (!first) return null;
       const rescan =
-        outboxes[0]?.kind === "rescan"
-          ? traceRescanPayloadSchema.parse(outboxes[0].payload)
+        first.kind === "rescan"
+          ? traceRescanPayloadSchema.parse(first.payload)
           : null;
       if (rescan) {
         if (rescan.organizationId !== organizationId)
           throw new Error("Rescan scope mismatch.");
         try {
-          const context = await reauthorizeJob(
-            tx,
-            {
-              ...operatorContext(),
-              caller: rescan.caller,
-              requestId: rescan.requestId,
-            },
-            this.dependencies.allowedEmailDomains,
-            this.dependencies.saas,
-          );
-          requirePermission(context, "admin");
+          await this.reauthorizeRescan(tx, rescan);
         } catch (error) {
           if (!(error instanceof ServiceError) || error.statusCode !== 403)
             throw error;
-          const cancelled = outboxes[0];
-          if (!cancelled) throw new Error("Rescan boundary is missing.");
-          await tx.traceOutbox.delete({ where: { id: cancelled.id } });
+          await tx.traceOutbox.delete({ where: { id: first.id } });
           await tx.traceSessionControl.update({
             where: { organizationId_id: { organizationId, id: sessionId } },
             data: {
-              publishedRevision: cancelled.revision,
+              publishedRevision: first.revision,
               projectionState:
-                control.acceptedRevision > cancelled.revision
+                control.acceptedRevision > first.revision
                   ? "queued"
                   : "published",
               projectionError: null,
@@ -182,31 +266,20 @@ export class TraceProjectionService {
                 "The initiating account no longer has permission to run this rescan.",
             },
           });
-          await audit.write(
-            operatorContext(),
-            {
-              action: "redaction.rescan.cancelled",
-              statusCode: 403,
-              resourceType: "session",
-              resourceIds: [sessionId],
-              actor: {
-                organizationId,
-                userId: null,
-                apiKeyId: null,
-                authMethod: "worker",
-              },
-              detail: { run_id: rescan.runId },
-            },
-            tx,
-          );
+          await this.audit(tx, organizationId, {
+            action: "redaction.rescan.cancelled",
+            statusCode: 403,
+            resourceType: "session",
+            resourceIds: [sessionId],
+            detail: { run_id: rescan.runId },
+          });
           return null;
         }
       }
       const redactor = rescan
         ? await createPolicyCache(tx).get(organizationId)
         : null;
-      const last = outboxes.at(-1);
-      if (!last) return null;
+      const last = outboxes.at(-1) ?? first;
       const lease = uuidv7();
       await tx.traceSessionControl.update({
         where: { organizationId_id: { organizationId, id: sessionId } },
@@ -227,25 +300,15 @@ export class TraceProjectionService {
         },
         orderBy: [{ sourcePos: "asc" }, { sentAt: "asc" }, { id: "asc" }],
       });
-      await audit.write(
-        operatorContext(),
-        {
-          action: "trace.reserve",
-          resourceType: "session",
-          resourceIds: [sessionId],
-          actor: {
-            organizationId,
-            userId: null,
-            apiKeyId: null,
-            authMethod: "worker",
-          },
-          detail: {
-            revision: String(last.revision),
-            outbox_batches: outboxes.length,
-          },
+      await this.audit(tx, organizationId, {
+        action: "trace.reserve",
+        resourceType: "session",
+        resourceIds: [sessionId],
+        detail: {
+          revision: String(last.revision),
+          outbox_batches: outboxes.length,
         },
-        tx,
-      );
+      });
       const receipts = await tx.traceReceipt.findMany({
         where: {
           organizationId,
@@ -258,6 +321,8 @@ export class TraceProjectionService {
         include: { redactions: true },
       });
       return {
+        organizationId,
+        sessionId,
         control,
         rescan,
         redactor,
@@ -268,533 +333,503 @@ export class TraceProjectionService {
         revision: last.revision,
       };
     });
-    if (!plan) return;
-    try {
-      const published: TraceScope = {
-        organizationId,
-        sessionId,
-        revision: plan.control.publishedRevision,
-        generation: plan.control.redactionGeneration,
-      };
-      const target: TraceScope = {
-        organizationId,
-        sessionId,
-        revision: plan.revision,
-        generation: plan.rescan
-          ? plan.revision
-          : plan.control.redactionGeneration,
-      };
-      let records: TraceRawRecord[] = [];
-      let after: string | null = null;
-      if (published.revision > 0n)
-        do {
-          const page = await repository.rawPage(published, {
-            after,
-            limit: 1000,
-          });
-          records.push(...page.records);
-          after = page.after;
-        } while (after);
-      let header =
-        published.revision > 0n
-          ? await repository.readSession(
-              organizationId,
-              sessionId,
-              published.revision,
-              published.generation,
-            )
-          : null;
-      let context = normalizerContextSchema.parse(
-        plan.control.normalizerContext,
+  }
+  /**
+   * Write the plan's raw records, projection and receipts to the sink under its lease.
+   * Null when the lease was lost mid-way; the next reservation starts over.
+   */
+  private async build(plan: Plan): Promise<Build | null> {
+    const { organizationId, sessionId } = plan;
+    const { repository } = this.dependencies;
+    const guarded = (operation: () => Promise<void>) =>
+      this.write(organizationId, sessionId, plan.lease, operation);
+    const published: TraceScope = {
+      organizationId,
+      sessionId,
+      revision: plan.control.publishedRevision,
+      generation: plan.control.redactionGeneration,
+    };
+    const target: TraceScope = {
+      organizationId,
+      sessionId,
+      revision: plan.revision,
+      generation: plan.rescan
+        ? plan.revision
+        : plan.control.redactionGeneration,
+    };
+    // The generation the delta is computed against: none for a rescan, which rewrites every row.
+    const baseline = plan.rescan ? null : published;
+    let records: TraceRawRecord[] = [];
+    if (published.revision > 0n)
+      await drainPages(
+        (after) => repository.rawPage(published, { after, limit: 1000 }),
+        (page) => records.push(...page.records),
       );
-      let lifecycle = false;
-      for (const outbox of plan.outboxes.filter(
-        (row) => row.kind === "ingest",
-      )) {
-        const payload = traceOutboxPayloadSchema.parse(outbox.payload);
-        const incoming = payload.records.map(sourceFromOutbox);
-        const raw = incoming.map((record) => ({
-          ...record,
-          ingestBatchId: payload.envelope.batchId,
-          recordType:
-            typeof record.payload.type === "string"
-              ? record.payload.type
-              : "unknown",
-        }));
-        records.push(...raw);
-        for (let offset = 0; offset < raw.length; offset += 500)
-          if (
-            !(await this.write(
-              {
-                organizationId,
-                sessionId,
-                revision: outbox.revision,
-                generation: plan.control.redactionGeneration,
-              },
-              plan.lease,
-              () =>
-                repository.appendRaw(
-                  {
-                    organizationId,
-                    sessionId,
-                    revision: outbox.revision,
-                    generation: plan.control.redactionGeneration,
-                  },
-                  raw.slice(offset, offset + 500),
-                ),
-            ))
-          )
-            return;
-        header ??= initialHeader(
-          plan.control,
-          payload.envelope,
-          outbox.createdAt,
-        );
-        header.last_activity_at = outbox.createdAt;
-        if (payload.lifecycleApplied) {
-          if (payload.envelope.behavior === "end") {
-            header.status = "ENDED";
-            header.ended_at = new Date(payload.envelope.sentAt);
-            header.end_reason = payload.envelope.end?.reason ?? null;
-            header.end_commit = payload.envelope.end?.head ?? null;
-            header.observed_commits =
-              payload.envelope.end?.observedCommits ?? null;
-            header.observed_diff_stat =
-              payload.envelope.end?.observedDiffStat ?? null;
-            header.dirty_file_count =
-              payload.envelope.end?.dirtyFileCount ?? null;
-          } else {
-            header.status = "ACTIVE";
-            header.ended_at = null;
-            header.end_reason = null;
-          }
-        }
-        context = payload.normalizerContext;
-        lifecycle ||= payload.envelope.start?.resume ?? false;
-      }
-      if (!header)
-        throw new Error("A trace projection has no durable header source.");
-      const rewritten =
-        plan.rescan && plan.redactor
-          ? await redactTraceSnapshot(
-              plan.redactor,
-              plan.control,
-              header,
-              records,
-            )
-          : null;
-      if (rewritten) {
-        records = rewritten.records;
-        header = rewritten.header;
-        context = rewritten.control.normalizerContext;
-        for (let offset = 0; offset < records.length; offset += 500)
-          if (
-            !(await this.write(target, plan.lease, () =>
-              repository.appendRaw(target, records.slice(offset, offset + 500)),
-            ))
-          )
-            return;
-        const lastReceipt = plan.receipts.at(-1);
-        if (lastReceipt)
-          rewritten.counts.set(lastReceipt.id, [
-            ...(rewritten.counts.get(lastReceipt.id) ?? []),
-            ...rewritten.metadataCounts,
-          ]);
-      }
-      const projection = projectTrace(
-        {
-          id: sessionId,
-          harness: header.harness,
-          cwd: header.cwd,
-          repoRoot: header.repo_root,
-          normalizerContext: context,
-          projectedContext: normalizerContextSchema.parse(
-            rewritten?.control.projectedContext ??
-              plan.control.projectedContext,
-          ),
-        },
-        records,
-        plan.resumes,
-        { lifecycle, rescan: plan.rescan !== null },
-      );
-      const messages: TraceMessageDelta[] = [];
-      const files: TraceFileDelta[] = [];
-      if (projection) {
-        const oldMessages = await this.manifest(
-          plan.rescan ? { ...target, revision: 0n } : published,
-          "messages",
-        );
-        for (const message of projection.messages) {
-          const hash = fingerprint(message);
-          if (oldMessages.get(message.id) !== hash)
-            messages.push({ id: message.id, message, fingerprint: hash });
-          oldMessages.delete(message.id);
-        }
-        for (const id of oldMessages.keys())
-          messages.push({ id, message: null, fingerprint: fingerprint(null) });
-        const oldFiles = await this.manifest(
-          plan.rescan ? { ...target, revision: 0n } : published,
-          "files",
-        );
-        for (const file of projection.files) {
-          const hash = fingerprint(file.ops);
-          if (oldFiles.get(file.path) !== hash)
-            files.push({ ...file, fingerprint: hash });
-          oldFiles.delete(file.path);
-        }
-        for (const path of oldFiles.keys())
-          files.push({ path, ops: null, fingerprint: fingerprint(null) });
-        const delta = projection.delta;
-        header = {
-          ...header,
-          ...(header.repo_name || !delta.repoUrl
-            ? {}
-            : snakeRepository(delta.repoUrl)),
-          branch: delta.branch ?? header.branch,
-          harness_version: delta.harnessVersion ?? header.harness_version,
-          entrypoint: delta.entrypoint ?? header.entrypoint,
-          model: delta.model ?? null,
-          models_used: delta.modelsUsed ?? [],
-          started_at: delta.startedAt ?? header.started_at,
-          title:
-            delta.title === undefined
-              ? null
-              : Array.from(delta.title).slice(0, 120).join(""),
-          first_prompt:
-            delta.firstPrompt === undefined
-              ? null
-              : truncateUtf8(delta.firstPrompt, 4096),
-          agent_type: delta.agentType ?? header.agent_type,
-          start_commit: header.start_commit ?? delta.startCommit ?? null,
-          message_count: projection.messages.length,
-          tool_call_count: projection.messages.filter(
-            (message) => message.kind === "TOOL_USE",
-          ).length,
-          tools_used: [
-            ...new Set(
-              projection.messages.flatMap((message) =>
-                message.tool_name ? [message.tool_name] : [],
-              ),
-            ),
-          ].sort(),
-          input_tokens: projection.messages.reduce(
-            (sum, message) => sum + (message.input_tokens ?? 0n),
-            0n,
-          ),
-          output_tokens: projection.messages.reduce(
-            (sum, message) => sum + (message.output_tokens ?? 0n),
-            0n,
-          ),
-        };
-      }
-      const snapshot = header;
-      for (
-        let offset = 0;
-        offset < Math.max(1, messages.length, files.length);
-        offset += 500
-      )
-        if (
-          !(await this.write(target, plan.lease, () =>
-            repository.writeProjection({
-              ...target,
-              session: snapshot,
-              messages: messages.slice(offset, offset + 500),
-              files: files.slice(offset, offset + 500),
-            }),
-          ))
-        )
-          return;
-      if (
-        !(await this.write(target, plan.lease, () =>
-          repository.appendReceipts(
-            target,
-            plan.receipts,
-            plan.receipts.flatMap((receipt) => {
-              const counts = new Map(
-                receipt.redactions.map((hit) => [hit.policyId, hit.count]),
-              );
-              for (const hit of rewritten?.counts.get(receipt.id) ?? [])
-                counts.set(
-                  hit.policyId,
-                  (counts.get(hit.policyId) ?? 0) + hit.count,
-                );
-              return [...counts].map(([policyId, count]) => ({
-                receiptId: receipt.id,
-                policyId,
-                count,
-              }));
-            }),
-          ),
-        ))
-      )
-        return;
-      await prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT id FROM organization WHERE id=${organizationId} FOR NO KEY UPDATE`;
-        await lockTracePublication(tx, organizationId, "write");
-        await tx.$queryRaw`SELECT id FROM trace_session_control WHERE organization_id=${organizationId} AND id=${sessionId}::uuid FOR UPDATE`;
-        const current = await tx.traceSessionControl.findUniqueOrThrow({
-          where: { organizationId_id: { organizationId, id: sessionId } },
-        });
-        if (
-          current.purgedAt ||
-          current.projectionLease !== plan.lease ||
-          current.publishedRevision !== plan.control.publishedRevision
-        )
-          return;
-        if (plan.rescan) {
-          const context = await reauthorizeJob(
-            tx,
-            {
-              ...operatorContext(),
-              caller: plan.rescan.caller,
-              requestId: plan.rescan.requestId,
-            },
-            this.dependencies.allowedEmailDomains,
-            this.dependencies.saas,
-          );
-          requirePermission(context, "admin");
-        }
-        if (rewritten && plan.redactor) {
-          // An upload can advance its native context while this generation is built.
-          // Redact the latest accepted context without replacing it with an older snapshot.
-          rewritten.control.normalizerContext = (
-            await redactNormalizerContext(
-              normalizerContextSchema.parse(current.normalizerContext),
-              plan.redactor,
-            )
-          ).value;
-          rewritten.control.parentNativeRef =
-            current.parentNativeRef === null
-              ? null
-              : (
-                  await canonicalIdentity(
-                    current.parentNativeRef,
-                    plan.redactor,
-                  )
-                ).value;
-          const installation = await tx.installation.findUniqueOrThrow({
-            where: {
-              organizationId_id: { organizationId, id: current.installationId },
-            },
-          });
-          await tx.installation.update({
-            where: {
-              organizationId_id: { organizationId, id: installation.id },
-            },
-            data: {
-              hostname: (await plan.redactor.text(installation.hostname)).value,
-              osUser: (await plan.redactor.text(installation.osUser)).value,
-              platform: (await plan.redactor.text(installation.platform)).value,
-              arch: (await plan.redactor.text(installation.arch)).value,
-            },
-          });
-        }
-        if (rewritten)
-          for (const [receiptId, counts] of rewritten.counts)
-            await persistRedactionCounts(
-              tx,
-              organizationId,
-              receiptId,
-              sessionId,
-              counts,
-            );
-        await tx.traceSessionControl.update({
-          where: { organizationId_id: { organizationId, id: sessionId } },
-          data: {
-            ...(rewritten
-              ? {
-                  harnessSessionId: rewritten.control.harnessSessionId,
-                  parentNativeRef: rewritten.control.parentNativeRef,
-                  normalizerContext: rewritten.control.normalizerContext,
-                  projectedContext: rewritten.control.projectedContext,
-                }
-              : {}),
-            redactionGeneration: target.generation,
-            publishedRevision: plan.revision,
-            startedAt: snapshot.started_at,
-            embeddingRevision: null,
-            embeddingSourceRevision: null,
-            projectionLease: null,
-            projectionLeaseUntil: null,
-            projectionState:
-              current.acceptedRevision > plan.revision
-                ? "queued"
-                : projection?.ready
-                  ? "published"
-                  : "waiting_source",
-            projectionError: projection?.ready
-              ? null
-              : "Waiting for the native transcript branch to arrive.",
-            ...(projection?.ready
-              ? { projectedContext: projection.context }
-              : {}),
-          },
-        });
-        await tx.embeddingState.updateMany({
-          where: { organizationId, sessionId },
-          data: { complete: false },
-        });
-        await this.dependencies.scheduleEmbeddings?.(tx, {
-          organizationId,
-          sessionId,
-        });
-        await tx.traceReceipt.updateMany({
-          where: {
+    let header =
+      published.revision > 0n
+        ? await repository.readSession(
             organizationId,
             sessionId,
-            revision: { lte: plan.revision },
-            publishedAt: null,
-          },
-          data: { publishedAt: new Date() },
-        });
-        await tx.traceOutbox.deleteMany({
-          where: { id: { in: plan.outboxes.map((row) => row.id) } },
-        });
-        if (plan.rescan) {
-          const count = [...(rewritten?.counts.values() ?? [])]
-            .flat()
-            .reduce((sum, hit) => sum + hit.count, 0);
-          await tx.redactionRunSession.update({
-            where: {
-              organizationId_runId_sessionId: {
-                organizationId,
-                runId: plan.rescan.runId,
-                sessionId,
-              },
-            },
-            data: { processedAt: new Date() },
-          });
-          const run = await tx.redactionRun.update({
-            where: {
-              organizationId_id: { organizationId, id: plan.rescan.runId },
-            },
-            data: {
-              processedSessions: { increment: 1 },
-              redactionCount: { increment: count },
-              error: null,
-            },
-          });
-          await tx.redactionRun.update({
-            where: { organizationId_id: { organizationId, id: run.id } },
-            data: {
-              state:
-                run.processedSessions === run.totalSessions
-                  ? "completed"
-                  : "running",
-            },
-          });
+            published.revision,
+            published.generation,
+          )
+        : null;
+    let context = normalizerContextSchema.parse(plan.control.normalizerContext);
+    let lifecycle = false;
+    for (const outbox of plan.outboxes.filter((row) => row.kind === "ingest")) {
+      const payload = traceOutboxPayloadSchema.parse(outbox.payload);
+      const incoming = payload.records.map(sourceFromOutbox);
+      const raw = incoming.map((record) => ({
+        ...record,
+        ingestBatchId: payload.envelope.batchId,
+        recordType:
+          typeof record.payload.type === "string"
+            ? record.payload.type
+            : "unknown",
+      }));
+      records.push(...raw);
+      const scope: TraceScope = {
+        organizationId,
+        sessionId,
+        revision: outbox.revision,
+        generation: plan.control.redactionGeneration,
+      };
+      for (let offset = 0; offset < raw.length; offset += SINK_BATCH)
+        if (
+          !(await guarded(() =>
+            repository.appendRaw(scope, raw.slice(offset, offset + SINK_BATCH)),
+          ))
+        )
+          return null;
+      header ??= initialHeader(
+        plan.control,
+        payload.envelope,
+        outbox.createdAt,
+      );
+      header.last_activity_at = outbox.createdAt;
+      if (payload.lifecycleApplied) {
+        if (payload.envelope.behavior === "end") {
+          header.status = "ENDED";
+          header.ended_at = new Date(payload.envelope.sentAt);
+          header.end_reason = payload.envelope.end?.reason ?? null;
+          header.end_commit = payload.envelope.end?.head ?? null;
+          header.observed_commits =
+            payload.envelope.end?.observedCommits ?? null;
+          header.observed_diff_stat =
+            payload.envelope.end?.observedDiffStat ?? null;
+          header.dirty_file_count =
+            payload.envelope.end?.dirtyFileCount ?? null;
+        } else {
+          header.status = "ACTIVE";
+          header.ended_at = null;
+          header.end_reason = null;
         }
-        await audit.write(
-          operatorContext(),
-          {
-            action: plan.rescan ? "redaction.rescan.session" : "trace.publish",
-            resourceType: "session",
-            resourceIds: [sessionId],
-            actor: {
-              organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: {
-              revision: String(plan.revision),
-              ...(plan.rescan ? { run_id: plan.rescan.runId } : {}),
-              changed_messages: messages.length,
-              changed_files: files.length,
-              projection_ready: projection?.ready ?? false,
-            },
-          },
-          tx,
-        );
+      }
+      context = payload.normalizerContext;
+      lifecycle ||= payload.envelope.start?.resume ?? false;
+    }
+    if (!header)
+      throw new Error("A trace projection has no durable header source.");
+    const rewritten =
+      plan.rescan && plan.redactor
+        ? await redactTraceSnapshot(
+            plan.redactor,
+            plan.control,
+            header,
+            records,
+          )
+        : null;
+    if (rewritten) {
+      records = rewritten.records;
+      header = rewritten.header;
+      context = rewritten.control.normalizerContext;
+      for (let offset = 0; offset < records.length; offset += SINK_BATCH)
+        if (
+          !(await guarded(() =>
+            repository.appendRaw(
+              target,
+              records.slice(offset, offset + SINK_BATCH),
+            ),
+          ))
+        )
+          return null;
+      const lastReceipt = plan.receipts.at(-1);
+      if (lastReceipt)
+        rewritten.counts.set(lastReceipt.id, [
+          ...(rewritten.counts.get(lastReceipt.id) ?? []),
+          ...rewritten.metadataCounts,
+        ]);
+    }
+    const projection = projectTrace(
+      {
+        id: sessionId,
+        harness: header.harness,
+        cwd: header.cwd,
+        repoRoot: header.repo_root,
+        normalizerContext: context,
+        projectedContext: normalizerContextSchema.parse(
+          rewritten?.control.projectedContext ?? plan.control.projectedContext,
+        ),
+      },
+      records,
+      plan.resumes,
+      { lifecycle, rescan: plan.rescan !== null },
+    );
+    const messages: TraceMessageDelta[] = [];
+    const files: TraceFileDelta[] = [];
+    if (projection) {
+      const oldMessages = await this.manifest(baseline, "messages");
+      for (const message of projection.messages) {
+        const hash = fingerprint(message);
+        if (oldMessages.get(message.id) !== hash)
+          messages.push({ id: message.id, message, fingerprint: hash });
+        oldMessages.delete(message.id);
+      }
+      for (const id of oldMessages.keys())
+        messages.push({ id, message: null, fingerprint: fingerprint(null) });
+      const oldFiles = await this.manifest(baseline, "files");
+      for (const file of projection.files) {
+        const hash = fingerprint(file.ops);
+        if (oldFiles.get(file.path) !== hash)
+          files.push({ ...file, fingerprint: hash });
+        oldFiles.delete(file.path);
+      }
+      for (const path of oldFiles.keys())
+        files.push({ path, ops: null, fingerprint: fingerprint(null) });
+      let toolCalls = 0;
+      const tools = new Set<string>();
+      let inputTokens = 0n;
+      let outputTokens = 0n;
+      for (const message of projection.messages) {
+        if (message.kind === "TOOL_USE") toolCalls++;
+        if (message.tool_name) tools.add(message.tool_name);
+        inputTokens += message.input_tokens ?? 0n;
+        outputTokens += message.output_tokens ?? 0n;
+      }
+      const delta = projection.delta;
+      header = {
+        ...header,
+        ...(header.repo_name || !delta.repoUrl
+          ? {}
+          : snakeRepository(delta.repoUrl)),
+        branch: delta.branch ?? header.branch,
+        harness_version: delta.harnessVersion ?? header.harness_version,
+        entrypoint: delta.entrypoint ?? header.entrypoint,
+        model: delta.model ?? null,
+        models_used: delta.modelsUsed ?? [],
+        started_at: delta.startedAt ?? header.started_at,
+        title:
+          delta.title === undefined
+            ? null
+            : Array.from(delta.title).slice(0, 120).join(""),
+        first_prompt:
+          delta.firstPrompt === undefined
+            ? null
+            : truncateUtf8(delta.firstPrompt, 4096),
+        agent_type: delta.agentType ?? header.agent_type,
+        start_commit: header.start_commit ?? delta.startCommit ?? null,
+        message_count: projection.messages.length,
+        tool_call_count: toolCalls,
+        tools_used: [...tools].sort(),
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+      };
+    }
+    const snapshot = header;
+    for (
+      let offset = 0;
+      offset < Math.max(1, messages.length, files.length);
+      offset += SINK_BATCH
+    )
+      if (
+        !(await guarded(() =>
+          repository.writeProjection({
+            ...target,
+            session: snapshot,
+            messages: messages.slice(offset, offset + SINK_BATCH),
+            files: files.slice(offset, offset + SINK_BATCH),
+          }),
+        ))
+      )
+        return null;
+    if (
+      !(await guarded(() =>
+        repository.appendReceipts(
+          target,
+          plan.receipts,
+          plan.receipts.flatMap((receipt) => {
+            const counts = new Map(
+              receipt.redactions.map((hit) => [hit.policyId, hit.count]),
+            );
+            for (const hit of rewritten?.counts.get(receipt.id) ?? [])
+              counts.set(
+                hit.policyId,
+                (counts.get(hit.policyId) ?? 0) + hit.count,
+              );
+            return [...counts].map(([policyId, count]) => ({
+              receiptId: receipt.id,
+              policyId,
+              count,
+            }));
+          }),
+        ),
+      ))
+    )
+      return null;
+    return { target, snapshot, rewritten, projection, messages, files };
+  }
+  /** Commit the built generation on the control row, if the lease still holds. */
+  private async publish(plan: Plan, build: Build): Promise<void> {
+    const { organizationId, sessionId } = plan;
+    const { target, snapshot, rewritten, projection, messages, files } = build;
+    await this.dependencies.prisma.$transaction(async (tx) => {
+      await lockSession(tx, organizationId, sessionId);
+      const current = await tx.traceSessionControl.findUniqueOrThrow({
+        where: { organizationId_id: { organizationId, id: sessionId } },
       });
-      await this.cleanupGenerations(organizationId, sessionId);
-    } catch (error) {
-      await prisma.$transaction(async (tx) => {
-        const changed = await tx.traceSessionControl.updateMany({
-          where: { organizationId, id: sessionId, projectionLease: plan.lease },
-          data: {
-            projectionLease: null,
-            projectionLeaseUntil: null,
-            projectionState: "failed",
-            projectionError:
-              "Trace publication failed. The accepted upload is retained for retry.",
+      if (
+        current.purgedAt ||
+        current.projectionLease !== plan.lease ||
+        current.publishedRevision !== plan.control.publishedRevision
+      )
+        return;
+      if (plan.rescan) await this.reauthorizeRescan(tx, plan.rescan);
+      if (rewritten && plan.redactor) {
+        // An upload can advance its native context while this generation is built.
+        // Redact the latest accepted context without replacing it with an older snapshot.
+        rewritten.control.normalizerContext = (
+          await redactNormalizerContext(
+            normalizerContextSchema.parse(current.normalizerContext),
+            plan.redactor,
+          )
+        ).value;
+        rewritten.control.parentNativeRef =
+          current.parentNativeRef === null
+            ? null
+            : (await canonicalIdentity(current.parentNativeRef, plan.redactor))
+                .value;
+        const installation = await tx.installation.findUniqueOrThrow({
+          where: {
+            organizationId_id: { organizationId, id: current.installationId },
           },
         });
-        if (changed.count)
-          await audit.write(
-            operatorContext(),
-            {
-              action: "trace.publish",
-              statusCode: 503,
-              resourceType: "session",
-              resourceIds: [sessionId],
-              actor: {
-                organizationId,
-                userId: null,
-                apiKeyId: null,
-                authMethod: "worker",
-              },
-              detail: { failed: true, retained: true },
-            },
+        await tx.installation.update({
+          where: {
+            organizationId_id: { organizationId, id: installation.id },
+          },
+          data: {
+            hostname: (await plan.redactor.text(installation.hostname)).value,
+            osUser: (await plan.redactor.text(installation.osUser)).value,
+            platform: (await plan.redactor.text(installation.platform)).value,
+            arch: (await plan.redactor.text(installation.arch)).value,
+          },
+        });
+      }
+      if (rewritten)
+        for (const [receiptId, counts] of rewritten.counts)
+          await persistRedactionCounts(
             tx,
+            organizationId,
+            receiptId,
+            sessionId,
+            counts,
           );
+      await tx.traceSessionControl.update({
+        where: { organizationId_id: { organizationId, id: sessionId } },
+        data: {
+          ...(rewritten
+            ? {
+                harnessSessionId: rewritten.control.harnessSessionId,
+                parentNativeRef: rewritten.control.parentNativeRef,
+                normalizerContext: rewritten.control.normalizerContext,
+                projectedContext: rewritten.control.projectedContext,
+              }
+            : {}),
+          redactionGeneration: target.generation,
+          publishedRevision: plan.revision,
+          startedAt: snapshot.started_at,
+          embeddingRevision: null,
+          embeddingSourceRevision: null,
+          projectionLease: null,
+          projectionLeaseUntil: null,
+          projectionState:
+            current.acceptedRevision > plan.revision
+              ? "queued"
+              : projection?.ready
+                ? "published"
+                : "waiting_source",
+          projectionError: projection?.ready
+            ? null
+            : "Waiting for the native transcript branch to arrive.",
+          ...(projection?.ready
+            ? { projectedContext: projection.context }
+            : {}),
+        },
       });
-      throw new Error("Trace publication failed; retry the durable outbox.", {
-        cause: error,
+      await tx.embeddingState.updateMany({
+        where: { organizationId, sessionId },
+        data: { complete: false },
       });
-    }
+      await this.dependencies.scheduleEmbeddings?.(tx, {
+        organizationId,
+        sessionId,
+      });
+      await tx.traceReceipt.updateMany({
+        where: {
+          organizationId,
+          sessionId,
+          revision: { lte: plan.revision },
+          publishedAt: null,
+        },
+        data: { publishedAt: new Date() },
+      });
+      await tx.traceOutbox.deleteMany({
+        where: { id: { in: plan.outboxes.map((row) => row.id) } },
+      });
+      if (plan.rescan)
+        await completeRunSession(
+          tx,
+          organizationId,
+          plan.rescan.runId,
+          sessionId,
+          [...(rewritten?.counts.values() ?? [])]
+            .flat()
+            .reduce((sum, hit) => sum + hit.count, 0),
+        );
+      await this.audit(tx, organizationId, {
+        action: plan.rescan ? "redaction.rescan.session" : "trace.publish",
+        resourceType: "session",
+        resourceIds: [sessionId],
+        detail: {
+          revision: String(plan.revision),
+          ...(plan.rescan ? { run_id: plan.rescan.runId } : {}),
+          changed_messages: messages.length,
+          changed_files: files.length,
+          projection_ready: projection?.ready ?? false,
+        },
+      });
+    });
   }
+  /** Release the lease and mark the failure; the accepted upload stays queued for a retry. */
+  private async fail(plan: Plan, error: unknown): Promise<never> {
+    const { organizationId, sessionId } = plan;
+    await this.dependencies.prisma.$transaction(async (tx) => {
+      const changed = await tx.traceSessionControl.updateMany({
+        where: { organizationId, id: sessionId, projectionLease: plan.lease },
+        data: {
+          projectionLease: null,
+          projectionLeaseUntil: null,
+          projectionState: "failed",
+          projectionError:
+            "Trace publication failed. The accepted upload is retained for retry.",
+        },
+      });
+      if (changed.count)
+        await this.audit(tx, organizationId, {
+          action: "trace.publish",
+          statusCode: 503,
+          resourceType: "session",
+          resourceIds: [sessionId],
+          detail: { failed: true, retained: true },
+        });
+    });
+    throw new Error("Trace publication failed; retry the durable outbox.", {
+      cause: error,
+    });
+  }
+  /**
+   * Reclaim the rows a committed publish superseded: the previous header and the older
+   * rows of each changed message or file (§5.2). Gated on the change size and revision;
+   * `publish` returns without committing when its lease was lost, so the committed
+   * revision is read back rather than assumed.
+   */
+  private async cleanupSuperseded(plan: Plan, build: Build): Promise<void> {
+    const changed = build.messages.length + build.files.length;
+    if (
+      changed === 0 ||
+      (plan.revision % SUPERSEDED_CLEANUP_EVERY_REVISIONS !== 0n &&
+        changed <= SUPERSEDED_CLEANUP_ROWS)
+    )
+      return;
+    const { organizationId, sessionId } = plan;
+    const { prisma, repository } = this.dependencies;
+    await prisma.$transaction(
+      async (tx) => {
+        await lockTraceSink(tx, organizationId, sessionId, "write");
+        const locked = await tx.traceSessionControl.findUnique({
+          where: { organizationId_id: { organizationId, id: sessionId } },
+        });
+        if (
+          !locked ||
+          locked.purgedAt ||
+          locked.publishedRevision < plan.revision
+        )
+          return;
+        await repository.deleteSupersededRevisions({
+          organizationId,
+          sessionId,
+          revision: locked.publishedRevision,
+          generation: locked.redactionGeneration,
+        });
+        await this.audit(tx, organizationId, {
+          action: "trace.revision.cleanup",
+          resourceType: "session",
+          resourceIds: [sessionId],
+          detail: {
+            revision: String(locked.publishedRevision),
+            changed_rows: changed,
+          },
+        });
+      },
+      { timeout: 40_000, maxWait: 10_000 },
+    );
+  }
+  /** Drop superseded redaction generations; `pending` is the control row when the caller already read it. */
   private async cleanupGenerations(
     organizationId: string,
     sessionId: string,
+    pending?: TraceSessionControl | null,
   ): Promise<void> {
-    const { prisma, repository, audit } = this.dependencies;
-    const pending = await prisma.traceSessionControl.findUnique({
-      where: { organizationId_id: { organizationId, id: sessionId } },
-    });
+    const { prisma, repository } = this.dependencies;
+    const current =
+      pending === undefined
+        ? await prisma.traceSessionControl.findUnique({
+            where: { organizationId_id: { organizationId, id: sessionId } },
+          })
+        : pending;
     if (
-      !pending ||
-      pending.purgedAt ||
-      pending.redactionCleanedGeneration >= pending.redactionGeneration
+      !current ||
+      current.purgedAt ||
+      current.redactionCleanedGeneration >= current.redactionGeneration
     )
       return;
     await prisma.$transaction(
       async (tx) => {
         await lockTraceSink(tx, organizationId, sessionId, "write");
-        const current = await tx.traceSessionControl.findUniqueOrThrow({
+        const locked = await tx.traceSessionControl.findUniqueOrThrow({
           where: { organizationId_id: { organizationId, id: sessionId } },
         });
         if (
-          current.purgedAt ||
-          current.redactionCleanedGeneration >= current.redactionGeneration
+          locked.purgedAt ||
+          locked.redactionCleanedGeneration >= locked.redactionGeneration
         )
           return;
         await repository.cleanupGenerations({
           organizationId,
           sessionId,
-          revision: current.publishedRevision,
-          generation: current.redactionGeneration,
+          revision: locked.publishedRevision,
+          generation: locked.redactionGeneration,
         });
         await tx.traceSessionControl.update({
           where: { organizationId_id: { organizationId, id: sessionId } },
-          data: { redactionCleanedGeneration: current.redactionGeneration },
+          data: { redactionCleanedGeneration: locked.redactionGeneration },
         });
-        await audit.write(
-          operatorContext(),
-          {
-            action: "trace.redaction.cleanup",
-            resourceType: "session",
-            resourceIds: [sessionId],
-            actor: {
-              organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: { generation: String(current.redactionGeneration) },
-          },
-          tx,
-        );
+        await this.audit(tx, organizationId, {
+          action: "trace.redaction.cleanup",
+          resourceType: "session",
+          resourceIds: [sessionId],
+          detail: { generation: String(locked.redactionGeneration) },
+        });
       },
       { timeout: 40_000, maxWait: 10_000 },
     );
@@ -803,7 +838,7 @@ export class TraceProjectionService {
     organizationId: string,
     sessionId: string,
   ): Promise<void> {
-    const { prisma, repository, audit } = this.dependencies;
+    const { prisma, repository } = this.dependencies;
     await prisma.$transaction(
       async (tx) => {
         await lockTraceSink(tx, organizationId, sessionId, "write");
@@ -855,41 +890,28 @@ export class TraceProjectionService {
         await tx.traceOutbox.deleteMany({
           where: { organizationId, sessionId, kind: "purge" },
         });
-        await audit.write(
-          operatorContext(),
-          {
-            action: "session.purge.complete",
-            resourceType: "session",
-            resourceIds: [sessionId],
-            actor: {
-              organizationId,
-              userId: null,
-              apiKeyId: null,
-              authMethod: "worker",
-            },
-            detail: { deleted: control.purgeManifest },
-          },
-          tx,
-        );
+        await this.audit(tx, organizationId, {
+          action: "session.purge.complete",
+          resourceType: "session",
+          resourceIds: [sessionId],
+          detail: { deleted: control.purgeManifest },
+        });
       },
       { timeout: 120_000, maxWait: 10_000 },
     );
   }
+  /** Run one sink write under the session's shared sink lock while the lease still holds. */
   private async write(
-    scope: TraceScope,
+    organizationId: string,
+    sessionId: string,
     lease: string,
     operation: () => Promise<void>,
   ): Promise<boolean> {
     return this.dependencies.prisma.$transaction(
       async (tx) => {
-        await lockTraceSink(tx, scope.organizationId, scope.sessionId, "read");
+        await lockTraceSink(tx, organizationId, sessionId, "read");
         const control = await tx.traceSessionControl.findUnique({
-          where: {
-            organizationId_id: {
-              organizationId: scope.organizationId,
-              id: scope.sessionId,
-            },
-          },
+          where: { organizationId_id: { organizationId, id: sessionId } },
         });
         if (!control || control.purgedAt || control.projectionLease !== lease)
           return false;
@@ -899,19 +921,20 @@ export class TraceProjectionService {
       { timeout: 120_000, maxWait: 10_000 },
     );
   }
-  private async manifest(scope: TraceScope, kind: "messages" | "files") {
+  /** Fingerprints of the rows published at `scope`; empty when there is no baseline. */
+  private async manifest(scope: TraceScope | null, kind: "messages" | "files") {
     const values = new Map<string, string>();
-    if (scope.revision === 0n) return values;
-    let after: string | null = null;
-    do {
-      const page = await this.dependencies.repository.projectionManifest(
-        scope,
-        kind,
-        { after, limit: 1000 },
-      );
-      for (const item of page.items) values.set(item.id, item.fingerprint);
-      after = page.after;
-    } while (after);
+    if (!scope || scope.revision === 0n) return values;
+    await drainPages(
+      (after) =>
+        this.dependencies.repository.projectionManifest(scope, kind, {
+          after,
+          limit: 1000,
+        }),
+      (page) => {
+        for (const item of page.items) values.set(item.id, item.fingerprint);
+      },
+    );
     return values;
   }
 }

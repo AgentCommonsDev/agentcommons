@@ -1,7 +1,4 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
 import { PrismaClient } from "@agentcommons/db";
 import { randomUUID } from "node:crypto";
@@ -16,88 +13,41 @@ import {
   ingestEnvelopeSchema,
   type IngestEnvelope,
 } from "@agentcommons/core";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { createRuntime } from "../src/main.js";
-import { createApp } from "../src/app.js";
-import { environment } from "../src/env.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
 import { IngestService } from "../src/services/ingest.js";
 import { configSchema } from "../../../packages/hook/src/config.js";
 import { recordHook } from "../../../packages/hook/src/hook.js";
 import { upload } from "../../../packages/hook/src/upload.js";
 import { loadState } from "../../../packages/hook/src/state.js";
+import { startApp, type StartedApp } from "./app.js";
+import { testEnvelope, textRecord } from "./envelopes.js";
 import {
+  injectHeaders,
   provisionOrganization,
   provisionMember,
+  releaser,
   testAuthConfiguration,
+  testBillingConfig,
 } from "./support.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let application: PrismaClient;
 let projections: ReturnType<typeof traceServices>;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
+let runtime: StartedApp["runtime"];
+let app: StartedApp["app"];
 let address: string;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 
 function envelope(native = randomUUID()): IngestEnvelope {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
+  return testEnvelope({
     harnessSessionId: native,
-    installationId: randomUUID(),
-    batchId: randomUUID(),
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
-    sentAt: new Date().toISOString(),
-    sourcePos: 0,
     cursor: "initial",
-    end: null,
-    context: {
-      cwd: "/billing",
-      installation: {
-        hostname: "billing",
-        osUser: "developer",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [
-      {
-        key: randomUUID(),
-        pos: 0,
-        sourceVersion: 0,
-        line: JSON.stringify({
-          type: "user",
-          uuid: randomUUID(),
-          message: {
-            role: "user",
-            content: "Investigate the monthly capture allowance",
-          },
-        }),
-      },
-    ],
-  };
-}
-async function organization(slug: string) {
-  const value = await provisionOrganization(db, `billing-${slug}`);
-  await db.prisma.user.update({
-    where: { id: requireCaller(value.owner).userId },
-    data: { emailVerified: true },
+    context: { cwd: "/billing", installation: { hostname: "billing" } },
+    records: [textRecord(0, "Investigate the monthly capture allowance")],
   });
-  return value;
 }
-function requestHeaders(context: ServiceContext) {
-  const result: Record<string, string> = {};
-  context.headers.forEach((value, key) => {
-    result[key] = value;
-  });
-  return result;
-}
+const organization = (slug: string) =>
+  provisionOrganization(db, `billing-${slug}`, { verified: true });
 function usage(context: ServiceContext) {
   return runtime.services.billing.usage(context).then((value) => value.result);
 }
@@ -136,37 +86,32 @@ async function ledger(context: ServiceContext) {
 
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   application = new PrismaClient({ datasourceUrl: db.urls.app });
-  release.unshift(() => application.$disconnect());
+  defer(() => application.$disconnect());
   projections = traceServices(db, application);
-  release.unshift(() => projections.close());
-  const env = environment({
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    INSTANCE_MODE: "saas",
-    FREE_MONTHLY_RECORDS: "2",
-    PRO_INCLUDED_RECORDS: "3",
-    CAPTURE_CENTS_PER_1000: "5",
-    EMBEDDING_CENTS_PER_1000: "10",
-    STRIPE_CAPTURE_EVENT_NAME: "capture_records",
-    STRIPE_EMBEDDING_EVENT_NAME: "embedded_messages",
-    CAL_COM_URL: "https://cal.com/agentcommons/demo",
-    LOG_LEVEL: "silent",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  app = await createApp({ env, services: runtime.services, static: false });
-  release.unshift(() => app.close());
-  address = await app.listen({ host: "127.0.0.1", port: 0 });
+  defer(() => projections.close());
+  const started = await startApp(
+    db,
+    {
+      INSTANCE_MODE: "saas",
+      FREE_MONTHLY_RECORDS: "2",
+      PRO_INCLUDED_RECORDS: "3",
+      CAPTURE_CENTS_PER_1000: "5",
+      EMBEDDING_CENTS_PER_1000: "10",
+      STRIPE_CAPTURE_EVENT_NAME: "capture_records",
+      STRIPE_EMBEDDING_EVENT_NAME: "embedded_messages",
+      CAL_COM_URL: "https://cal.com/agentcommons/demo",
+    },
+    { listen: true },
+  );
+  defer(() => started.close());
+  ({ runtime, app, address } = started);
 }, 120_000);
 afterAll(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
-  expect(await cleanup(release.splice(0))).toEqual([]);
+  await release();
 });
 
 // @req R-SAAS-03
@@ -293,16 +238,11 @@ it("retains append-only record admissions after purge and does not recharge pre-
   const customer = new IngestService({
     ...db,
     traces: projections.jobs,
-    billing: {
+    billing: testBillingConfig({
       mode: "customer",
       freeMonthlyRecords: 0,
       proIncludedRecords: 1,
-      calComUrl: null,
-      captureCentsPer1000: null,
-      embeddingCentsPer1000: null,
-      captureEventName: null,
-      embeddingEventName: null,
-    },
+    }),
   });
   await customer.execute(org.context, input);
   expect(await ledger(org.context)).toBe(0);
@@ -343,16 +283,11 @@ it.each(["customer", "public"] as const)(
     const service = new IngestService({
       ...db,
       traces: projections.jobs,
-      billing: {
+      billing: testBillingConfig({
         mode,
         freeMonthlyRecords: 0,
         proIncludedRecords: 1,
-        calComUrl: null,
-        captureCentsPer1000: null,
-        embeddingCentsPer1000: null,
-        captureEventName: null,
-        embeddingEventName: null,
-      },
+      }),
     });
     for (let index = 0; index < 3; index++)
       await service.execute(org.context, envelope());
@@ -479,11 +414,8 @@ it("serves shared public pricing without tenant data, scopes member usage, and r
     db,
     org.owner,
     "billing-member@example.com",
+    { verified: true },
   );
-  await db.prisma.user.update({
-    where: { id: requireCaller(member.owner).userId },
-    data: { emailVerified: true },
-  });
   await capture(org.context);
   const publicResponse = await app.inject({
     method: "GET",
@@ -518,7 +450,7 @@ it("serves shared public pricing without tenant data, scopes member usage, and r
     [org.context, false],
     [member.owner, false],
   ] as const) {
-    const headers = requestHeaders(actor);
+    const headers = injectHeaders(actor);
     const response = await app.inject({
       method: "GET",
       url: "/api/v1/billing",
@@ -535,7 +467,7 @@ it("serves shared public pricing without tenant data, scopes member usage, and r
       const result = await app.inject({
         method: "POST",
         url: `/api/v1/billing/${endpoint}`,
-        headers: { ...headers, origin: testAuthConfiguration.publicUrl },
+        headers,
         payload: endpoint === "checkout" ? { plan: "pro" } : {},
       });
       expect(result.statusCode, result.body).toBe(canManage ? 503 : 403);
@@ -544,10 +476,7 @@ it("serves shared public pricing without tenant data, scopes member usage, and r
   const forged = await app.inject({
     method: "POST",
     url: "/api/v1/billing/checkout",
-    headers: {
-      ...requestHeaders(org.owner),
-      origin: testAuthConfiguration.publicUrl,
-    },
+    headers: injectHeaders(org.owner),
     payload: {
       referenceId: "another-organization",
       plan: "enterprise",
@@ -591,7 +520,6 @@ it.each(["upgrade", "month reset"] as const)(
           cwd: directory,
           hook_event_name: "Stop",
         },
-        "quota-launch",
       );
       if (!path) throw new Error("Expected a durable upload intent");
       const sent: IngestEnvelope[] = [];

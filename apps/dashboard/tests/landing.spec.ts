@@ -23,18 +23,9 @@ for (const theme of ["dark", "light"] as const) {
       await page.goto(path);
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
       await expect(page.locator("h1")).toBeVisible();
-      await page.evaluate(() => document.fonts.ready);
-      expect(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= window.innerWidth,
-        ),
-      ).toBe(true);
-      const report = await new AxeBuilder({ page }).analyze();
-      expect(
-        report.violations.filter((violation) =>
-          ["serious", "critical"].includes(violation.impact ?? ""),
-        ),
-      ).toEqual([]);
+      // The stored theme lands after hydration; the helper waits for that transition to
+      // finish so axe does not compare one theme's text with the other's background.
+      await accessible(page);
       await expect(page).toHaveScreenshot(
         `${path === "/" ? "landing" : "guide"}-${theme}.png`,
         { fullPage: true },
@@ -61,7 +52,7 @@ test("example tabs work with keyboard and theme survives reload", async ({
     "true",
   );
   await expect(
-    page.getByText(copy.preview.get.rows[0].text, { exact: true }),
+    page.getByText(copy.site.preview.get.rows[0].text, { exact: true }),
   ).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: /sql/ })).toHaveAttribute(
@@ -69,22 +60,22 @@ test("example tabs work with keyboard and theme survives reload", async ({
     "true",
   );
   await expect(page.getByRole("table")).toBeVisible();
-  await page.getByRole("button", { name: copy.theme.light }).click();
+  await page.getByRole("button", { name: copy.app.common.theme.light }).click();
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  const menu = page.getByRole("button", { name: copy.navigation.menu });
+  const menu = page.getByRole("button", { name: copy.app.navigation.menu });
   if (await menu.isVisible()) {
     await menu.click();
     await expect(
-      page.getByRole("button", { name: copy.navigation.close }),
+      page.getByRole("button", { name: copy.app.navigation.closeMenu }),
     ).toHaveAttribute("aria-expanded", "true");
     await page
-      .getByRole("link", { name: copy.navigation.product, exact: true })
+      .getByRole("link", { name: copy.site.navigation.product, exact: true })
       .click();
     await expect(menu).toHaveAttribute("aria-expanded", "false");
   }
   await expect(
-    page.getByRole("link", { name: copy.hero.primary }).first(),
+    page.getByRole("link", { name: copy.site.hero.primary }).first(),
   ).toHaveAttribute("href", "/login");
 });
 
@@ -98,7 +89,7 @@ test("landing is readable without JavaScript and discovery is public documentati
   const page = await context.newPage();
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText(
-    copy.hero.title,
+    copy.site.hero.title,
   );
   await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
     "content",
@@ -114,11 +105,11 @@ test("landing is readable without JavaScript and discovery is public documentati
   );
   expect(metadata).toMatchObject({
     "@type": "SoftwareApplication",
-    name: copy.brand,
+    name: copy.site.brand,
   });
   expect(metadata).not.toHaveProperty("aggregateRating");
   expect(await (await request.get("/llms.txt")).text()).toContain(
-    copy.publicGuide.sections[0],
+    copy.site.publicGuide.sections[0],
   );
   expect(await (await request.get("/llms-full.txt")).text()).toContain(
     "# AgentCommons",
@@ -148,7 +139,7 @@ test("native hydration preserves the prerendered content and layout", async ({
   });
   await page.goto("/", { waitUntil: "commit" });
   const heading = page.getByRole("heading", { level: 1 });
-  await expect(heading).toContainText(copy.hero.title);
+  await expect(heading).toContainText(copy.site.hero.title);
   await page.evaluate(() => document.fonts.ready);
   const original = await heading.elementHandle();
   const before = await heading.evaluate((node) => {
@@ -197,7 +188,7 @@ test("customer public pages hide hosted signup, pricing and email requests", asy
   ]) {
     await page.goto(path);
     await expect(
-      page.getByText(copy.saas.unavailable, { exact: true }),
+      page.getByText(copy.site.saas.unavailable, { exact: true }),
     ).toBeVisible();
     await expect(page.locator("form")).toHaveCount(0);
   }
@@ -222,7 +213,7 @@ for (const theme of ["dark", "light"] as const)
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto("/blog");
     await expect(
-      page.getByRole("heading", { name: copy.blog.title, exact: true }),
+      page.getByRole("heading", { name: copy.site.blog.title, exact: true }),
     ).toBeVisible();
     await expect(page).toHaveScreenshot(`blog-${theme}.png`, {
       fullPage: true,
@@ -248,7 +239,7 @@ for (const theme of ["dark", "light"] as const)
       fullPage: true,
     });
     await page
-      .getByRole("link", { name: copy.blog.back, exact: true })
+      .getByRole("link", { name: copy.site.blog.back, exact: true })
       [input]();
     await expect(page).toHaveURL(/\/blog$/);
     const sitemap = await context.request.get("/sitemap.xml");
@@ -331,7 +322,7 @@ for (const [path, document] of [
         isMobile,
       );
       await expect(page).toHaveURL(new RegExp(`${path}$`));
-      await expect(page).toHaveTitle(`${document.title} · ${copy.brand}`);
+      await expect(page).toHaveTitle(`${document.title} · ${copy.site.brand}`);
       await expect(
         page.getByRole("heading", {
           level: 1,

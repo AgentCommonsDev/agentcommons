@@ -6,6 +6,7 @@ import {
 } from "../redaction/structure.js";
 import {
   array,
+  assignPresent,
   identitiesAt,
   assignUsage,
   createNormalizer,
@@ -18,6 +19,7 @@ import {
   tokens,
   toolFiles,
   SENSITIVE_FILE_MARKER,
+  type NativeRoles,
 } from "./shared.js";
 import type { NormalizedMessage, SessionDelta } from "./types.js";
 
@@ -26,6 +28,8 @@ const fileRules = {
   write_file: { paths: ["file_path", "path"], ops: ["write"] },
   replace: { paths: ["file_path", "path"], ops: ["edit"] },
 };
+/** Gemini records the author as the message type. */
+const recordRoles: NativeRoles = { user: "USER", gemini: "ASSISTANT" };
 /** Gemini CLI 0.35.3 records a thought as `{ subject, description, timestamp }`
  * (`ChatRecordingService.recordThought`); older shapes used a plain `text`. */
 function thoughtText(thought: unknown): string {
@@ -84,7 +88,6 @@ export const geminiCli = createNormalizer({
         return [];
       return [
         {
-          rawRecordId: record.id,
           toolUseId: string(tool.id),
           locations: [
             {
@@ -122,10 +125,10 @@ export const geminiCli = createNormalizer({
         ? records.filter((record) => record.pos < BigInt(length))
         : records;
     return current.flatMap((record) => {
-      const data = object(record.payload);
-      if (data.type !== "user" && data.type !== "gemini") return [];
+      const data = record.payload;
+      const role = recordRoles[string(data.type) ?? ""];
+      if (!role) return [];
       const model = string(data.model);
-      const role = data.type === "user" ? "USER" : "ASSISTANT";
       const result: NormalizedMessage[] = [];
       const content = text(data.content);
       if (content)
@@ -195,10 +198,10 @@ export const geminiCli = createNormalizer({
   sessionDelta(_records, context) {
     const delta: SessionDelta = {};
     const metadata = context?.transcriptMetadata ?? {};
-    const id = string(metadata.sessionId);
-    if (id) delta.harnessSessionId = id;
-    const start = timestamp(metadata.startTime);
-    if (start) delta.startedAt = start;
+    assignPresent(delta, {
+      harnessSessionId: string(metadata.sessionId),
+      startedAt: timestamp(metadata.startTime),
+    });
     return delta;
   },
   links() {

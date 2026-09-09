@@ -5,6 +5,8 @@ import { GenericContainer, Wait } from "testcontainers";
 import { startDatabase } from "../../../apps/api/test/support.js";
 import { cleanup } from "../../../scripts/cleanup.js";
 import {
+  clickHouseConfigSchema,
+  clickHouseEnvironmentKeys,
   migrateTraces,
   CLICKHOUSE_IMAGE,
   TraceReaders,
@@ -97,15 +99,14 @@ export async function startTraceDatabase(
 export function traceEnvironment(
   config: ClickHouseConfig,
 ): Record<string, string> {
-  return {
-    CLICKHOUSE_URL: config.url,
-    CLICKHOUSE_DATABASE: config.database,
-    CLICKHOUSE_WRITER_USER: config.username,
-    CLICKHOUSE_WRITER_PASSWORD: config.password,
-    CLICKHOUSE_ACCESS_USER: config.accessUsername,
-    CLICKHOUSE_ACCESS_PASSWORD: config.accessPassword,
-    CLICKHOUSE_READER_SECRET: config.readerSecret,
-  };
+  return Object.fromEntries(
+    clickHouseConfigSchema
+      .keyof()
+      .options.map((setting) => [
+        clickHouseEnvironmentKeys[setting],
+        config[setting],
+      ]),
+  );
 }
 
 /** Await accepted revisions becoming visible; callers start the actual worker separately. */

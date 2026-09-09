@@ -5,7 +5,7 @@ import {
   type GetOutput,
   type SessionHeader,
 } from "../schemas/get.js";
-import type { SearchOutput } from "../schemas/search.js";
+import { searchOutputSchema, type SearchOutput } from "../schemas/search.js";
 import type { SqlOutput } from "../schemas/sql.js";
 
 const sessionId = "0192a3f0-7c1e-7d1a-9b0e-3f2a1c9d4e55";
@@ -144,9 +144,11 @@ describe("shared text and structured formatters", () => {
     expect(nested.text).toContain(
       `root_session_id: ${sessionId} | parent_relation: SUBAGENT | agent_type: Explore | parent_tool_use_id: call-1`,
     );
-    expect(() =>
-      formatSearch({ ...search, rank: 0.8 } as SearchOutput),
-    ).toThrow();
+    // Formatters render an already-validated value; the output schema the adapters
+    // parse with is what keeps internal ranks out of the contract.
+    expect(searchOutputSchema.safeParse({ ...search, rank: 0.8 }).success).toBe(
+      false,
+    );
   });
   it("counts unique sessions after window merging and prints an empty result honestly", () => {
     expect(

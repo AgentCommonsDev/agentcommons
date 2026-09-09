@@ -1,7 +1,4 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.ts";
+import { startTraceDatabase } from "../../../packages/traces/test/support.ts";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -12,11 +9,9 @@ import {
   provisionMember,
   testAuthConfiguration,
 } from "../../api/test/support.ts";
+import { startApp } from "../../api/test/app.ts";
 import { startMailpit } from "../../api/test/mailpit.ts";
 import { startStripe } from "../../api/test/stripe-support.ts";
-import { createRuntime } from "../../api/src/main.ts";
-import { createApp } from "../../api/src/app.ts";
-import { environment } from "../../api/src/env.ts";
 import { cleanup } from "../../../scripts/cleanup.ts";
 
 // One SaaS fixture per port so a developer can run beside a live instance; the
@@ -73,15 +68,8 @@ try {
     },
     data: { emailVerified: true },
   });
-  const env = environment({
-    ...traceEnvironment(database.traceConfig),
-    PUBLIC_URL: origin,
-    DATABASE_URL: database.urls.app,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
+  const saasEnvironment = {
     INSTANCE_MODE: "saas",
-    AUTH_SOCIAL_PROVIDER: "google",
-    AUTH_GOOGLE_CLIENT_ID: "browser-domain-client",
-    AUTH_GOOGLE_CLIENT_SECRET: "browser-domain-secret",
     FREE_MONTHLY_RECORDS: "2",
     PRO_INCLUDED_RECORDS: "4",
     CAPTURE_CENTS_PER_1000: String(stripe.billing.captureCentsPer1000),
@@ -91,54 +79,49 @@ try {
     EMAIL_TRANSPORT: "smtp",
     EMAIL_FROM: "no-reply@example.test",
     SMTP_URL: mail.smtpUrl,
-    LOG_LEVEL: "silent",
     TRUST_PROXY: "loopback",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  env.auth.stripe = {
-    client: stripe.client,
-    webhookSecret: signingSecret,
-    ...stripe.billing,
   };
-  const runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  await runtime.jobs.start();
-  const app = await createApp({
-    env,
-    services: runtime.services,
-    ...(dashboardDirectory ? { dashboardDirectory } : {}),
-  });
-  release.unshift(() => app.close());
-  await app.listen({ port: basePort, host: "127.0.0.1" });
-  const calendarEnv = environment({
-    ...traceEnvironment(database.traceConfig),
-    PUBLIC_URL: calendarOrigin,
-    DATABASE_URL: database.urls.app,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    INSTANCE_MODE: "saas",
-    FREE_MONTHLY_RECORDS: "2",
-    PRO_INCLUDED_RECORDS: "4",
-    CAPTURE_CENTS_PER_1000: String(stripe.billing.captureCentsPer1000),
-    EMBEDDING_CENTS_PER_1000: String(stripe.billing.embeddingCentsPer1000),
-    STRIPE_CAPTURE_EVENT_NAME: stripe.billing.captureEventName,
-    STRIPE_EMBEDDING_EVENT_NAME: stripe.billing.embeddingEventName,
-    CAL_COM_URL: "https://cal.com/agentcommons-provider-fixture/demo",
-    EMAIL_TRANSPORT: "smtp",
-    EMAIL_FROM: "no-reply@example.test",
-    SMTP_URL: mail.smtpUrl,
-    LOG_LEVEL: "silent",
-    TRUST_PROXY: "loopback",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  const calendarRuntime = await createRuntime(calendarEnv);
-  release.unshift(() => calendarRuntime.close());
-  const calendarApp = await createApp({
-    env: calendarEnv,
-    services: calendarRuntime.services,
-    ...(dashboardDirectory ? { dashboardDirectory } : {}),
-  });
-  release.unshift(() => calendarApp.close());
-  await calendarApp.listen({ port: basePort + 1, host: "127.0.0.1" });
+  const serving = dashboardDirectory
+    ? { dashboardDirectory }
+    : { static: true };
+  const { app, close: closeApp } = await startApp(
+    database,
+    {
+      ...saasEnvironment,
+      PUBLIC_URL: origin,
+      AUTH_SOCIAL_PROVIDER: "google",
+      AUTH_GOOGLE_CLIENT_ID: "browser-domain-client",
+      AUTH_GOOGLE_CLIENT_SECRET: "browser-domain-secret",
+    },
+    {
+      configure: (env) => ({
+        ...env,
+        auth: {
+          ...env.auth,
+          stripe: {
+            client: stripe.client,
+            webhookSecret: signingSecret,
+            ...stripe.billing,
+          },
+        },
+      }),
+      jobs: true,
+      listen: true,
+      port: basePort,
+      ...serving,
+    },
+  );
+  release.unshift(closeApp);
+  const calendar = await startApp(
+    database,
+    {
+      ...saasEnvironment,
+      PUBLIC_URL: calendarOrigin,
+      CAL_COM_URL: "https://cal.com/agentcommons-provider-fixture/demo",
+    },
+    { listen: true, port: basePort + 1, ...serving },
+  );
+  release.unshift(calendar.close);
   const control = createServer((request, response) => {
     const handle = async () => {
       if (request.headers.authorization !== `Bearer ${controlToken}`) {

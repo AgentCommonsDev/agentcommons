@@ -1,4 +1,6 @@
 import type { TraceReadClient } from "@agentcommons/traces";
+import { messageContent } from "@agentcommons/core/format";
+import { traceJson } from "./read-model.js";
 
 /** Keep payload transfers bounded; one oversized row still makes forward progress. */
 export function* messagePayloadBatches(
@@ -37,4 +39,13 @@ export async function readMessagePayloads(
   if (result.rows.length !== metadata.length)
     throw new Error("The published message payload is unavailable.");
   return result.rows;
+}
+
+/** The text a reader sees for one message row: its content, plus the tool input of a TOOL_USE. */
+export function messageText(row: Record<string, unknown>): string {
+  return messageContent(
+    String(row.content),
+    String(row.kind),
+    row.tool_input === undefined ? undefined : traceJson(row.tool_input),
+  );
 }

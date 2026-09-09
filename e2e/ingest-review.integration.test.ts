@@ -1,4 +1,3 @@
-import { cleanup as cleanupAll } from "../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Harness, IngestEnvelope } from "../packages/core/src/index.js";
@@ -6,55 +5,29 @@ import { traceServices } from "../apps/api/test/trace-services.js";
 import { startTraceDatabase } from "../packages/traces/test/support.js";
 import { PolicyService } from "../apps/api/src/services/policies.js";
 import { CursorCodec } from "../apps/api/src/services/cursor.js";
-import { provisionOrganization } from "../apps/api/test/support.js";
+import { provisionOrganization, releaser } from "../apps/api/test/support.js";
+import {
+  sourceRecord as record,
+  testEnvelope,
+  textRecord as text,
+} from "../apps/api/test/envelopes.js";
 
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let primary: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let services: ReturnType<typeof traceServices>;
 let policies: PolicyService;
-function envelope(
-  harness: Harness = "CLAUDE_CODE",
-): IngestEnvelope & { sourcePos: number } {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
+function envelope(harness: Harness = "CLAUDE_CODE"): IngestEnvelope {
+  return testEnvelope({
     harness,
-    harnessSessionId: randomUUID(),
     behavior: "start",
     nativeEvent: "SessionStart",
     start: { resume: false },
-    batchId: randomUUID(),
-    installationId: randomUUID(),
     sentAt: "2026-09-07T00:00:00Z",
-    sourcePos: 0,
-    context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "review-host",
-        osUser: "review-user",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: [],
     cursor: "initial",
-    end: null,
-  };
-}
-function record(
-  pos: number,
-  payload: Record<string, unknown>,
-  key = `record-${String(pos)}`,
-) {
-  return { pos, sourceVersion: 0, key, line: JSON.stringify(payload) };
-}
-function text(pos: number, content: string) {
-  return record(pos, {
-    type: "user",
-    message: { content: [{ type: "text", text: content }] },
+    context: {
+      installation: { hostname: "review-host", osUser: "review-user" },
+    },
   });
 }
 function next(
@@ -75,14 +48,14 @@ function upload(input: IngestEnvelope, organization = primary) {
     input,
   );
 }
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   primary = await provisionOrganization(database, "review-primary");
   other = await provisionOrganization(database, "review-other");
   services = traceServices(database);
-  release.unshift(() => services.close());
+  defer(() => services.close());
   policies = new PolicyService({
     prisma: database.prisma,
     audit: database.audit,
@@ -90,9 +63,7 @@ beforeAll(async () => {
     cursors: new CursorCodec("independent-review-cursor-secret"),
   });
 });
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 describe("independent ingestion adversarial review", () => {
   // @req R-ING-07

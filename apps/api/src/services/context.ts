@@ -1,11 +1,19 @@
-import type { CallerContext, JsonValue } from "@agentcommons/core";
+import type {
+  CallerContext,
+  JsonValue,
+  transportSchema,
+} from "@agentcommons/core";
 import type { AuditEvent } from "@agentcommons/db";
 import { hasAdminAuthority } from "@agentcommons/db";
+import type { z } from "zod";
+import type { AuthIdentity } from "../auth/identity.js";
 
 export interface ServiceContext {
   caller: CallerContext | null;
+  /** The authenticated user and session behind `caller`, set by adapter authentication. */
+  principal?: AuthIdentity;
   requestId: string;
-  transport: "rest" | "mcp" | "web";
+  transport: z.infer<typeof transportSchema>;
   ip: string | null;
   userAgent: string | null;
   startedAt: number;

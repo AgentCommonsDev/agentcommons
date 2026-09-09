@@ -8,6 +8,7 @@ import { workspaceOrigin } from "../playwright.shared";
 import { testAccountPassword } from "../../api/test/support";
 import {
   accessible,
+  accountLocation,
   activate,
   openNavigation,
   collectErrors,
@@ -33,14 +34,20 @@ async function organizations(page: Page) {
   ).organizations;
 }
 
-// @req R-DASH-27 @req R-ORG-10
+// @req R-DASH-27 @req R-ORG-10 @req R-DASH-34
 test("anonymous application visits go to sign-in and legacy paths are neither served nor redirected", async ({
   page,
   context,
 }) => {
-  for (const path of [paths.home, paths.admin.users]) {
+  // Home needs no return address; any other page travels along as `next`.
+  for (const [path, next] of [
+    [paths.home, null],
+    [paths.admin.users, paths.admin.users],
+  ] as const) {
     await page.goto(path);
-    await expect(page).toHaveURL(/\/login$/);
+    await expect
+      .poll(() => accountLocation(page))
+      .toEqual({ path: paths.login, next });
     await expect(page.getByTestId("auth-card")).toBeVisible();
   }
   const state = await signInAsOwner(context);
@@ -54,7 +61,7 @@ test("anonymous application visits go to sign-in and legacy paths are neither se
     await page.goto(legacy);
     await expect(page).toHaveURL(new RegExp(`${legacy}$`));
     await expect(
-      page.getByText(copy.notFound.title, { exact: true }),
+      page.getByText(copy.site.notFound.title, { exact: true }),
     ).toBeVisible();
     await expect(page.getByTestId("dashboard-picker")).toHaveCount(0);
   }
@@ -281,7 +288,7 @@ test("a fresh sign-in lands in the first membership, the theme toggle persists, 
   ).toBe(first.id);
   // Nothing has been clicked yet, so the first Tab lands on the skip link.
   await page.keyboard.press("Tab");
-  const skip = page.getByRole("link", { name: copy.skip, exact: true });
+  const skip = page.getByRole("link", { name: copy.site.skip, exact: true });
   await expect(skip).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/#main$/);
@@ -322,14 +329,14 @@ test("a self-hosted instance sends the site root to the application: sign-in whe
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByTestId("auth-card")).toBeVisible();
   await expect(
-    page.getByRole("link", { name: copy.saas.signup, exact: true }),
+    page.getByRole("link", { name: copy.site.saas.signup, exact: true }),
   ).toHaveCount(0);
   await signInAsOwner(context);
   await page.goto(paths.site);
   await expect(page).toHaveURL(new RegExp(`${paths.home}$`));
   await expect(page.getByTestId("dashboard-picker")).toBeVisible();
   await expect(
-    page.getByRole("link", { name: copy.hero.primary, exact: true }),
+    page.getByRole("link", { name: copy.site.hero.primary, exact: true }),
   ).toHaveCount(0);
 });
 
@@ -423,15 +430,15 @@ for (const theme of ["dark", "light"] as const)
       },
       {
         path: paths.forgotPassword,
-        ready: () => expect(heading).toHaveText(copy.signup.resetTitle),
+        ready: () => expect(heading).toHaveText(copy.site.signup.resetTitle),
       },
       {
         path: paths.verifyEmail,
-        ready: () => expect(heading).toHaveText(copy.signup.verifyEmail),
+        ready: () => expect(heading).toHaveText(copy.site.signup.verifyEmail),
       },
       {
         path: paths.signup,
-        ready: () => expect(heading).toHaveText(copy.signup.title),
+        ready: () => expect(heading).toHaveText(copy.site.signup.title),
       },
     ];
     for (const screen of screens) {

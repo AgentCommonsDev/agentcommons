@@ -1,17 +1,17 @@
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Eye, EyeOff, ExternalLink, Trash2 } from "lucide-react";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import { sessionSortKeys } from "../../lib/api/options";
 import { dateTime, harnessLabel, number } from "../../lib/display";
-import { paths } from "../../lib/routes";
 import type { SessionItem } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
 import { ConfirmDialog } from "../../components/app/confirm-dialog";
-import { RequestError, StatusBadge } from "../../components/app/states";
+import { StatusBadge } from "../../components/app/states";
 import { Alert, PageHeader } from "../../components/ui/feedback";
 import { Input } from "../../components/ui/input";
 import { useListPage } from "../../features/admin/list";
@@ -52,18 +52,22 @@ const fields = copy.app.fields;
 export function ModerationPage() {
   const { organization } = useWorkspace();
   const client = useQueryClient();
+  const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [filters, setFilters] = useState<Filters>({});
   const [action, setAction] = useState<Action | null>(null);
-  const list = useListPage<SessionItem, (typeof sessionSortKeys)[number]>({
-    queryKey: [organization.id, "admin", "moderation", filters],
+  const list = useListPage<
+    SessionItem,
+    (typeof sessionSortKeys)[number],
+    Filters
+  >({
+    queryKey: [organization.id, "admin", "moderation"],
     initialSort: "started_at",
     sortKeys: sessionSortKeys,
     csvName: text.csvName,
     fetchPage: async (request, signal) =>
       unwrap(
         await api.GET("/api/v1/sessions", {
-          params: { query: { filters, ...request, format: "json" } },
+          params: { query: { ...request, format: "json" } },
           signal,
         }),
       ),
@@ -78,7 +82,7 @@ export function ModerationPage() {
         header: fields.title,
         cell: ({ row }) => (
           <span className="line-clamp-2 max-w-md font-medium">
-            {row.original.title?.trim() || text.untitled}
+            {row.original.title?.trim() || copy.app.common.untitledSession}
           </span>
         ),
       },
@@ -150,7 +154,10 @@ export function ModerationPage() {
                 {
                   label: text.open,
                   icon: ExternalLink,
-                  href: paths.session(session.session_id),
+                  link: {
+                    to: "/app/sessions/$id",
+                    params: { id: session.session_id },
+                  },
                 },
                 {
                   label: text.visible,
@@ -218,112 +225,104 @@ export function ModerationPage() {
   return (
     <>
       <PageHeader title={text.title} description={text.description} />
-      {list.query.error ? (
-        <RequestError
-          error={list.query.error}
-          retry={() => {
-            void list.query.refetch();
+      <div data-testid="admin-moderation-table">
+        <DataTable
+          {...list.table}
+          columns={columns}
+          label={text.title}
+          hiddenColumns={["message_count", "branch", "session_id"]}
+          rowId={(row) => row.session_id}
+          onRowClick={(row) => {
+            void navigate({
+              to: "/app/sessions/$id",
+              params: { id: row.session_id },
+            });
           }}
+          emptyTitle={text.empty}
+          emptyDescription={text.emptyHint}
+          toolbar={
+            <FilterBar
+              label={copy.app.common.filters}
+              activeCount={countActive(list.filters)}
+              onApply={() => {
+                list.setFilters(toFilters(draft));
+              }}
+              onClear={() => {
+                setDraft(emptyDraft);
+                list.setFilters({});
+              }}
+              controls={[
+                {
+                  id: "repo",
+                  label: text.repo,
+                  width: "sm:w-52",
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="search"
+                      placeholder={text.repo}
+                      value={draft.repo}
+                      onChange={(event) => {
+                        set("repo")(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "user",
+                  label: text.user,
+                  width: "sm:w-52",
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="email"
+                      placeholder={text.user}
+                      value={draft.user}
+                      onChange={(event) => {
+                        set("user")(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "since",
+                  label: text.since,
+                  width: "sm:w-40",
+                  showLabel: true,
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="date"
+                      title={text.since}
+                      value={draft.since}
+                      onChange={(event) => {
+                        set("since")(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "until",
+                  label: text.until,
+                  width: "sm:w-40",
+                  showLabel: true,
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="date"
+                      title={text.until}
+                      value={draft.until}
+                      onChange={(event) => {
+                        set("until")(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+              ]}
+            />
+          }
         />
-      ) : (
-        <div data-testid="admin-moderation-table">
-          <DataTable
-            {...list.table}
-            columns={columns}
-            label={text.title}
-            hiddenColumns={["message_count", "branch", "session_id"]}
-            rowId={(row) => row.session_id}
-            onRowClick={(row) => {
-              window.location.assign(paths.session(row.session_id));
-            }}
-            emptyTitle={text.empty}
-            emptyDescription={text.emptyHint}
-            toolbar={
-              <FilterBar
-                label={copy.app.common.filters}
-                activeCount={countActive(filters)}
-                onApply={() => {
-                  setFilters(toFilters(draft));
-                  list.reset();
-                }}
-                onClear={() => {
-                  setDraft(emptyDraft);
-                  setFilters({});
-                  list.reset();
-                }}
-                controls={[
-                  {
-                    id: "repo",
-                    label: text.repo,
-                    width: "sm:w-52",
-                    render: (props) => (
-                      <Input
-                        {...props}
-                        type="search"
-                        placeholder={text.repo}
-                        value={draft.repo}
-                        onChange={(event) => {
-                          set("repo")(event.target.value);
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    id: "user",
-                    label: text.user,
-                    width: "sm:w-52",
-                    render: (props) => (
-                      <Input
-                        {...props}
-                        type="email"
-                        placeholder={text.user}
-                        value={draft.user}
-                        onChange={(event) => {
-                          set("user")(event.target.value);
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    id: "since",
-                    label: text.since,
-                    width: "sm:w-40",
-                    showLabel: true,
-                    render: (props) => (
-                      <Input
-                        {...props}
-                        type="date"
-                        title={text.since}
-                        value={draft.since}
-                        onChange={(event) => {
-                          set("since")(event.target.value);
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    id: "until",
-                    label: text.until,
-                    width: "sm:w-40",
-                    showLabel: true,
-                    render: (props) => (
-                      <Input
-                        {...props}
-                        type="date"
-                        title={text.until}
-                        value={draft.until}
-                        onChange={(event) => {
-                          set("until")(event.target.value);
-                        }}
-                      />
-                    ),
-                  },
-                ]}
-              />
-            }
-          />
-        </div>
-      )}
+      </div>
       <ConfirmDialog
         open={action !== null}
         onOpenChange={(open) => {

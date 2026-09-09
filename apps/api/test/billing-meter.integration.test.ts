@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, expect, it, vi } from "vitest";
 import { PrismaClient } from "@agentcommons/db";
-import { startDatabase, provisionOrganization } from "./support.js";
+import { startDatabase, provisionOrganization, releaser } from "./support.js";
 import { startStripe } from "./stripe-support.js";
-import { cleanup } from "../../../scripts/cleanup.js";
 import { AuditService } from "../src/services/audit.js";
 import { createPolicyCache } from "../src/services/policy-cache.js";
 import { BillingMeterService } from "../src/services/billing-meter.js";
@@ -16,17 +15,17 @@ let audit: AuditService;
 let meter: BillingMeterService;
 let organizationId: string;
 let now: Date;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   db = await startDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   stripe = await startStripe();
-  release.unshift(() => stripe.close());
+  defer(() => stripe.close());
   organizationId = requireCaller(
     (await provisionOrganization(db, "meter-protocol")).owner,
   ).organizationId;
   prisma = new PrismaClient({ datasourceUrl: db.urls.app });
-  release.unshift(() => prisma.$disconnect());
+  defer(() => prisma.$disconnect());
   audit = new AuditService(prisma, createPolicyCache(prisma));
   now = new Date();
   meter = new BillingMeterService({
@@ -36,9 +35,7 @@ beforeAll(async () => {
     now: () => now,
   });
 });
-afterAll(async () => {
-  expect(await cleanup(release)).toEqual([]);
-});
+afterAll(release);
 async function event(occurredAt = now) {
   return prisma.billingMeterEvent.create({
     data: {

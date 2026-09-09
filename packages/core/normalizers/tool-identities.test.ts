@@ -1,38 +1,22 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
 import { claudeCode, codex, geminiCli, pi } from "./index.js";
-import type { SourceRecord } from "./types.js";
 import {
   Redactor,
   maskToolResults,
   redactSourceRecord,
 } from "../redaction/index.js";
 import { object } from "./shared.js";
+import {
+  geminiMessages,
+  jsonlRecords,
+  sourceRecord,
+} from "../test/fixtures.js";
 
 const directory = new URL(
   "../../../fixtures/transcripts/tool-identities/",
   import.meta.url,
 );
-const payloadSchema = z.looseObject({});
-function source(payload: Record<string, unknown>, pos: number): SourceRecord {
-  return {
-    id: `record-${String(pos)}`,
-    pos: BigInt(pos),
-    sourceVersion: 0,
-    key: null,
-    payload,
-    receivedAt: new Date("2026-09-08T06:00:00Z"),
-  };
-}
-function records(name: string) {
-  return readFileSync(new URL(name, directory), "utf8")
-    .trimEnd()
-    .split("\n")
-    .map((line, pos) =>
-      source(payloadSchema.parse(JSON.parse(line) as unknown), pos),
-    );
-}
+const records = (name: string) => jsonlRecords(new URL(name, directory));
 function completions(name = "codex.jsonl") {
   return records(name).filter((record) => {
     const payload = object(record.payload.payload);
@@ -51,13 +35,7 @@ function firstCompletion() {
 describe("live native search tool contracts", () => {
   // @req R-HRN-01 @req R-HRN-03
   it("preserves the separately captured native filename-search tools", () => {
-    const document = z
-      .looseObject({ messages: z.array(payloadSchema) })
-      .parse(
-        JSON.parse(
-          readFileSync(new URL("gemini-glob.json", directory), "utf8"),
-        ) as unknown,
-      );
+    const document = geminiMessages(new URL("gemini-glob.json", directory));
     expect(
       claudeCode
         .toMessages(records("claude-glob.jsonl"))
@@ -66,26 +44,22 @@ describe("live native search tool contracts", () => {
     ).toEqual(["Glob"]);
     expect(
       geminiCli
-        .toMessages(document.messages.map(source))
+        .toMessages(document.map((payload, pos) => sourceRecord(payload, pos)))
         .filter((message) => message.kind === "TOOL_USE")
         .map((message) => message.toolName),
     ).toEqual(["glob"]);
   });
   // @req R-HRN-01 @req R-HRN-03 @req R-HRN-04
   it("normalizes exact captured Claude, Gemini and pi names without counting result blocks as calls", () => {
-    const document = z
-      .looseObject({ messages: z.array(payloadSchema) })
-      .parse(
-        JSON.parse(
-          readFileSync(new URL("gemini.json", directory), "utf8"),
-        ) as unknown,
-      );
+    const document = geminiMessages(new URL("gemini.json", directory));
     const piRecords = records("pi.jsonl");
     const leaf = piRecords.at(-1)?.payload.id;
     expect(typeof leaf).toBe("string");
     const observed = [
       claudeCode.toMessages(records("claude.jsonl")),
-      geminiCli.toMessages(document.messages.map(source)),
+      geminiCli.toMessages(
+        document.map((payload, pos) => sourceRecord(payload, pos)),
+      ),
       pi.toMessages(piRecords, { activeLeafId: String(leaf) }),
     ];
     expect(
@@ -167,7 +141,7 @@ describe("live native search tool contracts", () => {
     expect(
       codex
         .toMessages([
-          source(
+          sourceRecord(
             {
               type: "response_item",
               payload: {
@@ -210,7 +184,7 @@ describe("live native search tool contracts", () => {
     expect(
       codex.toMessages([duplicate, original]).map((message) => message.kind),
     ).toEqual(["TOOL_USE", "TOOL_RESULT"]);
-    const call = source(
+    const call = sourceRecord(
       {
         type: "response_item",
         payload: {
@@ -223,7 +197,7 @@ describe("live native search tool contracts", () => {
       0,
     );
     const result = {
-      ...source(
+      ...sourceRecord(
         {
           type: "response_item",
           payload: {
@@ -272,7 +246,7 @@ describe("live native search tool contracts", () => {
     for (const value of variants)
       expect(
         codex.toMessages([
-          source(
+          sourceRecord(
             {
               type: "event_msg",
               payload: { type: "item_completed", item: value },
@@ -287,7 +261,7 @@ describe("live native search tool contracts", () => {
     expect(
       codex
         .toMessages([
-          source(
+          sourceRecord(
             {
               type: "event_msg",
               payload: { type: "item_completed", item: noResult },

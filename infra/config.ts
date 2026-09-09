@@ -92,37 +92,40 @@ export const clickhouseCloudUrlSchema = z
     };
   });
 
-/** One Compose host behind Caddy; the stack name becomes the resource and parameter prefix. */
-export const singleNodeSettingsSchema = z
-  .object({
-    deployment: z.literal("single-node"),
-    stack: z.string().regex(/^[a-z][a-z0-9-]{0,23}$/),
-    hostname: hostnameSchema,
-    instanceType: z
-      .enum(["t4g.medium", "t4g.large", "t4g.xlarge"])
-      .default("t4g.large"),
-    volumeSize: z.coerce.number().int().min(40).max(1000).default(60),
-    snapshotRetention: z.coerce.number().int().min(1).max(35).default(7),
-    alarmEmail: z.email().optional(),
-    traceStore: z.enum(["local", "clickhouse-cloud"]).default("local"),
+const singleNodeHost = z.object({
+  deployment: z.literal("single-node"),
+  stack: z.string().regex(/^[a-z][a-z0-9-]{0,23}$/),
+  hostname: hostnameSchema,
+  instanceType: z
+    .enum(["t4g.medium", "t4g.large", "t4g.xlarge"])
+    .default("t4g.large"),
+  volumeSize: z.coerce.number().int().min(40).max(1000).default(60),
+  snapshotRetention: z.coerce.number().int().min(1).max(35).default(7),
+  alarmEmail: z.email().optional(),
+  /**
+   * libpq options ClickHouse passes when reading PostgreSQL. `default` sends none:
+   * libpq still prefers TLS and the host's pg_hba.conf accepts only TLS, but the
+   * certificate is not verified. ClickHouse Cloud 26.2 rejects any explicit option.
+   */
+  clickhouseCloudPostgresTls: z
+    .enum(["default", "require", "verify-full"])
+    .default("default"),
+  environment: environmentSchema.default({}),
+});
+/**
+ * One Compose host behind Caddy; the stack name becomes the resource and parameter
+ * prefix. The trace store selects the variant: the cloud one requires the endpoint.
+ */
+export const singleNodeSettingsSchema = z.discriminatedUnion("traceStore", [
+  singleNodeHost.extend({
+    traceStore: z.literal("local").default("local"),
     clickhouseCloudUrl: clickhouseCloudUrlSchema.optional(),
-    /**
-     * libpq options ClickHouse passes when reading PostgreSQL. `default` sends none:
-     * libpq still prefers TLS and the host's pg_hba.conf accepts only TLS, but the
-     * certificate is not verified. ClickHouse Cloud 26.2 rejects any explicit option.
-     */
-    clickhouseCloudPostgresTls: z
-      .enum(["default", "require", "verify-full"])
-      .default("default"),
-    environment: environmentSchema.default({}),
-  })
-  .refine(
-    (v) => v.traceStore === "local" || v.clickhouseCloudUrl !== undefined,
-    {
-      message: "traceStore clickhouse-cloud requires clickhouseCloudUrl.",
-      path: ["clickhouseCloudUrl"],
-    },
-  );
+  }),
+  singleNodeHost.extend({
+    traceStore: z.literal("clickhouse-cloud"),
+    clickhouseCloudUrl: clickhouseCloudUrlSchema,
+  }),
+]);
 export type SingleNodeSettings = z.infer<typeof singleNodeSettingsSchema>;
 type Settings = FargateSettings | SingleNodeSettings;
 
@@ -175,7 +178,9 @@ export function readSecrets() {
           .parse(value),
       ),
     appPassword: config.requireSecret("databaseAppPassword"),
-    authSecret: config.requireSecret("betterAuthSecret"),
+    authSecret: config
+      .requireSecret("betterAuthSecret")
+      .apply((value) => z.string().min(32).parse(value)),
     traceControlPassword: config.requireSecret("databaseTraceControlPassword"),
     clickhouseAdminPassword: config
       .requireSecret("clickhouseAdminPassword")

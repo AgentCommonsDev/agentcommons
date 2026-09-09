@@ -1,7 +1,8 @@
 import { z } from "zod";
 import {
   createListInputSchema,
-  opaqueCursorSchema,
+  paginatedOutput,
+  truncatedFieldsSchema,
   utcDateTimeSchema,
   metricUnitSchema,
 } from "./common.js";
@@ -44,12 +45,9 @@ export const metricGroups = {
     "observed_commit_rate",
   ],
 } as const;
-export const metricsGroupSchema = z.enum([
-  "reuse",
-  "health",
-  "usage",
-  "outcomes",
-]);
+export const metricsGroupSchema = z.enum(
+  Object.keys(metricGroups) as (keyof typeof metricGroups)[],
+);
 export const metricNameSchema = z.enum([
   ...metricGroups.reuse,
   ...metricGroups.health,
@@ -97,10 +95,7 @@ export const metricRowSchema = z.strictObject({
   numerator: z.number().nullable(),
   denominator: z.number().nullable(),
   unit: metricUnitSchema,
-  truncated_fields: z.array(z.string()).default([]),
+  truncated_fields: truncatedFieldsSchema,
 });
-export const metricsOutputSchema = z.strictObject({
-  items: z.array(metricRowSchema),
-  cursor: opaqueCursorSchema,
-});
+export const metricsOutputSchema = paginatedOutput(metricRowSchema);
 export type MetricRow = z.infer<typeof metricRowSchema>;

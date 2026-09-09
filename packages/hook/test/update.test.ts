@@ -93,19 +93,12 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
     );
   };
   const run = async () => {
-    const path = recordHook(
-      directory,
-      executable,
-      config,
-      "claude",
-      {
-        session_id: randomUUID(),
-        transcript_path: transcript,
-        cwd: directory,
-        hook_event_name: "Stop",
-      },
-      "launch",
-    );
+    const path = recordHook(directory, executable, config, "claude", {
+      session_id: randomUUID(),
+      transcript_path: transcript,
+      cwd: directory,
+      hook_event_name: "Stop",
+    });
     if (!path) throw new Error("Missing state.");
     await upload(directory, executable, path, config, {
       fetch: fetcher,

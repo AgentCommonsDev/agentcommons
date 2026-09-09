@@ -1,6 +1,7 @@
 import { selectOrganization } from "./organization-controls";
 import {
   accessible,
+  accountLocation,
   activate,
   openPasswordSignIn,
   cookieSchema,
@@ -95,7 +96,7 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
   await openPasswordSignIn(page, isMobile);
   await expect(page.getByTestId("auth-card")).toBeVisible();
   await page
-    .getByLabel(copy.signup.name, { exact: true })
+    .getByLabel(copy.site.signup.name, { exact: true })
     .fill("Browser owner");
   await page.getByLabel(copy.auth.email, { exact: true }).fill(email);
   await page
@@ -103,7 +104,7 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
     .fill(testAccountPassword);
   await activate(page.getByTestId("signup-submit"), isMobile);
   await expect(
-    page.getByRole("heading", { name: copy.signup.verifyTitle }),
+    page.getByRole("heading", { name: copy.site.signup.verifyTitle }),
   ).toBeVisible();
   await accessible(page);
   const verificationLink = await emailLink(
@@ -125,12 +126,12 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
   expect(denied.status()).toBe(403);
   await page.goto(verificationLink);
   await expect(
-    page.getByRole("heading", { name: copy.signup.onboardingTitle }),
+    page.getByRole("heading", { name: copy.site.signup.onboardingTitle }),
   ).toBeVisible();
   // The organization form asks for a name only; the server derives the slug.
-  await expect(page.getByLabel(copy.signup.slug, { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByLabel(copy.site.signup.slug, { exact: true }),
+  ).toHaveCount(0);
   await expect(page.getByRole("textbox")).toHaveCount(1);
   for (const value of ["light", "dark"] as const) {
     await theme(page, value, isMobile);
@@ -292,7 +293,9 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
   await expect(page.getByText(copy.billing.cap, { exact: true })).toHaveCount(
     0,
   );
-  await expect(page.getByRole("link", { name: copy.saas.demo })).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: copy.site.saas.demo }),
+  ).toHaveCount(0);
   for (const value of ["light", "dark"] as const) {
     await theme(page, value, isMobile);
     await accessible(page);
@@ -313,7 +316,7 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
   expect(changed.status(), await changed.text()).toBe(200);
   expect(await changed.json()).toEqual({ url: null });
   await expect(page.getByTestId("billing-plan")).toContainText(
-    copy.saas.pro_embeddings,
+    copy.site.saas.pro_embeddings,
   );
   await expect(page).toHaveURL(new RegExp(`${paths.billing}$`));
   let portal = "";
@@ -336,11 +339,11 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
   await page.goto(paths.forgotPassword);
   await page.getByLabel(copy.auth.email, { exact: true }).fill(email);
   await activate(
-    page.getByRole("button", { name: copy.signup.resetSubmit }),
+    page.getByRole("button", { name: copy.site.signup.resetSubmit }),
     isMobile,
   );
   await expect(
-    page.getByRole("status").filter({ hasText: copy.signup.resetSent }),
+    page.getByRole("status").filter({ hasText: copy.site.signup.resetSent }),
   ).toBeVisible();
   await page.goto(
     await emailLink(page.request, email, "Reset your AgentCommons password"),
@@ -370,6 +373,72 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
   await activate(page.getByTestId("login-submit"), isMobile);
   await expect(page).toHaveURL(new RegExp(`${paths.home}$`));
   await expect(page.getByTestId("dashboard-picker")).toBeVisible();
+});
+
+// @req R-DASH-34 @req R-SAAS-01 @req R-SAAS-09
+test("a signed-out deep link survives signup, verification and onboarding, and a later sign-in returns to it", async ({
+  page,
+  context,
+  isMobile,
+}) => {
+  const email = `browser-${randomUUID()}@example.test`;
+  const target = `${paths.keys}#return`;
+  await page.goto(target);
+  await expect
+    .poll(() => accountLocation(page))
+    .toEqual({ path: paths.login, next: target });
+  await activate(
+    page.getByRole("link", { name: copy.auth.signupLink, exact: true }),
+    isMobile,
+  );
+  await expect
+    .poll(() => accountLocation(page))
+    .toEqual({ path: paths.signup, next: target });
+  await openPasswordSignIn(page, isMobile);
+  await page
+    .getByLabel(copy.site.signup.name, { exact: true })
+    .fill("Browser returning owner");
+  await page.getByLabel(copy.auth.email, { exact: true }).fill(email);
+  await page
+    .getByLabel(copy.auth.password, { exact: true })
+    .fill(testAccountPassword);
+  await activate(page.getByTestId("signup-submit"), isMobile);
+  await expect(
+    page.getByRole("heading", { name: copy.site.signup.verifyTitle }),
+  ).toBeVisible();
+  // The verification link carries the return address into onboarding.
+  await page.goto(
+    await emailLink(page.request, email, "Verify your AgentCommons email"),
+  );
+  await expect
+    .poll(() => accountLocation(page))
+    .toEqual({ path: paths.onboarding, next: target });
+  await expect(
+    page.getByRole("heading", { name: copy.site.signup.onboardingTitle }),
+  ).toBeVisible();
+  await page
+    .getByTestId("onboarding-organization-name")
+    .fill("Browser return organization");
+  await activate(page.getByTestId("onboarding-submit"), isMobile);
+  await expect(page).toHaveURL(`${origin}${target}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    copy.keys.title,
+  );
+  // The session is gone while the page is open: a reload asks for sign-in with the same
+  // return address, and a ready account comes back through onboarding.
+  await context.clearCookies();
+  await page.reload();
+  await expect
+    .poll(() => accountLocation(page))
+    .toEqual({ path: paths.login, next: target });
+  await openPasswordSignIn(page, isMobile);
+  await page.getByTestId("login-email").fill(email);
+  await page.getByTestId("login-password").fill(testAccountPassword);
+  await activate(page.getByTestId("login-submit"), isMobile);
+  await expect(page).toHaveURL(`${origin}${target}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    copy.keys.title,
+  );
 });
 
 // @req R-SAAS-01 @req R-SAAS-04 @req R-SAAS-07 @req R-DASH-27 @req R-WEB-02
@@ -407,10 +476,10 @@ test("SaaS public, account and billing screens preserve mobile access, ownership
     page.getByRole("link", { name: copy.auth.signupLink, exact: true }),
   ).toHaveAttribute("href", paths.signup);
   await expect(
-    page.getByRole("link", { name: copy.signup.forgot, exact: true }),
+    page.getByRole("link", { name: copy.site.signup.forgot, exact: true }),
   ).toHaveAttribute("href", paths.forgotPassword);
   await expect(
-    page.getByRole("link", { name: copy.signup.verifyEmail, exact: true }),
+    page.getByRole("link", { name: copy.site.signup.verifyEmail, exact: true }),
   ).toHaveAttribute("href", paths.verifyEmail);
   const noJs = await browser.newContext({
     javaScriptEnabled: false,
@@ -420,7 +489,7 @@ test("SaaS public, account and billing screens preserve mobile access, ownership
     const document = await noJs.newPage();
     await document.goto(origin);
     await expect(
-      document.getByRole("heading", { name: copy.saas.pricingTitle }),
+      document.getByRole("heading", { name: copy.site.saas.pricingTitle }),
     ).toBeVisible();
     await expect(
       document.locator(".pricing-free .plan-allowance"),
@@ -429,7 +498,7 @@ test("SaaS public, account and billing screens preserve mobile access, ownership
       document.locator(".pricing-pro .plan-allowance"),
     ).toContainText("4");
     await expect(
-      document.getByText(copy.saas.madeIn, { exact: false }),
+      document.getByText(copy.site.saas.madeIn, { exact: false }),
     ).toBeVisible();
   } finally {
     await noJs.close();
@@ -454,7 +523,9 @@ test("SaaS public, account and billing screens preserve mobile access, ownership
   await page.goto(paths.billing);
   await selectOrganization(page, state.organizationId, isMobile);
   await expect(progress(page)).toHaveAttribute("aria-valuenow", "0");
-  await expect(page.getByTestId("billing-plan")).toContainText(copy.saas.free);
+  await expect(page.getByTestId("billing-plan")).toContainText(
+    copy.site.saas.free,
+  );
   for (const value of ["light", "dark"] as const) {
     await theme(page, value, isMobile);
     await accessible(page);
@@ -531,10 +602,10 @@ test("official Cal embed loads a controlled provider event and missing Stripe st
     page.getByRole("button", { name: copy.billing.upgrade }),
   ).toBeDisabled();
   await expect(
-    page.getByText(copy.saas.checkoutUnavailable, { exact: true }),
+    page.getByText(copy.site.saas.checkoutUnavailable, { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("link", { name: copy.saas.demo }),
+    page.getByRole("link", { name: copy.site.saas.demo }),
   ).toHaveAttribute(
     "href",
     "https://cal.com/agentcommons-provider-fixture/demo",

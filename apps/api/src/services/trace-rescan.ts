@@ -14,7 +14,7 @@ import {
   type RedactionResult,
   type Redactor,
 } from "@agentcommons/core";
-import type { TraceSessionControl } from "@agentcommons/db";
+import type { Prisma, TraceSessionControl } from "@agentcommons/db";
 import type { TraceRawRecord, TraceSession } from "@agentcommons/traces";
 
 export const traceRescanPayloadSchema = z.strictObject({
@@ -24,6 +24,41 @@ export const traceRescanPayloadSchema = z.strictObject({
   requestId: z.string(),
   input: redactionRescanInputSchema,
 });
+
+/**
+ * Marks one session of a redaction run processed and advances the run, which completes
+ * once its last session is counted. The publisher and the skipped-session path share it.
+ */
+export async function completeRunSession(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  runId: string,
+  sessionId: string,
+  redactionCount: number,
+): Promise<void> {
+  const where = { organizationId_id: { organizationId, id: runId } };
+  await tx.redactionRunSession.update({
+    where: {
+      organizationId_runId_sessionId: { organizationId, runId, sessionId },
+    },
+    data: { processedAt: new Date() },
+  });
+  const run = await tx.redactionRun.update({
+    where,
+    data: {
+      processedSessions: { increment: 1 },
+      redactionCount: { increment: redactionCount },
+      error: null,
+    },
+  });
+  await tx.redactionRun.update({
+    where,
+    data: {
+      state:
+        run.processedSessions === run.totalSessions ? "completed" : "running",
+    },
+  });
+}
 
 /** Reuses native record classification and schema-aware redaction for each storage generation. */
 export async function redactTraceSnapshot(
@@ -51,14 +86,11 @@ export async function redactTraceSnapshot(
     );
   const originals = new Map(source.map((record) => [record.id, record]));
   const records: TraceRawRecord[] = [];
-  for (const record of maskToolResults(NORMALIZERS[control.harness], source)) {
+  const normalizer = NORMALIZERS[control.harness];
+  for (const record of maskToolResults(normalizer, source)) {
     const original = originals.get(record.id);
     if (!original) throw new Error("Rescan record provenance is missing.");
-    const redacted = await redactSourceRecord(
-      NORMALIZERS[control.harness],
-      record,
-      redactor,
-    );
+    const redacted = await redactSourceRecord(normalizer, record, redactor);
     const key =
       record.key === null
         ? null

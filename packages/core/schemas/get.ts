@@ -13,13 +13,13 @@ import {
   parentRelationSchema,
   sessionIdSchema,
   sessionStatusSchema,
+  truncatedFieldsSchema,
   utcDateTimeSchema,
   visibilitySchema,
 } from "./common.js";
 
 const session = (column: string) => catalogDescription("sessions", column);
 const message = (column: string) => catalogDescription("messages", column);
-const truncatedFieldsText = "Fields shortened to fit the response";
 
 export const contentCursorSchema = z
   .strictObject({
@@ -148,7 +148,7 @@ export const sessionHeaderSchema = z.strictObject({
   children_truncated: z
     .boolean()
     .describe("True when more children exist than are listed"),
-  truncated_fields: z.array(z.string()).describe(truncatedFieldsText),
+  truncated_fields: truncatedFieldsSchema,
   root_session_id: sessionIdSchema.describe(
     "Top of this session's parent chain; equals session_id for a root session",
   ),
@@ -181,10 +181,7 @@ export const messageSchema = z.strictObject({
     .nullable()
     .describe(message("output_tokens")),
   agent_id: nullableTextSchema.describe(message("agent_id")),
-  truncated_fields: z
-    .array(z.string())
-    .default([])
-    .describe(truncatedFieldsText),
+  truncated_fields: truncatedFieldsSchema,
 });
 export const getOutputSchema = z.strictObject({
   header: sessionHeaderSchema.describe(
@@ -198,7 +195,6 @@ export const getOutputSchema = z.strictObject({
     .describe("Cursor for the following page; null when the range is complete"),
 });
 export type ContentCursor = z.infer<typeof contentCursorSchema>;
-export type GetInput = z.infer<typeof getInputSchema>;
 export type GetOutput = z.infer<typeof getOutputSchema>;
 export type SessionHeader = z.infer<typeof sessionHeaderSchema>;
 export type Message = z.infer<typeof messageSchema>;

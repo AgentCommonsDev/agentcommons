@@ -2,7 +2,8 @@ import { posix } from "node:path";
 import { v5 } from "uuid";
 import type { NormalizedMessage, NativeLink } from "../normalizers/types.js";
 import type { JsonValue } from "../schemas/common.js";
-import { utf8ByteLength } from "../schemas/common.js";
+import { utf8ByteLength, utf8CodePointLength } from "../schemas/common.js";
+import type { ParentHint } from "../schemas/ingest-context.js";
 import { projectionIdentity } from "../redaction/tool-results.js";
 
 export function utf8Slice(
@@ -21,7 +22,7 @@ export function utf8Slice(
   let used = 0;
   let content = "";
   for (const character of value) {
-    const bytes = utf8ByteLength(character);
+    const bytes = utf8CodePointLength(character.codePointAt(0) ?? 0);
     if (position < offset) {
       position += bytes;
       if (position > offset)
@@ -54,8 +55,9 @@ function tailUtf8(value: string, maximumBytes: number): string {
       index > 0 &&
       value.charCodeAt(index - 1) >= 0xd800 &&
       value.charCodeAt(index - 1) <= 0xdbff;
-    const character = value.slice(paired ? index - 1 : index, index + 1);
-    const size = utf8ByteLength(character);
+    const size = utf8CodePointLength(
+      value.codePointAt(paired ? index - 1 : index) ?? 0,
+    );
     if (bytes + size > maximumBytes) break;
     bytes += size;
     if (paired) index--;
@@ -134,18 +136,13 @@ export function repositoryPath(
   return relative === ".." || relative.startsWith("../") ? null : relative;
 }
 
-export interface ParentHint {
-  harnessSessionId: string;
-  relation: "SUBAGENT" | "SPAWNED";
-  agentType?: string | null | undefined;
-}
 export function resolveLink(
   native: readonly NativeLink[],
   hint: ParentHint | null,
 ): {
   link: {
     parentNativeRef: string;
-    relation: "SUBAGENT" | "FORK" | "SPAWNED";
+    relation: NativeLink["relation"] | ParentHint["relation"];
     agentType?: string;
   } | null;
   conflicts: JsonValue[];

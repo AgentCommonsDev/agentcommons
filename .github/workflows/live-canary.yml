@@ -17,6 +17,9 @@ on:
       - "scripts/live-*.ts"
       - "scripts/live-*.mjs"
       - "scripts/canary-*.ts"
+      - "scripts/canary/**"
+      - "scripts/claude-agent.ts"
+      - "scripts/harness-versions.json"
       - "scripts/pi-lifecycle.mjs"
       - "apps/api/src/services/ingest.ts"
       - "apps/api/src/services/trace-projection.ts"
@@ -39,15 +42,11 @@ jobs:
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
-      - run: npm install --global @anthropic-ai/claude-code@2.1.265 @openai/codex@0.153.4 @google/gemini-cli@0.35.3
+      # One pin per harness in scripts/harness-versions.json; the canary asserts the same versions.
+      - run: npm install --global $(jq -r '[.claude, .codex, .gemini] | map("\(.package)@\(.version)") | join(" ")' scripts/harness-versions.json)
       - name: Run all four native harnesses and retrieve their sessions through MCP
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -1,14 +1,15 @@
 import { KeyRound } from "lucide-react";
 import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Button } from "../../components/ui/button";
 import { Alert, Spinner } from "../../components/ui/feedback";
 import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { copy } from "../../copy";
-import { authClient } from "../../lib/auth-client";
+import { authClient, authResult } from "../../lib/auth-client";
 import { useBillingConfig } from "../../lib/billing-config";
 import { errorMessage } from "../../lib/display";
-import { paths } from "../../lib/routes";
+import { paths, withReturn } from "../../lib/routes";
 import {
   AccountForm,
   AccountHeading,
@@ -16,38 +17,46 @@ import {
   AccountLinks,
 } from "./layout";
 
-/** Sets a password from an emailed token: admin-issued setup links and SaaS password resets. */
-export function PasswordSetupPage({ token }: { token: string | undefined }) {
+/**
+ * Sets a password from an emailed token: admin-issued setup links and SaaS password resets.
+ * `next` is the application page the visitor asked for; sign-in links carry it on.
+ */
+export function PasswordSetupPage({
+  token,
+  next,
+}: {
+  token: string | undefined;
+  next: string | undefined;
+}) {
   const billing = useBillingConfig();
+  const loginPath = withReturn(paths.login, next);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [mismatch, setMismatch] = useState(false);
-  const [pending, setPending] = useState(false);
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const submit = async () => {
+  const reset = useMutation({
+    mutationFn: async (setupToken: string) => {
+      authResult(
+        await authClient.resetPassword({
+          token: setupToken,
+          newPassword: password,
+        }),
+        copy.auth.setupFailed,
+      );
+    },
+    onSuccess: () => {
+      setPassword("");
+      setConfirm("");
+    },
+  });
+  const done = reset.isSuccess;
+  const pending = reset.isPending;
+  const submit = () => {
     if (!token) return;
     if (password !== confirm) {
       setMismatch(true);
       return;
     }
-    setPending(true);
-    setError(null);
-    try {
-      const response = await authClient.resetPassword({
-        token,
-        newPassword: password,
-      });
-      if (response.error)
-        throw new Error(response.error.message ?? copy.auth.setupFailed);
-      setDone(true);
-      setPassword("");
-      setConfirm("");
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setPending(false);
-    }
+    reset.mutate(token);
   };
   return (
     <>
@@ -60,14 +69,14 @@ export function PasswordSetupPage({ token }: { token: string | undefined }) {
         <>
           <Alert variant="success">{copy.auth.setupDone}</Alert>
           <Button asChild className="w-full">
-            <a href={paths.login}>{copy.auth.signIn}</a>
+            <a href={loginPath}>{copy.auth.signIn}</a>
           </Button>
         </>
       ) : token ? (
         <AccountForm
           onSubmit={(event) => {
             event.preventDefault();
-            void submit();
+            submit();
           }}
         >
           <Field
@@ -124,7 +133,9 @@ export function PasswordSetupPage({ token }: { token: string | undefined }) {
               />
             )}
           </Field>
-          {error && <Alert variant="danger">{error}</Alert>}
+          {reset.error && (
+            <Alert variant="danger">{errorMessage(reset.error)}</Alert>
+          )}
           <Button type="submit" className="w-full" disabled={pending}>
             {pending && <Spinner className="text-current" />}
             {pending ? copy.app.common.saving : copy.auth.setupSubmit}
@@ -135,10 +146,10 @@ export function PasswordSetupPage({ token }: { token: string | undefined }) {
       )}
       {!done && (
         <AccountLinks>
-          <AccountLink href={paths.login}>{copy.auth.backToSignIn}</AccountLink>
+          <AccountLink href={loginPath}>{copy.auth.backToSignIn}</AccountLink>
           {billing.enabled && !token && (
-            <AccountLink href={paths.forgotPassword}>
-              {copy.signup.forgot}
+            <AccountLink href={withReturn(paths.forgotPassword, next)}>
+              {copy.site.signup.forgot}
             </AccountLink>
           )}
         </AccountLinks>

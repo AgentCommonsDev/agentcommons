@@ -12,6 +12,7 @@ import {
   parentRelationSchema,
   scalarOrArray,
   sessionIdSchema,
+  truncatedFieldsSchema,
   utcDateTimeSchema,
 } from "./common.js";
 
@@ -31,6 +32,14 @@ export const searchConditionFields = {
   status: "session",
   tool_input: "message",
 } as const;
+/** The condition fields of one scope as prose, so descriptions follow the map. */
+const fieldsOf = (scope: "message" | "session", omit: string[] = []) =>
+  Object.entries(searchConditionFields)
+    .filter(([key, value]) => value === scope && !omit.includes(key))
+    .map(([key]) => key)
+    .join(", ");
+const messageFields = fieldsOf("message", ["tool_input"]);
+const sessionFields = fieldsOf("session");
 const conditionFieldSchema = z
   .enum(
     Object.keys(
@@ -38,7 +47,7 @@ const conditionFieldSchema = z
     ) as (keyof typeof searchConditionFields)[],
   )
   .describe(
-    "Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status",
+    `Field to test. Message fields: ${messageFields}, tool_input (JSON, needs path). Session fields: ${sessionFields}`,
   );
 const conditionText = z
   .string()
@@ -162,8 +171,7 @@ const filterShape = {
     .optional()
     .describe("Messages before this UTC time (exclusive)"),
 };
-const whereDescription =
-  "Up to 10 extra conditions that must all hold, on a message field (tool_name, tool_use_id, content, role, kind, model, or a JSON path inside tool_input) or a session field (harness, title, repo_name, branch, user_email, status)";
+const whereDescription = `Up to 10 extra conditions that must all hold, on a message field (${messageFields}, or a JSON path inside tool_input) or a session field (${sessionFields})`;
 export const searchFilterKeys: string[] = [
   ...Object.keys(filterShape),
   "where",
@@ -199,7 +207,7 @@ export const searchFiltersSchema = filtersSchema(
 export const searchConditionToolSchema = z.strictObject({
   field: conditionFieldSchema.describe("Field to test"),
   op: z
-    .enum(["eq", "contains", "starts_with", "exists"])
+    .enum(searchConditionSchema.options.map((option) => option.shape.op.value))
     .describe(
       "eq: exact, case-sensitive, null matches missing; contains and starts_with: literal, case-insensitive; exists: non-null, takes no value",
     ),
@@ -265,10 +273,6 @@ export const searchToolInputSchema = z.strictObject({
   ...searchInputSchema.shape,
   filters: searchToolFiltersSchema.default({}).describe(filtersDescription),
 });
-const truncatedFields = z
-  .array(z.string())
-  .default([])
-  .describe("Fields shortened to fit the response");
 export const searchMessageSchema = z.strictObject({
   seq: nonnegativeIntegerSchema.describe(catalogDescription("messages", "seq")),
   role: messageRoleSchema.describe(catalogDescription("messages", "role")),
@@ -288,7 +292,7 @@ export const searchMessageSchema = z.strictObject({
   truncated: z
     .boolean()
     .describe("True when content is an excerpt of a longer message"),
-  truncated_fields: truncatedFields,
+  truncated_fields: truncatedFieldsSchema,
 });
 export const searchBlockSchema = z.strictObject({
   session_id: sessionIdSchema.describe(
@@ -324,7 +328,7 @@ export const searchBlockSchema = z.strictObject({
   messages: z
     .array(searchMessageSchema)
     .describe("Matched messages and their context, in seq order"),
-  truncated_fields: truncatedFields,
+  truncated_fields: truncatedFieldsSchema,
 });
 export const searchOutputSchema = z.strictObject({
   blocks: z
@@ -340,6 +344,5 @@ export const searchOutputSchema = z.strictObject({
     ),
 });
 export type SearchFilters = z.infer<typeof searchFiltersSchema>;
-export type SearchInput = z.infer<typeof searchInputSchema>;
 export type SearchOutput = z.infer<typeof searchOutputSchema>;
 export type SearchBlock = z.infer<typeof searchBlockSchema>;

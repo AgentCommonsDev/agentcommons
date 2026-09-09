@@ -1,28 +1,13 @@
 import Fastify from "fastify";
-import swagger from "@fastify/swagger";
-import { serializerCompiler } from "fastify-type-provider-zod";
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { assertRouteContract } from "./app.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { registerPublicApiRoutes } from "./routes/public.js";
-import {
-  apiDefinition,
-  openApiTransform,
-  openApiTransformObject,
-} from "./routes/openapi.js";
-import { queryValidatorCompiler } from "./routes/query.js";
+import { registerContract } from "./routes/openapi.js";
 
 export async function generateOpenApi() {
   const app = Fastify({ exposeHeadRoutes: false });
-  app.setValidatorCompiler(queryValidatorCompiler);
-  app.setSerializerCompiler(serializerCompiler);
-  app.addHook("onRoute", assertRouteContract);
-  await app.register(swagger, {
-    openapi: apiDefinition(),
-    transform: openApiTransform,
-    transformObject: openApiTransformObject,
-  });
+  await registerContract(app);
   // The checked-in artifact carries every optional group for the generated client.
   registerApiRoutes(app, undefined, {
     embeddings: true,

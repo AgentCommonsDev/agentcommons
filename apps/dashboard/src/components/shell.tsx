@@ -1,18 +1,20 @@
-import { ArrowUpRight, Menu, Moon, Sun, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowUpRight, Menu, X } from "lucide-react";
+import { useState } from "react";
 import type { ReactNode } from "react";
 import { usePublicAccount } from "../lib/public-account";
 import { useBillingConfig } from "../lib/billing-config";
 import { copy, links } from "../copy";
 import { paths } from "../lib/routes";
+import { ThemeToggle } from "./app/theme-toggle";
 import { Button } from "./ui/button";
 
+const site = copy.site;
 function Brand({ footer = false }: { footer?: boolean }) {
   return (
     <a
       className={footer ? "brand brand-footer" : "brand"}
-      href="/"
-      aria-label={copy.navigation.home}
+      href={paths.site}
+      aria-label={site.navigation.home}
     >
       <img
         src="/logo.png"
@@ -21,47 +23,8 @@ function Brand({ footer = false }: { footer?: boolean }) {
         width={32}
         height={32}
       />
-      <span>{copy.brand}</span>
+      <span>{site.brand}</span>
     </a>
-  );
-}
-
-function ThemeToggle() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("agentcommons-theme");
-      if (stored === "light" || stored === "dark") {
-        setTheme(stored);
-        document.documentElement.dataset.theme = stored;
-      }
-    } catch {
-      /* Browser storage can be disabled. */
-    }
-  }, []);
-  const toggle = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    document.documentElement.dataset.theme = next;
-    try {
-      localStorage.setItem("agentcommons-theme", next);
-    } catch {
-      /* Theme still works for this page. */
-    }
-  };
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={toggle}
-      aria-label={theme === "dark" ? copy.theme.light : copy.theme.dark}
-    >
-      {theme === "dark" ? (
-        <Sun size={17} aria-hidden />
-      ) : (
-        <Moon size={17} aria-hidden />
-      )}
-    </Button>
   );
 }
 
@@ -72,14 +35,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <>
       <a href="#main" className="skip-link">
-        {copy.skip}
+        {site.skip}
       </a>
       <header className="site-header">
         <div className="container header-inner">
           <Brand />
           <nav
             className={menuOpen ? "main-nav menu-open" : "main-nav"}
-            aria-label={copy.navigation.label}
+            aria-label={site.navigation.label}
           >
             <a
               href="/#how-it-works"
@@ -87,7 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 setMenuOpen(false);
               }}
             >
-              {copy.navigation.product}
+              {site.navigation.product}
             </a>
             <a
               href="/#your-data"
@@ -95,7 +58,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 setMenuOpen(false);
               }}
             >
-              {copy.navigation.principles}
+              {site.navigation.principles}
             </a>
             {billing.enabled && (
               <a
@@ -104,15 +67,17 @@ export function AppShell({ children }: { children: ReactNode }) {
                   setMenuOpen(false);
                 }}
               >
-                {copy.saas.pricing}
+                {site.saas.pricing}
               </a>
             )}
-            {billing.enabled && <a href="/login">{copy.navigation.login}</a>}
-            {billing.mode !== "customer" && (
-              <a href="/blog">{copy.blog.navigation}</a>
+            {billing.enabled && (
+              <a href={paths.login}>{site.navigation.login}</a>
             )}
-            <a href={links.documentation}>
-              {copy.navigation.docs}
+            {billing.mode !== "customer" && (
+              <a href={paths.blog}>{site.blog.navigation}</a>
+            )}
+            <a href={paths.docs}>
+              {site.navigation.docs}
               <ArrowUpRight size={13} aria-hidden />
             </a>
           </nav>
@@ -129,7 +94,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               variant="ghost"
               size="icon"
               aria-label={
-                menuOpen ? copy.navigation.close : copy.navigation.menu
+                menuOpen
+                  ? copy.app.navigation.closeMenu
+                  : copy.app.navigation.menu
               }
               aria-expanded={menuOpen}
               onClick={() => {
@@ -151,15 +118,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="footer-top">
             <div>
               <Brand footer />
-              <p>{copy.footer.description}</p>
+              <p>{site.footer.description}</p>
             </div>
-            <nav aria-label={copy.navigation.docs}>
-              <a href={links.repository}>{copy.footer.links.source}</a>
+            <nav aria-label={site.navigation.docs}>
+              <a href={links.repository}>{site.footer.links.source}</a>
               <a href={links.specification}>
-                {copy.footer.links.specification}
+                {site.footer.links.specification}
               </a>
-              <a href={links.security}>{copy.footer.links.security}</a>
-              <a href={links.license}>{copy.footer.links.license}</a>
+              <a href={links.security}>{site.footer.links.security}</a>
+              <a href={links.license}>{site.footer.links.license}</a>
               {billing.mode !== "customer" && (
                 <>
                   <a href={paths.privacy}>{copy.legal.privacy.title}</a>
@@ -170,13 +137,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <div className="footer-bottom">
             <span>
-              {copy.footer.source}
+              {site.footer.source}
               {copy.app.common.separator}
-              {copy.saas.madeIn}
+              {site.saas.madeIn}
             </span>
             <span>
               <span className="status-dot" />
-              {billing.enabled ? copy.saas.footerStatus : copy.footer.status}
+              {billing.enabled ? site.saas.footerStatus : site.footer.status}
             </span>
           </div>
         </div>

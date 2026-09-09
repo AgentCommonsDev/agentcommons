@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { expect, it } from "vitest";
 import { cleanup } from "../../../scripts/cleanup.js";
+import { callerContextSchema } from "@agentcommons/core/schemas/common";
 import { provisionOrganization } from "../../../apps/api/test/support.js";
-import { requireCaller } from "../../../apps/api/src/services/context.js";
 import { startTraceDatabase, traceEnvironment } from "./support.js";
 import { TraceFixtures } from "./fixtures.js";
 
@@ -18,7 +18,7 @@ it("runs the native migration CLI repeatedly without erasing published traces or
     const fixtures = new TraceFixtures(db);
     release.unshift(() => fixtures.close());
     const org = await provisionOrganization(db, "migration-cli");
-    const caller = requireCaller(org.context);
+    const caller = callerContextSchema.parse(org.context.caller);
     const installationId = randomUUID();
     await db.prisma.installation.create({
       data: {

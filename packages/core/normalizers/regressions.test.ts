@@ -9,19 +9,10 @@ import {
   SourceNotReadyError,
 } from "./index.js";
 import type { SourceRecord } from "./types.js";
+import { sourceRecord } from "../test/fixtures.js";
 
-function source(payload: Record<string, unknown>, pos: number): SourceRecord {
-  return {
-    id: `record-${String(pos)}`,
-    pos: BigInt(pos),
-    sourceVersion: 0,
-    key: null,
-    payload,
-    receivedAt: new Date("2026-09-07T00:00:00Z"),
-  };
-}
 function tokenEvent(output: number | null, pos: number): SourceRecord {
-  return source(
+  return sourceRecord(
     {
       type: "event_msg",
       payload: {
@@ -41,7 +32,7 @@ describe("cumulative token regression", () => {
   // @req R-HRN-01
   it("retains Claude per-message high watermarks when a later snapshot decreases", () => {
     const records = [10, 5, 10].map((output_tokens, pos) =>
-      source(
+      sourceRecord(
         {
           type: "assistant",
           message: {
@@ -81,7 +72,7 @@ describe("cumulative token regression", () => {
   // @req R-ING-14
   it("allows a reset after explicit resume but preserves counters that continue", () => {
     const metadata = (pos: number) =>
-      source(
+      sourceRecord(
         {
           type: "session_meta",
           payload: { id: "same-session", base_instructions: "instructions" },
@@ -114,7 +105,7 @@ describe("cumulative token regression", () => {
 // @req R-ING-12
 it("does not derive Claude metadata or links from an unknown record type", () => {
   const records = [
-    source(
+    sourceRecord(
       {
         type: "future_record",
         aiTitle: "unrecognized title",
@@ -147,7 +138,7 @@ it("derives Gemini session identity and start time from the captured document he
       ) as unknown,
     );
   const { messages, ...transcriptMetadata } = document;
-  const records = messages.map((message, pos) => source(message, pos));
+  const records = messages.map((message, pos) => sourceRecord(message, pos));
   const context = {
     transcriptMetadata: z
       .record(z.string(), z.json())
@@ -159,8 +150,8 @@ it("derives Gemini session identity and start time from the captured document he
   expect(geminiCli.sessionDelta(records, context)).toEqual(delta);
 });
 describe("pi partial source projection", () => {
-  const header = source({ type: "session", id: "session" }, 0);
-  const first = source(
+  const header = sourceRecord({ type: "session", id: "session" }, 0);
+  const first = sourceRecord(
     {
       type: "message",
       id: "first",
@@ -169,7 +160,7 @@ describe("pi partial source projection", () => {
     },
     1,
   );
-  const next = source(
+  const next = sourceRecord(
     {
       type: "message",
       id: "next",
@@ -205,7 +196,7 @@ describe("pi partial source projection", () => {
   it("ignores an unknown record without a native id when choosing the default leaf", () => {
     expect(
       pi
-        .toMessages([header, first, source({ type: "future_record" }, 3)])
+        .toMessages([header, first, sourceRecord({ type: "future_record" }, 3)])
         .map((message) => message.content),
     ).toEqual(["first prompt"]);
   });

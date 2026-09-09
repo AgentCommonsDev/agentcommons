@@ -1,20 +1,11 @@
-import { useEffect, useState } from "react";
 import { Alert } from "../../components/ui/feedback";
 import { copy } from "../../copy";
 import { paths } from "../../lib/routes";
+import { useTheme } from "../../lib/theme";
 
 /** The Scalar reference framed inside the app; it reloads when the theme toggles. */
 export function ApiReference() {
-  const [generation, setGeneration] = useState(0);
-  useEffect(() => {
-    const listener = () => {
-      setGeneration((prior) => prior + 1);
-    };
-    window.addEventListener("agentcommons:theme", listener);
-    return () => {
-      window.removeEventListener("agentcommons:theme", listener);
-    };
-  }, []);
+  const { theme } = useTheme();
   return (
     <div className="flex flex-col gap-3">
       <Alert variant="info">
@@ -24,7 +15,7 @@ export function ApiReference() {
         </code>
       </Alert>
       <iframe
-        key={generation}
+        key={theme}
         data-testid="api-reference-frame"
         title={copy.apiReference.frameTitle}
         src={paths.apiReference}

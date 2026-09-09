@@ -1,30 +1,29 @@
-import { sqlIdentifier } from "../client.js";
-import { receiptColumns, receiptRedactionColumns } from "../schema.js";
-import { latestRowsSql, sessionDetailColumns, traceScopeSql } from "./base.js";
+import { sqlIdentifier, sqlString } from "../client.js";
+import {
+  latestRowsSql,
+  sessionDetailColumns,
+  traceScopeSql,
+  traceView,
+  type TraceViewDefinition,
+  type TraceViewGrant,
+} from "./base.js";
 
 /** Existing product metrics over the same native caller-visible trace relations. */
-export function analyticsViews(database: string): string[] {
+export function analyticsViews(database: string): TraceViewDefinition[] {
   const db = sqlIdentifier(database);
   const admin = traceScopeSql.admin;
   const control = "api_ro.session_live";
-  const definitions: Array<[string, string]> = [];
-  const add = (name: string, query: string) => {
-    definitions.push([name, query]);
+  const definitions: TraceViewDefinition[] = [];
+  const add = (name: string, query: string, grant?: TraceViewGrant) => {
+    definitions.push(traceView(name, query, grant));
   };
-  add(
-    "receipt_base",
-    latestRowsSql(database, "ingest_receipts", receiptColumns, "receipt_id"),
-  );
+  add("receipt_base", latestRowsSql(database, "ingest_receipts"), "internal");
   add(
     "receipt_redaction_base",
-    latestRowsSql(
-      database,
-      "receipt_redactions",
-      receiptRedactionColumns,
-      "redaction_id",
-    ),
+    latestRowsSql(database, "receipt_redactions"),
+    "internal",
   );
-  add("audit_base", `SELECT * FROM ${db}.audit_events FINAL`);
+  add("audit_base", `SELECT * FROM ${db}.audit_events FINAL`, "internal");
   add(
     "metrics_active_windows",
     `WITH lifecycle AS MATERIALIZED (SELECT * FROM api_ro.receipt_base WHERE behavior IN ('start','end') AND lifecycle_applied), states AS MATERIALIZED (
@@ -36,22 +35,28 @@ export function analyticsViews(database: string): string[] {
  SELECT session_id,installation_id,sent_at AS observed_at,if(behavior IN ('start','end'),behavior,coalesce(tupleElement(lifecycle_state,1),'start')) AS behavior,if(behavior IN ('start','end'),source_pos,coalesce(tupleElement(lifecycle_state,2),toInt64(-1))) AS lifecycle_pos,if(behavior IN ('start','end'),sent_at,coalesce(tupleElement(lifecycle_state,3),started_at)) AS lifecycle_at FROM states
  ) SELECT o.session_id AS session_id,o.installation_id AS installation_id,o.observed_at AS active_from,least(o.observed_at+INTERVAL 6 HOUR,coalesce(tupleElement(argMinIf(tuple(l.sent_at),tuple(l.source_pos,l.sent_at,l.receipt_id),l.receipt_id IS NOT NULL),1),o.observed_at+INTERVAL 6 HOUR)) AS active_to FROM observations o LEFT JOIN lifecycle l ON l.session_id=o.session_id AND tuple(l.source_pos,l.sent_at)>tuple(o.lifecycle_pos,o.lifecycle_at) WHERE o.behavior='start' GROUP BY o.session_id,o.installation_id,o.observed_at,o.lifecycle_pos,o.lifecycle_at`,
   );
+  // The audit row's actor and request columns as every audit-derived view projects them.
+  const auditColumns = `a.audit_id AS id,a.ts AS ts,a.user_id AS user_id,a.user_email AS user_email,a.installation_id AS installation_id,a.transport AS transport,a.auth_method AS auth_method,a.action AS action`;
+  // The session an audit row is about: its first resource id, else the named result field.
+  const auditTarget = (field: string) =>
+    `toUUIDOrZero(coalesce(nullIf(arrayElement(a.resource_ids,1),''),JSONExtractString(a.detail,'result',${sqlString(field)})))`;
   const resultIds = `if(notEmpty(a.resource_ids),arrayMap(x->toUUIDOrZero(x),a.resource_ids),arrayMap(x->toUUIDOrZero(JSONExtractString(x)),JSONExtractArrayRaw(a.detail,'result','session_ids')))`;
   add(
     "metrics_reads",
-    `WITH visible_sessions AS MATERIALIZED (SELECT session_id,user_id,repo_name,purged_at FROM api_ro.session_live) SELECT a.audit_id AS id,a.ts AS ts,a.user_id AS user_id,a.user_email AS user_email,a.installation_id AS installation_id,a.transport AS transport,a.auth_method AS auth_method,a.action AS action,
+    `WITH visible_sessions AS MATERIALIZED (SELECT session_id,user_id,repo_name,purged_at FROM api_ro.session_live) SELECT ${auditColumns},
  target.session_id AS target_session_id,target.user_id AS target_user_id,target.repo_name AS repo_name,
  arrayFilter(x->x IN (SELECT session_id FROM ${control} WHERE purged_at IS NULL),${resultIds}) AS result_session_ids,
  top_result.session_id AS top_session_id,top_result.user_id AS top_user_id,
  if(JSONType(a.detail,'result','hits') IN ('Int64','UInt64','Float64'),toDecimal256OrNull(JSONExtractRaw(a.detail,'result','hits'),0),NULL) AS hits
  FROM api_ro.audit_base a
- LEFT ANY JOIN visible_sessions target ON a.action='get' AND target.session_id=toUUIDOrZero(coalesce(nullIf(arrayElement(a.resource_ids,1),''),JSONExtractString(a.detail,'result','session_id'))) AND target.purged_at IS NULL
- LEFT ANY JOIN visible_sessions top_result ON top_result.session_id=toUUIDOrZero(coalesce(nullIf(arrayElement(a.resource_ids,1),''),JSONExtractString(a.detail,'result','top_session_id'))) AND top_result.purged_at IS NULL
+ LEFT ANY JOIN visible_sessions target ON a.action='get' AND target.session_id=${auditTarget("session_id")} AND target.purged_at IS NULL
+ LEFT ANY JOIN visible_sessions top_result ON top_result.session_id=${auditTarget("top_session_id")} AND top_result.purged_at IS NULL
  WHERE a.status_code BETWEEN 200 AND 299 AND a.action IN ('search','get','sql') AND (a.action!='get' OR target.session_id IS NOT NULL) AND (${admin} OR a.action='get')`,
   );
   add(
     "get_reads",
-    `SELECT a.audit_id AS id,a.ts AS ts,a.user_id AS user_id,a.user_email AS user_email,a.installation_id AS installation_id,a.transport AS transport,a.auth_method AS auth_method,a.action AS action,target.session_id AS target_session_id FROM api_ro.audit_base a JOIN ${control} target ON target.session_id=toUUIDOrZero(coalesce(nullIf(arrayElement(a.resource_ids,1),''),JSONExtractString(a.detail,'result','session_id'))) WHERE a.action='get' AND a.status_code BETWEEN 200 AND 299 AND target.purged_at IS NULL`,
+    `SELECT ${auditColumns},target.session_id AS target_session_id FROM api_ro.audit_base a JOIN ${control} target ON target.session_id=${auditTarget("session_id")} WHERE a.action='get' AND a.status_code BETWEEN 200 AND 299 AND target.purged_at IS NULL`,
+    "internal",
   );
   add(
     "reuse_edges",
@@ -73,10 +78,12 @@ export function analyticsViews(database: string): string[] {
   add(
     "reuse_source_flags",
     `SELECT e.source_session_id AS session_id,max(target.user_id!=e.reader_user_id) AS cross_user_reused FROM api_ro.reuse_edges e JOIN ${control} target ON target.session_id=e.target_session_id GROUP BY e.source_session_id`,
+    "internal",
   );
   add(
     "memory_assisted_sessions",
-    `SELECT DISTINCT w.session_id AS session_id FROM api_ro.metrics_active_windows w JOIN api_ro.audit_base a ON a.installation_id=w.installation_id AND a.ts>=w.active_from AND a.ts<w.active_to WHERE a.auth_method='key' AND a.transport IN ('mcp','rest') AND a.status_code BETWEEN 200 AND 299 AND a.action IN ('search','get','sql') AND (a.action!='get' OR toUUIDOrZero(coalesce(nullIf(arrayElement(a.resource_ids,1),''),JSONExtractString(a.detail,'result','session_id'))) IN (SELECT session_id FROM ${control} WHERE purged_at IS NULL))`,
+    `SELECT DISTINCT w.session_id AS session_id FROM api_ro.metrics_active_windows w JOIN api_ro.audit_base a ON a.installation_id=w.installation_id AND a.ts>=w.active_from AND a.ts<w.active_to WHERE a.auth_method='key' AND a.transport IN ('mcp','rest') AND a.status_code BETWEEN 200 AND 299 AND a.action IN ('search','get','sql') AND (a.action!='get' OR ${auditTarget("session_id")} IN (SELECT session_id FROM ${control} WHERE purged_at IS NULL))`,
+    "internal",
   );
   add(
     "metrics_reuse_sessions",
@@ -110,6 +117,7 @@ export function analyticsViews(database: string): string[] {
     "audit_sources",
     `SELECT a.audit_id AS audit_id,tupleElement(argMin(tuple(s.repo_name),tuple(-toUnixTimestamp64Micro(w.active_from),s.session_id)),1) AS repo_name
  FROM api_ro.audit_base a JOIN api_ro.metrics_active_windows w ON w.installation_id=a.installation_id AND a.ts>=w.active_from AND a.ts<w.active_to JOIN api_ro.session_live s ON s.session_id=w.session_id GROUP BY a.audit_id`,
+    "internal",
   );
   add(
     "metrics_usage",
@@ -131,15 +139,18 @@ export function analyticsViews(database: string): string[] {
     "metrics_own_zero_results",
     `SELECT audit_id AS search_id,ts AS searched_at,JSONExtractString(detail,'input','query') AS query FROM api_ro.audit_base WHERE user_id=${traceScopeSql.user} AND action='search' AND status_code=200 AND JSONExtractRaw(detail,'result','hits')='0' AND JSONType(detail,'input','query')='String'`,
   );
-  const pairs = `FROM api_ro.session_live s JOIN api_ro.session_live other ON other.purged_at IS NULL AND other.session_id!=s.session_id AND other.repo_name=s.repo_name AND other.user_id!=s.user_id AND abs(dateDiff('second',other.started_at,s.started_at))<=2592000 WHERE s.purged_at IS NULL`;
+  // Pairs of visible sessions by different members on one repository within thirty days.
+  const pairJoin = `FROM api_ro.session_live s JOIN api_ro.session_live other ON other.purged_at IS NULL AND other.session_id!=s.session_id AND other.repo_name=s.repo_name AND other.user_id!=s.user_id AND abs(dateDiff('second',other.started_at,s.started_at))<=2592000`;
   add(
     "outcome_duplicates",
-    `SELECT DISTINCT session_id FROM (SELECT s.session_id AS session_id ${pairs} AND s.first_prompt IS NOT NULL AND other.first_prompt IS NOT NULL AND 1-ngramDistanceUTF8(s.first_prompt,other.first_prompt)>0.6 UNION ALL SELECT s.session_id AS session_id FROM api_ro.session_live s JOIN api_ro.session_live other ON other.purged_at IS NULL AND other.session_id!=s.session_id AND other.repo_name=s.repo_name AND other.user_id!=s.user_id AND abs(dateDiff('second',other.started_at,s.started_at))<=2592000 JOIN api_ro.session_embeddings a ON a.session_id=s.session_id JOIN api_ro.session_embeddings b ON b.session_id=other.session_id WHERE s.purged_at IS NULL AND 1-cosineDistance(a.embedding,b.embedding)>0.6)`,
+    `SELECT DISTINCT session_id FROM (SELECT s.session_id AS session_id ${pairJoin} WHERE s.purged_at IS NULL AND s.first_prompt IS NOT NULL AND other.first_prompt IS NOT NULL AND 1-ngramDistanceUTF8(s.first_prompt,other.first_prompt)>0.6 UNION ALL SELECT s.session_id AS session_id ${pairJoin} JOIN api_ro.session_embeddings a ON a.session_id=s.session_id JOIN api_ro.session_embeddings b ON b.session_id=other.session_id WHERE s.purged_at IS NULL AND 1-cosineDistance(a.embedding,b.embedding)>0.6)`,
+    "internal",
   );
   const command = `coalesce(nullIf(JSONExtractString(call.tool_input,'command'),''),JSONExtractString(call.tool_input,'cmd'))`;
   add(
     "outcome_reruns",
     `SELECT DISTINCT session_id FROM (SELECT session_id,command FROM (SELECT call.session_id AS session_id,call.message_id AS message_id,${command} AS command,tupleElement(argMin(tuple(result.content),tuple(result.seq,result.message_id)),1) AS result_content FROM api_ro.messages call LEFT JOIN api_ro.messages result ON result.session_id=call.session_id AND result.tool_use_id=call.tool_use_id AND result.kind='TOOL_RESULT' AND result.seq>call.seq WHERE call.kind='TOOL_USE' GROUP BY call.session_id,call.message_id,command) WHERE match(command,'(?i)(^|[[:space:];&|])(test|build|pytest|vitest|jest|tsc|make)([[:space:];&|]|$)') AND match(coalesce(result_content,''),'(?i)(^|[^a-z])(failed|failure|error|exit code[ :]+[1-9][0-9]*)([^a-z]|$)') GROUP BY session_id,command HAVING uniqExact(message_id)>=2)`,
+    "internal",
   );
   add(
     "metrics_outcomes",
@@ -154,23 +165,5 @@ export function analyticsViews(database: string): string[] {
     "sessions",
     `SELECT ${sessionDetailColumns.map((name) => `d.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")},coalesce(r.reuse_count,toUInt64(0)) AS reuse_count FROM api_ro.session_details d LEFT ANY JOIN api_ro.session_reuse r ON r.session_id=d.session_id`,
   );
-  const internal = new Set([
-    "receipt_base",
-    "receipt_redaction_base",
-    "audit_base",
-    "audit_sources",
-    "outcome_duplicates",
-    "outcome_reruns",
-    "reuse_source_flags",
-    "memory_assisted_sessions",
-    "get_reads",
-  ]);
-  return definitions.flatMap(([name, query]) => [
-    `CREATE OR REPLACE VIEW api_ro.${sqlIdentifier(name)} DEFINER=${sqlIdentifier(database + "_view_owner")} SQL SECURITY DEFINER AS ${query}`,
-    ...(internal.has(name)
-      ? []
-      : [
-          `GRANT SELECT ON api_ro.${sqlIdentifier(name)} TO ${sqlIdentifier(database + "_reader")}`,
-        ]),
-  ]);
+  return definitions;
 }

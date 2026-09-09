@@ -53,19 +53,17 @@ export function Alert({
   children,
   action,
   className,
-  role,
 }: {
   variant?: keyof typeof alertStyles | undefined;
   title?: ReactNode;
   children?: ReactNode;
   action?: ReactNode;
   className?: string | undefined;
-  role?: "alert" | "status" | undefined;
 }) {
   const { className: tone, Icon } = alertStyles[variant];
   return (
     <div
-      role={role ?? (variant === "danger" ? "alert" : "status")}
+      role={variant === "danger" ? "alert" : "status"}
       className={cn(
         "flex items-start gap-3 rounded-lg border px-4 py-3 text-sm",
         tone,
@@ -133,13 +131,11 @@ export function EmptyState({
 export function PageHeader({
   title,
   description,
-  eyebrow,
   actions,
   className,
 }: {
   title: ReactNode;
   description?: ReactNode;
-  eyebrow?: ReactNode;
   actions?: ReactNode;
   className?: string | undefined;
 }) {
@@ -151,9 +147,6 @@ export function PageHeader({
       )}
     >
       <div className="min-w-0">
-        {eyebrow && (
-          <div className="mb-1 text-xs font-medium text-muted">{eyebrow}</div>
-        )}
         <h1 className="text-[22px] leading-tight font-semibold tracking-tight sm:text-2xl">
           {title}
         </h1>

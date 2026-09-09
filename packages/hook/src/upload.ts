@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import * as z from "zod";
 import {
   ingestEnvelopeSchema,
@@ -14,14 +15,14 @@ import {
   jsonFiles,
   readJson,
   removeFile,
-  secureDirectory,
   writeAtomic,
 } from "./files.js";
 import { CredentialRejected, credentialOrganization } from "./identity.js";
 import { gitContext, gitEnd } from "./git.js";
-import { HARNESSES } from "./harnesses.js";
+import { HARNESSES, type HarnessDefinition } from "./harnesses.js";
 import { spawnUpload } from "./hook.js";
 import { acquireLock, MAX_UPLOADER_MS, type Lock } from "./lock.js";
+import { note } from "./paths.js";
 import { hookIdentity, reconcileInstall, selfUpdate } from "./update.js";
 import {
   OversizedSourceRecord,
@@ -33,12 +34,17 @@ import {
 import {
   batchIdForIntent,
   ensureState,
-  intents,
+  headIntent,
+  highestSourceEntry,
+  intentById,
+  journalEntries,
   publishIntent,
+  readEntry,
   removeIntent,
   latestSource,
   loadState,
   ownerPath,
+  quarantinePath,
   snapshot,
   statePath,
   stateSchema,
@@ -65,6 +71,7 @@ const deferredSchema = z.strictObject({
   afterGeneration: z.number().int().nonnegative(),
   retryable: z.boolean(),
 });
+type Deferred = z.infer<typeof deferredSchema>;
 const splitSchema = z.strictObject({
   envelope: ingestEnvelopeSchema,
   pending: z.unknown(),
@@ -79,26 +86,39 @@ interface UploadOptions {
   sweep?: boolean;
   update?: boolean;
 }
-const pause = (milliseconds: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, milliseconds));
+interface DrainResult {
+  readonly children: readonly string[];
+  readonly retry: boolean;
+  readonly settle: boolean;
+}
+/** A drain that found nothing to do or must not proceed. */
+const IDLE: DrainResult = { children: [], retry: false, settle: false };
 /** Turn-end hooks (`settle` in HARNESSES) can fire before the harness appends its
  * final record. After such a drain the uploader polls the source every 250 ms until
  * it has been quiet for 2 s, never more than 5 s per drain, so the final message
  * ships in this run rather than at the next hook. Acknowledgment never waits on it. */
-const SETTLE_POLL_MS = 250;
-const SETTLE_QUIET_POLLS = 8;
-const SETTLE_MAX_POLLS = 20;
-function log(directory: string, code: number): void {
-  secureDirectory(directory);
-  appendFileSync(
-    join(directory, "hook.log"),
-    `${new Date().toISOString()} Upload paused (HTTP ${String(code)}). Run hook.js doctor after updating the configuration.\n`,
-    { mode: 0o600 },
-  );
-}
+export const SETTLE_POLL_MS = 250;
+export const SETTLE_QUIET_POLLS = 8;
+export const SETTLE_MAX_POLLS = 20;
 function save(path: string, state: HookState, lock: Lock): void {
   lock.assertOwned();
   writeAtomic(path, state);
+}
+/** Stops this session until the credential or server changes (§6.2 upload step 3). */
+function suspend(
+  directory: string,
+  path: string,
+  state: HookState,
+  lock: Lock,
+  code: number,
+  reason: string,
+): void {
+  state.suspended = { code, reason };
+  save(path, state, lock);
+  note(
+    directory,
+    `Upload paused (HTTP ${String(code)}). Run hook.js doctor after updating the configuration.`,
+  );
 }
 function cleanupAcknowledged(path: string, state: HookState, lock: Lock): void {
   if (!state.cleanup.files.length && !state.cleanup.intents.length) return;
@@ -126,6 +146,7 @@ function finishIntent(state: HookState, intent: Intent | undefined): void {
 function envelope(
   config: HookConfig,
   identity: HookIdentity,
+  definition: HarnessDefinition,
   state: HookState,
   intent: Intent | undefined,
   source: SourceRead | undefined,
@@ -134,7 +155,7 @@ function envelope(
   return ingestEnvelopeSchema.parse({
     envelopeVersion: 2,
     hook: identity,
-    harness: HARNESSES[state.harness].id,
+    harness: definition.id,
     harnessSessionId: state.sessionId,
     behavior,
     nativeEvent: intent?.nativeEvent ?? "source_flush",
@@ -184,10 +205,11 @@ async function send(
     } catch {
       /* The exact pending bytes are retried after transport failures. */
     }
-    await (options.sleep ?? pause)(delay);
+    await (options.sleep ?? sleep)(delay);
   }
   return null;
 }
+/** Writes the spool file and persists it as the session's single pending batch. */
 function prepare(
   directory: string,
   path: string,
@@ -195,16 +217,16 @@ function prepare(
   body: IngestEnvelope,
   pending: Omit<Pending, "batchId" | "file">,
   lock: Lock,
-): Pending {
+): void {
   const file = join(directory, "spool", `${body.batchId}.json`);
   writeAtomic(file, body);
   state.pending = { ...pending, batchId: body.batchId, file };
   save(path, state, lock);
-  return state.pending;
 }
 function registerChildren(
   directory: string,
   state: HookState,
+  definition: HarnessDefinition,
   intent: Intent,
   config: HookConfig,
 ): void {
@@ -228,11 +250,9 @@ function registerChildren(
         snapshot(
           child.transcriptPath,
           { signature: null, size: 0, watermark: 0 },
-          HARNESSES[state.harness].reader,
+          definition.reader,
         ),
-      behavior:
-        HARNESSES[state.harness].events[intent.nativeEvent]?.childBehavior ??
-        "sync",
+      behavior: definition.events[intent.nativeEvent]?.childBehavior ?? "sync",
       resume: false,
       children: [],
       context: {
@@ -271,12 +291,14 @@ async function drain(
   config: HookConfig,
   options: UploadOptions,
   settle = false,
-): Promise<{ children: string[]; retry: boolean; settle: boolean }> {
+): Promise<DrainResult> {
   const lock = await acquireLock(ownerPath(path));
-  if (!lock) return { children: [], retry: false, settle: false };
+  if (!lock) return IDLE;
   const deadline = setTimeout(() => process.exit(0), MAX_UPLOADER_MS);
   deadline.unref();
   const state = loadState(path);
+  const definition = HARNESSES[state.harness];
+  const wait = options.sleep ?? sleep;
   let retry = false;
   let stoppedSource: string | null = null;
   // A first pass never waits: children registered by this drain are flushed before
@@ -284,10 +306,22 @@ async function drain(
   // delayed behind its parent's quiet window.
   let settleRequested = false;
   let settlePolls = 0;
+  // Rejected records awaiting replay, listed once and again only after the set changes.
+  let quarantined: { file: string; item: Deferred }[] | null = null;
+  const replayable = (): { file: string; item: Deferred } | undefined => {
+    quarantined ??= jsonFiles(quarantinePath(path)).map((file) => ({
+      file,
+      item: readJson(file, deferredSchema),
+    }));
+    return quarantined.find(
+      ({ item }) =>
+        item.retryable && item.afterGeneration < state.retryGeneration,
+    );
+  };
   try {
     cleanupAcknowledged(path, state, lock);
     if (state.suspended && state.credentialHash === hash(config.key))
-      return { children: [], retry: false, settle: false };
+      return IDLE;
     // A state belongs to its original server. A credential/server switch must not leak its spool.
     if (
       new URL(state.server).origin !== new URL(config.server).origin ||
@@ -295,13 +329,15 @@ async function drain(
         state.organizationId !== null &&
         state.organizationId !== config.organizationId)
     ) {
-      state.suspended = {
-        code: 409,
-        reason: "The server or organization changed.",
-      };
-      save(path, state, lock);
-      log(directory, 409);
-      return { children: [], retry: false, settle: false };
+      suspend(
+        directory,
+        path,
+        state,
+        lock,
+        409,
+        "The server or organization changed.",
+      );
+      return IDLE;
     }
     if (!state.organizationId || state.credentialHash !== hash(config.key)) {
       let organizationId: string;
@@ -315,25 +351,29 @@ async function drain(
           error instanceof CredentialRejected &&
           [401, 403, 409].includes(error.status)
         ) {
-          state.suspended = {
-            code: error.status,
-            reason: "The server rejected this credential.",
-          };
           state.credentialHash = hash(config.key);
-          save(path, state, lock);
-          log(directory, error.status);
-          return { children: [], retry: false, settle: false };
+          suspend(
+            directory,
+            path,
+            state,
+            lock,
+            error.status,
+            "The server rejected this credential.",
+          );
+          return IDLE;
         }
         throw error;
       }
       if (state.organizationId && state.organizationId !== organizationId) {
-        state.suspended = {
-          code: 409,
-          reason: "The credential belongs to another organization.",
-        };
-        save(path, state, lock);
-        log(directory, 409);
-        return { children: [], retry: false, settle: false };
+        suspend(
+          directory,
+          path,
+          state,
+          lock,
+          409,
+          "The credential belongs to another organization.",
+        );
+        return IDLE;
       }
       state.organizationId = organizationId;
       state.credentialHash = hash(config.key);
@@ -341,9 +381,11 @@ async function drain(
       save(path, state, lock);
     }
     for (;;) {
-      const waiting = intents(path, state);
-      const intent = waiting[0];
+      // Filenames index the journal (§6.2): a pass reads only the head intent and, for
+      // the source snapshot, the entry with the highest watermark.
+      const entries = journalEntries(path, state.processed);
       if (!state.pending) {
+        const intent = headIntent(entries);
         if (intent) {
           if (Date.parse(intent.sentAt) >= Date.parse(state.contextSentAt)) {
             state.context = {
@@ -360,30 +402,23 @@ async function drain(
           }
           state.intent = intent.behavior === "end" ? "end" : "sync";
           settleRequested ||=
-            HARNESSES[state.harness].events[intent.nativeEvent]?.settle ===
-            true;
-          registerChildren(directory, state, intent, config);
-          if (intent.behavior !== "sync") {
-            state.pending = prepare(
-              directory,
-              path,
-              state,
-              envelope(config, identity, state, intent, undefined),
-              pendingBase(state, "lifecycle", intent.id, intent.source),
-              lock,
-            );
-          }
+            definition.events[intent.nativeEvent]?.settle === true;
+          registerChildren(directory, state, definition, intent, config);
         }
-        if (!state.pending) {
-          const deferred = jsonFiles(`${path}.quarantine`)
-            .map((file) => ({ file, item: readJson(file, deferredSchema) }))
-            .find(
-              ({ item }) =>
-                item.retryable && item.afterGeneration < state.retryGeneration,
-            );
-          if (deferred) {
+        if (intent && intent.behavior !== "sync")
+          prepare(
+            directory,
+            path,
+            state,
+            envelope(config, identity, definition, state, intent, undefined),
+            pendingBase(state, "lifecycle", intent.id, intent.source),
+            lock,
+          );
+        else {
+          const replay = replayable();
+          if (replay) {
             const body = {
-              ...deferred.item.envelope,
+              ...replay.item.envelope,
               batchId: randomUUID(),
               behavior: "sync" as const,
               start: null,
@@ -392,22 +427,29 @@ async function drain(
               cursor: JSON.stringify(state.ackedCursor),
               context: state.context,
             };
-            state.pending = prepare(
+            prepare(
               directory,
               path,
               state,
               body,
               {
                 ...pendingBase(state, "deferred", null),
-                deferredFiles: [deferred.file],
+                deferredFiles: [replay.file],
               },
               lock,
             );
           } else {
+            const highest = highestSourceEntry(entries);
+            const waiting = [
+              intent,
+              highest && highest.id !== intent?.id
+                ? readEntry(highest)
+                : undefined,
+            ].flatMap((item) => (item ? [item] : []));
             const observed = snapshot(
               state.transcriptPath,
               latestSource(state, waiting),
-              HARNESSES[state.harness].reader,
+              definition.reader,
             );
             let read: SourceRead | undefined;
             if (
@@ -418,7 +460,7 @@ async function drain(
                 read = readSource(
                   state.transcriptPath,
                   state.ackedCursor,
-                  HARNESSES[state.harness],
+                  definition,
                   observed.watermark,
                 );
               } catch (error) {
@@ -427,7 +469,7 @@ async function drain(
                     error,
                     state.ackedCursor,
                     observed.watermark,
-                    `${path}.quarantine/raw`,
+                    join(quarantinePath(path), "raw"),
                   );
                 else if (!isCode(error, "ENOENT")) throw error;
               }
@@ -438,11 +480,11 @@ async function drain(
                 JSON.stringify(read.cursor) !==
                   JSON.stringify(state.ackedCursor))
             ) {
-              state.pending = prepare(
+              prepare(
                 directory,
                 path,
                 state,
-                envelope(config, identity, state, intent, read),
+                envelope(config, identity, definition, state, intent, read),
                 {
                   ...pendingBase(state, "source", intent?.id ?? null, {
                     ...observed,
@@ -454,15 +496,14 @@ async function drain(
               );
             } else if (intent) {
               // Context-only tree changes still need a server projection; source cursors stay unchanged.
-              state.pending = prepare(
+              prepare(
                 directory,
                 path,
                 state,
-                envelope(config, identity, state, intent, {
+                envelope(config, identity, definition, state, intent, {
                   records: [],
                   cursor: state.ackedCursor,
                   sourcePos: intent.source.watermark,
-                  complete: true,
                 }),
                 pendingBase(state, "source", intent.id, intent.source),
                 lock,
@@ -480,14 +521,11 @@ async function drain(
                 quiet++
               ) {
                 settlePolls++;
-                await (options.sleep ?? pause)(SETTLE_POLL_MS);
+                await wait(SETTLE_POLL_MS);
                 if (
-                  intents(path, state).length ||
-                  snapshot(
-                    state.transcriptPath,
-                    observed,
-                    HARNESSES[state.harness].reader,
-                  ).signature !== observed.signature
+                  journalEntries(path, state.processed).length ||
+                  snapshot(state.transcriptPath, observed, definition.reader)
+                    .signature !== observed.signature
                 ) {
                   grew = true;
                   break;
@@ -500,6 +538,7 @@ async function drain(
         }
       }
       const pending = state.pending;
+      if (!pending) break;
       await options.checkpoint?.("persisted", state);
       const bodyText = readFileSync(pending.file, "utf8");
       const body = ingestEnvelopeSchema.parse(JSON.parse(bodyText) as unknown);
@@ -515,9 +554,10 @@ async function drain(
         state.source = pending.source;
         state.lastSyncAt = Date.now();
         if (pending.mode === "source") state.retryGeneration++;
-        const acknowledged = waiting.find(
-          (item) => item.id === pending.intentId,
-        );
+        const acknowledged =
+          pending.intentId === null
+            ? undefined
+            : intentById(entries, pending.intentId);
         finishIntent(state, acknowledged);
         state.pending = null;
         if (pending.remainderFile) {
@@ -541,16 +581,20 @@ async function drain(
         };
         save(path, state, lock);
         await options.checkpoint?.("acknowledged", state);
+        // Replayed quarantine files leave the set with this cleanup.
+        if (pending.deferredFiles.length) quarantined = null;
         cleanupAcknowledged(path, state, lock);
         continue;
       }
       if ([401, 403, 409].includes(response.status)) {
-        state.suspended = {
-          code: response.status,
-          reason: "The server rejected this session or credential.",
-        };
-        save(path, state, lock);
-        log(directory, response.status);
+        suspend(
+          directory,
+          path,
+          state,
+          lock,
+          response.status,
+          "The server rejected this session or credential.",
+        );
         await response.body?.cancel();
         break;
       }
@@ -587,7 +631,7 @@ async function drain(
           records: selected,
           cursor: JSON.stringify(cursor),
         };
-        state.pending = prepare(
+        prepare(
           directory,
           path,
           state,
@@ -623,7 +667,7 @@ async function drain(
         }
         for (const record of bad) {
           const file = join(
-            `${path}.quarantine`,
+            quarantinePath(path),
             `${hash(JSON.stringify([record.pos, record.sourceVersion, record.key, record.line]))}.json`,
           );
           writeAtomic(file, {
@@ -633,6 +677,7 @@ async function drain(
             retryable: rejected.code === "UNPAIRED_TOOL_RESULT",
           });
         }
+        quarantined = null;
         // Keep old deferred copies until this pending replacement has been committed.
         const next = {
           ...body,
@@ -641,7 +686,7 @@ async function drain(
             (record) => !positions.has(String(record.pos)),
           ),
         };
-        state.pending = prepare(
+        prepare(
           directory,
           path,
           state,
@@ -702,7 +747,7 @@ export async function upload(
         ({ file, state }) =>
           !state.suspended &&
           (state.pending ||
-            intents(file, state).length ||
+            journalEntries(file, state.processed).length ||
             snapshot(
               state.transcriptPath,
               state.source,
@@ -727,6 +772,10 @@ export async function upload(
   // Covers a hook that published while the old owner was exiting. Hooks arriving
   // after this check see no owner and start their own uploader.
   const current = loadState(path);
-  if (!retry && !current.suspended && intents(path, current).length)
+  if (
+    !retry &&
+    !current.suspended &&
+    journalEntries(path, current.processed).length
+  )
     spawnUpload(config, executable, path);
 }

@@ -42,9 +42,9 @@ import {
   TableHeader,
   TableRow,
 } from "../ui/table";
-import { DefinitionList, LoadingState } from "./states";
+import { DefinitionList, LoadingState, RequestError } from "./states";
 
-interface DataTablePage {
+export interface DataTablePage {
   index: number;
   hasNext: boolean;
   onNext: () => void;
@@ -74,9 +74,9 @@ interface DataTableProps<T> {
   emptyTitle?: string;
   emptyDescription?: string;
   emptyAction?: ReactNode;
-  /** Render all columns as stacked label/value rows below 640px. */
-  stackOnMobile?: boolean;
-  className?: string;
+  /** The page query's failure; shown in place of the rows with a retry. */
+  error?: unknown;
+  retry?: (() => void) | undefined;
   compact?: boolean;
 }
 function columnId<T>(column: ColumnDef<T>, index: number): string {
@@ -121,20 +121,21 @@ export function DataTable<T>({
   emptyTitle,
   emptyDescription,
   emptyAction,
-  stackOnMobile = true,
-  className,
+  error = null,
+  retry,
   compact = false,
 }: DataTableProps<T>) {
-  const initialVisibility = useMemo<VisibilityState>(
-    () =>
-      Object.fromEntries(
-        columns.map((column, index) => [
-          columnId(column, index),
-          !hiddenColumns.includes(columnId(column, index)),
-        ]),
-      ),
-    [columns, hiddenColumns],
-  );
+  // Callers pass the hidden list inline; its contents, not its identity, decide the memo.
+  const hiddenKey = hiddenColumns.join("\u0000");
+  const initialVisibility = useMemo<VisibilityState>(() => {
+    const hidden = new Set(hiddenKey === "" ? [] : hiddenKey.split("\u0000"));
+    return Object.fromEntries(
+      columns.map((column, index) => {
+        const id = columnId(column, index);
+        return [id, !hidden.has(id)];
+      }),
+    );
+  }, [columns, hiddenKey]);
   const storageKey = `agentcommons-columns:${label}`;
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
     () => {
@@ -227,7 +228,7 @@ export function DataTable<T>({
     .filter((column) => column.getCanHide() && column.accessorFn !== undefined);
   const showToolbar = Boolean(toolbar) || hideable.length > 1 || Boolean(csv);
   return (
-    <div className={cn("flex flex-col", className)}>
+    <div className="flex flex-col">
       {showToolbar && (
         <div className="flex flex-wrap items-center gap-2 pb-3">
           <div className="flex min-w-0 flex-1 basis-full flex-wrap items-center gap-2 sm:basis-0">
@@ -301,7 +302,13 @@ export function DataTable<T>({
         </Alert>
       )}
       <div className="overflow-hidden rounded-lg border border-line bg-surface">
-        {loading && data.length === 0 ? (
+        {error !== null && error !== undefined ? (
+          <RequestError
+            error={error}
+            retry={retry}
+            className="rounded-none border-0"
+          />
+        ) : loading && data.length === 0 ? (
           <div className="p-5">
             <LoadingState />
           </div>
@@ -317,10 +324,7 @@ export function DataTable<T>({
           <Table
             aria-label={label}
             aria-busy={loading}
-            className={cn(
-              stackOnMobile && "stacked-table",
-              loading && "opacity-60",
-            )}
+            className={cn("stacked-table", loading && "opacity-60")}
           >
             <TableHeader>
               {table.getHeaderGroups().map((group) => (

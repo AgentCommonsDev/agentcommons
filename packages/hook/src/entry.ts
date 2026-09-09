@@ -2,10 +2,11 @@ import * as z from "zod";
 z.config({ jitless: true });
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dataDirectory, loadConfig } from "./config.js";
-import { cliHarnessSchema } from "./harnesses.js";
+import { loadConfig } from "./config.js";
+import { HARNESSES, cliHarnessSchema } from "./harnesses.js";
 import { recordHook } from "./hook.js";
 import type { InstallOptions } from "./install.js";
+import { dataDirectory } from "./paths.js";
 
 async function main(): Promise<void> {
   const [mode, ...args] = process.argv.slice(2);
@@ -68,15 +69,34 @@ async function main(): Promise<void> {
       `${mode === "install" ? "Configured" : "Removed"} AgentCommons for ${names.join(", ") || "no detected harnesses"}.\n`,
     );
     if (mode === "install") {
+      const wired = names.map((name) => HARNESSES[name]);
       const files = instructionFiles(home ?? homedir(), names);
-      const guidance = files.length
-        ? `Your agents read the AgentCommons guidance from ${files.join(", ")}${names.includes("pi") ? "; pi gets it from its extension" : ""}.\n`
-        : names.includes("pi")
-          ? "pi gets the AgentCommons guidance from its extension.\n"
-          : "";
-      process.stdout.write(
-        `${options.noShellRc ? "" : "AGENTCOMMONS_API_KEY is exported from your bash, zsh and fish startup files; open a new terminal before starting Codex.\n"}${guidance}Codex asks you to trust hooks on the next interactive launch.\n`,
-      );
+      const lines = [
+        ...(options.noShellRc
+          ? []
+          : [
+              "AGENTCOMMONS_API_KEY is exported from your bash, zsh and fish startup files.",
+              ...wired.flatMap((definition) =>
+                definition.shellExportNote ? [definition.shellExportNote] : [],
+              ),
+            ]),
+        ...(files.length
+          ? [
+              `Your agents read the AgentCommons guidance from ${files.join(", ")}.`,
+            ]
+          : []),
+        // A harness without a global instructions file carries the guidance in its extension.
+        ...names
+          .filter((name) => HARNESSES[name].instructionsPath === null)
+          .map(
+            (name) =>
+              `${name} reads the AgentCommons guidance from its extension.`,
+          ),
+        ...wired.flatMap((definition) =>
+          definition.installNote ? [definition.installNote] : [],
+        ),
+      ];
+      process.stdout.write(lines.map((line) => `${line}\n`).join(""));
     }
     return;
   }

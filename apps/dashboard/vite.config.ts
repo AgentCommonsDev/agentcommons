@@ -1,34 +1,34 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { copy } from "./src/copy";
+import type { documentHead, headMarker } from "./src/lib/document-head";
 
 const apiOrigin =
   process.env.AGENTCOMMONS_API_ORIGIN ?? "http://localhost:3000";
-const escape = (value: string) =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;");
-const head = [
-  `<title>${escape(copy.meta.title)}</title>`,
-  `<meta name="description" content="${escape(copy.meta.description)}" />`,
-  '<meta name="robots" content="noindex,nofollow,noarchive" />',
-  '<link rel="canonical" href="__PUBLIC_URL__/" />',
-  '<meta property="og:type" content="website" />',
-  `<meta property="og:title" content="${escape(copy.meta.title)}" />`,
-  `<meta property="og:description" content="${escape(copy.meta.description)}" />`,
-  '<meta property="og:url" content="__PUBLIC_URL__/" />',
-  '<meta property="og:image" content="__PUBLIC_URL__/logo.png" />',
-  `<script type="application/ld+json">${JSON.stringify({ "@context": "https://schema.org", "@type": "SoftwareApplication", name: copy.brand, description: copy.meta.description, applicationCategory: copy.meta.applicationCategory, operatingSystem: copy.meta.operatingSystem, url: "__PUBLIC_URL__/" }).replaceAll("<", "\\u003c")}</script>`,
-].join("\n");
+/** Type-only: the module itself is loaded through the dev server's resolver below. */
+interface DocumentHeadModule {
+  documentHead: typeof documentHead;
+  headMarker: typeof headMarker;
+}
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
     {
-      name: "agentcommons-document-copy",
-      transformIndexHtml: (html) => html.replace("<!--app-head-->", head),
+      // The dev server fills the head with the landing page's tags. Built documents keep
+      // the marker so the prerender step writes each public page's own head. The head
+      // module reaches into the shared core package, so the dev server's own module
+      // loader resolves it rather than this config file.
+      name: "agentcommons-document-head",
+      apply: "serve",
+      transformIndexHtml: async (html, context) => {
+        if (!context.server) return html;
+        const { documentHead, headMarker } =
+          (await context.server.ssrLoadModule(
+            "/src/lib/document-head.ts",
+          )) as unknown as DocumentHeadModule;
+        return html.replace(headMarker, () => documentHead());
+      },
     },
   ],
   server: {

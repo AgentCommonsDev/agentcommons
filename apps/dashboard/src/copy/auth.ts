@@ -1,6 +1,6 @@
 /**
  * Sign-in, password setup and onboarding strings. SaaS account strings shared with the
- * public site (signup form, email requests, organization form) live in `copy.signup`.
+ * public site (signup form, email requests, organization form) live in `copy.site.signup`.
  */
 export const authCopy = {
   email: "Email address",

@@ -1,41 +1,34 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { randomUUID } from "node:crypto";
 import Stripe from "stripe";
 import { startStripe } from "./stripe-support.js";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { billingUsageSchema, billingRedirectSchema } from "@agentcommons/core";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { environment } from "../src/env.js";
-import { createRuntime } from "../src/main.js";
-import { createApp } from "../src/app.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
+import { startApp, type StartedApp } from "./app.js";
 import {
+  injectHeaders,
   provisionOrganization,
   provisionMember,
+  releaser,
   testAuthConfiguration,
 } from "./support.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
-let address: string;
-let appEnvironment: ReturnType<typeof environment>;
+let runtime: StartedApp["runtime"];
+let app: StartedApp["app"];
 let sdk: Stripe;
 const signingSecret = "whsec_local_protocol_fixture";
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 let stripe: Awaited<ReturnType<typeof startStripe>>;
+// Every `/auth/*` request counts against the in-memory `auth` rate category (20 per
+// minute per IP, apps/api/src/routes/rate-limit.ts), so each test speaks from its own IP.
+let clientIndex = 0;
+let clientIp = "10.30.0.1";
+beforeEach(() => {
+  clientIp = `10.30.0.${String(++clientIndex)}`;
+});
 function event(type: string, object: unknown, id = `evt_${randomUUID()}`) {
   return {
     id,
@@ -65,37 +58,28 @@ async function send(
   const payload = options.payload ?? JSON.stringify(value, null, 2);
   const signature =
     options.signature ?? signedHeader({ payload, secret: signingSecret });
-  return fetch(`${address}/auth/stripe/webhook`, {
+  return app.inject({
     method: "POST",
+    url: "/auth/stripe/webhook",
     headers: {
       "content-type": "application/json",
       "stripe-signature": signature,
     },
-    body: payload,
+    payload,
+    remoteAddress: clientIp,
   });
 }
 async function account(name: string) {
-  const org = await provisionOrganization(db, `stripe-${name}`);
-  const caller = requireCaller(org.owner);
   const customer = `cus_${randomUUID()}`;
-  await db.prisma.organization.update({
-    where: { id: caller.organizationId },
-    data: { stripeCustomerId: customer },
+  const org = await provisionOrganization(db, `stripe-${name}`, {
+    verified: true,
+    stripeCustomerId: customer,
   });
-  await db.prisma.user.update({
-    where: { id: caller.userId },
-    data: { emailVerified: true },
-  });
-  return { ...org, customer, organizationId: caller.organizationId };
-}
-function headers(context: ServiceContext) {
-  const result: Record<string, string> = {
-    origin: testAuthConfiguration.publicUrl,
+  return {
+    ...org,
+    customer,
+    organizationId: requireCaller(org.owner).organizationId,
   };
-  context.headers.forEach((value, key) => {
-    result[key] = value;
-  });
-  return result;
 }
 async function stored(id: string) {
   return db.prisma.subscription.findFirstOrThrow({
@@ -112,7 +96,7 @@ async function finance(
   return app.inject({
     method: "POST",
     url: `/api/v1/billing/${action}`,
-    headers: headers(context),
+    headers: injectHeaders(context),
     payload,
   });
 }
@@ -120,47 +104,33 @@ async function finance(
 beforeAll(async () => {
   stripe = await startStripe();
   sdk = stripe.client;
-  release.unshift(stripe.close);
+  defer(stripe.close);
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
-  const env = environment({
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    INSTANCE_MODE: "saas",
-    LOG_LEVEL: "silent",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  runtime = await createRuntime({
-    ...env,
-    auth: {
-      ...testAuthConfiguration,
-      instanceMode: "saas",
-      stripe: {
-        client: sdk,
-        webhookSecret: signingSecret,
-        ...stripe.billing,
-      },
+  defer(() => db.close());
+  const started = await startApp(
+    db,
+    { INSTANCE_MODE: "saas" },
+    {
+      configure: (env) => ({
+        ...env,
+        auth: {
+          ...testAuthConfiguration,
+          instanceMode: "saas",
+          stripe: {
+            client: sdk,
+            webhookSecret: signingSecret,
+            ...stripe.billing,
+          },
+        },
+      }),
     },
-  });
-  release.unshift(() => runtime.close());
-  appEnvironment = env;
+  );
+  defer(() => started.close());
+  ({ runtime, app } = started);
 }, 120_000);
-beforeEach(async () => {
-  app = await createApp({
-    env: appEnvironment,
-    services: runtime.services,
-    static: false,
-  });
-  address = await app.listen({ host: "127.0.0.1", port: 0 });
-});
-afterEach(async () => {
-  await app.close();
-});
 afterAll(async () => {
   vi.restoreAllMocks();
-  expect(await cleanup(release.splice(0))).toEqual([]);
+  await release();
 });
 
 // @req R-SAAS-05
@@ -170,7 +140,7 @@ it("accepts a genuine raw-body SDK signature without browser Origin and scopes p
   stripe.current.set(native.id, native);
   const receipt = event("customer.subscription.created", native);
   const response = await send(receipt);
-  expect(response.status, await response.text()).toBe(200);
+  expect(response.statusCode, response.body).toBe(200);
   expect(await stored(native.id)).toMatchObject({
     referenceId: org.organizationId,
     status: "active",
@@ -217,7 +187,7 @@ it("rejects missing, tampered and stale signatures before native state or Stripe
     },
   ]) {
     const response = await send(value, options);
-    expect(response.status, await response.text()).toBe(400);
+    expect(response.statusCode, response.body).toBe(400);
   }
   expect(stripe.requests).toHaveLength(initial);
   expect(
@@ -241,7 +211,7 @@ it.each([
     stripe.current.set(native.id, native);
     if (type !== "customer.subscription.created") {
       expect(
-        (await send(event("customer.subscription.created", native))).status,
+        (await send(event("customer.subscription.created", native))).statusCode,
       ).toBe(200);
     }
     const before = await db.prisma.subscription.findFirst({
@@ -267,7 +237,7 @@ it.each([
     const receipt = event(type, object);
     stripe.unavailable.add(native.id);
     const failed = await send(receipt);
-    expect(failed.status, await failed.text()).toBe(400);
+    expect(failed.statusCode, failed.body).toBe(400);
     expect(
       await db.prisma.subscription.findFirst({
         where: { stripeSubscriptionId: native.id },
@@ -286,7 +256,7 @@ it.each([
     });
     stripe.unavailable.delete(native.id);
     const retried = await send(receipt);
-    expect(retried.status, await retried.text()).toBe(200);
+    expect(retried.statusCode, retried.body).toBe(200);
     expect(await stored(native.id)).toMatchObject({
       status: "canceled",
       referenceId: org.organizationId,
@@ -311,7 +281,9 @@ it("serializes duplicate deliveries and reconciles a delayed active event agains
   const responses = await Promise.all(
     Array.from({ length: 3 }, () => send(created)),
   );
-  expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+  expect(responses.map((response) => response.statusCode)).toEqual([
+    200, 200, 200,
+  ]);
   expect(
     await db.prisma.subscription.count({
       where: { stripeSubscriptionId: native.id },
@@ -320,13 +292,13 @@ it("serializes duplicate deliveries and reconciles a delayed active event agains
   const canceled = { ...native, status: "canceled" };
   stripe.current.set(native.id, canceled);
   expect(
-    (await send(event("customer.subscription.updated", canceled))).status,
+    (await send(event("customer.subscription.updated", canceled))).statusCode,
   ).toBe(200);
   const stale = {
     ...event("customer.subscription.updated", native),
     created: created.created - 3600,
   };
-  expect((await send(stale)).status).toBe(200);
+  expect((await send(stale)).statusCode).toBe(200);
   expect(await stored(native.id)).toMatchObject({ status: "canceled" });
   expect((await runtime.services.billing.usage(org.owner)).result.plan).toBe(
     "free",
@@ -344,7 +316,7 @@ it("rolls back native paid state when its mandatory audit cannot persist", async
     .mockRejectedValueOnce(new Error("Forced audit storage failure"));
   try {
     const response = await send(receipt);
-    expect(response.status).toBeGreaterThanOrEqual(500);
+    expect(response.statusCode).toBeGreaterThanOrEqual(500);
   } finally {
     fault.mockRestore();
   }
@@ -353,7 +325,7 @@ it("rolls back native paid state when its mandatory audit cannot persist", async
       where: { stripeSubscriptionId: native.id },
     }),
   ).toBe(0);
-  expect((await send(receipt)).status).toBe(200);
+  expect((await send(receipt)).statusCode).toBe(200);
   expect(
     await db.prisma.subscription.count({
       where: { stripeSubscriptionId: native.id },
@@ -389,7 +361,7 @@ it("binds native checkout and portal to the owner organization, published price 
   const usage = await app.inject({
     method: "GET",
     url: "/api/v1/billing",
-    headers: headers(org.owner),
+    headers: injectHeaders(org.owner),
   });
   expect(billingUsageSchema.parse(usage.json())).toMatchObject({
     plan: "free",
@@ -400,6 +372,7 @@ it("binds native checkout and portal to the owner organization, published price 
   const returned = await app.inject({
     method: "GET",
     url: "/auth/subscription/success?checkoutSessionId=forged&callbackURL=https%3A%2F%2Fevil.example",
+    remoteAddress: clientIp,
   });
   expect(returned.statusCode).toBe(303);
   expect(returned.headers.location).toBe(
@@ -429,11 +402,8 @@ it("rejects member, API-key and forged finance bodies before contacting Stripe",
     db,
     org.owner,
     "stripe-finance-member@example.com",
+    { verified: true },
   );
-  await db.prisma.user.update({
-    where: { id: requireCaller(member.owner).userId },
-    data: { emailVerified: true },
-  });
   const initial = stripe.requests.length;
   for (const actor of [member.owner, member.context, org.context]) {
     for (const action of ["checkout", "portal"] as const) {
@@ -451,8 +421,9 @@ it("rejects member, API-key and forged finance bodies before contacting Stripe",
   const direct = await app.inject({
     method: "POST",
     url: "/auth/subscription/upgrade",
-    headers: headers(org.owner),
+    headers: injectHeaders(org.owner),
     payload: { plan: "pro", referenceId: org.organizationId },
+    remoteAddress: clientIp,
   });
   expect(direct.statusCode).toBe(404);
   expect(stripe.requests).toHaveLength(initial);
@@ -536,7 +507,7 @@ it.each(
     const native = stripe.subscription(`sub_${randomUUID()}`, org.customer);
     stripe.current.set(native.id, native);
     expect(
-      (await send(event("customer.subscription.created", native))).status,
+      (await send(event("customer.subscription.created", native))).statusCode,
     ).toBe(200);
     expect((await runtime.services.billing.usage(org.owner)).result.plan).toBe(
       "pro",
@@ -565,14 +536,14 @@ it.each(
           }
         : native;
     const response = await send(event(type, object));
-    expect(response.status, await response.text()).toBe(200);
+    expect(response.statusCode, response.body).toBe(200);
     expect((await runtime.services.billing.usage(org.owner)).result.plan).toBe(
       "free",
     );
     if (status === "active") {
       stripe.current.set(native.id, native);
       const restored = await send(event(type, object));
-      expect(restored.status, await restored.text()).toBe(200);
+      expect(restored.statusCode, restored.body).toBe(200);
       expect(
         (await runtime.services.billing.usage(org.owner)).result.plan,
       ).toBe("pro");
@@ -586,14 +557,14 @@ it("sends existing paid owners to the portal and keeps browser finance protected
   const native = stripe.subscription(`sub_${randomUUID()}`, org.customer);
   stripe.current.set(native.id, native);
   expect(
-    (await send(event("customer.subscription.created", native))).status,
+    (await send(event("customer.subscription.created", native))).statusCode,
   ).toBe(200);
   const initial = stripe.requests.length;
   const checkout = await finance(org.owner, "checkout");
   expect(checkout.statusCode).toBe(409);
   expect(checkout.json()).toMatchObject({ code: "PLAN_UNCHANGED" });
   for (const origin of ["https://untrusted.example", undefined]) {
-    const requestHeaders = headers(org.owner);
+    const requestHeaders = injectHeaders(org.owner);
     delete requestHeaders.origin;
     if (origin) requestHeaders.origin = origin;
     const rejected = await app.inject({
@@ -614,17 +585,19 @@ it.each(["customer", "public"] as const)(
   "keeps %s runtime pricing, finance and webhook boundaries unmetered and disabled even when Stripe credentials exist",
   async (mode) => {
     const org = await account(`disabled-${mode}`);
-    const env = {
-      ...appEnvironment,
-      auth: { ...runtime.services.auth.config, instanceMode: mode },
-      billing: { ...appEnvironment.billing, mode },
-    };
-    const isolatedRuntime = await createRuntime(env);
-    const isolatedApp = await createApp({
-      env,
-      services: isolatedRuntime.services,
-      static: false,
-    });
+    // The SaaS instance shape with only the billing mode and auth instance mode changed.
+    const isolated = await startApp(
+      db,
+      { INSTANCE_MODE: "saas" },
+      {
+        configure: (env) => ({
+          ...env,
+          auth: { ...runtime.services.auth.config, instanceMode: mode },
+          billing: { ...env.billing, mode },
+        }),
+      },
+    );
+    const isolatedApp = isolated.app;
     try {
       const config = await isolatedApp.inject({
         method: "GET",
@@ -639,7 +612,7 @@ it.each(["customer", "public"] as const)(
       const usage = await isolatedApp.inject({
         method: "GET",
         url: "/api/v1/billing",
-        headers: headers(org.owner),
+        headers: injectHeaders(org.owner),
       });
       expect(usage.statusCode, usage.body).toBe(200);
       expect(billingUsageSchema.parse(usage.json())).toMatchObject({
@@ -655,7 +628,7 @@ it.each(["customer", "public"] as const)(
         const response = await isolatedApp.inject({
           method: "POST",
           url: `/api/v1/billing/${action}`,
-          headers: headers(org.owner),
+          headers: injectHeaders(org.owner),
           payload: action === "checkout" ? { plan: "pro" } : {},
         });
         expect(response.statusCode, response.body).toBe(503);
@@ -674,16 +647,12 @@ it.each(["customer", "public"] as const)(
           "stripe-signature": signedHeader({ payload, secret: signingSecret }),
         },
         payload,
+        remoteAddress: clientIp,
       });
       expect(webhook.statusCode, webhook.body).toBe(404);
       expect(stripe.requests).toHaveLength(initial);
     } finally {
-      expect(
-        await cleanup([
-          () => isolatedApp.close(),
-          () => isolatedRuntime.close(),
-        ]),
-      ).toEqual([]);
+      await isolated.close();
     }
   },
 );
@@ -703,7 +672,7 @@ it.each(["active", "past_due"])(
     });
     stripe.current.set(native.id, native);
     expect(
-      (await send(event("customer.subscription.created", native))).status,
+      (await send(event("customer.subscription.created", native))).statusCode,
     ).toBe(200);
     stripe.updateStatuses.set(native.id, status);
     const before = stripe.requests.length;
@@ -745,7 +714,7 @@ it("reconciles Stripe remotely before waiting to publish paid entitlement behind
   );
   stripe.current.set(native.id, native);
   expect(
-    (await send(event("customer.subscription.created", native))).status,
+    (await send(event("customer.subscription.created", native))).statusCode,
   ).toBe(200);
   let began: () => void = () => {};
   const ready = new Promise<void>((resolve) => {
@@ -794,7 +763,7 @@ it("reconciles Stripe remotely before waiting to publish paid entitlement behind
     release();
   }
   await reading;
-  expect((await writing).status).toBe(200);
+  expect((await writing).statusCode).toBe(200);
   expect((await stored(native.id)).status).toBe("canceled");
 });
 

@@ -3,7 +3,6 @@ import {
   admitUsage,
   type BillingConfiguration,
 } from "../repositories/billing.js";
-import { createHash } from "node:crypto";
 import { v7 as uuidv7 } from "uuid";
 import {
   type Prisma,
@@ -17,9 +16,8 @@ import {
   projectionIdentity,
   redactNormalizerContext,
   endObservationStructure,
-  gitContextStructure,
-  protocolLiterals,
-  protocolObject,
+  ingestContextStructure,
+  parentHintStructure,
   ingestEnvelopeSchema,
   ingestOutputSchema,
   jsonObjectSchema,
@@ -30,6 +28,7 @@ import {
   repositoryIdentity,
   resolveLink,
   sanitizeSourceRecord,
+  sha256Hex,
   UnpairedToolResultError,
   SourceNotReadyError,
   identityDigest,
@@ -43,21 +42,11 @@ import { ServiceError, type ServiceContext } from "./context.js";
 import { lockOrganization } from "./auth.js";
 import { persistRedactionCounts } from "./policies.js";
 import { mutationOperation } from "./mutation.js";
-import { outboxRecord, traceOutboxPayloadSchema } from "./trace-outbox.js";
-
-const parentHintStructure = protocolObject(
-  ["harnessSessionId", "agentId", "agentType"],
-  { relation: protocolLiterals("SUBAGENT", "SPAWNED") },
-);
-const contextStructure = protocolObject(["cwd", "activeLeafId"], {
-  installation: protocolObject(["hostname", "osUser", "platform", "arch"]),
-  git: gitContextStructure,
-  parentHint: parentHintStructure,
-  transcriptMetadata: protocolObject(["sessionId", "startTime"]),
-});
-
-const digest = (value: string): string =>
-  createHash("sha256").update(value).digest("hex");
+import {
+  outboxRecord,
+  traceOutboxPayloadSchema,
+  type TraceQueue,
+} from "./trace-outbox.js";
 
 export class IngestService {
   constructor(
@@ -65,12 +54,7 @@ export class IngestService {
       prisma: PrismaClient;
       audit: AuditService;
       billing?: BillingConfiguration;
-      traces: {
-        enqueue(
-          tx: Prisma.TransactionClient,
-          data: { organizationId: string; sessionId: string; outboxId: string },
-        ): Promise<void>;
-      };
+      traces: TraceQueue;
     },
   ) {}
 
@@ -116,14 +100,14 @@ export class IngestService {
         const repository = repositoryIdentity(
           request.context.git?.remoteUrl ?? null,
         );
+        // The normalizer fields are redacted with identity canonicalization; the rest of
+        // the context is protocol-shaped free text.
+        const { activeLeafId, transcriptMetadata, ...observed } =
+          envelope.context;
         const normalizerContext = await redactNormalizerContext(
           normalizerContextSchema.parse({
-            ...(envelope.context.activeLeafId === undefined
-              ? {}
-              : { activeLeafId: envelope.context.activeLeafId }),
-            ...(envelope.context.transcriptMetadata === undefined
-              ? {}
-              : { transcriptMetadata: envelope.context.transcriptMetadata }),
+            ...(activeLeafId === undefined ? {} : { activeLeafId }),
+            ...(transcriptMetadata === undefined ? {} : { transcriptMetadata }),
           }),
           redactor,
         );
@@ -135,22 +119,22 @@ export class IngestService {
           context: {
             ...((await clean(
               {
-                ...envelope.context,
-                git: envelope.context.git
-                  ? { ...envelope.context.git, remoteUrl: repository.repoUrl }
+                ...observed,
+                git: observed.git
+                  ? { ...observed.git, remoteUrl: repository.repoUrl }
                   : null,
               },
-              contextStructure,
+              ingestContextStructure,
             )) as Record<string, JsonValue>),
             ...normalizerContext.value,
-            parentHint: envelope.context.parentHint
+            parentHint: observed.parentHint
               ? {
                   ...((await clean(
-                    envelope.context.parentHint,
+                    observed.parentHint,
                     parentHintStructure,
                   )) as Record<string, JsonValue>),
                   harnessSessionId: await identity(
-                    envelope.context.parentHint.harnessSessionId,
+                    observed.parentHint.harnessSessionId,
                   ),
                 }
               : null,
@@ -220,7 +204,7 @@ export class IngestService {
           if (
             !session ||
             prior.sessionId !== session.id ||
-            prior.cursor !== digest(cursor)
+            prior.cursor !== sha256Hex(cursor)
           )
             throw new ServiceError(
               409,
@@ -276,12 +260,21 @@ export class IngestService {
               lastActivityAt: receivedAt,
             },
           });
-        const sourceIdentity = (record: SourceRecord) =>
-          digest(
-            record.key === null
-              ? `position:${String(record.pos)}:${String(record.sourceVersion)}`
-              : `key:${projectionIdentity(record.key)}`,
-          );
+        // Every later form of a record (masked, redacted, sanitized) keeps its id, so
+        // the admission identity is computed once per record.
+        const identities = new Map<string, string>();
+        const sourceIdentity = (record: SourceRecord): string => {
+          let value = identities.get(record.id);
+          if (value === undefined) {
+            value = sha256Hex(
+              record.key === null
+                ? `position:${String(record.pos)}:${String(record.sourceVersion)}`
+                : `key:${projectionIdentity(record.key)}`,
+            );
+            identities.set(record.id, value);
+          }
+          return value;
+        };
         const priorSources = await tx.traceSourceAdmission.findMany({
           where: {
             organizationId: caller.organizationId,
@@ -309,7 +302,8 @@ export class IngestService {
                 ),
             ),
           );
-          for (const call of adapter.toolUses(accepted))
+          const uses = adapter.toolUses(accepted);
+          for (const call of uses)
             if (call.toolUseId) hashes.add(identityDigest(call.toolUseId));
           const previousCalls = await tx.traceToolCallControl.findMany({
             where: {
@@ -318,24 +312,11 @@ export class IngestService {
               idHash: { in: [...hashes] },
             },
           });
-          const classification: SourceRecord[] = previousCalls.map((call) => ({
-            id: call.idHash,
-            pos: 0n,
-            sourceVersion: 0,
-            key: null,
-            receivedAt,
-            payload: {},
-            redactionContext: {
-              toolCalls: [{ idHash: call.idHash, sensitive: call.sensitive }],
-              identities: [],
-            },
-          }));
-          masked = maskToolResults(adapter, accepted, classification);
+          masked = maskToolResults(adapter, accepted, previousCalls, uses);
           // Validate known record shapes before committing a durable receipt. A missing
           // tree leaf is a projection dependency and is retained for the next upload.
           try {
-            adapter.toMessages(accepted, normalizerContext.value);
-            adapter.sessionDelta(accepted, normalizerContext.value);
+            adapter.normalize(accepted, normalizerContext.value);
           } catch (error) {
             if (!(error instanceof SourceNotReadyError)) throw error;
           }
@@ -412,9 +393,9 @@ export class IngestService {
             resourceIds: sanitized.map((record) => record.id),
             receivedAt,
           });
-        for (const record of sanitized) {
-          await tx.traceSourceAdmission.create({
-            data: {
+        if (sanitized.length)
+          await tx.traceSourceAdmission.createMany({
+            data: sanitized.map((record) => ({
               organizationId: caller.organizationId,
               sessionId: session.id,
               sourceIdentity: sourceIdentity(record),
@@ -423,23 +404,38 @@ export class IngestService {
               sourceVersion: record.sourceVersion,
               introducedRevision: revision,
               receivedAt,
-            },
+            })),
           });
+        // A call classified sensitive by any record stays sensitive; an existing row is
+        // only ever promoted, never cleared.
+        const toolCalls = new Map<string, boolean>();
+        for (const record of sanitized)
           for (const call of record.redactionContext?.toolCalls ?? [])
-            await tx.traceToolCallControl.upsert({
+            toolCalls.set(
+              call.idHash,
+              (toolCalls.get(call.idHash) ?? false) || call.sensitive,
+            );
+        if (toolCalls.size) {
+          await tx.traceToolCallControl.createMany({
+            data: [...toolCalls].map(([idHash, sensitive]) => ({
+              organizationId: caller.organizationId,
+              sessionId: session.id,
+              idHash,
+              sensitive,
+            })),
+            skipDuplicates: true,
+          });
+          const sensitive = [...toolCalls].flatMap(([idHash, flag]) =>
+            flag ? [idHash] : [],
+          );
+          if (sensitive.length)
+            await tx.traceToolCallControl.updateMany({
               where: {
-                organizationId_sessionId_idHash: {
-                  organizationId: caller.organizationId,
-                  sessionId: session.id,
-                  idHash: call.idHash,
-                },
-              },
-              create: {
                 organizationId: caller.organizationId,
                 sessionId: session.id,
-                ...call,
+                idHash: { in: sensitive },
               },
-              update: call.sensitive ? { sensitive: true } : {},
+              data: { sensitive: true },
             });
         }
         // Spawn evidence is read before redaction so the child reference canonicalizes
@@ -491,7 +487,7 @@ export class IngestService {
             byteCount,
             redactionCount,
             durationMs: Math.max(0, Date.now() - context.startedAt),
-            cursor: digest(cursor),
+            cursor: sha256Hex(cursor),
           },
         });
         const outbox = await tx.traceOutbox.create({
@@ -579,13 +575,11 @@ export class IngestService {
             },
           },
         });
-        let cycle = false;
-        if (parent) {
-          const ancestors = await tx.$queryRaw<
-            { id: string }[]
-          >`WITH RECURSIVE ancestors(id,parent_session_id) AS (SELECT id,parent_session_id FROM trace_session_control WHERE organization_id=${session.organizationId} AND id=${parent.id}::uuid UNION SELECT s.id,s.parent_session_id FROM trace_session_control s JOIN ancestors a ON s.id=a.parent_session_id WHERE s.organization_id=${session.organizationId}) SELECT id FROM ancestors WHERE id=${session.id}::uuid`;
-          cycle = ancestors.length > 0;
-        }
+        const cycle =
+          parent !== null &&
+          (await ancestorIds(tx, session.organizationId, parent.id)).includes(
+            session.id,
+          );
         if (!cycle)
           await tx.traceSessionControl.update({
             where: {
@@ -613,24 +607,8 @@ export class IngestService {
     }
     // Resolve only explicit waiting edges. Visibility is applied when reading, so
     // a private parent never needs to be copied into a child's public fields.
-    const ancestors = await tx.$queryRaw<
-      { id: string }[]
-    >`WITH RECURSIVE ancestors(id,parent_session_id) AS (SELECT id,parent_session_id FROM trace_session_control WHERE organization_id=${session.organizationId} AND id=${session.id}::uuid UNION SELECT s.id,s.parent_session_id FROM trace_session_control s JOIN ancestors a ON s.id=a.parent_session_id WHERE s.organization_id=${session.organizationId}) SELECT id FROM ancestors`;
-    const waiting = await tx.$queryRaw<
-      { id: string }[]
-    >`SELECT id FROM trace_session_control WHERE organization_id=${session.organizationId} AND harness=${session.harness}::"Harness" AND parent_session_id IS NULL AND public.native_identity(parent_native_ref)=${projectionIdentity(session.harnessSessionId)}`;
-    await tx.traceSessionControl.updateMany({
-      where: {
-        organizationId: session.organizationId,
-        harness: session.harness,
-        parentSessionId: null,
-        id: {
-          in: waiting.map((child) => child.id),
-          notIn: ancestors.map((ancestor) => ancestor.id),
-        },
-      },
-      data: { parentSessionId: session.id },
-    });
+    const ancestors = await ancestorIds(tx, session.organizationId, session.id);
+    await tx.$executeRaw`UPDATE trace_session_control SET parent_session_id=${session.id}::uuid WHERE organization_id=${session.organizationId} AND harness=${session.harness}::"Harness" AND parent_session_id IS NULL AND public.native_identity(parent_native_ref)=${projectionIdentity(session.harnessSessionId)} AND id<>ALL(${ancestors}::uuid[])`;
     // A spawn claim names the child by the identity its own upload uses; it is kept
     // until that child exists and applies only to a child linked to this parent.
     for (const spawn of spawns) {
@@ -684,4 +662,15 @@ export class IngestService {
 interface SpawnClaim {
   childNativeIdentity: string;
   toolUseId: string;
+}
+/** One session and every ancestor above it, following parent links inside the organization. */
+async function ancestorIds(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  sessionId: string,
+): Promise<string[]> {
+  const rows = await tx.$queryRaw<
+    { id: string }[]
+  >`WITH RECURSIVE ancestors(id,parent_session_id) AS (SELECT id,parent_session_id FROM trace_session_control WHERE organization_id=${organizationId} AND id=${sessionId}::uuid UNION SELECT s.id,s.parent_session_id FROM trace_session_control s JOIN ancestors a ON s.id=a.parent_session_id WHERE s.organization_id=${organizationId}) SELECT id FROM ancestors`;
+  return rows.map((row) => row.id);
 }

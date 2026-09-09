@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
+import { dailySnapshots, ec2InstanceRole, quote } from "./shared.js";
 
-const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const image = "clickhouse/clickhouse-server:26.8.2.7";
 const privacy = readFileSync(
   new URL("../packages/traces/config/privacy.xml", import.meta.url),
@@ -41,11 +41,8 @@ export function clickHouseHost(input: {
       JSON.stringify({ CLICKHOUSE_PASSWORD: password }),
     ),
   });
-  const role = new aws.iam.Role(name, {
-    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
-      Service: "ec2.amazonaws.com",
-    }),
-    tags: input.tags,
+  const { role, profile } = ec2InstanceRole(name, input.tags, {
+    ssm: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
   });
   const secretAccess = new aws.iam.RolePolicy(`${name}-bootstrap`, {
     role: role.id,
@@ -62,11 +59,6 @@ export function clickHouseHost(input: {
       }),
     ),
   });
-  new aws.iam.RolePolicyAttachment(`${name}-ssm`, {
-    role: role.name,
-    policyArn: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-  });
-  const profile = new aws.iam.InstanceProfile(name, { role: role.name });
   const ami = aws.ssm.getParameterOutput({
     name: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
   });
@@ -153,80 +145,55 @@ export function clickHouseHost(input: {
     },
     { deleteBeforeReplace: true },
   );
-  const backupRole = new aws.iam.Role(`${name}-backup`, {
-    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
-      Service: "dlm.amazonaws.com",
-    }),
-    tags: input.tags,
-  });
-  const backupPolicy = new aws.iam.RolePolicy(`${name}-backup`, {
-    role: backupRole.id,
-    policy: volume.arn.apply((arn) =>
-      JSON.stringify({
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Effect: "Allow",
-            Action: [
-              "ec2:DescribeVolumes",
-              "ec2:DescribeInstances",
-              "ec2:DescribeSnapshots",
-              "ec2:DescribeSnapshotAttribute",
-              "ec2:DescribeSnapshotTierStatus",
+  dailySnapshots(name, input.tags, {
+    description: "Daily snapshots of the AgentCommons trace volume",
+    resourceTypes: ["VOLUME"],
+    targetTags: { TraceBackup: input.name },
+    retain: input.production ? 35 : 7,
+    grant: (role) =>
+      new aws.iam.RolePolicy(`${name}-backup`, {
+        role: role.id,
+        policy: volume.arn.apply((arn) =>
+          JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [
+              {
+                Effect: "Allow",
+                Action: [
+                  "ec2:DescribeVolumes",
+                  "ec2:DescribeInstances",
+                  "ec2:DescribeSnapshots",
+                  "ec2:DescribeSnapshotAttribute",
+                  "ec2:DescribeSnapshotTierStatus",
+                ],
+                Resource: "*",
+              },
+              {
+                Effect: "Allow",
+                Action: ["ec2:CreateSnapshot"],
+                Resource: [arn, "arn:aws:ec2:*:*:snapshot/*"],
+              },
+              {
+                Effect: "Allow",
+                Action: ["ec2:DeleteSnapshot"],
+                Resource: "arn:aws:ec2:*:*:snapshot/*",
+                Condition: {
+                  StringEquals: { "ec2:ResourceTag/TraceBackup": input.name },
+                },
+              },
+              {
+                Effect: "Allow",
+                Action: ["ec2:CreateTags"],
+                Resource: "arn:aws:ec2:*:*:snapshot/*",
+                Condition: {
+                  StringEquals: { "ec2:CreateAction": "CreateSnapshot" },
+                },
+              },
             ],
-            Resource: "*",
-          },
-          {
-            Effect: "Allow",
-            Action: ["ec2:CreateSnapshot"],
-            Resource: [arn, "arn:aws:ec2:*:*:snapshot/*"],
-          },
-          {
-            Effect: "Allow",
-            Action: ["ec2:DeleteSnapshot"],
-            Resource: "arn:aws:ec2:*:*:snapshot/*",
-            Condition: {
-              StringEquals: { "ec2:ResourceTag/TraceBackup": input.name },
-            },
-          },
-          {
-            Effect: "Allow",
-            Action: ["ec2:CreateTags"],
-            Resource: "arn:aws:ec2:*:*:snapshot/*",
-            Condition: {
-              StringEquals: { "ec2:CreateAction": "CreateSnapshot" },
-            },
-          },
-        ],
+          }),
+        ),
       }),
-    ),
   });
-  new aws.dlm.LifecyclePolicy(
-    `${name}-backup`,
-    {
-      executionRoleArn: backupRole.arn,
-      description: "Daily snapshots of the AgentCommons trace volume",
-      state: "ENABLED",
-      policyDetails: {
-        resourceTypes: ["VOLUME"],
-        targetTags: { TraceBackup: input.name },
-        schedules: [
-          {
-            name: "daily",
-            copyTags: true,
-            createRule: {
-              interval: 24,
-              intervalUnit: "HOURS",
-              times: "03:00",
-            },
-            retainRule: { count: input.production ? 35 : 7 },
-          },
-        ],
-      },
-      tags: input.tags,
-    },
-    { dependsOn: [backupPolicy] },
-  );
   return {
     url: pulumi.interpolate`http://${instance.privateIp}:8123`,
     instanceId: instance.id,

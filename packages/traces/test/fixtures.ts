@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   createTraceClient,
   traceTables,
+  type TraceScope,
   type TraceTable,
 } from "../src/index.js";
 import { emptyTraceRow, validateTraceRow } from "../src/rows.js";
@@ -15,6 +16,33 @@ export class TraceFixtures {
   constructor(readonly db: Awaited<ReturnType<typeof startTraceDatabase>>) {
     this.client = createTraceClient(db.traceConfig);
   }
+  /**
+   * One physical row at an explicit revision and generation, with empty defaults for
+   * unnamed columns. Control is not consulted or advanced: the caller decides publication.
+   */
+  async insertRaw(
+    table: TraceTable,
+    scope: TraceScope,
+    fields: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const row = {
+      ...emptyTraceRow(table),
+      deleted: 0,
+      fingerprint: "a".repeat(64),
+      ...fields,
+      organization_id: scope.organizationId,
+      session_id: scope.sessionId,
+      generation: scope.generation,
+      revision: scope.revision,
+    };
+    await this.client.insert({
+      table,
+      values: [validateTraceRow(table, row)],
+      format: "JSONEachRow",
+    });
+    return row;
+  }
+  /** Publish one row as the next revision of an existing control row. */
   async insert(
     table: TraceTable,
     sessionId: string,
@@ -29,23 +57,18 @@ export class TraceFixtures {
         ? previous
         : control.publishedRevision) + 1n;
     this.revisions.set(sessionId, revision);
-    const row = {
-      ...emptyTraceRow(table),
-      deleted: 0,
-      fingerprint: "a".repeat(64),
-      ...fields,
-      organization_id: control.organizationId,
-      session_id: sessionId,
-      generation: control.redactionGeneration,
-      revision,
-    };
-    await this.client.insert({
+    const row = await this.insertRaw(
       table,
-      values: [validateTraceRow(table, row)],
-      format: "JSONEachRow",
-    });
+      {
+        organizationId: control.organizationId,
+        sessionId,
+        revision,
+        generation: control.redactionGeneration,
+      },
+      fields,
+    );
     this.rows.set(
-      `${table}:${sessionId}:${JSON.stringify(traceTables[table].keys.filter((key) => !["organization_id", "session_id", "generation", "revision"].includes(key)).map((key) => row[key as keyof typeof row]))}`,
+      `${table}:${sessionId}:${JSON.stringify(row[traceTables[table].identity])}`,
       row,
     );
     await this.db.prisma.traceSessionControl.update({
@@ -119,6 +142,63 @@ export class TraceFixtures {
       ...options.fields,
     });
     return id;
+  }
+  /**
+   * A session owned by the caller's organization, user and key; its installation row is
+   * created when missing so read tests need no seeded installation of their own.
+   */
+  async sessionFor(
+    context: {
+      caller: {
+        organizationId: string;
+        userId: string;
+        apiKeyId: string | null;
+      } | null;
+    },
+    options: Omit<
+      Parameters<TraceFixtures["session"]>[0],
+      "organizationId" | "userId" | "keyId" | "installationId"
+    > & {
+      installationId?: string;
+      hostname?: string;
+      toolsEnabled?: boolean;
+    } = {},
+  ) {
+    const caller = context.caller;
+    if (!caller?.apiKeyId)
+      throw new Error("Expected a key-authenticated caller for the session.");
+    const {
+      installationId = randomUUID(),
+      hostname = "fixture",
+      toolsEnabled = true,
+      ...session
+    } = options;
+    await this.db.prisma.installation.upsert({
+      where: {
+        organizationId_id: {
+          organizationId: caller.organizationId,
+          id: installationId,
+        },
+      },
+      create: {
+        organizationId: caller.organizationId,
+        id: installationId,
+        hostname,
+        osUser: "fixture",
+        platform: "linux",
+        arch: "x64",
+        toolsEnabled,
+      },
+      update: {},
+    });
+    const id = await this.session({
+      ...session,
+      organizationId: caller.organizationId,
+      userId: caller.userId,
+      keyId: caller.apiKeyId,
+      installationId,
+    });
+    return { id, installationId };
   }
   close() {
     return this.client.close();

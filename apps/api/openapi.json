@@ -15012,11 +15012,12 @@
                             "description": "True when more children exist than are listed"
                           },
                           "truncated_fields": {
+                            "default": [],
+                            "description": "Fields shortened to fit the response",
                             "type": "array",
                             "items": {
                               "type": "string"
-                            },
-                            "description": "Fields shortened to fit the response"
+                            }
                           },
                           "root_session_id": {
                             "type": "string",
@@ -15647,11 +15648,12 @@
                             "description": "True when more children exist than are listed"
                           },
                           "truncated_fields": {
+                            "default": [],
+                            "description": "Fields shortened to fit the response",
                             "type": "array",
                             "items": {
                               "type": "string"
-                            },
-                            "description": "Fields shortened to fit the response"
+                            }
                           },
                           "root_session_id": {
                             "type": "string",
@@ -16296,11 +16298,12 @@
                           "description": "True when more children exist than are listed"
                         },
                         "truncated_fields": {
+                          "default": [],
+                          "description": "Fields shortened to fit the response",
                           "type": "array",
                           "items": {
                             "type": "string"
-                          },
-                          "description": "Fields shortened to fit the response"
+                          }
                         },
                         "root_session_id": {
                           "type": "string",
@@ -17015,9 +17018,11 @@
                           "session_id": {
                             "type": "string",
                             "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                            "description": "Primary key; every other view joins on it"
                           },
                           "title": {
+                            "description": "Short title derived from the session",
                             "type": [
                               "string",
                               "null"
@@ -17030,9 +17035,11 @@
                               "CODEX",
                               "GEMINI_CLI",
                               "PI"
-                            ]
+                            ],
+                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
                           },
                           "agent_type": {
+                            "description": "Subagent type when the session is a subagent",
                             "type": [
                               "string",
                               "null"
@@ -17051,7 +17058,8 @@
                               {
                                 "type": "null"
                               }
-                            ]
+                            ],
+                            "description": "SUBAGENT, FORK or SPAWNED"
                           },
                           "parent_session_id": {
                             "anyOf": [
@@ -17063,9 +17071,11 @@
                               {
                                 "type": "null"
                               }
-                            ]
+                            ],
+                            "description": "Parent session of a subagent, fork or spawned session"
                           },
                           "parent_tool_use_id": {
+                            "description": "Parent tool_use_id of the call that spawned this child; NULL when unrecorded",
                             "type": [
                               "string",
                               "null"
@@ -17074,12 +17084,14 @@
                           "user_email": {
                             "type": "string",
                             "format": "email",
-                            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                            "description": "Email of the member who ran it"
                           },
                           "started_at": {
                             "type": "string",
                             "format": "date-time",
-                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the session started (UTC)"
                           },
                           "status": {
                             "type": "string",
@@ -17087,17 +17099,21 @@
                               "ACTIVE",
                               "ENDED",
                               "INACTIVE"
-                            ]
+                            ],
+                            "description": "ACTIVE, ENDED or INACTIVE"
                           },
                           "message_count": {
                             "type": "integer",
                             "minimum": 0,
-                            "maximum": 9007199254740991
+                            "maximum": 9007199254740991,
+                            "description": "Rows in messages for this session"
                           },
                           "gap": {
                             "type": "boolean"
                           },
                           "truncated_fields": {
+                            "default": [],
+                            "description": "Fields shortened to fit the response",
                             "type": "array",
                             "items": {
                               "type": "string"
@@ -17450,9 +17466,11 @@
                         "type": "object",
                         "properties": {
                           "repo_name": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Repository name; matches sessions.repo_name"
                           },
                           "repo_url": {
+                            "description": "Remote URL",
                             "type": [
                               "string",
                               "null"
@@ -17461,24 +17479,30 @@
                           "session_count": {
                             "type": "integer",
                             "minimum": 0,
-                            "maximum": 9007199254740991
+                            "maximum": 9007199254740991,
+                            "description": "Sessions in the repository"
                           },
                           "user_count": {
                             "type": "integer",
                             "minimum": 0,
-                            "maximum": 9007199254740991
+                            "maximum": 9007199254740991,
+                            "description": "Distinct members who ran them"
                           },
                           "first_seen_at": {
                             "type": "string",
                             "format": "date-time",
-                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Earliest session start"
                           },
                           "last_activity_at": {
                             "type": "string",
                             "format": "date-time",
-                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Latest session activity"
                           },
                           "truncated_fields": {
+                            "default": [],
+                            "description": "Fields shortened to fit the response",
                             "type": "array",
                             "items": {
                               "type": "string"
@@ -17725,26 +17749,33 @@
                           "installation_id": {
                             "type": "string",
                             "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                            "description": "Install id; matches sessions.installation_id"
                           },
                           "tools_enabled": {
-                            "type": "boolean"
+                            "type": "boolean",
+                            "description": "Whether the AgentCommons MCP tools are installed there"
                           },
                           "organization_id": {
                             "type": "string",
-                            "minLength": 1
+                            "minLength": 1,
+                            "description": "Owning organization (already scoped)"
                           },
                           "hostname": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Machine hostname"
                           },
                           "os_user": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Operating-system user"
                           },
                           "platform": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Operating system, such as darwin or linux"
                           },
                           "arch": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "CPU architecture"
                           },
                           "hook_sha256": {
                             "anyOf": [
@@ -17755,24 +17786,30 @@
                               {
                                 "type": "null"
                               }
-                            ]
+                            ],
+                            "description": "SHA-256 of the installed hook script"
                           },
                           "first_seen_at": {
                             "type": "string",
                             "format": "date-time",
-                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Earliest session start"
                           },
                           "last_seen_at": {
                             "type": "string",
                             "format": "date-time",
-                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "Latest session activity"
                           },
                           "session_count": {
                             "type": "integer",
                             "minimum": 0,
-                            "maximum": 9007199254740991
+                            "maximum": 9007199254740991,
+                            "description": "Visible sessions captured"
                           },
                           "truncated_fields": {
+                            "default": [],
+                            "description": "Fields shortened to fit the response",
                             "type": "array",
                             "items": {
                               "type": "string"
@@ -18032,20 +18069,24 @@
                           "source_session_id": {
                             "type": "string",
                             "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                            "description": "Session that did the reading"
                           },
                           "target_session_id": {
                             "type": "string",
                             "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                            "description": "Session that was read"
                           },
                           "source_title": {
+                            "description": "Title of the reading session",
                             "type": [
                               "string",
                               "null"
                             ]
                           },
                           "target_title": {
+                            "description": "Title of the session that was read",
                             "type": [
                               "string",
                               "null"
@@ -18053,10 +18094,12 @@
                           },
                           "reader_user_id": {
                             "type": "string",
-                            "minLength": 1
+                            "minLength": 1,
+                            "description": "Member who ran the reading session"
                           },
                           "reader_email": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Email of that member"
                           },
                           "reader_harness": {
                             "type": "string",
@@ -18065,19 +18108,24 @@
                               "CODEX",
                               "GEMINI_CLI",
                               "PI"
-                            ]
+                            ],
+                            "description": "Harness of the reading session"
                           },
                           "read_at": {
                             "type": "string",
                             "format": "date-time",
-                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                            "description": "When the read happened"
                           },
                           "audit_id": {
                             "type": "string",
                             "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                            "description": "Audit event of the read"
                           },
                           "truncated_fields": {
+                            "default": [],
+                            "description": "Fields shortened to fit the response",
                             "type": "array",
                             "items": {
                               "type": "string"
@@ -18218,19 +18266,19 @@
           },
           {
             "schema": {
-              "type": "string"
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "in": "query",
             "name": "cursor",
-            "required": false
-          },
-          {
-            "schema": {
-              "type": "string",
-              "maxLength": 253
-            },
-            "in": "query",
-            "name": "domain",
             "required": false
           },
           {
@@ -18256,6 +18304,15 @@
             },
             "in": "query",
             "name": "order",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 253
+            },
+            "in": "query",
+            "name": "domain",
             "required": false
           }
         ],
@@ -18309,9 +18366,15 @@
                       }
                     },
                     "cursor": {
-                      "type": [
-                        "string",
-                        "null"
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     }
                   },
@@ -23168,6 +23231,7 @@
                           },
                           "truncated_fields": {
                             "default": [],
+                            "description": "Fields shortened to fit the response",
                             "type": "array",
                             "items": {
                               "type": "string"

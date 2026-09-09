@@ -319,7 +319,7 @@ test("quick filters and structured conditions live in the URL and remove as chip
   ).toBeVisible();
   const chips = page.getByLabel(labels.filters.label, { exact: true });
   await expect(chips).toContainText(
-    `${labels.filters.fields.repo_name} ${labels.filters.operators.eq} github.com/absent/browser-repo`,
+    `${copy.app.fields.repo_name} ${labels.filters.operators.eq} github.com/absent/browser-repo`,
   );
   await chips
     .getByRole("button", { name: labels.filters.remove, exact: true })
@@ -342,7 +342,7 @@ test("quick filters and structured conditions live in the URL and remove as chip
   await expect(page).toHaveURL(/where=/);
   expect(decodeURIComponent(page.url())).toContain('"field":"tool_name"');
   await expect(chips).toContainText(
-    `${labels.filters.fields.tool_name} ${labels.filters.operators.contains} Rea`,
+    `${copy.app.fields.tool_name} ${labels.filters.operators.contains} Rea`,
   );
   await settled(page);
   // Only sessions that called Read match: the seeded root and copies other tests made of it.

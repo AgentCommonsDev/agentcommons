@@ -10,39 +10,53 @@ import {
   messageKindSchema,
   type ProjectedMessage,
 } from "@agentcommons/core";
-import { createTraceClient, queryTrace, sqlIdentifier } from "./client.js";
+import {
+  createTraceClient,
+  queryTrace,
+  sqlIdentifier,
+  sqlString,
+} from "./client.js";
 import type { ClickHouseConfig } from "./config.js";
 import {
+  EMBEDDING_DIMENSIONS,
+  TRACE_PAGE_BYTES,
   traceTables,
-  sessionColumns,
   rawColumns,
   messageColumns,
   type TraceTable,
 } from "./schema.js";
 import { emptyTraceRow, traceWire, validateTraceRow } from "./rows.js";
-import type {
-  TraceScope,
-  TraceRawRecord,
-  TraceRawPage,
-  TraceProjectionWrite,
-  TraceSession,
-  TraceManifestEntry,
-  TraceEmbeddingChunk,
-  TraceEmbeddingWrite,
+import {
+  traceAuditSchema,
+  traceEmbeddingChunkSchema,
+  traceEmbeddingVectorSchema,
+  traceEmbeddingWriteSchema,
+  traceScopeSchema,
+  traceSessionSchema,
+  type TraceAudit,
+  type TraceScope,
+  type TraceRawRecord,
+  type TraceRawPage,
+  type TraceProjectionWrite,
+  type TraceSession,
+  type TraceManifestEntry,
+  type TraceEmbeddingChunk,
+  type TraceEmbeddingWrite,
+  type TraceParameters,
 } from "./types.js";
 
 const sha256 = (value: string) =>
   createHash("sha256").update(value).digest("hex");
+/** Digest of a trace value in its wire form; publishers compare it against stored manifests. */
+export const fingerprint = (value: unknown): string =>
+  sha256(JSON.stringify(traceWire(value)));
 const pageInput = z.object({
   after: z.string().nullable(),
   limit: z.number().int().min(1).max(1000),
 });
-const scopeInput = z.object({
-  organizationId: z.string().min(1),
-  sessionId: z.uuid(),
-  revision: z.bigint().nonnegative(),
-  generation: z.bigint().nonnegative(),
-});
+const jsonText = z
+  .string()
+  .transform((value) => jsonValueSchema.parse(JSON.parse(value)));
 const rawReadSchema = z.object({
   raw_record_id: z.uuid(),
   pos: z.coerce.bigint(),
@@ -58,22 +72,51 @@ const rawReadSchema = z.object({
   ingest_batch_id: z.uuid(),
   record_type: z.string(),
 });
-export interface TraceAudit {
-  id: string;
-  organization_id: string;
-  ts: Date;
-  user_id: string | null;
-  user_email: string | null;
-  api_key_id: string | null;
-  installation_id: string | null;
-  auth_method: string;
-  transport: string;
-  action: string;
-  resource_ids: string[];
-  status_code: number;
-  duration_ms: number;
-  detail: z.infer<typeof jsonValueSchema>;
-}
+/** A stored header row as ClickHouse returns it, decoded into the session shape. */
+const sessionRowSchema = traceSessionSchema.extend({
+  observed_commits: jsonText,
+  observed_diff_stat: jsonText,
+  started_at: z.coerce.date(),
+  ended_at: z.coerce.date().nullable(),
+  last_activity_at: z.coerce.date(),
+  input_tokens: z.coerce.bigint(),
+  output_tokens: z.coerce.bigint(),
+});
+const chunk = traceEmbeddingChunkSchema.shape;
+/** A stored chunk row, decoded into the chunk shape. */
+const chunkRowSchema = z
+  .object({
+    chunk_id: chunk.id,
+    message_id: chunk.messageId,
+    ordinal: chunk.ordinal,
+    content: chunk.content,
+    content_hash: chunk.contentHash,
+    token_count: chunk.tokenCount,
+    model: chunk.model,
+    embedding: chunk.embedding,
+  })
+  .transform((row): TraceEmbeddingChunk => ({
+    id: row.chunk_id,
+    messageId: row.message_id,
+    ordinal: row.ordinal,
+    content: row.content,
+    contentHash: row.content_hash,
+    tokenCount: row.token_count,
+    model: row.model,
+    embedding: row.embedding,
+  }));
+/** Tables whose surviving row counts a purge manifest reports. */
+const sessionCountTables = [
+  "raw_records",
+  "messages",
+  "session_files",
+  "message_chunks",
+  "session_embeddings",
+] as const satisfies readonly TraceTable[];
+export type TraceSessionCounts = Record<
+  (typeof sessionCountTables)[number],
+  number
+>;
 export class TraceRepository {
   private readonly client: ClickHouseClient;
   constructor(private readonly config: ClickHouseConfig) {
@@ -104,22 +147,9 @@ export class TraceRepository {
       generation: string;
     };
   } {
-    scopeInput.parse(scope);
-    const columns = Object.keys(traceTables[table].columns);
-    const identity =
-      table === "ingest_receipts"
-        ? "receipt_id"
-        : table === "receipt_redactions"
-          ? "redaction_id"
-          : table === "session_files"
-            ? "file_id"
-            : table === "messages"
-              ? "message_id"
-              : table === "raw_records"
-                ? "raw_record_id"
-                : table === "message_chunks"
-                  ? "chunk_id"
-                  : "session_id";
+    traceScopeSchema.parse(scope);
+    const { columns: definition, identity } = traceTables[table];
+    const columns = Object.keys(definition);
     return {
       sql: `SELECT ${columns.map((column, index) => `tupleElement(row,${String(index + 1)}) AS ${sqlIdentifier(column)}`).join(",")},tupleElement(row,${String(columns.length + 1)}) AS fingerprint FROM (SELECT argMax(tuple(${columns.map(sqlIdentifier).join(",")},fingerprint,deleted),revision) AS row FROM ${sqlIdentifier(this.config.database)}.${sqlIdentifier(table)} FINAL WHERE organization_id={organization:String} AND session_id={session:UUID} AND generation={generation:Int64} AND revision<={revision:Int64} GROUP BY ${sqlIdentifier(identity)}) WHERE tupleElement(row,${String(columns.length + 2)})=0`,
       parameters: {
@@ -151,7 +181,7 @@ export class TraceRepository {
       const size = Buffer.byteLength(JSON.stringify(value));
       if (
         values.length &&
-        (values.length >= 500 || bytes + size > 8 * 1024 * 1024)
+        (values.length >= 500 || bytes + size > TRACE_PAGE_BYTES)
       )
         await flush();
       values.push(value);
@@ -163,7 +193,7 @@ export class TraceRepository {
     scope: TraceScope,
     records: readonly TraceRawRecord[],
   ): Promise<void> {
-    scopeInput.parse(scope);
+    traceScopeSchema.parse(scope);
     await this.insert(
       "raw_records",
       records.map((record) => {
@@ -185,13 +215,13 @@ export class TraceRepository {
           revision: scope.revision,
           generation: scope.generation,
           deleted: 0,
-          fingerprint: sha256(JSON.stringify(traceWire(row))),
+          fingerprint: fingerprint(row),
         };
       }),
     );
   }
   async writeProjection(input: TraceProjectionWrite): Promise<void> {
-    scopeInput.parse(input);
+    traceScopeSchema.parse(input);
     if (
       input.session.organization_id !== input.organizationId ||
       input.session.session_id !== input.sessionId
@@ -208,48 +238,52 @@ export class TraceRepository {
       observed_commits: JSON.stringify(input.session.observed_commits),
       observed_diff_stat: JSON.stringify(input.session.observed_diff_stat),
     };
-    await this.insert("sessions", [
-      {
-        ...session,
-        ...scope,
-        deleted: 0,
-        fingerprint: sha256(JSON.stringify(traceWire(session))),
-      },
-    ]);
-    await this.insert(
-      "messages",
-      input.messages.map((delta) => {
-        const source = delta.message;
-        if (source && source.id !== delta.id)
-          throw new Error("Projection message identity mismatch.");
-        const row = source
-          ? {
-              ...Object.fromEntries(
-                Object.entries(source).filter(([name]) => name !== "id"),
-              ),
-              message_id: source.id,
-              tool_input: JSON.stringify(source.tool_input),
-            }
-          : { ...emptyTraceRow("messages"), message_id: delta.id };
-        return {
-          ...row,
+    // Readers see the revision only once control publishes it, so the three tables
+    // need no write order between them.
+    await Promise.all([
+      this.insert("sessions", [
+        {
+          ...session,
           ...scope,
-          deleted: source ? 0 : 1,
-          fingerprint: delta.fingerprint,
-        };
-      }),
-    );
-    await this.insert(
-      "session_files",
-      input.files.map((file) => ({
-        ...scope,
-        file_id: sha256(file.path),
-        path: file.path,
-        ops: file.ops ?? [],
-        deleted: file.ops ? 0 : 1,
-        fingerprint: file.fingerprint,
-      })),
-    );
+          deleted: 0,
+          fingerprint: fingerprint(session),
+        },
+      ]),
+      this.insert(
+        "messages",
+        input.messages.map((delta) => {
+          const source = delta.message;
+          if (source && source.id !== delta.id)
+            throw new Error("Projection message identity mismatch.");
+          const row = source
+            ? {
+                ...Object.fromEntries(
+                  Object.entries(source).filter(([name]) => name !== "id"),
+                ),
+                message_id: source.id,
+                tool_input: JSON.stringify(source.tool_input),
+              }
+            : { ...emptyTraceRow("messages"), message_id: delta.id };
+          return {
+            ...row,
+            ...scope,
+            deleted: source ? 0 : 1,
+            fingerprint: delta.fingerprint,
+          };
+        }),
+      ),
+      this.insert(
+        "session_files",
+        input.files.map((file) => ({
+          ...scope,
+          file_id: sha256(file.path),
+          path: file.path,
+          ops: file.ops ?? [],
+          deleted: file.ops ? 0 : 1,
+          fingerprint: file.fingerprint,
+        })),
+      ),
+    ]);
   }
   async readSession(
     organizationId: string,
@@ -265,31 +299,7 @@ export class TraceRepository {
     });
     const result = await queryTrace(this.client, source.sql, source.parameters);
     const row = result.rows[0];
-    if (!row) return null;
-    const checked = validateTraceRow("sessions", {
-      ...row,
-      revision: revision.toString(),
-      generation: generation.toString(),
-      deleted: 0,
-    });
-    const session = Object.fromEntries(
-      Object.keys(sessionColumns).map((key) => [key, checked[key]]),
-    );
-    for (const key of ["started_at", "last_activity_at"])
-      session[key] = z.coerce.date().parse(session[key]);
-    session.ended_at =
-      session.ended_at === null
-        ? null
-        : z.coerce.date().parse(session.ended_at);
-    session.observed_commits = jsonValueSchema.parse(
-      JSON.parse(z.string().parse(session.observed_commits)),
-    );
-    session.observed_diff_stat = jsonValueSchema.parse(
-      JSON.parse(z.string().parse(session.observed_diff_stat)),
-    );
-    session.input_tokens = z.coerce.bigint().parse(session.input_tokens);
-    session.output_tokens = z.coerce.bigint().parse(session.output_tokens);
-    return session as unknown as TraceSession;
+    return row ? sessionRowSchema.parse(row) : null;
   }
   async rawPage(
     scope: TraceScope,
@@ -300,7 +310,7 @@ export class TraceRepository {
     const source = this.latest("raw_records", scope);
     const rows = await queryTrace(
       this.client,
-      `WITH candidates AS (SELECT * FROM (${source.sql}) WHERE ({after:Nullable(UUID)} IS NULL OR raw_record_id>{after:Nullable(UUID)}) ORDER BY raw_record_id LIMIT {limit:UInt32}), bounded AS (SELECT *,sum(length(payload)+length(redaction_context)) OVER(ORDER BY raw_record_id) AS bytes,row_number() OVER(ORDER BY raw_record_id) ordinal FROM candidates) SELECT ${Object.keys(rawColumns).map(sqlIdentifier).join(",")} FROM bounded WHERE bytes<=8388608 OR ordinal=1 ORDER BY raw_record_id`,
+      `WITH candidates AS (SELECT * FROM (${source.sql}) WHERE ({after:Nullable(UUID)} IS NULL OR raw_record_id>{after:Nullable(UUID)}) ORDER BY raw_record_id LIMIT {limit:UInt32}), bounded AS (SELECT *,sum(length(payload)+length(redaction_context)) OVER(ORDER BY raw_record_id) AS bytes,row_number() OVER(ORDER BY raw_record_id) ordinal FROM candidates) SELECT ${Object.keys(rawColumns).map(sqlIdentifier).join(",")} FROM bounded WHERE bytes<=${String(TRACE_PAGE_BYTES)} OR ordinal=1 ORDER BY raw_record_id`,
       { ...source.parameters, after: page.after, limit: page.limit },
     );
     const records = rows.rows.map((row) => {
@@ -329,7 +339,7 @@ export class TraceRepository {
     const columns = Object.keys(messageColumns).map(sqlIdentifier).join(",");
     const result = await queryTrace(
       this.client,
-      `WITH candidates AS (SELECT * FROM (${source.sql}) WHERE ({after:Nullable(UUID)} IS NULL OR message_id>{after:Nullable(UUID)}) ORDER BY message_id LIMIT {limit:UInt32}), bounded AS (SELECT *,sum(byteSize(tuple(${columns}))) OVER(ORDER BY message_id) AS bytes,row_number() OVER(ORDER BY message_id) AS ordinal FROM candidates) SELECT ${columns} FROM bounded WHERE bytes<=8388608 OR ordinal=1 ORDER BY message_id`,
+      `WITH candidates AS (SELECT * FROM (${source.sql}) WHERE ({after:Nullable(UUID)} IS NULL OR message_id>{after:Nullable(UUID)}) ORDER BY message_id LIMIT {limit:UInt32}), bounded AS (SELECT *,sum(byteSize(tuple(${columns}))) OVER(ORDER BY message_id) AS bytes,row_number() OVER(ORDER BY message_id) AS ordinal FROM candidates) SELECT ${columns} FROM bounded WHERE bytes<=${String(TRACE_PAGE_BYTES)} OR ordinal=1 ORDER BY message_id`,
       { ...source.parameters, after: page.after, limit: page.limit },
     );
     const shape = z.object({
@@ -343,9 +353,7 @@ export class TraceRepository {
       content: z.string(),
       tool_name: z.string().nullable(),
       tool_use_id: z.string().nullable(),
-      tool_input: z
-        .string()
-        .transform((value) => jsonValueSchema.parse(JSON.parse(value))),
+      tool_input: jsonText,
       model: z.string().nullable(),
       timestamp: z.coerce.date().nullable(),
       received_at: z.coerce.date(),
@@ -370,11 +378,15 @@ export class TraceRepository {
   ): Promise<{ items: TraceManifestEntry[]; after: string | null }> {
     const page = pageInput.parse(input);
     const table = kind === "messages" ? "messages" : "session_files";
-    const id = kind === "messages" ? "message_id" : "file_id";
+    const { identity, identityType } = traceTables[table];
+    const id = sqlIdentifier(identity);
+    // The cursor carries the identity column's own type: a UUID sorts differently from its
+    // text form, and a text-compared cursor over UUID order skips most of a large session.
+    const after = `{after:Nullable(${identityType})}`;
     const source = this.latest(table, scope);
     const rows = await queryTrace(
       this.client,
-      `SELECT ${id} AS cursor,${kind === "files" ? "path" : id} AS id,fingerprint FROM (${source.sql}) WHERE ({after:Nullable(String)} IS NULL OR toString(${id})>{after:Nullable(String)}) ORDER BY ${id} LIMIT {limit:UInt32}`,
+      `SELECT toString(${id}) AS cursor,${kind === "files" ? "path" : id} AS id,fingerprint FROM (${source.sql}) WHERE (${after} IS NULL OR ${id}>${after}) ORDER BY ${id} LIMIT {limit:UInt32}`,
       { ...source.parameters, after: page.after, limit: page.limit },
     );
     const values = rows.rows.map((row) =>
@@ -397,7 +409,7 @@ export class TraceRepository {
       deleted?: boolean;
     }[] = [],
   ): Promise<void> {
-    scopeInput.parse(scope);
+    traceScopeSchema.parse(scope);
     await this.insert(
       "ingest_receipts",
       receipts.map((receipt) => {
@@ -432,7 +444,7 @@ export class TraceRepository {
           revision: scope.revision,
           generation: scope.generation,
           deleted: 0,
-          fingerprint: sha256(JSON.stringify(traceWire(row))),
+          fingerprint: fingerprint(row),
         };
       }),
     );
@@ -469,29 +481,7 @@ export class TraceRepository {
       `SELECT chunk_id,message_id,ordinal,content,content_hash,token_count,model,embedding FROM (${source.sql}) WHERE ({after:Nullable(UUID)} IS NULL OR chunk_id>{after:Nullable(UUID)}) ORDER BY chunk_id LIMIT {limit:UInt32}`,
       { ...source.parameters, after: page.after, limit: page.limit },
     );
-    const shape = z.object({
-      chunk_id: z.uuid(),
-      message_id: z.uuid(),
-      ordinal: z.number().int().nonnegative(),
-      content: z.string(),
-      content_hash: z.string().regex(/^[a-f0-9]{64}$/),
-      token_count: z.number().int().nonnegative(),
-      model: z.string(),
-      embedding: z.array(z.number()).length(1024),
-    });
-    const items = result.rows.map((row) => {
-      const value = shape.parse(row);
-      return {
-        id: value.chunk_id,
-        messageId: value.message_id,
-        ordinal: value.ordinal,
-        content: value.content,
-        contentHash: value.content_hash,
-        tokenCount: value.token_count,
-        model: value.model,
-        embedding: value.embedding,
-      };
-    });
+    const items = result.rows.map((row) => chunkRowSchema.parse(row));
     return { items, after: items.at(-1)?.id ?? null };
   }
   async readSessionEmbedding(scope: TraceScope): Promise<{
@@ -500,7 +490,7 @@ export class TraceRepository {
     embedding: number[];
     updatedAt: Date;
   } | null> {
-    scopeInput.parse(scope);
+    traceScopeSchema.parse(scope);
     const rows = await queryTrace(
       this.client,
       `SELECT model,token_count,embedding,updated_at FROM ${sqlIdentifier(this.config.database)}.session_embeddings FINAL WHERE organization_id={organization:String} AND session_id={session:UUID} AND generation={generation:Int64} AND revision={revision:Int64} AND deleted=0`,
@@ -516,7 +506,7 @@ export class TraceRepository {
       .object({
         model: z.string(),
         token_count: z.number().int().nonnegative(),
-        embedding: z.array(z.number()).length(1024),
+        embedding: traceEmbeddingVectorSchema,
         updated_at: z.coerce.date(),
       })
       .parse(rows.rows[0]);
@@ -531,31 +521,8 @@ export class TraceRepository {
     scope: TraceScope,
     input: TraceEmbeddingWrite,
   ): Promise<void> {
-    scopeInput.parse(scope);
-    const vector = z.array(z.number()).length(1024);
-    const chunk = z.object({
-      id: z.uuid(),
-      messageId: z.uuid(),
-      ordinal: z.number().int().nonnegative(),
-      content: z.string(),
-      contentHash: z.string().regex(/^[a-f0-9]{64}$/),
-      tokenCount: z.number().int().nonnegative(),
-      model: z.string().min(1),
-      embedding: vector,
-    });
-    const value = z
-      .object({
-        chunks: z.array(chunk),
-        session: z
-          .object({
-            model: z.string().min(1),
-            tokenCount: z.number().int().nonnegative(),
-            embedding: vector,
-          })
-          .nullable(),
-        updatedAt: z.date(),
-      })
-      .parse(input);
+    traceScopeSchema.parse(scope);
+    const value = traceEmbeddingWriteSchema.parse(input);
     const ids = new Set(value.chunks.map((item) => item.id));
     if (ids.size !== value.chunks.length)
       throw new Error("Duplicate embedding chunk identity.");
@@ -584,7 +551,7 @@ export class TraceRepository {
         ...emptyTraceRow("message_chunks"),
         ...common,
         chunk_id: id,
-        embedding: Array<number>(1024).fill(0),
+        embedding: Array<number>(EMBEDDING_DIMENSIONS).fill(0),
         deleted: 1,
         fingerprint: sha256("deleted:" + id),
       }));
@@ -604,7 +571,7 @@ export class TraceRepository {
         return {
           ...row,
           deleted: 0,
-          fingerprint: sha256(JSON.stringify(traceWire(row))),
+          fingerprint: fingerprint(row),
         };
       }),
       ...tombstones,
@@ -621,29 +588,13 @@ export class TraceRepository {
       {
         ...session,
         deleted: 0,
-        fingerprint: sha256(JSON.stringify(traceWire(session))),
+        fingerprint: fingerprint(session),
       },
     ]);
   }
   async appendAudit(rows: readonly TraceAudit[]): Promise<void> {
-    const shape = z.object({
-      id: z.uuid(),
-      organization_id: z.string().min(1),
-      ts: z.date(),
-      user_id: z.string().nullable(),
-      user_email: z.string().nullable(),
-      api_key_id: z.string().nullable(),
-      installation_id: z.uuid().nullable(),
-      auth_method: z.string(),
-      transport: z.string(),
-      action: z.string(),
-      resource_ids: z.array(z.string()),
-      status_code: z.number().int(),
-      duration_ms: z.number().int().nonnegative(),
-      detail: jsonValueSchema,
-    });
     const values = rows.map((row) => {
-      const { id, ...value } = shape.parse(row);
+      const { id, ...value } = traceAuditSchema.parse(row);
       return {
         ...(traceWire(value) as Record<string, unknown>),
         audit_id: id,
@@ -660,41 +611,54 @@ export class TraceRepository {
   async sessionCounts(scope: {
     organizationId: string;
     sessionId: string;
-  }): Promise<{
-    raw_records: number;
-    messages: number;
-    session_files: number;
-    message_chunks: number;
-    session_embeddings: number;
-  }> {
+  }): Promise<TraceSessionCounts> {
     z.object({ organizationId: z.string().min(1), sessionId: z.uuid() }).parse(
       scope,
     );
-    const tables = {
-      raw_records: "raw_record_id",
-      messages: "message_id",
-      session_files: "file_id",
-      message_chunks: "chunk_id",
-      session_embeddings: "session_id",
-    };
-    const count = async (table: string, id: string) => {
-      const result = await queryTrace(
-        this.client,
-        `SELECT uniqExact(${sqlIdentifier(id)}) AS count FROM ${sqlIdentifier(this.config.database)}.${sqlIdentifier(table)} WHERE organization_id={organization:String} AND session_id={session:UUID}`,
-        { organization: scope.organizationId, session: scope.sessionId },
-      );
-      return z.coerce.number().int().nonnegative().parse(result.rows[0]?.count);
-    };
+    const result = await queryTrace(
+      this.client,
+      sessionCountTables
+        .map(
+          (table) =>
+            `SELECT ${sqlString(table)} AS table_name,uniqExact(${sqlIdentifier(traceTables[table].identity)}) AS count FROM ${sqlIdentifier(this.config.database)}.${sqlIdentifier(table)} WHERE organization_id={organization:String} AND session_id={session:UUID}`,
+        )
+        .join(" UNION ALL "),
+      { organization: scope.organizationId, session: scope.sessionId },
+    );
+    const counts = new Map(
+      z
+        .array(
+          z.object({
+            table_name: z.enum(sessionCountTables),
+            count: z.coerce.number().int().nonnegative(),
+          }),
+        )
+        .parse(result.rows)
+        .map((row) => [row.table_name, row.count]),
+    );
+    const count = z.number();
     return {
-      raw_records: await count("raw_records", tables.raw_records),
-      messages: await count("messages", tables.messages),
-      session_files: await count("session_files", tables.session_files),
-      message_chunks: await count("message_chunks", tables.message_chunks),
-      session_embeddings: await count(
-        "session_embeddings",
-        tables.session_embeddings,
-      ),
+      raw_records: count.parse(counts.get("raw_records")),
+      messages: count.parse(counts.get("messages")),
+      session_files: count.parse(counts.get("session_files")),
+      message_chunks: count.parse(counts.get("message_chunks")),
+      session_embeddings: count.parse(counts.get("session_embeddings")),
     };
+  }
+  /** One synchronous `ALTER TABLE … DELETE` per table over the session's rows that also satisfy `where`. */
+  private async deleteRows(
+    tables: ReadonlyArray<readonly [string, { readonly identity: string }]>,
+    where: (table: string, identity: string) => string,
+    parameters: TraceParameters,
+  ): Promise<void> {
+    const signal = AbortSignal.timeout(30000);
+    for (const [table, { identity }] of tables)
+      await this.client.command({
+        query: `ALTER TABLE ${sqlIdentifier(this.config.database)}.${sqlIdentifier(table)} DELETE WHERE organization_id={organization:String} AND session_id={session:UUID}${where(table, identity)}`,
+        query_params: parameters,
+        clickhouse_settings: { mutations_sync: "2" },
+        abort_signal: signal,
+      });
   }
   private async cleanup(
     scope: { organizationId: string; sessionId: string },
@@ -704,20 +668,44 @@ export class TraceRepository {
       scope,
     );
     if (generation !== undefined) z.bigint().nonnegative().parse(generation);
-    const signal = AbortSignal.timeout(30000);
-    for (const table of Object.keys(traceTables))
-      await this.client.command({
-        query: `ALTER TABLE ${sqlIdentifier(this.config.database)}.${sqlIdentifier(table)} DELETE WHERE organization_id={organization:String} AND session_id={session:UUID}${generation === undefined ? "" : " AND generation<{generation:Int64}"}`,
-        query_params: {
-          organization: scope.organizationId,
-          session: scope.sessionId,
-          ...(generation === undefined
-            ? {}
-            : { generation: generation.toString() }),
-        },
-        clickhouse_settings: { mutations_sync: "2" },
-        abort_signal: signal,
-      });
+    await this.deleteRows(
+      Object.entries(traceTables),
+      () =>
+        generation === undefined ? "" : " AND generation<{generation:Int64}",
+      {
+        organization: scope.organizationId,
+        session: scope.sessionId,
+        ...(generation === undefined
+          ? {}
+          : { generation: generation.toString() }),
+      },
+    );
+  }
+  /**
+   * Reclaims rows the published revision has superseded: within `scope.generation`, every
+   * row of an identity older than that identity's newest row at or below `scope.revision`.
+   * Rows above the published revision, other generations (`cleanupGenerations`) and the
+   * vector tables, whose revision is the separately fenced vector epoch, stay untouched, so
+   * the latest rows readers resolve are identical before and after.
+   */
+  async deleteSupersededRevisions(scope: TraceScope): Promise<void> {
+    traceScopeSchema.parse(scope);
+    const published =
+      "WHERE organization_id={organization:String} AND session_id={session:UUID} AND generation={generation:Int64} AND revision<={revision:Int64}";
+    await this.deleteRows(
+      Object.entries(traceTables).filter(([, table]) => !table.vector),
+      (table, identity) => {
+        const id = sqlIdentifier(identity);
+        const from = `FROM ${sqlIdentifier(this.config.database)}.${sqlIdentifier(table)} ${published}`;
+        return ` AND generation={generation:Int64} AND revision<{revision:Int64} AND (${id},revision) IN (SELECT ${id},revision ${from} AND (${id},revision) NOT IN (SELECT ${id},max(revision) ${from} GROUP BY ${id}))`;
+      },
+      {
+        organization: scope.organizationId,
+        session: scope.sessionId,
+        generation: scope.generation.toString(),
+        revision: scope.revision.toString(),
+      },
+    );
   }
   async cleanupSession(scope: {
     organizationId: string;
@@ -726,7 +714,7 @@ export class TraceRepository {
     await this.cleanup(scope);
   }
   async cleanupGenerations(scope: TraceScope): Promise<void> {
-    scopeInput.parse(scope);
+    traceScopeSchema.parse(scope);
     await this.cleanup(scope, scope.generation);
   }
   async ready(): Promise<boolean> {

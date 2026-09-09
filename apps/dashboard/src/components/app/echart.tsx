@@ -20,6 +20,7 @@ import {
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { EChartsCoreOption } from "echarts/core";
+import { useTheme } from "../../lib/theme";
 import { cn } from "../../lib/utils";
 
 echarts.use([
@@ -73,7 +74,7 @@ function chartTheme(): Record<string, unknown> {
     backgroundColor: "transparent",
     textStyle: {
       color: text,
-      fontFamily: "Inter Variable, sans-serif",
+      fontFamily: cssVar("--font-sans"),
       fontSize: 12,
     },
     title: { textStyle: { color: text } },
@@ -100,15 +101,14 @@ function chartTheme(): Record<string, unknown> {
     gauge: { axisLine: { lineStyle: { color: [[1, soft]] } } },
   };
 }
-let registered: "dark" | "light" | null = null;
-function ensureTheme(): string {
-  const mode =
-    document.documentElement.dataset.theme === "light" ? "light" : "dark";
+/** Themes register once per mode; the tokens are read when a mode is first used. */
+const registered = new Map<"dark" | "light", string>();
+function themeName(mode: "dark" | "light"): string {
+  const known = registered.get(mode);
+  if (known) return known;
   const name = `agentcommons-${mode}`;
-  if (registered !== mode) {
-    echarts.registerTheme(name, chartTheme());
-    registered = mode;
-  }
+  echarts.registerTheme(name, chartTheme());
+  registered.set(mode, name);
   return name;
 }
 /**
@@ -128,35 +128,27 @@ export function EChart({
   const chart = useRef<echarts.ECharts | null>(null);
   const latest = useRef(option);
   latest.current = option;
+  const { theme } = useTheme();
+  // A theme change re-creates the chart: ECharts fixes its theme at init time.
   useEffect(() => {
     const element = host.current;
     if (!element) return;
-    const create = () => {
-      chart.current?.dispose();
-      const instance = echarts.init(element, ensureTheme(), {
-        renderer: "canvas",
-      });
-      instance.setOption(latest.current, { notMerge: true });
-      chart.current = instance;
-      onReady?.(instance);
-    };
-    create();
+    const instance = echarts.init(element, themeName(theme), {
+      renderer: "canvas",
+    });
+    instance.setOption(latest.current, { notMerge: true });
+    chart.current = instance;
+    onReady?.(instance);
     const observer = new ResizeObserver(() => {
-      chart.current?.resize();
+      instance.resize();
     });
     observer.observe(element);
-    const rethemed = () => {
-      registered = null;
-      create();
-    };
-    window.addEventListener("agentcommons:theme", rethemed);
     return () => {
       observer.disconnect();
-      window.removeEventListener("agentcommons:theme", rethemed);
-      chart.current?.dispose();
+      instance.dispose();
       chart.current = null;
     };
-  }, []);
+  }, [theme]);
   useEffect(() => {
     chart.current?.setOption(option, { notMerge: true });
   }, [option]);

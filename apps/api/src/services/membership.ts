@@ -1,5 +1,5 @@
 import { auditedOperation } from "./audit.js";
-import { z } from "zod";
+import type { z } from "zod";
 import {
   memberAddInputSchema,
   memberAddOutputSchema,
@@ -14,7 +14,9 @@ import {
 import { Prisma, type PrismaClient, type Member } from "@agentcommons/db";
 import {
   createAuth,
+  passwordSetupUrl,
   type AuthConfiguration,
+  type NativeAuth,
   type PasswordDelivery,
   PASSWORD_SETUP_SECONDS,
 } from "../auth/config.js";
@@ -28,10 +30,29 @@ import {
   ServiceError,
   type ServiceContext,
 } from "./context.js";
+import { offsetPage, wireValue } from "./read-budget.js";
 
 function requireMemberAdmin(context: ServiceContext): CallerContext {
   requireCookie(context);
   return requirePermission(context, "admin");
+}
+
+/** Membership rows change through the native adapter; role changes use the native endpoint. */
+async function updateMember(
+  auth: NativeAuth,
+  organizationId: string,
+  id: string,
+  update: { role?: string; suspended?: boolean; removedAt?: Date | null },
+): Promise<void> {
+  const native = await auth.$context;
+  await native.adapter.update({
+    model: "member",
+    where: [
+      { field: "id", value: id },
+      { field: "organizationId", value: organizationId },
+    ],
+    update,
+  });
 }
 
 async function editableMember(
@@ -92,18 +113,11 @@ export class MembershipService {
         const caller = requirePermission(context, "admin");
         const parsed = membersInputSchema.parse(input);
         const { cursor, ...query } = parsed;
-        const binding = z.json().parse(
-          JSON.parse(
-            JSON.stringify({
-              organizationId: caller.organizationId,
-              operation: "members",
-              input: query,
-            }),
-          ),
-        );
-        const offset = cursor
-          ? this.cursors.decode(cursor, binding, z.number().int().nonnegative())
-          : 0;
+        const binding = wireValue({
+          organizationId: caller.organizationId,
+          operation: "members",
+          input: query,
+        });
         const field = parsed.sort ?? "created_at";
         const orderBy: Prisma.MemberOrderByWithRelationInput =
           field === "email" || field === "name"
@@ -115,44 +129,49 @@ export class MembershipService {
                   suspended: "suspended",
                 }[field]]: parsed.order,
               };
-        const rows = await this.prisma.member.findMany({
-          where: {
-            organizationId: caller.organizationId,
-            removedAt: null,
-            ...(parsed.filters.email
-              ? { user: { email: parsed.filters.email.toLowerCase() } }
-              : {}),
-            ...(parsed.filters.role ? { role: parsed.filters.role } : {}),
-            ...(parsed.filters.suspended === undefined
-              ? {}
-              : { suspended: parsed.filters.suspended }),
-          },
-          include: { user: true },
-          orderBy: [orderBy, { id: "asc" }],
-          skip: offset,
-          take: parsed.limit + 1,
-        });
-        const items = rows.slice(0, parsed.limit).map((member) => ({
-          id: member.id,
-          organization_id: member.organizationId,
-          user_id: member.userId,
-          email: member.user.email,
-          name: member.user.name,
-          role: member.role,
-          suspended: member.suspended ?? false,
-          created_at: member.createdAt.toISOString(),
-        }));
+        const page = await offsetPage(
+          this.cursors,
+          binding,
+          cursor,
+          parsed.limit,
+          async (skip, take) =>
+            (
+              await this.prisma.member.findMany({
+                where: {
+                  organizationId: caller.organizationId,
+                  removedAt: null,
+                  ...(parsed.filters.email
+                    ? { user: { email: parsed.filters.email.toLowerCase() } }
+                    : {}),
+                  ...(parsed.filters.role ? { role: parsed.filters.role } : {}),
+                  ...(parsed.filters.suspended === undefined
+                    ? {}
+                    : { suspended: parsed.filters.suspended }),
+                },
+                include: { user: true },
+                orderBy: [orderBy, { id: "asc" }],
+                skip,
+                take,
+              })
+            ).map((member) => ({
+              id: member.id,
+              organization_id: member.organizationId,
+              user_id: member.userId,
+              email: member.user.email,
+              name: member.user.name,
+              role: member.role,
+              suspended: member.suspended ?? false,
+              created_at: member.createdAt.toISOString(),
+            })),
+        );
         const result = membersOutputSchema.parse({
-          items,
-          cursor:
-            rows.length > parsed.limit
-              ? this.cursors.encode(binding, offset + parsed.limit)
-              : null,
+          items: page.items,
+          cursor: page.cursor,
         });
         const audit = await this.audit.write(context, {
           action: "members.list",
           resourceType: "member",
-          detail: { ...query, row_count: items.length },
+          detail: { ...query, row_count: page.items.length },
         });
         return { result, audit };
       },
@@ -176,6 +195,7 @@ export class MembershipService {
             "OWNER_REQUIRED",
             "Only an owner can add another owner.",
           );
+        const emails = parsed.emails.map((email) => email.toLowerCase());
         return membershipTransaction(this.prisma, async (tx) => {
           await lockOrganization(tx, caller);
           const deliveries = new Map<string, PasswordDelivery>();
@@ -183,26 +203,71 @@ export class MembershipService {
             deliveries.set(delivery.userId, delivery),
           );
           await tx.$queryRaw(
-            Prisma.sql`SELECT id FROM "user" WHERE email IN (${Prisma.join(parsed.emails.map((email) => email.toLowerCase()))}) ORDER BY id FOR UPDATE`,
+            Prisma.sql`SELECT id FROM "user" WHERE email IN (${Prisma.join(emails)}) ORDER BY id FOR UPDATE`,
+          );
+          // One lookup per table for the whole batch; the loop below keeps the maps
+          // current so an address repeated in one request reads as existing.
+          const users = new Map<string, { id: string }>(
+            (
+              await tx.user.findMany({
+                where: { email: { in: emails } },
+                select: { id: true, email: true },
+              })
+            ).map((user) => [user.email, user]),
+          );
+          const userIds = [...users.values()].map((user) => user.id);
+          const members = new Map<
+            string,
+            { id: string; removedAt: Date | null }
+          >(
+            userIds.length
+              ? (
+                  await tx.member.findMany({
+                    where: {
+                      userId: { in: userIds },
+                      organizationId: caller.organizationId,
+                    },
+                    select: { id: true, userId: true, removedAt: true },
+                  })
+                ).map((member) => [member.userId, member])
+              : [],
+          );
+          const claimed = new Set(
+            userIds.length
+              ? (
+                  await tx.account.findMany({
+                    where: { userId: { in: userIds } },
+                    select: { userId: true },
+                    distinct: ["userId"],
+                  })
+                ).map((account) => account.userId)
+              : [],
+          );
+          const elsewhere = new Set(
+            userIds.length
+              ? (
+                  await tx.member.findMany({
+                    where: {
+                      userId: { in: userIds },
+                      organizationId: { not: caller.organizationId },
+                      removedAt: null,
+                    },
+                    select: { userId: true },
+                    distinct: ["userId"],
+                  })
+                ).map((member) => member.userId)
+              : [],
           );
           const results: z.infer<typeof memberAddOutputSchema>["results"] = [];
           const memberIds: string[] = [];
-          for (const address of parsed.emails) {
-            const email = address.toLowerCase();
-            const existing = await tx.user.findUnique({ where: { email } });
-            const current = existing
-              ? await tx.member.findFirst({
-                  where: {
-                    userId: existing.id,
-                    organizationId: caller.organizationId,
-                  },
-                })
-              : null;
+          for (const email of emails) {
+            const existing = users.get(email);
+            const current = existing ? members.get(existing.id) : undefined;
             if (current && !current.removedAt) {
               results.push({
                 email,
                 status: "existing",
-                user_id: current.userId,
+                user_id: existing?.id ?? null,
                 setup_url: null,
                 error: null,
               });
@@ -210,15 +275,8 @@ export class MembershipService {
             }
             if (
               existing &&
-              (await tx.account.count({ where: { userId: existing.id } })) ===
-                0 &&
-              (await tx.member.count({
-                where: {
-                  userId: existing.id,
-                  organizationId: { not: caller.organizationId },
-                  removedAt: null,
-                },
-              })) > 0
+              !claimed.has(existing.id) &&
+              elsewhere.has(existing.id)
             ) {
               throw new ServiceError(
                 409,
@@ -232,15 +290,10 @@ export class MembershipService {
                 .user;
             let member: { id: string };
             if (current) {
-              const native = await auth.$context;
-              await native.adapter.update({
-                model: "member",
-                where: [{ field: "id", value: current.id }],
-                update: {
-                  role: parsed.role,
-                  suspended: false,
-                  removedAt: null,
-                },
+              await updateMember(auth, caller.organizationId, current.id, {
+                role: parsed.role,
+                suspended: false,
+                removedAt: null,
               });
               member = current;
             } else {
@@ -252,13 +305,12 @@ export class MembershipService {
                 },
               });
             }
+            users.set(email, user);
+            members.set(user.id, { id: member.id, removedAt: null });
             memberIds.push(member.id);
             if (!existing && this.config.emailPasswordEnabled)
               await auth.api.requestPasswordReset({
-                body: {
-                  email,
-                  redirectTo: `${this.config.publicUrl}/setup-password`,
-                },
+                body: { email, redirectTo: passwordSetupUrl(this.config) },
               });
             results.push({
               email,
@@ -275,11 +327,7 @@ export class MembershipService {
               action: "members.add",
               resourceType: "member",
               resourceIds: memberIds,
-              detail: {
-                emails: parsed.emails.map((email) => email.toLowerCase()),
-                role: parsed.role,
-                added: memberIds.length,
-              },
+              detail: { emails, role: parsed.role, added: memberIds.length },
             },
             tx,
           );
@@ -338,7 +386,7 @@ export class MembershipService {
           await native.api.requestPasswordReset({
             body: {
               email: target.user.email,
-              redirectTo: `${this.config.publicUrl}/setup-password`,
+              redirectTo: passwordSetupUrl(this.config),
             },
           });
           if (!delivery)
@@ -390,6 +438,8 @@ export class MembershipService {
             id,
             parsed.role !== "owner",
           );
+          // Role changes go through the native endpoint so Better Auth applies its own
+          // role authorization to the calling session.
           if (member.role !== parsed.role)
             await createAuth(tx, this.config).api.updateMemberRole({
               headers: context.headers,
@@ -434,18 +484,13 @@ export class MembershipService {
           await lockOrganization(tx, caller);
           const member = await editableMember(tx, caller, id, parsed.suspended);
           const changed = (member.suspended ?? false) !== parsed.suspended;
-          if (changed) {
-            const auth = createAuth(tx, this.config);
-            const native = await auth.$context;
-            await native.adapter.update({
-              model: "member",
-              where: [
-                { field: "id", value: id },
-                { field: "organizationId", value: caller.organizationId },
-              ],
-              update: { suspended: parsed.suspended },
-            });
-          }
+          if (changed)
+            await updateMember(
+              createAuth(tx, this.config),
+              caller.organizationId,
+              id,
+              { suspended: parsed.suspended },
+            );
           const audit = await this.audit.write(
             context,
             {
@@ -481,15 +526,12 @@ export class MembershipService {
             (await tx.account.count({ where: { userId: target.userId } })) === 0
           )
             await invalidateSetupTokens(tx, target.userId);
-          const native = await createAuth(tx, this.config).$context;
-          await native.adapter.update({
-            model: "member",
-            where: [
-              { field: "id", value: id },
-              { field: "organizationId", value: caller.organizationId },
-            ],
-            update: { suspended: true, removedAt: new Date() },
-          });
+          await updateMember(
+            createAuth(tx, this.config),
+            caller.organizationId,
+            id,
+            { suspended: true, removedAt: new Date() },
+          );
           const audit = await this.audit.write(
             context,
             {

@@ -4,22 +4,25 @@ import { EmbeddingService } from "../src/embeddings/service.js";
 import { FakeEmbeddingProvider } from "../src/embeddings/provider.js";
 import { AdminService } from "../src/services/admin.js";
 import { CursorCodec } from "../src/services/cursor.js";
-import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { beforeAll, afterAll, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { PrismaClient, lockTracePublication } from "@agentcommons/db";
-import { ingestEnvelopeSchema } from "@agentcommons/core";
 import { createClient } from "@clickhouse/client";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
-import { provisionOrganization } from "./support.js";
-import { cleanup } from "../../../scripts/cleanup.js";
+import {
+  provisionOrganization,
+  releaser,
+  testBillingConfig,
+} from "./support.js";
+import { lineRecords, testEnvelope, textRecord } from "./envelopes.js";
 import { IngestService } from "../src/services/ingest.js";
-import { TraceProjectionService } from "../src/services/trace-projection.js";
-import { JobService } from "../src/services/jobs.js";
-import { AuditService } from "../src/services/audit.js";
+import type { TraceProjectionService } from "../src/services/trace-projection.js";
+import type { JobService } from "../src/services/jobs.js";
+import type { AuditService } from "../src/services/audit.js";
 import { createPolicyCache } from "../src/services/policy-cache.js";
 import { requireCaller } from "../src/services/context.js";
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
@@ -28,40 +31,18 @@ let jobs: JobService;
 let projection: TraceProjectionService;
 let ingest: IngestService;
 let audit: AuditService;
-const release: Array<() => Promise<unknown>> = [];
-const workerErrors: Error[] = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
+  defer(() => db.close());
   prisma = new PrismaClient({ datasourceUrl: db.urls.app });
-  release.unshift(() => prisma.$disconnect());
-  audit = new AuditService(prisma, createPolicyCache(prisma));
-  projection = new TraceProjectionService({
-    prisma,
-    audit,
-    repository: db.traces,
-  });
-  jobs = new JobService({
-    prisma,
-    audit,
-    traces: projection,
-    traceAudit: new TraceAuditProjectionService({
-      prisma,
-      audit,
-      traces: db.traces,
-    }),
-    connectionString: db.urls.app,
-    allowedEmailDomains: [],
-    auditRetentionDays: 365,
-    onError: (error) => workerErrors.push(error),
-  });
-  release.unshift(() => jobs.stop());
-  ingest = new IngestService({ prisma, audit, traces: jobs });
+  defer(() => prisma.$disconnect());
+  const services = traceServices(db, prisma);
+  defer(() => services.close());
+  ({ audit, projection, jobs, ingest } = services);
 });
-afterAll(async () => {
-  expect(await cleanup(release)).toEqual([]);
-  expect(workerErrors).toEqual([]);
-});
+afterAll(release);
+/** The captured Claude Code transcript as one sync batch, under a fresh session identity. */
 async function captured() {
   const lines = (
     await readFile(
@@ -74,37 +55,11 @@ async function captured() {
   )
     .trimEnd()
     .split("\n");
-  return ingestEnvelopeSchema.parse({
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    installationId: randomUUID(),
-    batchId: randomUUID(),
-    behavior: "sync",
-    nativeEvent: "Stop",
-    start: null,
-    sentAt: new Date().toISOString(),
+  return testEnvelope({
     sourcePos: lines.length,
     cursor: "capture",
-    end: null,
-    context: {
-      cwd: "/trace",
-      installation: {
-        hostname: "trace",
-        osUser: "developer",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
-    },
-    records: lines.map((line, pos) => ({
-      pos,
-      key: `fixture-${String(pos)}`,
-      sourceVersion: 0,
-      line,
-    })),
+    context: { cwd: "/trace", installation: { hostname: "trace" } },
+    records: lineRecords(lines, (pos) => `fixture-${String(pos)}`),
   });
 }
 // @req R-ING-01 @req R-ING-04 @req R-AUD-01
@@ -384,16 +339,10 @@ it("rejects an over-allowance capture before committing source identities, recei
     prisma,
     audit,
     traces: jobs,
-    billing: {
+    billing: testBillingConfig({
       mode: "saas",
       freeMonthlyRecords: envelope.records.length - 1,
-      proIncludedRecords: 10000,
-      captureCentsPer1000: null,
-      embeddingCentsPer1000: null,
-      captureEventName: null,
-      embeddingEventName: null,
-      calComUrl: null,
-    },
+    }),
   });
   await expect(limited.execute(org.context, envelope)).rejects.toMatchObject({
     statusCode: 402,
@@ -844,16 +793,13 @@ it("requires native paid embedding entitlement and meters each successfully inde
     traces: db.traces,
     provider,
     dailyTokenBudget: 1000000,
-    billing: {
+    billing: testBillingConfig({
       mode: "saas",
-      freeMonthlyRecords: 1000,
-      proIncludedRecords: 10000,
       captureCentsPer1000: 100,
       embeddingCentsPer1000: 100,
       captureEventName: "capture_records",
       embeddingEventName: "indexed_messages",
-      calComUrl: null,
-    },
+    }),
   });
   const target = {
     organizationId: caller.organizationId,
@@ -1044,4 +990,123 @@ it("runs a native queued rescan through an atomic redaction generation and remov
   } finally {
     await raw.close();
   }
+});
+// @req R-ING-17 @req R-ING-18
+it("reclaims the rows superseded below the published revision at every tenth publish that changed rows, leaving what readers see unchanged", async () => {
+  const org = await provisionOrganization(db, "trace-superseded");
+  const caller = requireCaller(org.context);
+  const harnessSessionId = randomUUID();
+  const installationId = randomUUID();
+  const raw = createClient({
+    url: db.traceMigration.url,
+    username: db.traceMigration.username,
+    password: db.traceMigration.password,
+  });
+  defer(() => raw.close());
+  let sessionId = "";
+  const rawCount = async (table: "sessions" | "messages") => {
+    const response = await raw.query({
+      query: `SELECT count() AS count FROM ac_trace.${table} WHERE organization_id={organization:String} AND session_id={session:UUID}`,
+      query_params: { organization: caller.organizationId, session: sessionId },
+      format: "JSONEachRow",
+    });
+    return z
+      .array(z.object({ count: z.coerce.number() }))
+      .parse(await response.json())[0]?.count;
+  };
+  const cleanups = () =>
+    prisma.auditEvent.count({
+      where: {
+        action: "trace.revision.cleanup",
+        resourceIds: { has: sessionId },
+      },
+    });
+  const control = () =>
+    prisma.traceSessionControl.findUniqueOrThrow({
+      where: {
+        organizationId_id: {
+          organizationId: caller.organizationId,
+          id: sessionId,
+        },
+      },
+    });
+  /** Each publish appends one message: one changed message row plus the new header. */
+  const publish = async (index: number) => {
+    const accepted = await ingest.execute(
+      org.context,
+      testEnvelope({
+        harnessSessionId,
+        installationId,
+        sourcePos: index + 1,
+        cursor: String(index + 1),
+        context: { cwd: "/trace", installation: { hostname: "trace" } },
+        records: [
+          {
+            ...textRecord(index, `Message ${String(index)}`, {
+              uuid: `user-${String(index)}`,
+              timestamp: new Date().toISOString(),
+            }),
+            key: `superseded-${String(index)}`,
+          },
+        ],
+      }),
+    );
+    sessionId = accepted.result.sessionId;
+    await projection.process(caller.organizationId, sessionId);
+    expect((await control()).publishedRevision).toBe(BigInt(index + 1));
+  };
+  for (let index = 0; index < 9; index++) await publish(index);
+  // Nine publishes left nine headers; nothing is reclaimed before the tenth revision.
+  expect(await rawCount("sessions")).toBe(9);
+  expect(await rawCount("messages")).toBe(9);
+  expect(await cleanups()).toBe(0);
+
+  await publish(9);
+
+  expect(await rawCount("sessions"), "only the published header remains").toBe(
+    1,
+  );
+  expect(await rawCount("messages"), "latest rows are kept").toBe(10);
+  expect(await cleanups()).toBe(1);
+  expect(
+    await prisma.auditEvent.findFirstOrThrow({
+      where: {
+        action: "trace.revision.cleanup",
+        resourceIds: { has: sessionId },
+      },
+    }),
+  ).toMatchObject({
+    authMethod: "worker",
+    statusCode: 200,
+    detail: { revision: "10", changed_rows: 1 },
+  });
+  const published = await control();
+  const header = await db.traces.readSession(
+    caller.organizationId,
+    sessionId,
+    published.publishedRevision,
+    published.redactionGeneration,
+  );
+  expect(header?.message_count).toBe(10);
+  const page = await db.traces.messagesPage(
+    {
+      organizationId: caller.organizationId,
+      sessionId,
+      revision: published.publishedRevision,
+      generation: published.redactionGeneration,
+    },
+    { after: null, limit: 1000 },
+  );
+  expect(
+    page.items.sort((a, b) => a.seq - b.seq).map((message) => message.content),
+  ).toEqual(
+    Array.from({ length: 10 }, (_, index) => `Message ${String(index)}`),
+  );
+  const visible = await db.traceReaders.read(caller, (client) =>
+    client.query(
+      "SELECT count() AS count FROM messages WHERE session_id={id:UUID}",
+      { id: sessionId },
+    ),
+  );
+  expect(Number(visible.rows[0]?.count)).toBe(10);
 });

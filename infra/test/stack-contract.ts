@@ -3,19 +3,7 @@ import { readFileSync } from "node:fs";
 import * as pulumi from "@pulumi/pulumi";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
-
-/** Resolves mock inputs, unwrapping RPC secrets so tests can assert on values. */
-export function unwrap(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item: unknown) => unwrap(item));
-  if (value !== null && typeof value === "object") {
-    const record = z.record(z.string(), z.unknown()).parse(value);
-    if (pulumi.runtime.isRpcSecret(record)) return unwrap(record.value);
-    return Object.fromEntries(
-      Object.entries(record).map(([key, item]) => [key, unwrap(item)]),
-    );
-  }
-  return value;
-}
+import { fixtureSecretConfig, record, resourceQueries } from "./mocks.js";
 
 export function stackContract(stack: "dev" | "prod") {
   const resources: pulumi.runtime.MockResourceArgs[] = [];
@@ -27,7 +15,7 @@ export function stackContract(stack: "dev" | "prod") {
         resources.push(args);
         const arn = `arn:aws:mock:us-east-1:123456789012:${args.name}`;
         const state: Record<string, unknown> = {
-          ...z.record(z.string(), z.unknown()).parse(args.inputs),
+          ...record.parse(args.inputs),
           name: args.name,
           arn,
           address: "database.internal",
@@ -53,19 +41,14 @@ export function stackContract(stack: "dev" | "prod") {
         return { id: `${args.name}-id`, state };
       },
       call(args) {
+        const inputs = record.parse(args.inputs);
         if (args.token === "aws:ec2/getSubnet:getSubnet")
-          return {
-            ...z.record(z.string(), z.unknown()).parse(args.inputs),
-            availabilityZone: "us-east-1a",
-          };
+          return { ...inputs, availabilityZone: "us-east-1a" };
         if (args.token === "aws:ssm/getParameter:getParameter")
-          return {
-            ...z.record(z.string(), z.unknown()).parse(args.inputs),
-            value: "ami-native-fixture",
-          };
+          return { ...inputs, value: "ami-native-fixture" };
         if (args.token === "aws:index/getRegion:getRegion")
           return { region: "us-east-1" };
-        return z.record(z.string(), z.unknown()).parse(args.inputs);
+        return inputs;
       },
     },
     "agentcommons",
@@ -99,28 +82,9 @@ export function stackContract(stack: "dev" | "prod") {
     "agentcommons:githubRepository": "example/agentcommons",
     "agentcommons:githubOidcProviderArn":
       "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com",
-    "agentcommons:databaseMigrationPassword": "migration-password-fixture",
-    "agentcommons:databaseAppPassword": "application-password-fixture",
-    "agentcommons:databaseTraceControlPassword":
-      "trace-control-password-fixture",
-    "agentcommons:clickhouseAdminPassword": "clickhouse-admin-password-fixture",
-    "agentcommons:clickhouseWriterPassword":
-      "clickhouse-writer-password-fixture",
-    "agentcommons:clickhouseAccessPassword":
-      "clickhouse-access-password-fixture",
-    "agentcommons:clickhouseReaderSecret":
-      "clickhouse-reader-principal-secret-fixture",
-    "agentcommons:betterAuthSecret":
-      "test-only-authentication-secret-at-least-32",
+    ...fixtureSecretConfig,
   });
-  const find = (type: string, suffix = "") => {
-    const resource = resources.find(
-      (item) => item.type === type && item.name.endsWith(suffix),
-    );
-    if (resource === undefined)
-      throw new Error(`Resource absent: ${type} ${suffix}`);
-    return z.record(z.string(), z.unknown()).parse(unwrap(resource.inputs));
-  };
+  const { find } = resourceQueries(resources);
   describe(`${stack} resource contract`, () => {
     beforeAll(async () => {
       await mocksReady;

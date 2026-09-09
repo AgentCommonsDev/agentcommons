@@ -2,16 +2,14 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import { ServiceError } from "../services/context.js";
 import { requestContext } from "./context.js";
-type RateCategory = "ingest" | "read" | "sql" | "mcp" | "auth";
+
+/** Requests per minute for each category; the category names are the table's keys. */
+const maxima = { ingest: 600, read: 300, sql: 60, mcp: 120, auth: 20 } as const;
+export type RateCategory = keyof typeof maxima;
+const categories = Object.keys(maxima) as RateCategory[];
+
 export async function createRateLimiter(app: FastifyInstance) {
   await app.register(rateLimit, { global: false });
-  const maxima: Record<RateCategory, number> = {
-    ingest: 600,
-    read: 300,
-    sql: 60,
-    mcp: 120,
-    auth: 20,
-  };
   const create = (category: RateCategory) =>
     app.createRateLimit({
       max: maxima[category],
@@ -23,18 +21,16 @@ export async function createRateLimiter(app: FastifyInstance) {
           : `${category}:${caller?.organizationId ?? "anonymous"}:${caller?.apiKeyId ?? caller?.userId ?? request.ip}`;
       },
     });
-  const limits = {
-    ingest: create("ingest"),
-    read: create("read"),
-    sql: create("sql"),
-    mcp: create("mcp"),
-    auth: create("auth"),
-  };
+  const limits = new Map(
+    categories.map((category) => [category, create(category)] as const),
+  );
   return async (
     request: FastifyRequest,
     category: RateCategory,
   ): Promise<void> => {
-    const result = await limits[category](request);
+    const limit = limits.get(category);
+    if (!limit) throw new Error(`Unknown rate category ${category}.`);
+    const result = await limit(request);
     if (!result.isAllowed && result.isExceeded)
       throw new ServiceError(
         429,

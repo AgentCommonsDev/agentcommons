@@ -9,6 +9,9 @@ const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
 const dateOnlyFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
 });
+const timeOnlyFormat = new Intl.DateTimeFormat(undefined, {
+  timeStyle: "short",
+});
 const numberFormat = new Intl.NumberFormat();
 const compactFormat = new Intl.NumberFormat(undefined, {
   notation: "compact",
@@ -38,6 +41,11 @@ export function dateTime(value: string | null | undefined): string {
 export function dateOnly(value: string | null | undefined): string {
   const date = parseDate(value);
   return date ? dateOnlyFormat.format(date) : unavailable();
+}
+/** Clock time only, for events that happened today. */
+export function timeOnly(value: string | Date): string {
+  const date = value instanceof Date ? value : parseDate(value);
+  return date ? timeOnlyFormat.format(date) : unavailable();
 }
 export function relativeTime(
   value: string | null | undefined,
@@ -121,21 +129,29 @@ export function errorMessage(error: unknown): string {
     ? error.message
     : copy.app.common.requestFailed;
 }
-export function harnessLabel(harness: string): string {
-  const labels: Record<string, string> = copy.app.harnesses;
-  return labels[harness] ?? harness;
-}
+/** A lookup into a label table that falls back to the raw value. */
+const labelFrom =
+  (labels: Record<string, string>) =>
+  (value: string): string =>
+    labels[value] ?? value;
+export const harnessLabel = labelFrom(copy.app.harnesses);
+export const statusLabel = labelFrom(copy.app.statuses);
+/** A recorded file operation (read, edit, write, delete) as people see it. */
+export const operationLabel = labelFrom(
+  copy.sessions.detail.files.operationsLabel,
+);
 /** A column or field name as a heading: the shared label, or the name as words. */
+/** Metric table headings: the shared field labels, with the metric-only names overridden. */
+export function metricColumnLabel(key: string): string {
+  const overrides: Record<string, string> = copy.admin.status.dimensions;
+  return overrides[key] ?? fieldLabel(key);
+}
 export function fieldLabel(field: string): string {
   const labels: Record<string, string> = copy.app.fields;
   const known = labels[field];
   if (known !== undefined) return known;
   const words = field.replaceAll("_", " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
-}
-export function statusLabel(status: string): string {
-  const labels: Record<string, string> = copy.app.statuses;
-  return labels[status] ?? status;
 }
 const statusColumns = new Set(["status", "visibility", "role", "kind"]);
 /**
@@ -147,12 +163,6 @@ export function columnValueLabel(column: string, value: string): string {
   if (column === "harness") return harnessLabel(value);
   if (statusColumns.has(column)) return statusLabel(value);
   return value;
-}
-/** A recorded file operation (read, edit, write, delete) as people see it. */
-export function operationLabel(operation: string): string {
-  const labels: Record<string, string> =
-    copy.sessions.detail.files.operationsLabel;
-  return labels[operation] ?? operation;
 }
 export function truncate(value: string, max = 80): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;

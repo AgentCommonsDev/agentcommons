@@ -11,14 +11,10 @@ import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import { dateTime, harnessLabel, relativeTime } from "../../lib/display";
 import { usePagination } from "../../lib/pagination";
-import { useAuthConfig } from "../../lib/use-auth-config";
+import { useFeature } from "../../lib/use-auth-config";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
-import {
-  LoadingState,
-  RequestError,
-  StatusBadge,
-} from "../../components/app/states";
+import { QueryState, StatusBadge } from "../../components/app/states";
 import {
   Card,
   CardContent,
@@ -45,7 +41,7 @@ function reuseColumns(direction: "by" | "from"): ColumnDef<ReuseEdge>[] {
           params={{ id: row.original[`${peer}_session_id`] }}
           className="line-clamp-2 font-medium text-fg hover:underline"
         >
-          {row.original[`${peer}_title`] ?? copy.sessions.list.untitled}
+          {row.original[`${peer}_title`] ?? copy.app.common.untitledSession}
         </Link>
       ),
     },
@@ -125,44 +121,32 @@ function ReuseTable({
   return (
     <div className="flex min-w-0 flex-col gap-2">
       <h3 className="text-[13px] font-medium text-muted">{title}</h3>
-      {query.error ? (
-        <RequestError
-          error={query.error}
-          retry={() => {
-            void query.refetch();
-          }}
-        />
-      ) : (
-        <DataTable
-          compact
-          data={query.data?.items ?? []}
-          columns={columns}
-          sorting={pagination.sorting}
-          onSortingChange={pagination.onSortingChange}
-          loading={query.isPending}
-          page={{
-            index: pagination.pageIndex,
-            hasNext: Boolean(query.data?.cursor),
-            onNext: () => {
-              pagination.next(query.data?.cursor ?? null);
-            },
-            onPrevious: pagination.previous,
-          }}
-          label={title}
-          {...(query.data?.cursor
-            ? {
-                csv: {
-                  name: direction === "by" ? labels.csvBy : labels.csvFrom,
-                  fetchAll: (cursor: string | null, signal: AbortSignal) =>
-                    fetchPage(cursor, 100, signal),
-                },
-              }
-            : {})}
-          rowId={(row) => `${row.source_session_id}:${row.target_session_id}`}
-          emptyTitle={direction === "by" ? labels.emptyBy : labels.emptyFrom}
-          emptyDescription=""
-        />
-      )}
+      <DataTable
+        compact
+        data={query.data?.items ?? []}
+        columns={columns}
+        sorting={pagination.sorting}
+        onSortingChange={pagination.onSortingChange}
+        loading={query.isPending}
+        error={query.error}
+        retry={() => {
+          void query.refetch();
+        }}
+        page={pagination.page(query.data?.cursor)}
+        label={title}
+        {...(query.data?.cursor
+          ? {
+              csv: {
+                name: direction === "by" ? labels.csvBy : labels.csvFrom,
+                fetchAll: (cursor: string | null, signal: AbortSignal) =>
+                  fetchPage(cursor, 100, signal),
+              },
+            }
+          : {})}
+        rowId={(row) => `${row.source_session_id}:${row.target_session_id}`}
+        emptyTitle={direction === "by" ? labels.emptyBy : labels.emptyFrom}
+        emptyDescription=""
+      />
     </div>
   );
 }
@@ -188,58 +172,51 @@ function SimilarSessions({ sessionId }: { sessionId: string }) {
         </div>
       </CardHeader>
       <CardContent className="flex min-w-0 flex-col gap-2">
-        {query.isPending && <LoadingState rows={2} />}
-        {query.error && (
-          <RequestError
-            error={query.error}
-            retry={() => {
-              void query.refetch();
-            }}
-          />
-        )}
-        {query.data &&
-          (query.data.sessions.length === 0 ? (
-            <EmptyState
-              compact
-              title={similar.empty}
-              description={similar.emptyHint}
-            />
-          ) : (
-            <ul className="divide-y divide-line-soft rounded-lg border border-line bg-surface">
-              {query.data.sessions.map((session) => (
-                <li
-                  key={session.session_id}
-                  className="flex flex-col gap-0.5 px-3 py-2"
-                >
-                  <Link
-                    to="/app/sessions/$id"
-                    params={{ id: session.session_id }}
-                    className="line-clamp-2 text-sm font-medium hover:underline"
+        <QueryState query={query} rows={2}>
+          {(data) =>
+            data.sessions.length === 0 ? (
+              <EmptyState
+                compact
+                title={similar.empty}
+                description={similar.emptyHint}
+              />
+            ) : (
+              <ul className="divide-y divide-line-soft rounded-lg border border-line bg-surface">
+                {data.sessions.map((session) => (
+                  <li
+                    key={session.session_id}
+                    className="flex flex-col gap-0.5 px-3 py-2"
                   >
-                    {session.title ?? copy.sessions.list.untitled}
-                  </Link>
-                  <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
-                    <StatusBadge value={session.status} />
-                    <span>{harnessLabel(session.harness)}</span>
-                    {session.repo_name && (
-                      <span className="truncate">{session.repo_name}</span>
-                    )}
-                    <time dateTime={session.started_at}>
-                      {relativeTime(session.started_at)}
-                    </time>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ))}
+                    <Link
+                      to="/app/sessions/$id"
+                      params={{ id: session.session_id }}
+                      className="line-clamp-2 text-sm font-medium hover:underline"
+                    >
+                      {session.title ?? copy.app.common.untitledSession}
+                    </Link>
+                    <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
+                      <StatusBadge value={session.status} />
+                      <span>{harnessLabel(session.harness)}</span>
+                      {session.repo_name && (
+                        <span className="truncate">{session.repo_name}</span>
+                      )}
+                      <time dateTime={session.started_at}>
+                        {relativeTime(session.started_at)}
+                      </time>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )
+          }
+        </QueryState>
       </CardContent>
     </Card>
   );
 }
 /** Reuse edges in one card; similarity, a different concept, gets its own card below. */
 export function ReuseCard({ sessionId }: { sessionId: string }) {
-  const config = useAuthConfig();
-  const similar = config.data?.features.includes("similar_sessions") ?? false;
+  const similar = useFeature("similar_sessions");
   return (
     <>
       <Card>

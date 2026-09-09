@@ -27,8 +27,9 @@ import {
 import { CheckboxField, Field } from "../../components/ui/field";
 import { Alert } from "../../components/ui/feedback";
 import { Input, NativeSelect, Textarea } from "../../components/ui/input";
+import { ProgressBar } from "../../components/app/display";
+import { CodeBlock } from "../../components/app/markdown";
 import { RequestError, StatusBadge } from "../../components/app/states";
-import { CodeBlock, ProgressBar } from "./display";
 
 type PolicyBody =
   paths["/api/v1/admin/redaction/policies"]["post"]["requestBody"]["content"]["application/json"];
@@ -412,11 +413,7 @@ function PolicyForm({
                 </p>
               )}
               {preview && "output" in preview && preview.count > 0 && (
-                <CodeBlock
-                  text={preview.output}
-                  copyLabel={copy.app.common.copy}
-                  maxHeight="max-h-40"
-                />
+                <CodeBlock content={preview.output} maxHeight="max-h-40" />
               )}
             </div>
           )}
@@ -522,7 +519,7 @@ export function TestRedactionCard({
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
               <div className="flex min-w-0 flex-col gap-1.5">
                 <p className="text-xs text-muted">{text.result}</p>
-                <CodeBlock text={test.data.text} />
+                <CodeBlock content={test.data.text} maxHeight="max-h-80" />
               </div>
               <div className="flex flex-col gap-1.5">
                 <p className="text-xs text-muted">{text.matches}</p>

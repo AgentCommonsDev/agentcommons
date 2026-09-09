@@ -32,7 +32,7 @@ SecureString parameters under `/agentcommons/<stack>/env/`, one per `.env` key, 
 Pulumi stays the source of truth and the host reads them at release time. Releases are
 `git archive` tarballs of a commit in the private bucket; `single-node-release.sh`
 uploads one and runs the on-host apply through SSM Run Command, which rebuilds the image,
-runs both database migrations and restarts the API. `single-node-bootstrap.sh` seeds the
+runs both database migrations and restarts the API. `single-node-run.sh bootstrap.sh` seeds the
 owner organization and enrolls Google sign-in domains (ADR 0049) by completing the
 owner's setup link with a generated password through Better Auth's native endpoints and
 handing that session cookie to the existing `db:domain` CLI; the link and password stay

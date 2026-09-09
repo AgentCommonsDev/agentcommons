@@ -44,7 +44,6 @@ export const sqlCopy = {
     queryError: "Query failed",
     atLine: "at line",
     column: "column",
-    checking: "Checking…",
     ranIn: "Ran in",
   },
   results: {

@@ -7,6 +7,7 @@ import {
 import {
   advanceCumulativeUsage,
   array,
+  assignPresent,
   identitiesAt,
   anthropicBlocks,
   assignUsage,
@@ -14,13 +15,13 @@ import {
   createNormalizer,
   message,
   object,
-  recordSchema,
   string,
   text,
   timestamp,
   tokens,
   toolFiles,
   SENSITIVE_FILE_MARKER,
+  type NativeRoles,
 } from "./shared.js";
 import type {
   NativeLink,
@@ -40,11 +41,23 @@ const knownRecordTypes = new Set([
   "queue-operation",
   "atis-latch",
 ]);
+/** Record types that carry conversation turns; every other known type is metadata. */
+const recordRoles: NativeRoles = { user: "USER", assistant: "ASSISTANT" };
 /** Claude Code stamps locally generated assistant rows (API errors, interruptions) with this model. */
 const SYNTHETIC_MODEL = "<synthetic>";
 /** A subagent transcript's native session id: the layout the shim registers at `SubagentStart`. */
 function subagentSessionId(sessionId: string, agentId: string): string {
   return `${sessionId}:agent-${agentId}`;
+}
+/** The parent session and agent of a sidechain (subagent) record; null on the main thread. */
+function subagentOf(
+  data: Record<string, unknown>,
+): { parent: string; agent: string } | null {
+  const parent = string(data.sessionId);
+  const agent = string(data.agentId);
+  return parent && agent && data.isSidechain === true
+    ? { parent, agent }
+    : null;
 }
 /** `gitBranch` is `git rev-parse --abbrev-ref HEAD`, which prints `HEAD` when detached. */
 function branchName(value: unknown): string | null {
@@ -151,7 +164,6 @@ export const claudeCode = createNormalizer({
         const id = string(block.tool_use_id);
         return [
           {
-            rawRecordId: record.id,
             toolUseId: id,
             locations: [
               {
@@ -179,25 +191,26 @@ export const claudeCode = createNormalizer({
   toMessages(records) {
     const seenUsage = new Map<string, { input: bigint; output: bigint }>();
     return records.flatMap((record) => {
-      const parsed = recordSchema.safeParse(record.payload);
-      if (!parsed.success) return [];
-      const data = parsed.data;
-      if (data.type === "summary")
+      const data = record.payload;
+      const type = string(data.type);
+      if (type === null) return [];
+      if (type === "summary")
         return [
           message(record, 0, { kind: "TEXT", content: text(data.summary) }),
         ];
-      if (data.type === "system" || data.type === "attachment")
+      if (type === "system" || type === "attachment")
         return [
           message(record, 0, {
             content: text(data.content ?? data.attachment ?? data),
           }),
         ];
-      if (data.type !== "user" && data.type !== "assistant") return [];
+      const role = recordRoles[type];
+      if (!role) return [];
       const native = object(data.message);
       const result: NormalizedMessage[] = blocks(
         record,
         native.content,
-        data.type === "user" ? "USER" : "ASSISTANT",
+        role,
         anthropicBlocks,
         {
           model:
@@ -238,7 +251,7 @@ export const claudeCode = createNormalizer({
     const delta: SessionDelta = {};
     for (const { payload: data } of records) {
       if (!knownRecordTypes.has(string(data.type) ?? "")) continue;
-      const values = {
+      assignPresent(delta, {
         harnessSessionId: string(data.sessionId),
         harnessVersion: string(data.version),
         entrypoint: string(data.entrypoint),
@@ -246,14 +259,13 @@ export const claudeCode = createNormalizer({
         branch: branchName(data.gitBranch),
         title: string(data.aiTitle),
         agentType: string(data.agentType),
-      };
-      for (const [key, value] of Object.entries(values))
-        if (value) Object.assign(delta, { [key]: value });
-      const parent = string(data.sessionId);
-      const agent = string(data.agentId);
-      if (parent && agent && data.isSidechain === true) {
-        delta.harnessSessionId = subagentSessionId(parent, agent);
-      }
+      });
+      const subagent = subagentOf(data);
+      if (subagent)
+        delta.harnessSessionId = subagentSessionId(
+          subagent.parent,
+          subagent.agent,
+        );
       // Attachments can be appended before the prompt that precedes them in time.
       const start = timestamp(data.timestamp);
       if (start && (!delta.startedAt || start < delta.startedAt))
@@ -265,9 +277,9 @@ export const claudeCode = createNormalizer({
     const links: NativeLink[] = [];
     for (const { payload: data } of records) {
       if (!knownRecordTypes.has(string(data.type) ?? "")) continue;
-      const parent = string(data.sessionId);
-      if (parent && string(data.agentId) && data.isSidechain === true) {
-        links.push({ relation: "SUBAGENT", parentNativeRef: parent });
+      const subagent = subagentOf(data);
+      if (subagent) {
+        links.push({ relation: "SUBAGENT", parentNativeRef: subagent.parent });
         break;
       }
     }

@@ -701,7 +701,7 @@ function RunBlock({
                 </span>
               )}
               <span className="truncate text-sm font-medium">
-                {node.title ?? copy.sessions.list.untitled}
+                {node.title ?? copy.app.common.untitledSession}
               </span>
             </span>
             <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted">

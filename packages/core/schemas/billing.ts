@@ -4,15 +4,21 @@ import { nonnegativeIntegerSchema, utcDateTimeSchema } from "./common.js";
 export const instanceModeSchema = z.enum(["customer", "public", "saas"]);
 export const paidPlanSchema = z.enum(["pro", "pro_embeddings"]);
 export const billingCheckoutSchema = z.strictObject({ plan: paidPlanSchema });
-export const calendarUrlSchema = z.url().refine((value) => {
-  const url = new URL(value);
-  return (
-    url.protocol === "https:" &&
-    ["cal.com", "www.cal.com"].includes(url.hostname) &&
-    !url.username &&
-    !url.password
-  );
-}, "Use an HTTPS Cal.com booking URL.");
+/** An HTTPS URL without credentials whose host is one of `hosts`. */
+const httpsUrlOn = (hosts: readonly string[], message: string) =>
+  z.url().refine((value) => {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      hosts.includes(url.hostname) &&
+      !url.username &&
+      !url.password
+    );
+  }, message);
+export const calendarUrlSchema = httpsUrlOn(
+  ["cal.com", "www.cal.com"],
+  "Use an HTTPS Cal.com booking URL.",
+);
 export const billingConfigSchema = z.strictObject({
   mode: instanceModeSchema,
   enabled: z.boolean(),
@@ -32,7 +38,7 @@ export const billingConfigSchema = z.strictObject({
   cal_com_url: calendarUrlSchema.nullable(),
 });
 export const billingUsageSchema = z.strictObject({
-  plan: z.enum(["free", "pro", "pro_embeddings", "unmetered"]),
+  plan: z.enum(["free", ...paidPlanSchema.options, "unmetered"]),
   period_start: utcDateTimeSchema,
   period_end: utcDateTimeSchema,
   records_used: nonnegativeIntegerSchema,
@@ -50,18 +56,10 @@ export const billingUsageSchema = z.strictObject({
   cal_com_url: calendarUrlSchema.nullable(),
 });
 export const billingRedirectSchema = z.strictObject({
-  url: z
-    .url()
-    .refine((value) => {
-      const url = new URL(value);
-      return (
-        url.protocol === "https:" &&
-        !url.username &&
-        !url.password &&
-        ["checkout.stripe.com", "billing.stripe.com"].includes(url.hostname)
-      );
-    }, "Billing redirects must use Stripe's secure checkout or portal.")
-    .nullable(),
+  url: httpsUrlOn(
+    ["checkout.stripe.com", "billing.stripe.com"],
+    "Billing redirects must use Stripe's secure checkout or portal.",
+  ).nullable(),
 });
 export type BillingConfig = z.infer<typeof billingConfigSchema>;
 export type BillingUsage = z.infer<typeof billingUsageSchema>;

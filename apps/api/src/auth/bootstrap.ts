@@ -1,14 +1,16 @@
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { type PrismaClient } from "@agentcommons/db";
+import { PrismaClient } from "@agentcommons/db";
 import {
   createAuth,
+  passwordSetupUrl,
   type AuthConfiguration,
   type PasswordDelivery,
 } from "./config.js";
+import { authEnvironment } from "./environment.js";
 import { membershipTransaction } from "./transaction.js";
 import { seedPolicies } from "../services/policies.js";
-import { AuditService } from "../services/audit.js";
+import { AuditService, type AuditActor } from "../services/audit.js";
 import { ServiceError, type ServiceContext } from "../services/context.js";
 
 export const bootstrapInputSchema = z.object({
@@ -29,6 +31,28 @@ export function operatorContext(): ServiceContext {
     startedAt: Date.now(),
     headers: new Headers(),
   };
+}
+
+function systemActor(
+  authMethod: "worker" | "operator",
+  organizationId?: string,
+): AuditActor {
+  return {
+    userId: null,
+    apiKeyId: null,
+    authMethod,
+    ...(organizationId === undefined ? {} : { organizationId }),
+  };
+}
+
+/** Audit actor for background workers acting on an organization's behalf. */
+export function workerActor(organizationId?: string): AuditActor {
+  return systemActor("worker", organizationId);
+}
+
+/** Audit actor for operator CLI commands and boot-time maintenance. */
+export function operatorActor(organizationId?: string): AuditActor {
+  return systemActor("operator", organizationId);
 }
 
 export async function bootstrap(
@@ -91,10 +115,7 @@ export async function bootstrap(
     const accounts = await tx.account.count({ where: { userId: user.id } });
     if (config.emailPasswordEnabled && accounts === 0)
       await native.api.requestPasswordReset({
-        body: {
-          email: user.email,
-          redirectTo: `${config.publicUrl}/setup-password`,
-        },
+        body: { email: user.email, redirectTo: passwordSetupUrl(config) },
       });
     await seedPolicies(tx, organization.id, user.id);
     const audit = await audits.write(
@@ -103,12 +124,7 @@ export async function bootstrap(
         action: "operator.bootstrap",
         resourceType: "organization",
         resourceIds: [organization.id, user.id],
-        actor: {
-          userId: null,
-          apiKeyId: null,
-          authMethod: "operator",
-          organizationId: organization.id,
-        },
+        actor: operatorActor(organization.id),
       },
       tx,
     );
@@ -136,10 +152,7 @@ export async function recover(
     await createAuth(tx, config, (value) => {
       delivery = value;
     }).api.requestPasswordReset({
-      body: {
-        email: user.email,
-        redirectTo: `${config.publicUrl}/setup-password`,
-      },
+      body: { email: user.email, redirectTo: passwordSetupUrl(config) },
     });
     if (!delivery) throw new Error("Recovery URL was not generated");
     const audit = await new AuditService(prisma).write(
@@ -148,7 +161,7 @@ export async function recover(
         action: "operator.recover",
         resourceType: "user",
         resourceIds: [user.id],
-        actor: { userId: null, apiKeyId: null, authMethod: "operator" },
+        actor: operatorActor(),
       },
       tx,
     );
@@ -156,21 +169,45 @@ export async function recover(
   });
 }
 
-export function operatorArguments(kind: "seed" | "recover") {
+/** `pnpm db:seed --admin <email> [--organization <slug>] [--name <name>]`. */
+export function seedArguments(): z.infer<typeof bootstrapInputSchema> {
   const { values } = parseArgs({
-    options:
-      kind === "seed"
-        ? {
-            admin: { type: "string" },
-            organization: { type: "string" },
-            name: { type: "string" },
-          }
-        : { email: { type: "string" } },
+    options: {
+      admin: { type: "string" },
+      organization: { type: "string" },
+      name: { type: "string" },
+    },
   });
-  if (kind === "recover") return z.object({ email: z.email() }).parse(values);
   return bootstrapInputSchema.parse({
     email: values.admin,
     ...(values.organization ? { organization: values.organization } : {}),
     ...(values.name ? { name: values.name } : {}),
   });
+}
+
+/** `pnpm db:recover --email <email>`. */
+export function recoverArguments(): { email: string } {
+  const { values } = parseArgs({ options: { email: { type: "string" } } });
+  return z.object({ email: z.email() }).parse(values);
+}
+
+/**
+ * The scaffold every operator command shares: the native provider configuration from
+ * the environment, one Prisma client for the command's lifetime, and the JSON result on
+ * stdout.
+ */
+export async function runOperatorCommand(
+  command: (
+    prisma: PrismaClient,
+    auth: AuthConfiguration,
+  ) => Promise<{ result: unknown }>,
+): Promise<void> {
+  const env = authEnvironment(process.env);
+  const prisma = new PrismaClient({ datasourceUrl: env.databaseUrl });
+  try {
+    const { result } = await command(prisma, env.auth);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  } finally {
+    await prisma.$disconnect();
+  }
 }

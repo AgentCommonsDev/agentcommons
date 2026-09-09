@@ -14,7 +14,12 @@ import {
 } from "@agentcommons/core/schemas/common";
 import { copy } from "../../copy";
 import { defined } from "../../lib/api/client";
-import { harnessLabel, operationLabel, statusLabel } from "../../lib/display";
+import {
+  fieldLabel,
+  harnessLabel,
+  operationLabel,
+  statusLabel,
+} from "../../lib/display";
 
 /** Quick filters accept several values; the server matches any of them. */
 /** Filters as the generated client expects them: optional keys are absent, never undefined. */
@@ -323,8 +328,10 @@ export function fieldSpec(key: FieldSpec["key"]): FieldSpec {
   if (!spec) throw new Error(`Unknown filter field ${key}`);
   return spec;
 }
+/** Filter headings are the shared field labels, except where a filter reads differently. */
+const fieldOverrides: Record<string, string> = copy.sessions.filters.fields;
 export function fieldTitle(key: FieldSpec["key"] | ValueFilterKey): string {
-  return copy.sessions.filters.fields[key];
+  return fieldOverrides[key] ?? fieldLabel(key);
 }
 export function fieldHint(key: FieldSpec["key"]): string {
   return copy.sessions.filters.hints[key];

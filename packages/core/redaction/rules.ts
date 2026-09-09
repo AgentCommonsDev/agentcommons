@@ -44,3 +44,18 @@ export const builtinPatterns = [
   },
   { name: "agentcommons", pattern: "\\bac_[A-Za-z0-9_-]{20,}\\b" },
 ] as const;
+
+/**
+ * File names whose tool output is masked before redaction (R-RED-05), matched against the
+ * path's last segment: dotenv files, private keys, SSH identities, credential stores and
+ * package-manager auth files.
+ */
+export const SENSITIVE_FILE_PATTERNS: readonly RegExp[] = [
+  /^\.env/,
+  /\.pem$/,
+  /\.key$/,
+  /^id_rsa/,
+  /^credentials/,
+  /^\.npmrc$/,
+  /^\.netrc$/,
+];

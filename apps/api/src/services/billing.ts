@@ -1,6 +1,7 @@
 import {
   billingConfigSchema,
   billingCheckoutSchema,
+  type BillingConfig,
   type PaidPlan,
   billingUsageSchema,
   billingRedirectSchema,
@@ -19,6 +20,8 @@ import { mutationOperation } from "./mutation.js";
 import type { ServiceContext } from "./context.js";
 
 export class BillingService {
+  /** Immutable public values also feed the server-rendered landing page. */
+  private readonly config: BillingConfig;
   constructor(
     private readonly dependencies: {
       prisma: PrismaClient;
@@ -26,12 +29,9 @@ export class BillingService {
       configuration: BillingConfiguration;
       auth: AuthConfiguration;
     },
-  ) {}
-
-  /** Immutable public values also feed the server-rendered landing page. */
-  publicConfig() {
-    const config = this.dependencies.configuration;
-    return billingConfigSchema.parse({
+  ) {
+    const config = dependencies.configuration;
+    this.config = billingConfigSchema.parse({
       mode: config.mode,
       enabled: config.mode === "saas",
       plans: {
@@ -51,9 +51,13 @@ export class BillingService {
         },
       },
       checkout_enabled:
-        config.mode === "saas" && Boolean(this.dependencies.auth.stripe),
+        config.mode === "saas" && Boolean(dependencies.auth.stripe),
       cal_com_url: config.calComUrl,
     });
+  }
+
+  publicConfig(): BillingConfig {
+    return this.config;
   }
 
   async configuration(context: ServiceContext) {
@@ -73,16 +77,18 @@ export class BillingService {
         const config = this.publicConfig();
         return this.dependencies.prisma.$transaction(async (tx) => {
           await lockOrganization(tx, caller);
-          const usage = await billingUsage(
-            tx,
-            this.dependencies.configuration,
-            caller.organizationId,
-            new Date(),
-          );
-          const organization = await tx.organization.findUniqueOrThrow({
-            where: { id: caller.organizationId },
-            select: { stripeCustomerId: true },
-          });
+          const [usage, organization] = await Promise.all([
+            billingUsage(
+              tx,
+              this.dependencies.configuration,
+              caller.organizationId,
+              new Date(),
+            ),
+            tx.organization.findUniqueOrThrow({
+              where: { id: caller.organizationId },
+              select: { stripeCustomerId: true },
+            }),
+          ]);
           return billingUsageSchema.parse({
             ...usage,
             can_manage:

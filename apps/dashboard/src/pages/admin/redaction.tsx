@@ -6,19 +6,26 @@ import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import { policySortKeys } from "../../lib/api/options";
-import { dateTime, truncate } from "../../lib/display";
+import { dateTime, statusLabel, truncate } from "../../lib/display";
+import { paths } from "../../lib/routes";
 import type { Policy } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
 import { ConfirmDialog } from "../../components/app/confirm-dialog";
-import { RequestError, StatusBadge } from "../../components/app/states";
+import { StatusBadge } from "../../components/app/states";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Switch } from "../../components/ui/field";
 import { PageHeader } from "../../components/ui/feedback";
-import { Input, NativeSelect } from "../../components/ui/input";
+import { Input } from "../../components/ui/input";
 import { useListPage } from "../../features/admin/list";
-import { FilterBar, countActive, without } from "../../features/admin/filters";
+import {
+  BooleanFilterSelect,
+  EnumFilterSelect,
+  FilterBar,
+  countActive,
+  without,
+} from "../../features/admin/filters";
 import { RowMenu, actionsHeader } from "../../features/admin/row-menu";
 import {
   PolicyDialog,
@@ -36,38 +43,81 @@ type Filters = {
   enabled?: boolean;
   builtin?: boolean;
 };
-const kinds: Kind[] = ["REGEX", "SECRETLINT_RULE"];
+/** Every confirmed action on this page; one dialog describes and runs them all. */
+type Action =
+  | { kind: "toggle"; policy: Policy }
+  | { kind: "delete"; policy: Policy }
+  | { kind: "rescan" };
+// Mirrors core's policyKindSchema, whose module needs Node and cannot ship to the browser.
+const kinds: readonly Kind[] = ["REGEX", "SECRETLINT_RULE"];
 const text = copy.admin.redaction;
+function describe(action: Action | null) {
+  switch (action?.kind) {
+    case "toggle":
+      return action.policy.enabled
+        ? {
+            title: text.disableTitle,
+            description: text.disableDescription,
+            label: text.disable,
+            destructive: false,
+            requireReason: false,
+          }
+        : {
+            title: text.enableTitle,
+            description: text.enableDescription,
+            label: text.enable,
+            destructive: false,
+            requireReason: false,
+          };
+    case "delete":
+      return {
+        title: text.deleteTitle,
+        description: text.deleteDescription,
+        label: copy.app.common.delete,
+        destructive: true,
+        requireReason: true,
+      };
+    case "rescan":
+      return {
+        title: text.rescanTitle,
+        description: text.rescanDescription,
+        label: text.rescan,
+        destructive: false,
+        requireReason: true,
+      };
+    case undefined:
+      return {
+        title: "",
+        description: "",
+        label: copy.app.common.save,
+        destructive: false,
+        requireReason: true,
+      };
+  }
+}
 export function RedactionPage({ jobId }: { jobId: string | undefined }) {
   const { organization } = useWorkspace();
   const client = useQueryClient();
   const navigate = useNavigate();
   const [nameDraft, setNameDraft] = useState("");
-  const [filters, setFilters] = useState<Filters>({});
   const [editor, setEditor] = useState<{ policy: Policy | null } | null>(null);
-  const [toggling, setToggling] = useState<Policy | null>(null);
-  const [deleting, setDeleting] = useState<Policy | null>(null);
-  const [rescanOpen, setRescanOpen] = useState(false);
+  const [action, setAction] = useState<Action | null>(null);
   const queryKey = [organization.id, "admin", "policies"];
-  const list = useListPage<Policy, (typeof policySortKeys)[number]>({
-    queryKey: [...queryKey, filters],
+  const list = useListPage<Policy, (typeof policySortKeys)[number], Filters>({
+    queryKey,
     initialSort: "updated_at",
     sortKeys: policySortKeys,
     csvName: text.csvName,
     fetchPage: async (request, signal) =>
       unwrap(
         await api.GET("/api/v1/admin/redaction/policies", {
-          params: { query: { filters, ...request, format: "json" } },
+          params: { query: { ...request, format: "json" } },
           signal,
         }),
       ),
   });
   const preset = usePresetEnabled(organization.id);
   const refresh = () => client.invalidateQueries({ queryKey });
-  const update = (next: Filters) => {
-    setFilters(next);
-    list.reset();
-  };
   const columns = useMemo<ColumnDef<Policy>[]>(
     () => [
       {
@@ -107,7 +157,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
             checked={row.original.enabled}
             aria-label={text.toggle(row.original.name)}
             onCheckedChange={() => {
-              setToggling(row.original);
+              setAction({ kind: "toggle", policy: row.original });
             }}
           />
         ),
@@ -161,7 +211,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
                 destructive: true,
                 disabled: row.original.builtin,
                 onSelect: () => {
-                  setDeleting(row.original);
+                  setAction({ kind: "delete", policy: row.original });
                 },
               },
             ]}
@@ -171,6 +221,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
     ],
     [],
   );
+  const confirmation = describe(action);
   return (
     <>
       <PageHeader
@@ -181,7 +232,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
             <Button
               variant="secondary"
               onClick={() => {
-                setRescanOpen(true);
+                setAction({ kind: "rescan" });
               }}
             >
               <RefreshCw aria-hidden />
@@ -205,154 +256,111 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
           jobId={jobId}
           onDismiss={() => {
             void navigate({
-              to: "/app/admin/redaction",
+              to: paths.admin.redaction,
               search: { job: undefined },
             });
           }}
         />
       )}
-      {list.query.error ? (
-        <RequestError
-          error={list.query.error}
-          retry={() => {
-            void list.query.refetch();
-          }}
+      <div data-testid="admin-redaction-table">
+        <DataTable
+          {...list.table}
+          columns={columns}
+          label={text.title}
+          hiddenColumns={["replacement", "created_at"]}
+          rowId={(row) => row.id}
+          emptyTitle={text.empty}
+          emptyDescription={text.emptyHint}
+          toolbar={
+            <FilterBar
+              label={copy.app.common.filters}
+              activeCount={countActive(list.filters)}
+              onApply={() => {
+                const rest = without(list.filters, "name");
+                const name = nameDraft.trim();
+                list.setFilters(name ? { ...rest, name } : rest);
+              }}
+              onClear={() => {
+                setNameDraft("");
+                list.setFilters({});
+              }}
+              controls={[
+                {
+                  id: "name",
+                  label: text.filterName,
+                  width: "sm:w-48",
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="search"
+                      placeholder={text.filterName}
+                      value={nameDraft}
+                      onChange={(event) => {
+                        setNameDraft(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "kind",
+                  label: text.filterKind,
+                  width: "sm:w-40",
+                  render: (props) => (
+                    <EnumFilterSelect
+                      {...props}
+                      value={list.filters.kind}
+                      options={kinds}
+                      optionLabel={statusLabel}
+                      allLabel={text.allKinds}
+                      onChange={(next) => {
+                        list.setFilter("kind", next);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "state",
+                  label: text.filterEnabled,
+                  width: "sm:w-36",
+                  render: (props) => (
+                    <BooleanFilterSelect
+                      {...props}
+                      value={list.filters.enabled}
+                      labels={{
+                        all: text.allStates,
+                        on: copy.app.common.enabled,
+                        off: copy.app.common.disabled,
+                      }}
+                      onChange={(next) => {
+                        list.setFilter("enabled", next);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "source",
+                  label: text.filterBuiltin,
+                  width: "sm:w-36",
+                  render: (props) => (
+                    <BooleanFilterSelect
+                      {...props}
+                      value={list.filters.builtin}
+                      labels={{
+                        all: text.allSources,
+                        on: text.builtin,
+                        off: text.custom,
+                      }}
+                      onChange={(next) => {
+                        list.setFilter("builtin", next);
+                      }}
+                    />
+                  ),
+                },
+              ]}
+            />
+          }
         />
-      ) : (
-        <div data-testid="admin-redaction-table">
-          <DataTable
-            {...list.table}
-            columns={columns}
-            label={text.title}
-            hiddenColumns={["replacement", "created_at"]}
-            rowId={(row) => row.id}
-            emptyTitle={text.empty}
-            emptyDescription={text.emptyHint}
-            toolbar={
-              <FilterBar
-                label={copy.app.common.filters}
-                activeCount={countActive(filters)}
-                onApply={() => {
-                  const rest = without(filters, "name");
-                  const name = nameDraft.trim();
-                  update(name ? { ...rest, name } : rest);
-                }}
-                onClear={() => {
-                  setNameDraft("");
-                  update({});
-                }}
-                controls={[
-                  {
-                    id: "name",
-                    label: text.filterName,
-                    width: "sm:w-48",
-                    render: (props) => (
-                      <Input
-                        {...props}
-                        type="search"
-                        placeholder={text.filterName}
-                        value={nameDraft}
-                        onChange={(event) => {
-                          setNameDraft(event.target.value);
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    id: "kind",
-                    label: text.filterKind,
-                    width: "sm:w-40",
-                    render: (props) => (
-                      <NativeSelect
-                        {...props}
-                        value={filters.kind ?? ""}
-                        onChange={(event) => {
-                          const rest = without(filters, "kind");
-                          const kind = kinds.find(
-                            (value) => value === event.target.value,
-                          );
-                          update(kind ? { ...rest, kind } : rest);
-                        }}
-                      >
-                        <option value="">{text.allKinds}</option>
-                        {kinds.map((kind) => (
-                          <option key={kind} value={kind}>
-                            {copy.app.statuses[kind]}
-                          </option>
-                        ))}
-                      </NativeSelect>
-                    ),
-                  },
-                  {
-                    id: "state",
-                    label: text.filterEnabled,
-                    width: "sm:w-36",
-                    render: (props) => (
-                      <NativeSelect
-                        {...props}
-                        value={
-                          filters.enabled === undefined
-                            ? ""
-                            : filters.enabled
-                              ? "on"
-                              : "off"
-                        }
-                        onChange={(event) => {
-                          const rest = without(filters, "enabled");
-                          update(
-                            event.target.value
-                              ? {
-                                  ...rest,
-                                  enabled: event.target.value === "on",
-                                }
-                              : rest,
-                          );
-                        }}
-                      >
-                        <option value="">{text.allStates}</option>
-                        <option value="on">{copy.app.common.enabled}</option>
-                        <option value="off">{copy.app.common.disabled}</option>
-                      </NativeSelect>
-                    ),
-                  },
-                  {
-                    id: "source",
-                    label: text.filterBuiltin,
-                    width: "sm:w-36",
-                    render: (props) => (
-                      <NativeSelect
-                        {...props}
-                        value={
-                          filters.builtin === undefined
-                            ? ""
-                            : filters.builtin
-                              ? "builtin"
-                              : "custom"
-                        }
-                        onChange={(event) => {
-                          const rest = without(filters, "builtin");
-                          update(
-                            event.target.value
-                              ? {
-                                  ...rest,
-                                  builtin: event.target.value === "builtin",
-                                }
-                              : rest,
-                          );
-                        }}
-                      >
-                        <option value="">{text.allSources}</option>
-                        <option value="builtin">{text.builtin}</option>
-                        <option value="custom">{text.custom}</option>
-                      </NativeSelect>
-                    ),
-                  },
-                ]}
-              />
-            }
-          />
-        </div>
-      )}
+      </div>
       <TestRedactionCard policies={list.items} />
       <PolicyDialog
         open={editor !== null}
@@ -364,64 +372,50 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
         onSaved={refresh}
       />
       <ConfirmDialog
-        open={toggling !== null}
+        open={action !== null}
         onOpenChange={(open) => {
-          if (!open) setToggling(null);
+          if (!open) setAction(null);
         }}
-        title={toggling?.enabled ? text.disableTitle : text.enableTitle}
-        description={
-          toggling?.enabled ? text.disableDescription : text.enableDescription
-        }
-        confirmLabel={toggling?.enabled ? text.disable : text.enable}
-        destructive={false}
-        requireReason={false}
-        action={async () => {
-          if (!toggling) return;
-          unwrap(
-            await api.PATCH("/api/v1/admin/redaction/policies/{id}", {
-              params: { path: { id: toggling.id } },
-              body: policyBody(toggling, { enabled: !toggling.enabled }),
-            }),
-          );
-          await refresh();
-        }}
-      />
-      <ConfirmDialog
-        open={deleting !== null}
-        onOpenChange={(open) => {
-          if (!open) setDeleting(null);
-        }}
-        title={text.deleteTitle}
-        description={text.deleteDescription}
-        confirmLabel={copy.app.common.delete}
+        title={confirmation.title}
+        description={confirmation.description}
+        confirmLabel={confirmation.label}
+        destructive={confirmation.destructive}
+        requireReason={confirmation.requireReason}
         action={async (reason) => {
-          if (!deleting) return;
-          unwrap(
-            await api.DELETE("/api/v1/admin/redaction/policies/{id}", {
-              params: { path: { id: deleting.id } },
-              body: { reason },
-            }),
-          );
-          await refresh();
-        }}
-      />
-      <ConfirmDialog
-        open={rescanOpen}
-        onOpenChange={setRescanOpen}
-        title={text.rescanTitle}
-        description={text.rescanDescription}
-        confirmLabel={text.rescan}
-        destructive={false}
-        action={async (reason) => {
-          const result = unwrap(
-            await api.POST("/api/v1/admin/redaction/rescan", {
-              body: { reason },
-            }),
-          );
-          await navigate({
-            to: "/app/admin/redaction",
-            search: { job: result.job_id },
-          });
+          if (!action) return;
+          switch (action.kind) {
+            case "toggle":
+              unwrap(
+                await api.PATCH("/api/v1/admin/redaction/policies/{id}", {
+                  params: { path: { id: action.policy.id } },
+                  body: policyBody(action.policy, {
+                    enabled: !action.policy.enabled,
+                  }),
+                }),
+              );
+              await refresh();
+              return;
+            case "delete":
+              unwrap(
+                await api.DELETE("/api/v1/admin/redaction/policies/{id}", {
+                  params: { path: { id: action.policy.id } },
+                  body: { reason },
+                }),
+              );
+              await refresh();
+              return;
+            case "rescan": {
+              const result = unwrap(
+                await api.POST("/api/v1/admin/redaction/rescan", {
+                  body: { reason },
+                }),
+              );
+              await navigate({
+                to: paths.admin.redaction,
+                search: { job: result.job_id },
+              });
+            }
+          }
         }}
       />
     </>

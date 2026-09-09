@@ -1,11 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import {
   billingConfigSchema,
-  defaultBillingConfig,
   type BillingConfig,
 } from "@agentcommons/core/schemas/billing";
 import {
@@ -15,25 +13,40 @@ import {
 import fastifyStatic from "@fastify/static";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { ServiceError } from "../services/context.js";
+import { scriptNonce } from "./context.js";
+
+const missingFileSchema = z.object({ code: z.literal("ENOENT") });
+const NOINDEX = "noindex, nofollow, noarchive";
+
+/** Build artifacts are immutable for the process lifetime: each is read and prepared once. */
+function memo<T>(
+  cache: Map<string, Promise<T>>,
+  key: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  const existing = cache.get(key);
+  if (existing) return existing;
+  const value = load();
+  cache.set(key, value);
+  // A missing artifact is not cached, so a later request still reports it.
+  void value.catch(() => cache.delete(key));
+  return value;
+}
 
 export async function registerStaticRoutes(
   app: FastifyInstance,
   options: {
     publicUrl: string;
-    mode: BillingConfig["mode"];
-    billingConfig?: BillingConfig;
+    billingConfig: BillingConfig;
     dashboardDirectory: string;
     artifactDirectory: string;
   },
 ): Promise<void> {
   const origin = options.publicUrl.replace(/\/$/, "");
-  const config = billingConfigSchema.parse(
-    options.billingConfig ?? {
-      ...defaultBillingConfig,
-      mode: options.mode,
-      enabled: options.mode === "saas",
-    },
-  );
+  const config = billingConfigSchema.parse(options.billingConfig);
+  // Self-hosted instances have no public site: the root goes straight to the app, the
+  // legal documents, blog and discovery files are not served, and nothing is indexable.
+  const customer = config.mode === "customer";
   const renderedDocuments = new Map<string, string>();
   let publicOffering = "";
   {
@@ -78,40 +91,57 @@ export async function registerStaticRoutes(
   });
   const replacement = (source: string) =>
     source.replaceAll("__PUBLIC_URL__", origin);
+  const documents = new Map<string, Promise<string>>();
+  const texts = new Map<string, Promise<string>>();
+  const binaries = new Map<string, Promise<Buffer>>();
+  /** A document with its public config, origin and robots meta resolved; only the nonce varies. */
+  const preparedDocument = (file: string, indexable: boolean) =>
+    memo(documents, `${file}:${String(indexable)}`, async () => {
+      const html = replacement(
+        withPublicConfig(
+          renderedDocuments.get(file) ??
+            (await readFile(resolve(options.dashboardDirectory, file), "utf8")),
+          config,
+        ),
+      );
+      return indexable
+        ? html.replaceAll("noindex,nofollow,noarchive", "index,follow")
+        : html;
+    });
+  const calCom =
+    config.enabled && config.cal_com_url
+      ? {
+          app: " https://app.cal.com",
+          frame: ` ${new URL(config.cal_com_url).origin} https://app.cal.com`,
+        }
+      : { app: "", frame: "" };
+  const csp = (nonce: string) =>
+    `default-src 'self'; script-src 'self' 'nonce-${nonce}'${calCom.app}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'${calCom.app}; frame-src 'self'${calCom.frame}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`;
+  /** Indexable pages and discovery files drop the instance-wide noindex header app.ts sets. */
+  const indexable = (reply: FastifyReply) => {
+    reply.removeHeader("X-Robots-Tag");
+    return reply;
+  };
   const document = async (
     file: string,
-    indexable: boolean,
+    index: boolean,
     reply: FastifyReply,
   ) => {
-    const nonce = randomBytes(18).toString("base64");
-    let html = replacement(
-      withPublicConfig(
-        renderedDocuments.get(file) ??
-          (await readFile(resolve(options.dashboardDirectory, file), "utf8")),
-        config,
-      ),
-    );
-    html = withScriptNonce(html, nonce);
-    if (indexable)
-      html = html.replaceAll("noindex,nofollow,noarchive", "index,follow");
-    reply.header(
-      "Content-Security-Policy",
-      `default-src 'self'; script-src 'self' 'nonce-${nonce}'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; frame-src 'self'${config.enabled && config.cal_com_url ? ` ${new URL(config.cal_com_url).origin} https://app.cal.com` : ""}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
-    );
+    const nonce = scriptNonce();
+    const html = withScriptNonce(await preparedDocument(file, index), nonce);
+    reply.header("Content-Security-Policy", csp(nonce));
     reply.header("Cache-Control", "no-cache");
-    if (!indexable)
-      reply.header("X-Robots-Tag", "noindex, nofollow, noarchive");
+    if (index) indexable(reply);
+    else reply.header("X-Robots-Tag", NOINDEX);
     return reply.type("text/html; charset=utf-8").send(html);
   };
-  // Self-hosted instances have no public site: the root goes straight to the app,
-  // which sends signed-out visitors to sign-in.
   app.get("/", async (_request, reply) =>
-    options.mode === "customer"
+    customer
       ? reply.redirect("/app", 302)
       : document("index.html", true, reply),
   );
   app.get("/docs", async (_request, reply) =>
-    document("docs.html", options.mode !== "customer", reply),
+    document("docs.html", !customer, reply),
   );
   // The legal documents describe the hosted service; like the blog, customer
   // instances do not serve them.
@@ -120,16 +150,14 @@ export async function registerStaticRoutes(
     ["/tos", "tos.html"],
   ] as const)
     app.get(path, async (_request, reply) =>
-      options.mode === "customer"
-        ? reply.code(404).send()
-        : document(file, true, reply),
+      customer ? reply.code(404).send() : document(file, true, reply),
     );
   const blogDocument = async (
     slug: string | undefined,
     reply: FastifyReply,
   ) => {
     if (
-      options.mode === "customer" ||
+      customer ||
       (slug !== undefined && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
     )
       return reply.code(404).send();
@@ -140,7 +168,7 @@ export async function registerStaticRoutes(
         reply,
       );
     } catch (error) {
-      if (z.object({ code: z.literal("ENOENT") }).safeParse(error).success)
+      if (missingFileSchema.safeParse(error).success)
         return reply.code(404).send();
       throw error;
     }
@@ -150,45 +178,49 @@ export async function registerStaticRoutes(
     blogDocument(request.params.slug, reply),
   );
   app.get("/robots.txt", (_request, reply) =>
-    reply
-      .type("text/plain")
-      .send(
-        options.mode === "customer"
-          ? "User-agent: *\nDisallow: /\n"
-          : `User-agent: *\nAllow: /$\nAllow: /docs$\nAllow: /blog$\nAllow: /blog/\nAllow: /privacy$\nAllow: /tos$\nDisallow: /\nSitemap: ${origin}/sitemap.xml\n`,
-      ),
+    customer
+      ? reply.type("text/plain").send("User-agent: *\nDisallow: /\n")
+      : indexable(reply)
+          .type("text/plain")
+          .send(
+            `User-agent: *\nAllow: /$\nAllow: /docs$\nAllow: /blog$\nAllow: /blog/\nAllow: /privacy$\nAllow: /tos$\nDisallow: /\nSitemap: ${origin}/sitemap.xml\n`,
+          ),
   );
   for (const file of ["sitemap.xml", "llms.txt", "llms-full.txt"])
     app.get(`/${file}`, async (_request, reply) => {
-      if (options.mode === "customer") return reply.code(404).send();
-      return reply
+      if (customer) return reply.code(404).send();
+      const text = await memo(texts, file, async () =>
+        replacement(
+          (await readFile(resolve(options.dashboardDirectory, file), "utf8")) +
+            (file.startsWith("llms") && publicOffering
+              ? `\n\n${publicOffering}\n`
+              : ""),
+        ),
+      );
+      return indexable(reply)
         .type(file.endsWith(".xml") ? "application/xml" : "text/plain")
-        .send(
-          replacement(
-            (await readFile(
-              resolve(options.dashboardDirectory, file),
-              "utf8",
-            )) +
-              (file.startsWith("llms") && publicOffering
-                ? `\n\n${publicOffering}\n`
-                : ""),
-          ),
-        );
+        .send(text);
     });
   app.get("/logo.png", async (_request, reply) =>
     reply
       .type("image/png")
       .header("Cache-Control", "public, max-age=3600")
-      .send(await readFile(resolve(options.dashboardDirectory, "logo.png"))),
+      .send(
+        await memo(binaries, "logo.png", () =>
+          readFile(resolve(options.dashboardDirectory, "logo.png")),
+        ),
+      ),
   );
   app.get("/install.sh", async (_request, reply) =>
     reply
       .type("text/plain")
       .send(
-        replacement(
-          await readFile(
-            resolve(options.artifactDirectory, "install.sh"),
-            "utf8",
+        await memo(texts, "install.sh", async () =>
+          replacement(
+            await readFile(
+              resolve(options.artifactDirectory, "install.sh"),
+              "utf8",
+            ),
           ),
         ),
       ),

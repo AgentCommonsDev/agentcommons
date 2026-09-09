@@ -70,6 +70,5 @@ export const installCopy = {
     emptyHint:
       "Start Claude Code, Codex, Gemini CLI or pi on the connected machine and send at least one prompt.",
     allSessions: "All sessions",
-    untitled: "Untitled session",
   },
 } as const;

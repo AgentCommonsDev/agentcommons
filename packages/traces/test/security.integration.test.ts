@@ -7,8 +7,8 @@ import {
   type ReadAuthority,
 } from "@agentcommons/db";
 import { startTraceDatabase } from "./support.js";
+import { TraceFixtures } from "./fixtures.js";
 import { provisionOrganization } from "../../../apps/api/test/support.js";
-import { requireCaller } from "../../../apps/api/src/services/context.js";
 import { cleanup } from "../../../scripts/cleanup.js";
 import {
   createTraceClient,
@@ -22,11 +22,13 @@ import {
 } from "@agentcommons/core/sql";
 import { formatSchemaContext } from "@agentcommons/core/format";
 import { schemaOutputSchema } from "@agentcommons/core/schemas/rest";
+import { callerContextSchema } from "@agentcommons/core/schemas/common";
 import { searchTermsSql } from "../src/views/search.js";
-import { postgresTlsSql } from "../src/postgres.js";
-import { sqlString } from "../src/client.js";
+import { postgresSourceSql } from "../src/postgres.js";
+import { sqlIdentifier, sqlString, tracePrincipal } from "../src/client.js";
 import { emptyTraceRow, validateTraceRow } from "../src/rows.js";
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
+let fixtures: TraceFixtures;
 let owner: ReadAuthority;
 let member: ReadAuthority;
 let other: ReadAuthority;
@@ -35,10 +37,12 @@ const release: Array<() => Promise<unknown>> = [];
 beforeAll(async () => {
   db = await startTraceDatabase();
   release.unshift(() => db.close());
+  fixtures = new TraceFixtures(db);
+  release.unshift(() => fixtures.close());
   const a = await provisionOrganization(db, "native-security");
   const b = await provisionOrganization(db, "native-foreign");
-  owner = requireCaller(a.context);
-  other = requireCaller(b.context);
+  owner = callerContextSchema.parse(a.context.caller);
+  other = callerContextSchema.parse(b.context.caller);
   // An owner key without admin:* must select the ordinary native principal.
   member = { ...owner, permissions: { sessions: ["read"] } };
   writer = createTraceClient({
@@ -52,15 +56,14 @@ beforeAll(async () => {
 afterAll(async () => {
   expect(await cleanup(release.splice(0))).toEqual([]);
 });
+/** A published session of the authority's organization on a fresh installation. */
 async function seed(
   authority: ReadAuthority,
   visibility: "PUBLIC" | "PRIVATE" = "PUBLIC",
   fields: Record<string, unknown> = {},
 ) {
-  const id = randomUUID();
   const installationId = randomUUID();
   const userId = z.string().parse(authority.userId);
-  const now = new Date();
   const key = await db.prisma.apiKeyOwner.findFirstOrThrow({
     where: { organizationId: authority.organizationId, userId },
   });
@@ -74,40 +77,16 @@ async function seed(
       arch: "x64",
     },
   });
-  await db.prisma.traceSessionControl.create({
-    data: {
-      organizationId: authority.organizationId,
-      id,
-      harness: "CLAUDE_CODE",
-      nativeIdentity:
-        `redacted:${"a".repeat(64)}`.slice(0, 40) + id.slice(0, 20),
-      harnessSessionId: id,
-      userId,
-      ingestApiKeyId: key.keyId,
-      installationId,
-      startedAt: now,
-      lastActivityAt: now,
-      acceptedRevision: 1n,
-      publishedRevision: 1n,
-      visibility,
-    },
+  return fixtures.session({
+    organizationId: authority.organizationId,
+    userId,
+    keyId: key.keyId,
+    installationId,
+    visibility,
+    fields: { title: "Visible header", ...fields },
   });
-  await row("sessions", authority, id, 1n, 0n, {
-    harness: "CLAUDE_CODE",
-    harness_session_id: id,
-    user_id: userId,
-    ingest_api_key_id: key.keyId,
-    installation_id: installationId,
-    title: "Visible header",
-    status: "ACTIVE",
-    observed_commits: "null",
-    observed_diff_stat: "null",
-    started_at: now,
-    last_activity_at: now,
-    ...fields,
-  });
-  return id;
 }
+/** One physical row at an explicit revision and generation; publication stays with the test. */
 async function row(
   table: TraceTable,
   authority: ReadAuthority,
@@ -116,24 +95,21 @@ async function row(
   generation: bigint,
   fields: Record<string, unknown> = {},
 ) {
-  const value = validateTraceRow(table, {
-    ...emptyTraceRow(table),
-    ...(table === "messages"
-      ? { role: "USER", kind: "TEXT", tool_input: "null" }
-      : {}),
-    organization_id: authority.organizationId,
-    session_id: id,
-    revision,
-    generation,
-    deleted: 0,
-    fingerprint: "a".repeat(64),
-    ...fields,
-  });
-  await writer.insert({
-    table: `ac_trace.${table}`,
-    values: [value],
-    format: "JSONEachRow",
-  });
+  await fixtures.insertRaw(
+    table,
+    {
+      organizationId: authority.organizationId,
+      sessionId: id,
+      revision,
+      generation,
+    },
+    {
+      ...(table === "messages"
+        ? { role: "USER", kind: "TEXT", tool_input: "null" }
+        : {}),
+      ...fields,
+    },
+  );
 }
 async function select(
   authority: ReadAuthority,
@@ -456,8 +432,9 @@ it("fails closed for missing controls and refuses raw storage, dictionary and cr
   ).toEqual([]);
   for (const sql of [
     "SELECT * FROM ac_trace.messages",
-    "SELECT * FROM ac_trace.control_sessions",
-    "SHOW CREATE TABLE ac_trace.control_sessions",
+    "SELECT * FROM ac_trace.session_identities",
+    "SELECT * FROM ac_trace.control_installations",
+    "SHOW CREATE TABLE ac_trace.control_installations",
     "SELECT dictGet('ac_trace.session_scope','visible',('x',toUUID('00000000-0000-0000-0000-000000000000')))",
   ]) {
     await expect(select(owner, sql)).rejects.toThrow();
@@ -467,6 +444,56 @@ it("fails closed for missing controls and refuses raw storage, dictionary and cr
     "SELECT create_table_query FROM system.tables WHERE database='ac_trace'",
   );
   expect(metadata.rows).toEqual([]);
+});
+// @req R-SEC-01
+it("re-applies the reader limits to principals an earlier release created", async () => {
+  await select(member, "SELECT 1");
+  const principal = tracePrincipal(
+    member,
+    true,
+    db.traceConfig.readerSecret,
+  ).username;
+  const admin = createTraceClient({
+    url: db.traceMigration.url,
+    username: db.traceMigration.username,
+    password: db.traceMigration.password,
+  });
+  release.unshift(() => admin.close());
+  const settings = async () => {
+    const result = await admin.query({
+      query:
+        "SELECT setting_name, value FROM system.settings_profile_elements WHERE user_name={user:String} ORDER BY setting_name",
+      query_params: { user: principal },
+      format: "JSONEachRow",
+    });
+    return z
+      .array(
+        z.object({ setting_name: z.string(), value: z.string().nullable() }),
+      )
+      .parse(await result.json());
+  };
+  // A principal an older release provisioned: fewer, looser limits than today's list.
+  await admin.command({
+    query: `ALTER USER ${sqlIdentifier(principal)} SETTINGS readonly=1, max_execution_time=30`,
+  });
+  expect(await settings()).toEqual([
+    { setting_name: "max_execution_time", value: "30" },
+    { setting_name: "readonly", value: "1" },
+  ]);
+  // A fresh process re-provisions on first use and replaces the whole settings list.
+  const readers = new TraceReaders(db.traceConfig, db.prisma, {
+    embeddings: true,
+  });
+  release.unshift(() => readers.close());
+  await readers.read(member, (client) => client.query("SELECT 1"));
+  const current = await settings();
+  expect(current).toContainEqual({
+    setting_name: "max_execution_time",
+    value: "5",
+  });
+  expect(current).toContainEqual({ setting_name: "max_threads", value: "2" });
+  expect(current).toContainEqual({ setting_name: "readonly", value: "1" });
+  expect(current.length).toBeGreaterThan(2);
 });
 // @req R-ING-01 @req R-SEC-01
 it("holds one publication snapshot across callback queries with a three-connection PostgreSQL pool", async () => {
@@ -948,16 +975,8 @@ it("preserves required PostgreSQL TLS for native engines and direct dictionaries
     // The fixture deliberately has no TLS. Required TLS must fail instead of silently
     // falling back to the successful plaintext control connections used elsewhere.
     const engine = async () => {
-      const args = [
-        `${pg.hostname}:${pg.port || "5432"}`,
-        decodeURIComponent(pg.pathname.slice(1)),
-        "organization_settings",
-        decodeURIComponent(pg.username),
-        decodeURIComponent(pg.password),
-        "trace_control",
-      ];
       await admin.command({
-        query: `CREATE TABLE ${table} (organization_id String) ENGINE=PostgreSQL(${args.map(sqlString).join(",")},${postgresTlsSql(pg.toString(), "engine")})`,
+        query: `CREATE TABLE ${table} (organization_id String) ${postgresSourceSql(pg.toString(), "organization_settings", "engine")}`,
       });
       await (
         await admin.query({
@@ -969,7 +988,7 @@ it("preserves required PostgreSQL TLS for native engines and direct dictionaries
     await expect(engine()).rejects.toThrow(/SSL|TLS/i);
     const direct = async () => {
       await admin.command({
-        query: `CREATE DICTIONARY ${dictionary} (organization_id String,embeddings_enabled Int32 DEFAULT 0) PRIMARY KEY organization_id SOURCE(POSTGRESQL(HOST ${sqlString(pg.hostname)} PORT ${pg.port || "5432"} DB ${sqlString(decodeURIComponent(pg.pathname.slice(1)))} USER ${sqlString(decodeURIComponent(pg.username))} PASSWORD ${sqlString(decodeURIComponent(pg.password))} SCHEMA 'trace_control' TABLE 'organization_settings' ${postgresTlsSql(pg.toString(), "dictionary")})) LAYOUT(COMPLEX_KEY_DIRECT())`,
+        query: `CREATE DICTIONARY ${dictionary} (organization_id String,embeddings_enabled Int32 DEFAULT 0) PRIMARY KEY organization_id ${postgresSourceSql(pg.toString(), "organization_settings", "dictionary")} LAYOUT(COMPLEX_KEY_DIRECT())`,
       });
       await (
         await admin.query({

@@ -1,48 +1,31 @@
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { chromium } from "@playwright/test";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { access } from "node:fs/promises";
 import { z } from "zod";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { createApp } from "../src/app.js";
-import { createRuntime } from "../src/main.js";
-import { environment } from "../src/env.js";
-import { testAuthConfiguration } from "./support.js";
+import { startApp, type StartedApp } from "./app.js";
+import { releaser } from "./support.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
+let app: StartedApp["app"];
 let address: string;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
-  await promisify(execFile)("pnpm", [
-    "--filter",
-    "@agentcommons/api",
-    "build:reference",
-  ]);
+  // The Scalar bundle is a build artifact (`pnpm build` in CI), not a test fixture.
+  await access(new URL("../public/reference-config.js", import.meta.url)).catch(
+    () => {
+      throw new Error(
+        "The API reference bundle is missing; run `pnpm --filter @agentcommons/api build:reference` first.",
+      );
+    },
+  );
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
-  const env = environment({
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    LOG_LEVEL: "silent",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  app = await createApp({ env, services: runtime.services, static: false });
-  release.unshift(() => app.close());
-  address = await app.listen({ host: "127.0.0.1", port: 0 });
+  defer(() => db.close());
+  const started = await startApp(db, {}, { listen: true });
+  defer(() => started.close());
+  ({ app, address } = started);
 });
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-ARCH-07
 it("serves the exact live Zod-generated OpenAPI and native local Scalar bundle without granting corpus access", async () => {
@@ -118,10 +101,6 @@ it("renders searchable operations and their schemas in an actual browser under C
     await page
       .getByRole("heading", { name: "AgentCommons API", exact: true })
       .waitFor();
-    await page.screenshot({
-      path: "/tmp/agentcommons-scalar-initial.png",
-      fullPage: false,
-    });
     await page.keyboard.press("Control+k");
     const search = page.getByRole("combobox", {
       name: "Enter search query",
@@ -181,10 +160,6 @@ it("renders searchable operations and their schemas in an actual browser under C
     await result.click();
     await heading.scrollIntoViewIfNeeded();
     expect(await heading.isVisible()).toBe(true);
-    await page.screenshot({
-      path: "/tmp/agentcommons-scalar-mobile.png",
-      fullPage: false,
-    });
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,

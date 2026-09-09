@@ -38,7 +38,6 @@ export function recordHook(
   config: HookConfig,
   harness: CliHarness,
   input: unknown,
-  launchOverride?: string,
 ): string | null {
   const event = nativeHookSchema.parse(input);
   const definition = HARNESSES[harness];
@@ -78,8 +77,7 @@ export function recordHook(
         unread < config.syncBytesThreshold))
   )
     return path;
-  const identity =
-    launchOverride ?? JSON.stringify(harnessIdentity(definition));
+  const identity = JSON.stringify(harnessIdentity(definition));
   const phase = latestPhase(state, waiting);
   const preceding =
     phase?.kind === mapping.behavior

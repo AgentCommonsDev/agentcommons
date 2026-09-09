@@ -62,6 +62,23 @@ async function billingPeriod(
             : ("free" as const),
   };
 }
+type BillingPeriod = Awaited<ReturnType<typeof billingPeriod>>;
+/** Admissions of one kind counted against the period's allowance. */
+function admittedCount(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  period: BillingPeriod,
+  kind: "capture" | "embedding",
+): Promise<number> {
+  return tx.usageAdmission.count({
+    where: {
+      organizationId,
+      subscriptionId: period.paid?.id ?? null,
+      periodStart: period.start,
+      kind,
+    },
+  });
+}
 /** Caller holds the organization lock so usage and admission cannot race. */
 export async function billingUsage(
   tx: Prisma.TransactionClient,
@@ -75,17 +92,8 @@ export async function billingUsage(
   >
 > {
   const period = await billingPeriod(tx, configuration, organizationId, at);
-  const where = {
-    organizationId,
-    subscriptionId: period.paid?.id ?? null,
-    periodStart: period.start,
-  };
-  const records = await tx.usageAdmission.count({
-    where: { ...where, kind: "capture" },
-  });
-  const messages = await tx.usageAdmission.count({
-    where: { ...where, kind: "embedding" },
-  });
+  const records = await admittedCount(tx, organizationId, period, "capture");
+  const messages = await admittedCount(tx, organizationId, period, "embedding");
   const included =
     period.plan === "unmetered"
       ? null
@@ -158,21 +166,21 @@ export async function admitUsage(
   const ids = [...new Set(input.resourceIds)].filter((id) => !seenIds.has(id));
   if (!ids.length) return;
   if (input.kind === "capture" && period.plan === "free") {
-    const usage = await billingUsage(
+    const records = await admittedCount(
       tx,
-      configuration,
       input.organizationId,
-      input.receivedAt,
+      period,
+      "capture",
     );
-    if (usage.records_used + ids.length > configuration.freeMonthlyRecords)
+    if (records + ids.length > configuration.freeMonthlyRecords)
       throw new ServiceError(
         402,
         "USAGE_LIMIT_REACHED",
         "This organization has reached its monthly record allowance. Upgrade or retry after the next UTC month begins.",
         {
-          plan: usage.plan,
-          included_records: usage.included_records,
-          period_end: usage.period_end,
+          plan: period.plan,
+          included_records: configuration.freeMonthlyRecords,
+          period_end: period.end.toISOString(),
           cal_com_url: configuration.calComUrl,
         },
       );

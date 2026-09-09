@@ -7,8 +7,8 @@ import {
   DialogContent,
   DialogHeader,
 } from "../../components/ui/dialog";
+import { CodeBlock } from "../../components/app/markdown";
 import { CopyButton, DefinitionList } from "../../components/app/states";
-import { CodeBlock, formatJson } from "./display";
 
 export function StatusCodeBadge({ code }: { code: number }) {
   const variant = code >= 500 ? "danger" : code >= 400 ? "warning" : "success";
@@ -122,8 +122,10 @@ export function AuditRecordDialog({
                 <p className="text-sm text-muted">{text.noDetail}</p>
               ) : (
                 <CodeBlock
-                  text={formatJson(event.detail)}
+                  content={JSON.stringify(event.detail, null, 2)}
+                  language="json"
                   copyLabel={text.copyJson}
+                  maxHeight="max-h-80"
                 />
               )}
             </div>

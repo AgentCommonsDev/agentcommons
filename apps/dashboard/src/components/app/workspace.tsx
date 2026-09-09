@@ -1,13 +1,15 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { Outlet, useRouterState } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { onboardingPending } from "@agentcommons/core/schemas/auth";
 import { api, ApiError, unwrap } from "../../lib/api/client";
+import { identityQuery } from "../../lib/api/queries";
 import { useBillingConfig } from "../../lib/billing-config";
-import { authClient } from "../../lib/auth-client";
+import { authClient, authResult } from "../../lib/auth-client";
 import { closeStreams } from "../../lib/streams";
 import { copy } from "../../copy";
 import type { Me, Organization } from "../../lib/types";
-import { isAdminPath, paths } from "../../lib/routes";
+import { currentPage, isAdminPath, paths, withReturn } from "../../lib/routes";
 import { AppShell } from "./shell";
 import { LoadingState, RequestError } from "./states";
 import { EmptyState } from "../ui/feedback";
@@ -33,30 +35,20 @@ export function WorkspaceLayout() {
   const [switching, setSwitching] = useState(false);
   const [operationError, setOperationError] = useState<unknown>(null);
   const autoSelected = useRef(false);
-  const me = useQuery({
-    queryKey: ["identity"],
-    queryFn: async ({ signal }) =>
-      unwrap(await api.GET("/api/v1/me", { signal })),
-    retry: false,
-    enabled: !switching,
-  });
+  const me = useQuery({ ...identityQuery, enabled: !switching });
   const organizations = useQuery({
     queryKey: ["organizations"],
     queryFn: async ({ signal }) =>
       unwrap(await api.GET("/api/v1/me/organizations", { signal })),
     enabled: !!me.data && !switching,
   });
+  // Signed-out and unfinished accounts leave with the page they asked for as `next`,
+  // so sign-in or onboarding brings them back to it.
   useEffect(() => {
     if (me.error instanceof ApiError && me.error.status === 401)
-      window.location.assign(paths.login);
-    if (
-      billing.enabled &&
-      me.data &&
-      ["verify_email", "create_organization", "contact_admin"].includes(
-        me.data.onboarding,
-      )
-    )
-      window.location.assign(paths.onboarding);
+      window.location.assign(withReturn(paths.login, currentPage()));
+    if (billing.enabled && me.data && onboardingPending(me.data.onboarding))
+      window.location.assign(withReturn(paths.onboarding, currentPage()));
   }, [me.error, me.data, billing.enabled]);
   const changeOrganization = async (id: string) => {
     setSwitching(true);
@@ -97,13 +89,7 @@ export function WorkspaceLayout() {
     setOperationError(null);
     closeStreams();
     await client.cancelQueries();
-    const response = await authClient.signOut();
-    if (response.error) {
-      setOperationError(
-        new Error(response.error.message ?? copy.app.common.requestFailed),
-      );
-      return;
-    }
+    authResult(await authClient.signOut(), copy.app.common.requestFailed);
     client.clear();
     window.location.assign(paths.login);
   };

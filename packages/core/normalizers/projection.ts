@@ -1,6 +1,7 @@
 import { NORMALIZERS } from "./index.js";
 import { SourceNotReadyError } from "./errors.js";
 import {
+  compareBigInt,
   normalizerContextSchema,
   type Harness,
   type JsonValue,
@@ -70,10 +71,7 @@ export function projectTrace(
   const normalizer = NORMALIZERS[session.harness];
   let context = normalizerContextSchema.parse(session.normalizerContext);
   let ready = true;
-  const normalize = () => ({
-    messages: normalizer.toMessages(records, context),
-    delta: normalizer.sessionDelta(records, context),
-  });
+  const normalize = () => normalizer.normalize(records, context);
   let normalized;
   try {
     normalized = normalize();
@@ -168,14 +166,13 @@ export function projectTrace(
     const b = positions.get(right.id);
     if (!a || !b)
       throw new Error("A projected message has no source ordering metadata.");
-    return a.pos < b.pos
-      ? -1
-      : a.pos > b.pos
-        ? 1
-        : Number(a.lifecycle) - Number(b.lifecycle) ||
-          a.nativeOrder - b.nativeOrder ||
-          a.time - b.time ||
-          left.id.localeCompare(right.id);
+    return (
+      compareBigInt(a.pos, b.pos) ||
+      Number(a.lifecycle) - Number(b.lifecycle) ||
+      a.nativeOrder - b.nativeOrder ||
+      a.time - b.time ||
+      left.id.localeCompare(right.id)
+    );
   });
   messages.forEach((message, seq) => {
     message.seq = seq;

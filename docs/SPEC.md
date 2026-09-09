@@ -472,7 +472,16 @@ other records accepted on resend without it), `429/5xx` (retry with backoff).
 - A worker claims a bounded source revision and reconstructs the canonical session
   from redacted raw records and receipt observations. It writes only changed native
   messages/files plus the complete header to ClickHouse. Older versions remain
-  append-only; deleted derived records receive tombstones.
+  append-only; deleted derived records receive tombstones. The change set is computed
+  against the complete fingerprint manifest of the published revision, paged in the
+  identity column's native order with a cursor of the same type, so republishing an
+  unchanged session writes no message or file rows regardless of its size; rows of an
+  identity below its newest row at or under the published revision are dead once the
+  publish commits and may be reclaimed per session. The worker reclaims them after a
+  publish that changed at least one message or file row when the published revision is a
+  multiple of ten or the publish changed more than 1,000 rows, under the session's
+  exclusive sink lock, audited as `trace.revision.cleanup`; readers see the same rows
+  before and after.
 - Native row policies hide every unpublished revision. Only after every write is
   acknowledged does a PostgreSQL transaction advance the published revision, mark
   receipts published, remove the corresponding outboxes, and schedule embeddings.
@@ -1661,6 +1670,21 @@ admin data requests run; server authority checks remain mandatory. Organization 
 (SaaS onboarding and `/app/organizations/new`) asks only for a name; the URL slug is
 derived on the server and suffixed on collision (§9.6). The UI has no slug field.
 
+**Return to the requested page.** A signed-out visit to any `/app` page (a shared session
+link with its `#<seq>`, a dashboard) goes to `/login?next=<path>`, where `next` is the
+requested pathname with its query and hash; a signed-in account with onboarding pending goes
+to `/onboarding?next=<path>` the same way. Sign-in returns to `next` (the password form
+navigates there; the provider button passes it as Better Auth's relative `callbackURL`),
+the Create-account link carries it to `/signup`, and the SaaS chain keeps it through the
+verification link, `/verify-email`, `/forgot-password`, `/setup-password` and
+`/onboarding`, which opens `next` instead of Home (or Install after creating an
+organization) once the account is ready. `next` counts only as a same-origin relative path
+under `/app` (one leading slash, then `/app` at a path boundary; no scheme, host,
+backslash or whitespace); one helper in the dashboard (`returnPath` in `lib/routes.ts`)
+decides, every consumer goes through it, and anything else falls back to the default
+destination. Without `next` nothing changes, and `/app` itself never carries one because
+every flow ends there anyway.
+
 **Dashboards (ADR 0048).** A dashboard is an organization-visible object: any member
 creates one, the creator or an organization owner/admin edits or deletes it, every member
 sees all of them, and admins mark one as the Home default. Two read-only built-ins ship
@@ -1691,15 +1715,24 @@ because `GET /dashboards` and `dashboard_list` serve this schema to agents, whic
 Gemini API rejects when it is recursive. Unknown keys are rejected. MCP `tools/list`
 advertises the compact tool-facing rendering of §8.2 and validates calls with this schema.
 
-Rendering a saved dashboard runs its data tiles four at a time and caches the result in the
-API, keyed by organization, caller scope (admins share one entry; each member has their own
-because row policies show them their private sessions), dashboard revision, tile subset,
-resolved variables and the organization's data version (one indexed aggregate over its
-session control rows that changes on every publication, redaction pass, purge, visibility
-change or session end). A hit is therefore always current; entries expire after an hour
-regardless. `refresh: true` re-runs the tiles and replaces the entry; a save bumps the
-revision; inline definitions (editor previews) are never cached. The response reports
-`rendered_at` and `cached`, and Home shows when the data was rendered next to Refresh.
+Rendering a saved or built-in dashboard runs its data tiles four at a time and caches each
+tile's result in the API for one hour, keyed by organization, caller scope (admins share
+one entry; each member has their own because row policies show them their private
+sessions), dashboard revision and resolved variables. The organization's data version is
+not part of the key (ADR 0058): a hit may be up to an hour old, and new sessions appear on
+the next refresh, pre-render or expiry. A tile whose query failed is returned with its
+error but never cached, so the next request retries it alone while the other tiles come
+from the cache; `refresh: true` re-runs the requested tiles and replaces their entries; a
+save bumps the revision; inline definitions (editor previews) are never cached. A
+`dashboard-prerender` job runs at startup and at the top of every hour: for each
+organization it re-renders the default dashboard and every saved dashboard, with default
+variables, for up to 20 caller scopes that rendered a dashboard in the last seven days
+(taken from `dashboard.render` audit rows, most recently active first), re-validating each
+scope's membership and key and skipping, with a 403 audit row, those that lost access;
+each scope's run is audited as `dashboard.prerender` by the worker actor, and one
+organization's failure does not stop the others. The response reports `rendered_at` (the
+oldest returned tile's run) and `cached` (true when no tile ran); the page shows when the
+data was rendered under the tiles, and Refresh re-runs them.
 
 Variables are typed query parameters that a tile may reference as `{name:Type}` only when
 the dashboard declares them: `time_range` exposes `{name_from:DateTime}` and
@@ -2166,7 +2199,7 @@ automatic TLS for `PUBLIC_URL`, plain HTTP on the address, `TRUST_PROXY=uniquelo
 Stack config becomes SSM SecureString parameters that only the instance role reads;
 `infra/scripts/single-node-release.sh` publishes `git archive` of a commit to a private
 bucket and applies it through SSM Run Command (build, both migrations, restart);
-`single-node-bootstrap.sh` seeds the owner organization and enrolls Google sign-in
+`single-node-run.sh bootstrap.sh` seeds the owner organization and enrolls Google sign-in
 domains through a native owner session. Seven daily DLM snapshots; no replica, no ALB,
 no NAT.
 Development runs both databases on loopback with `docker-compose.dev.yml`, plus `pnpm dev`.

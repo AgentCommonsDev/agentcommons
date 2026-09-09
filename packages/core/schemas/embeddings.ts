@@ -1,10 +1,8 @@
 import { z } from "zod";
-import { reasonInputSchema } from "./admin.js";
+import { enabledInputSchema } from "./admin.js";
 import { nonnegativeIntegerSchema } from "./common.js";
 
-export const organizationEmbeddingsInputSchema = reasonInputSchema.extend({
-  enabled: z.boolean(),
-});
+export const organizationEmbeddingsInputSchema = enabledInputSchema;
 export const organizationEmbeddingsOutputSchema = z.strictObject({
   enabled: z.boolean(),
   available: z.boolean(),
@@ -17,6 +15,3 @@ export const organizationEmbeddingsOutputSchema = z.strictObject({
   sessions_pending: nonnegativeIntegerSchema,
   last_attempt: z.enum(["completed", "failed", "reserved"]).nullable(),
 });
-export type OrganizationEmbeddings = z.infer<
-  typeof organizationEmbeddingsOutputSchema
->;

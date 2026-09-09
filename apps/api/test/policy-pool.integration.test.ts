@@ -3,8 +3,8 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import { PrismaClient } from "@agentcommons/db";
 import type { IngestEnvelope } from "@agentcommons/core";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { provisionOrganization } from "./support.js";
+import { provisionOrganization, releaser } from "./support.js";
+import { testEnvelope } from "./envelopes.js";
 import { createPolicyCache } from "../src/services/policy-cache.js";
 import { AuditService } from "../src/services/audit.js";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
@@ -21,48 +21,29 @@ let prisma: PrismaClient;
 let policies: ReturnType<typeof createPolicyCache>;
 let audit: AuditService;
 let services: ReturnType<typeof traceServices>;
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   organization = await provisionOrganization(database, "bounded-pool");
   organizationId = requireCaller(organization.context).organizationId;
   const url = new URL(database.urls.app);
   url.searchParams.set("connection_limit", "3");
   url.searchParams.set("pool_timeout", "2");
   prisma = new PrismaClient({ datasourceUrl: url.toString() });
-  release.unshift(() => prisma.$disconnect());
+  defer(() => prisma.$disconnect());
   policies = createPolicyCache(prisma);
   audit = new AuditService(prisma, policies);
   services = traceServices(database, prisma);
-  release.unshift(() => services.close());
+  defer(() => services.close());
 });
-afterAll(async () => {
-  expect(await cleanup(release)).toEqual([]);
-});
+afterAll(release);
 function envelope(): IngestEnvelope {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
-    batchId: randomUUID(),
-    installationId: randomUUID(),
-    sentAt: new Date().toISOString(),
+  return testEnvelope({
     sourcePos: 1,
     context: {
       cwd: "/pool",
-      installation: {
-        hostname: "pool",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
+      installation: { hostname: "pool", osUser: "test" },
     },
     records: [
       {
@@ -75,9 +56,7 @@ function envelope(): IngestEnvelope {
         }),
       },
     ],
-    cursor: "1",
-    end: null,
-  };
+  });
 }
 
 // @req R-EMB-02 @req R-AUD-01 @req R-RED-02

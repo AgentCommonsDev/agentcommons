@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthService } from "../services/auth.js";
-import { requestContext, requestHeaders } from "./context.js";
+import { requestContext } from "./context.js";
 
 export function registerAuthRoutes(
   app: FastifyInstance,
@@ -8,7 +8,8 @@ export function registerAuthRoutes(
   publicUrl: string,
 ): void {
   const forward = async (request: FastifyRequest, reply: FastifyReply) => {
-    const headers = requestHeaders(request);
+    const context = requestContext(request);
+    const headers = new Headers(context.headers);
     headers.delete("content-length");
     headers.delete("content-encoding");
     const body =
@@ -24,8 +25,7 @@ export function registerAuthRoutes(
       headers,
       ...(body === undefined ? {} : { body }),
     });
-    const response = (await auth.handle(native, requestContext(request)))
-      .result;
+    const response = (await auth.handle(native, context)).result;
     reply.status(response.status);
     response.headers.forEach((value, name) => {
       if (name !== "set-cookie") reply.header(name, value);

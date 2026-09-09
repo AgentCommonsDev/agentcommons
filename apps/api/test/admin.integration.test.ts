@@ -1,7 +1,6 @@
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import { traceServices } from "./trace-services.js";
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { beforeAll, afterAll, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { PrismaClient, type Prisma } from "@agentcommons/db";
@@ -11,8 +10,8 @@ import { CursorCodec } from "../src/services/cursor.js";
 import type { IngestService } from "../src/services/ingest.js";
 import { SessionService } from "../src/services/session.js";
 import { reauthorizeJob } from "../src/auth/jobs.js";
-import { operatorContext } from "../src/auth/bootstrap.js";
-import { provisionOrganization } from "./support.js";
+import { contextFor, provisionOrganization, releaser } from "./support.js";
+import { testEnvelope, textRecord } from "./envelopes.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let organization: Awaited<ReturnType<typeof provisionOrganization>>;
@@ -26,49 +25,28 @@ let reader: ServiceContext;
 let adminOnly: ServiceContext;
 const reason = "Administrative review";
 function envelope(text = "Review session contents") {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    behavior: "sync",
-    nativeEvent: "Stop",
-    batchId: randomUUID(),
-    installationId: randomUUID(),
-    sourcePos: 0,
+  return testEnvelope({
     sentAt: "2026-09-07T01:00:00Z",
+    cursor: "1:0",
     context: {
-      cwd: "/repo",
-      installation: {
-        hostname: "admin-fixture",
-        osUser: "developer",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "admin-fixture" },
       git: {
         root: "/repo",
         remoteUrl: "git@github.com:rek7/agentcommons.git",
         branch: "main",
         head: "abc123",
       },
-      parentHint: null,
     },
     records: [
       {
-        pos: 0,
-        sourceVersion: 0,
-        key: "message",
-        line: JSON.stringify({
-          type: "user",
+        ...textRecord(0, text, {
           uuid: "message",
           timestamp: "2026-09-07T01:00:00Z",
-          message: { content: [{ type: "text", text }] },
         }),
+        key: "message",
       },
     ],
-    cursor: "1:0",
-    end: null,
-  };
+  });
 }
 async function keyContext(permissions: {
   sessions?: ("read" | "ingest")[];
@@ -78,21 +56,19 @@ async function keyContext(permissions: {
     name: "Admin integration",
     permissions,
   });
-  const headers = new Headers({ authorization: `Bearer ${key.result.key}` });
-  const base = { ...operatorContext(), headers };
-  return {
-    ...base,
-    caller: (await database.auth.authenticate(headers, base)).caller,
-  };
+  return contextFor(
+    database,
+    new Headers({ authorization: `Bearer ${key.result.key}` }),
+  );
 }
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   native = traceServices(database);
-  release.unshift(() => native.jobs.stop());
+  defer(() => native.close());
   fixtures = new TraceFixtures(database);
-  release.unshift(() => fixtures.close());
+  defer(() => fixtures.close());
   organization = await provisionOrganization(database, "admin-primary");
   other = await provisionOrganization(database, "admin-other");
   const migration = new PrismaClient({
@@ -141,9 +117,7 @@ beforeAll(async () => {
   reader = await keyContext({ sessions: ["read"] });
   adminOnly = await keyContext({ admin: ["*"] });
 }, 120_000);
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 it("supports admin-only keys and applies visibility only to the authenticated organization", async () => {
   const id = (await ingest.execute(organization.context, envelope())).result
@@ -401,14 +375,18 @@ it("bounds ascending audit pagination to its first-page timestamp despite each p
 });
 
 it("reauthorizes persisted job actors from current membership, issuer binding, key permissions and domain policy", async () => {
-  const actor = await reauthorizeJob(database.prisma, adminOnly);
+  const policy = database.authConfiguration;
+  const actor = await reauthorizeJob(database.prisma, adminOnly, policy);
   expect(actor.caller?.role).toBe("owner");
   await expect(
-    reauthorizeJob(database.prisma, adminOnly, ["elsewhere.test"]),
+    reauthorizeJob(database.prisma, adminOnly, {
+      ...policy,
+      allowedEmailDomains: ["elsewhere.test"],
+    }),
   ).rejects.toMatchObject({ statusCode: 403 });
   const keyId = z.string().parse(adminOnly.caller?.apiKeyId);
   await database.auth.revokeKey(organization.owner, keyId, { reason });
   await expect(
-    reauthorizeJob(database.prisma, adminOnly),
+    reauthorizeJob(database.prisma, adminOnly, policy),
   ).rejects.toMatchObject({ statusCode: 403 });
 });

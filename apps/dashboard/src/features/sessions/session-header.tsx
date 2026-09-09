@@ -21,6 +21,7 @@ import {
   number,
   statusLabel,
   textValue,
+  timeOnly,
 } from "../../lib/display";
 import type { SessionHeader, TreeNode } from "../../lib/types";
 import { cn } from "../../lib/utils";
@@ -52,7 +53,6 @@ const numberKeys = new Set([
   "child_count",
 ]);
 const badgeKeys = new Set(["visibility", "parent_relation"]);
-const timeFormat = new Intl.DateTimeFormat(undefined, { timeStyle: "short" });
 /** The event stream's state as the page sees it; absent once a session is no longer live. */
 export type StreamState = "connecting" | "streaming" | "reconnecting";
 type SessionRef = SessionHeader["children"][number];
@@ -153,7 +153,7 @@ function RelatedSession({
   session: SessionRef;
   node: TreeNode | undefined;
 }) {
-  const title = session.title ?? labels.untitled;
+  const title = session.title ?? copy.app.common.untitledSession;
   // Phones put the badges and count on one line and the title below; wider
   // screens read badges, title, count on a single line.
   return (
@@ -296,7 +296,7 @@ function startedLabel(value: string, now: number): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return dateTime(value);
   return date.toDateString() === new Date(now).toDateString()
-    ? timeFormat.format(date)
+    ? timeOnly(date)
     : dateTime(value);
 }
 /** A live session's duration counts up once a second; anything else renders once. */
@@ -350,7 +350,7 @@ export function SessionHeaderView({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl leading-tight font-semibold tracking-tight sm:text-2xl">
-              {header.title ?? labels.untitled}
+              {header.title ?? copy.app.common.untitledSession}
             </h1>
             <SessionStatusBadge
               status={header.status}

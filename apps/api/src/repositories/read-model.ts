@@ -15,7 +15,11 @@ import {
   type ReusePagePosition,
 } from "@agentcommons/core";
 import { ServiceError } from "../services/context.js";
-import { wireRow, compactMetadata } from "../services/read-budget.js";
+import {
+  wireRow,
+  compactMetadata,
+  pickSchema,
+} from "../services/read-budget.js";
 
 export class Parameters {
   readonly values: TraceParameters = {};
@@ -87,13 +91,20 @@ function conditionSql(condition: SearchCondition, params: Parameters): string {
     ? `positionCaseInsensitiveUTF8(${expression},${value})>0`
     : `startsWith(lowerUTF8(${expression}),lowerUTF8(${value}))`;
 }
+/**
+ * The WHERE clause for one filter set over `api_ro.sessions s` (and `api_ro.messages m` when
+ * `joinsMessages`, so a session-level caller knows whether it needs the join).
+ */
 export async function filterSql(
   client: TraceQueryClient,
   filters: SearchFilters,
   params: Parameters,
-): Promise<string> {
+): Promise<{ sql: string; joinsMessages: boolean }> {
   const conditions = (filters.where ?? []).map((condition) =>
     conditionSql(condition, params),
+  );
+  let joinsMessages = (filters.where ?? []).some(
+    (condition) => searchConditionFields[condition.field] === "message",
   );
   if (filters.repo_name !== undefined) {
     const requested = array(filters.repo_name);
@@ -138,8 +149,10 @@ export async function filterSql(
   }
   for (const key of ["role", "tool_name"] as const) {
     const value = filters[key];
-    if (value !== undefined)
+    if (value !== undefined) {
       conditions.push(`m.${key} IN ${params.add(array(value))}`);
+      joinsMessages = true;
+    }
   }
   // Both file filters test the same session_files row, so "edited a file under src/"
   // never matches a session that edited elsewhere and merely read src/.
@@ -159,14 +172,19 @@ export async function filterSql(
     );
   for (const key of ["since", "until"] as const) {
     const value = filters[key];
-    if (value !== undefined)
+    if (value !== undefined) {
       conditions.push(
         `arrayExists(bound -> coalesce(m.timestamp,m.received_at) ${key === "since" ? ">=" : "<"} parseDateTime64BestEffort(bound,6,'UTC'),${params.add(array(value))})`,
       );
+      joinsMessages = true;
+    }
   }
-  return conditions.length
-    ? conditions.map((condition) => `(${condition})`).join(" AND ")
-    : "true";
+  return {
+    sql: conditions.length
+      ? conditions.map((condition) => `(${condition})`).join(" AND ")
+      : "true",
+    joinsMessages,
+  };
 }
 
 export async function visibleSession(
@@ -243,11 +261,20 @@ export async function sessionHeaders(
     parent_tool_use_id: value.parent_tool_use_id,
     agent_type: value.agent_type,
   });
+  const relativeById = new Map<unknown, Record<string, unknown>>();
+  const childrenByParent = new Map<unknown, Record<string, unknown>[]>();
+  for (const relative of relatives.rows) {
+    if (!relativeById.has(relative.session_id))
+      relativeById.set(relative.session_id, relative);
+    const siblings = childrenByParent.get(relative.parent_session_id) ?? [];
+    siblings.push(relative);
+    childrenByParent.set(relative.parent_session_id, siblings);
+  }
   return rows.map((row) => {
-    const header: Record<string, unknown> = {};
-    const wire = wireRow(row);
-    for (const key of Object.keys(sessionHeaderSchema.shape))
-      if (key in wire) header[key] = wire[key];
+    const header: Record<string, unknown> = pickSchema(
+      wireRow(row),
+      sessionHeaderSchema,
+    );
     for (const key of [
       "file_count",
       "observed_commit_count",
@@ -255,12 +282,8 @@ export async function sessionHeaders(
       "child_count",
     ])
       header[key] = Number(row[key]);
-    const parent = relatives.rows.find(
-      (relative) => relative.session_id === row.parent_session_id,
-    );
-    const children = relatives.rows
-      .filter((relative) => relative.parent_session_id === row.session_id)
-      .slice(0, 10);
+    const parent = relativeById.get(row.parent_session_id);
+    const children = (childrenByParent.get(row.session_id) ?? []).slice(0, 10);
     header.parent = parent ? ref(parent) : null;
     header.children = children.map(ref);
     header.root_session_id =
@@ -333,7 +356,6 @@ export async function rawRecords(
   } | null,
   limit: number,
 ) {
-  await visibleSession(client, sessionId);
   const params = new Parameters();
   const id = params.add(sessionId, "UUID");
   const checkpoint = after
@@ -470,8 +492,7 @@ export async function reuseEdgePage(
         after.value,
         options.sort === "read_at" ? "DateTime64(6, 'UTC')" : "String",
       );
-      const typed = options.sort === "read_at" ? value : value;
-      checkpoint = `(sort_value IS NULL OR sort_value${options.order === "asc" ? ">" : "<"}${typed} OR (sort_value=${typed} AND ${ties}))`;
+      checkpoint = `(sort_value IS NULL OR sort_value${options.order === "asc" ? ">" : "<"}${value} OR (sort_value=${value} AND ${ties}))`;
     }
   }
   const result = await client.query(

@@ -1,8 +1,15 @@
 import { Building2, ShieldAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { onboardingInputSchema } from "@agentcommons/core/schemas/auth";
-import { LoadingState, RequestError } from "../../components/app/states";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  onboardingInputSchema,
+  onboardingPending,
+} from "@agentcommons/core/schemas/auth";
+import {
+  LoadingState,
+  QueryState,
+  RequestError,
+} from "../../components/app/states";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -21,10 +28,11 @@ import { Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { copy } from "../../copy";
 import { api, ApiError, unwrap } from "../../lib/api/client";
-import { authClient } from "../../lib/auth-client";
+import { identityQuery } from "../../lib/api/queries";
+import { authClient, authResult } from "../../lib/auth-client";
 import { useBillingConfig } from "../../lib/billing-config";
 import { errorMessage } from "../../lib/display";
-import { paths } from "../../lib/routes";
+import { paths, returnPath, withReturn } from "../../lib/routes";
 import { closeStreams } from "../../lib/streams";
 import { cn } from "../../lib/utils";
 import {
@@ -45,28 +53,22 @@ function OrganizationForm({
   submitClassName?: string | undefined;
 }) {
   const [name, setName] = useState("");
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<unknown>(null);
+  const create = useMutation({
+    // A schema failure surfaces like a request failure: `errorMessage` reads both.
+    mutationFn: () =>
+      onSubmit({ name: onboardingInputSchema.parse({ name }).name }),
+  });
+  /* Success navigates away, so the button stays disabled until the new page loads. */
+  const pending = create.isPending || create.isSuccess;
   return (
     <AccountForm
       onSubmit={(event) => {
         event.preventDefault();
-        setError(null);
-        const input = onboardingInputSchema.safeParse({ name });
-        if (!input.success) {
-          setError(input.error);
-          return;
-        }
-        setPending(true);
-        /* Success navigates away, so the button stays disabled until the new page loads. */
-        void onSubmit({ name: input.data.name }).catch((caught: unknown) => {
-          setError(caught);
-          setPending(false);
-        });
+        create.mutate();
       }}
     >
       <Field
-        label={copy.signup.organizationName}
+        label={copy.site.signup.organizationName}
         hint={copy.auth.organizationNameHint}
       >
         {(props) => (
@@ -85,7 +87,9 @@ function OrganizationForm({
           />
         )}
       </Field>
-      {error !== null && <Alert variant="danger">{errorMessage(error)}</Alert>}
+      {create.error && (
+        <Alert variant="danger">{errorMessage(create.error)}</Alert>
+      )}
       <Button
         type="submit"
         data-testid="onboarding-submit"
@@ -94,85 +98,83 @@ function OrganizationForm({
       >
         {pending && <Spinner className="text-current" />}
         {pending
-          ? copy.signup.organizationPending
-          : copy.signup.organizationSubmit}
+          ? copy.site.signup.organizationPending
+          : copy.site.signup.organizationSubmit}
       </Button>
     </AccountForm>
   );
 }
 
-/** Hosted-mode gate between sign-in and the workspace: verify, create an organization, or wait. */
-export function OnboardingPage() {
+/**
+ * Hosted-mode gate between sign-in and the workspace: verify, create an organization, or
+ * wait. `next` is the application page the visitor asked for; a ready account opens it.
+ */
+export function OnboardingPage({ next }: { next: string | undefined }) {
   const billing = useBillingConfig();
   const [operationError, setOperationError] = useState<unknown>(null);
-  const me = useQuery({
-    queryKey: ["identity"],
-    enabled: billing.enabled,
-    retry: false,
-    queryFn: async ({ signal }) =>
-      unwrap(await api.GET("/api/v1/me", { signal })),
-  });
+  const me = useQuery({ ...identityQuery, enabled: billing.enabled });
   const unauthenticated =
     me.error instanceof ApiError && me.error.status === 401;
-  const ready =
-    me.data?.onboarding === "ready" || me.data?.onboarding === "not_applicable";
+  const ready = me.data !== undefined && !onboardingPending(me.data.onboarding);
+  const requested = returnPath(next);
+  const destination = requested ?? paths.home;
   useEffect(() => {
-    if (unauthenticated) window.location.replace(paths.login);
-    else if (ready) window.location.replace(paths.home);
-  }, [unauthenticated, ready]);
+    if (unauthenticated) window.location.replace(withReturn(paths.login, next));
+    else if (ready) window.location.replace(destination);
+  }, [unauthenticated, ready, next, destination]);
   if (!billing.enabled)
-    return <AccountUnavailable title={copy.signup.onboardingTitle} />;
+    return <AccountUnavailable title={copy.site.signup.onboardingTitle} />;
   const signOut = async () => {
     setOperationError(null);
-    const response = await authClient.signOut();
-    if (response.error)
-      throw new Error(response.error.message ?? copy.app.common.requestFailed);
+    authResult(await authClient.signOut(), copy.app.common.requestFailed);
     window.location.assign(paths.login);
   };
   return (
     <>
-      {me.isPending || unauthenticated ? (
+      {unauthenticated ? (
         <LoadingState rows={2} />
-      ) : me.error ? (
-        <RequestError
-          error={me.error}
-          retry={() => {
-            void me.refetch();
-          }}
-        />
-      ) : me.data.onboarding === "verify_email" ? (
-        <VerificationNotice email={me.data.user.email} />
-      ) : me.data.onboarding === "create_organization" ? (
-        <>
-          <AccountHeading
-            icon={<Building2 aria-hidden />}
-            title={copy.signup.onboardingTitle}
-            description={copy.signup.onboardingDescription}
-          />
-          <OrganizationForm
-            onSubmit={async (input) => {
-              unwrap(await api.POST("/api/v1/onboarding", { body: input }));
-              window.location.assign(paths.install);
-            }}
-          />
-          <AccountAgreement />
-          <p className="text-xs leading-relaxed text-subtle">
-            {copy.auth.onboardingNext}
-          </p>
-        </>
-      ) : me.data.onboarding === "contact_admin" ? (
-        <AccountHeading
-          icon={<ShieldAlert aria-hidden />}
-          title={copy.signup.contactTitle}
-          description={copy.signup.contactDescription}
-        />
       ) : (
-        <>
-          <AccountHeading title={copy.auth.redirecting} />
-          <Button asChild className="w-full">
-            <a href={paths.home}>{copy.signup.continue}</a>
-          </Button>
-        </>
+        <QueryState query={me} rows={2}>
+          {(account) =>
+            account.onboarding === "verify_email" ? (
+              <VerificationNotice email={account.user.email} next={next} />
+            ) : account.onboarding === "create_organization" ? (
+              <>
+                <AccountHeading
+                  icon={<Building2 aria-hidden />}
+                  title={copy.site.signup.onboardingTitle}
+                  description={copy.site.signup.onboardingDescription}
+                />
+                <OrganizationForm
+                  onSubmit={async (input) => {
+                    unwrap(
+                      await api.POST("/api/v1/onboarding", { body: input }),
+                    );
+                    /* New organizations start on Install unless a page was asked for. */
+                    window.location.assign(requested ?? paths.install);
+                  }}
+                />
+                <AccountAgreement />
+                <p className="text-xs leading-relaxed text-subtle">
+                  {copy.auth.onboardingNext}
+                </p>
+              </>
+            ) : account.onboarding === "contact_admin" ? (
+              <AccountHeading
+                icon={<ShieldAlert aria-hidden />}
+                title={copy.site.signup.contactTitle}
+                description={copy.site.signup.contactDescription}
+              />
+            ) : (
+              <>
+                <AccountHeading title={copy.auth.redirecting} />
+                <Button asChild className="w-full">
+                  <a href={destination}>{copy.site.signup.continue}</a>
+                </Button>
+              </>
+            )
+          }
+        </QueryState>
       )}
       {operationError !== null && <RequestError error={operationError} />}
       {me.data && (
@@ -211,9 +213,9 @@ export function NewOrganizationPage() {
         <Card className="max-w-lg">
           <CardHeader>
             <div className="min-w-0">
-              <CardTitle>{copy.signup.organizationSubmit}</CardTitle>
+              <CardTitle>{copy.site.signup.organizationSubmit}</CardTitle>
               <CardDescription>
-                {copy.signup.onboardingDescription}
+                {copy.site.signup.onboardingDescription}
               </CardDescription>
             </div>
           </CardHeader>
@@ -238,7 +240,7 @@ export function NewOrganizationPage() {
       ) : (
         <EmptyState
           icon={<Building2 aria-hidden />}
-          title={copy.saas.unavailable}
+          title={copy.site.saas.unavailable}
           description={copy.auth.noAccount}
           action={
             <Button asChild variant="secondary">

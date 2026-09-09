@@ -4,16 +4,16 @@ export {
   spawnPlacements,
 } from "./session-navigation.js";
 export type { SpawnedRun } from "./session-navigation.js";
-import { searchOutputSchema, type SearchOutput } from "../schemas/search.js";
-import {
-  getOutputSchema,
-  type GetOutput,
-  type Message,
-  type SessionHeader,
-} from "../schemas/get.js";
-import { sqlOutputSchema, type SqlOutput } from "../schemas/sql.js";
+import type { SearchOutput } from "../schemas/search.js";
+import type { GetOutput, Message, SessionHeader } from "../schemas/get.js";
+import type { SqlOutput } from "../schemas/sql.js";
 import type { JsonValue } from "../schemas/common.js";
 
+/**
+ * Text and structured renderings of one already-validated result. Validation stays at
+ * the boundary that produced the value (the service's output schema, the MCP adapter),
+ * so byte-budget loops can format a candidate page without re-parsing it.
+ */
 export interface Formatted<T> {
   text: string;
   structuredContent: T;
@@ -36,8 +36,7 @@ function inline(value: JsonValue): string {
     .replaceAll("\n", "\\n")
     .replaceAll("\t", "\\t");
 }
-export function formatSearch(value: SearchOutput): Formatted<SearchOutput> {
-  const result = searchOutputSchema.parse(value);
+export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
   const count = new Set(result.blocks.map((block) => block.session_id)).size;
   const blocks = result.blocks.map((block) => {
     const messages = block.messages.map((message) => {
@@ -131,8 +130,7 @@ export function formatMessage(message: Message): string {
   ];
   return `${metadata.join(" ")}\n${message.content}\n${details.join("\n")}`;
 }
-export function formatGet(value: GetOutput): Formatted<GetOutput> {
-  const result = getOutputSchema.parse(value);
+export function formatGet(result: GetOutput): Formatted<GetOutput> {
   const text = [
     formatSessionHeader(result.header),
     ...result.messages.map(formatMessage),
@@ -140,8 +138,7 @@ export function formatGet(value: GetOutput): Formatted<GetOutput> {
   ].join("\n\n");
   return { text, structuredContent: result };
 }
-export function formatSql(value: SqlOutput): Formatted<SqlOutput> {
-  const result = sqlOutputSchema.parse(value);
+export function formatSql(result: SqlOutput): Formatted<SqlOutput> {
   const cell = (item: JsonValue) => inline(item).replaceAll("|", "\\|");
   const text = [
     `${String(result.row_count)} ${result.row_count === 1 ? "row" : "rows"}${result.capped ? " (capped)" : ""}`,
@@ -159,8 +156,8 @@ export { formatCsv } from "./csv.js";
 export {
   formatSchemaContext,
   schemaContextExamples,
-  schemaContextLimits,
 } from "./schema-context.js";
-export function formatJson<T extends JsonValue>(value: T): Formatted<T> {
+/** Pretty JSON of one validated result; schema outputs with optional keys are not `JsonValue`-typed, so any value serializes. */
+export function formatJson<T>(value: T): Formatted<T> {
   return { text: JSON.stringify(value, null, 2), structuredContent: value };
 }

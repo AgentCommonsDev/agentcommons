@@ -2,9 +2,8 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import { copy } from "../../copy";
-import { useAuthConfig } from "../../lib/use-auth-config";
+import { useFeature } from "../../lib/use-auth-config";
 import { useWorkspace } from "../../components/app/workspace";
-import { RequestError } from "../../components/app/states";
 import { Button } from "../../components/ui/button";
 import { PageHeader } from "../../components/ui/feedback";
 import { Input } from "../../components/ui/input";
@@ -38,9 +37,7 @@ const text = copy.admin.status;
 export function StatusPage() {
   const { organization } = useWorkspace();
   const client = useQueryClient();
-  const config = useAuthConfig();
-  const embeddings =
-    config.data?.features.includes("similar_sessions") ?? false;
+  const embeddings = useFeature("similar_sessions");
   const [defaults] = useState(defaultRange);
   const [draft, setDraft] = useState<Range>(defaults);
   const [applied, setApplied] = useState<Range>(defaults);
@@ -74,14 +71,6 @@ export function StatusPage() {
           </Button>
         }
       />
-      {config.error && (
-        <RequestError
-          error={config.error}
-          retry={() => {
-            void config.refetch();
-          }}
-        />
-      )}
       <HealthMetricsCard
         filters={filters}
         toolbar={

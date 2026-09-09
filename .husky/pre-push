@@ -1,1 +1,4 @@
+# Hooks inherit GIT_DIR/GIT_WORK_TREE when invoked from a linked worktree; the test
+# suite spawns git in temporary repositories and must not inherit them.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
 pnpm typecheck && pnpm test && pnpm openapi:check && pnpm spec:check

@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -40,7 +41,13 @@ it("real commits and pushes run the checked-in gates and stop on failures", () =
       '#!/bin/sh\nprintf "%s\\n" "$*" >> "$AC_HOOK_LOG"\nif [ "$*" = "$AC_FAIL_GATE" ]; then exit 17; fi\n',
     );
     chmodSync(pnpm, 0o755);
+    // Guard: the fixture must be its own repository. A leaked GIT_DIR would make every
+    // command below (init, config, hooks, commits) act on the real checkout.
+    expect(git("rev-parse", "--git-dir").status).not.toBe(0);
     expect(git("init", "--initial-branch=main").status).toBe(0);
+    const gitDir = git("rev-parse", "--absolute-git-dir");
+    expect(gitDir.status).toBe(0);
+    expect(gitDir.stdout.trim()).toBe(realpathSync(join(repo, ".git")));
     expect(git("config", "user.name", "Hook test").status).toBe(0);
     expect(
       git("config", "user.email", "hook-test@example.invalid").status,

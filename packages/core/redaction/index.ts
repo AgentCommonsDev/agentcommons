@@ -12,7 +12,6 @@ export * from "./context.js";
 export * from "./observations.js";
 
 export * from "./policy.js";
-export { allowedRuleIds } from "./rules.js";
 export * from "./sanitize.js";
 export * from "./tool-results.js";
 

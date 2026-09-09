@@ -5,6 +5,8 @@ import { auditedOperation, type AuditService } from "./audit.js";
 import { createPolicyCache } from "./policy-cache.js";
 import { jsonValueSchema } from "@agentcommons/core";
 
+/** Audit rows one `flush` projects; a full batch tells the worker to flush again at once. */
+export const AUDIT_PROJECTION_BATCH = 100;
 /** PostgreSQL owns audit history; this outbox maintains its bounded analytics projection. */
 export class TraceAuditProjectionService {
   constructor(
@@ -15,7 +17,7 @@ export class TraceAuditProjectionService {
     },
   ) {}
 
-  async flush(limit = 100): Promise<number> {
+  async flush(limit = AUDIT_PROJECTION_BATCH): Promise<number> {
     const context = operatorContext();
     return auditedOperation(
       this.dependencies.audit,
@@ -29,7 +31,7 @@ export class TraceAuditProjectionService {
             const selected = await tx.$queryRaw<{ audit_id: string }[]>`
           SELECT audit_id FROM public.trace_audit_outbox
           ORDER BY created_at,audit_id
-          LIMIT ${Math.min(100, Math.max(1, Math.trunc(limit)))} FOR UPDATE SKIP LOCKED`;
+          LIMIT ${limit} FOR UPDATE SKIP LOCKED`;
             if (!selected.length) return 0;
             const ids = selected.map((row) => row.audit_id);
             const rows = await tx.auditEvent.findMany({

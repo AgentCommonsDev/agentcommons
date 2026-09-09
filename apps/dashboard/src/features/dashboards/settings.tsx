@@ -3,11 +3,13 @@ import { useEffect, useState } from "react";
 import {
   dashboardDefinitionSchema,
   dashboardTimePresets,
+  dashboardVariableSchema,
   dashboardVariableTypes,
   type DashboardDefinition,
   type DashboardVariable,
 } from "@agentcommons/core/schemas/dashboards";
 import { copy } from "../../copy";
+import { Disclosure } from "../../components/app/display";
 import { CopyButton } from "../../components/app/states";
 import { Button } from "../../components/ui/button";
 import {
@@ -18,26 +20,19 @@ import {
 import { Field } from "../../components/ui/field";
 import { Alert } from "../../components/ui/feedback";
 import { Input, NativeSelect, Textarea } from "../../components/ui/input";
-import { Disclosure } from "../admin/display";
 import { formatIssues } from "./inspector";
 import { definitionJson } from "./model";
 
+/** A variable of `type` keeping the name and label; the schema supplies each type's defaults. */
 function makeVariable(
   type: DashboardVariable["type"],
   base: { name: string; label?: string | undefined },
 ): DashboardVariable {
-  const shared = {
+  return dashboardVariableSchema.parse({
     name: base.name,
     ...(base.label === undefined ? {} : { label: base.label }),
-  };
-  switch (type) {
-    case "time_range":
-      return { ...shared, type, default: "30d" };
-    case "text":
-      return { ...shared, type, default: "" };
-    default:
-      return { ...shared, type };
-  }
+    type,
+  });
 }
 function VariableRow({
   variable,

@@ -1,33 +1,41 @@
 import { guardTraceSql, TraceSqlError } from "@agentcommons/core/sql";
 import {
   embeddingsDisabledMessage,
-  embeddingsUnavailable,
   type EmbeddingAvailability,
 } from "../embeddings/settings.js";
 import { ServiceError } from "../services/context.js";
 
+/** A SQL tool failure; the REST mapper reads `position`, null when no source location applies. */
+export function sqlError(
+  statusCode: number,
+  code: string,
+  message: string,
+  position: number | null = null,
+): ServiceError {
+  return new ServiceError(statusCode, code, message, { position });
+}
+
 export function guardSql(
   sql: string,
-  embeddings: EmbeddingAvailability = embeddingsUnavailable,
+  embeddings: EmbeddingAvailability,
   parameters: Readonly<Record<string, string>> = {},
 ): string {
   try {
     return guardTraceSql(sql, embeddings.enabled, parameters);
   } catch (error) {
-    if (error instanceof TraceSqlError && error.capability !== null)
-      throw new ServiceError(
+    if (!(error instanceof TraceSqlError)) throw error;
+    if (error.capability !== null)
+      throw sqlError(
         400,
         "EMBEDDINGS_DISABLED",
         `${embeddingsDisabledMessage(error.capability, embeddings)} Use search_messages(q='words') for keyword search.`,
-        { position: error.position },
+        error.position,
       );
-    if (error instanceof TraceSqlError)
-      throw new ServiceError(
-        400,
-        "SQL_REJECTED",
-        `${error.message} Query schema_columns for available columns.`,
-        { position: error.position },
-      );
-    throw error;
+    throw sqlError(
+      400,
+      "SQL_REJECTED",
+      `${error.message} Query schema_columns for available columns.`,
+      error.position,
+    );
   }
 }

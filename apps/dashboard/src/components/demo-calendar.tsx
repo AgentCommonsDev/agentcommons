@@ -13,10 +13,10 @@ export function DemoCalendar() {
   if (!config.enabled) return null;
   return (
     <section className="demo-section" id="demo" aria-labelledby="demo-heading">
-      <h2 id="demo-heading">{copy.saas.demoTitle}</h2>
+      <h2 id="demo-heading">{copy.site.saas.demoTitle}</h2>
       {config.cal_com_url ? (
         <>
-          <p>{copy.saas.demoDescription}</p>
+          <p>{copy.site.saas.demoDescription}</p>
           <div className="demo-actions">
             <Button asChild variant="secondary">
               <a
@@ -24,21 +24,21 @@ export function DemoCalendar() {
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                {copy.saas.openCalendar}
+                {copy.site.saas.openCalendar}
                 <ArrowUpRight size={15} aria-hidden />
               </a>
             </Button>
           </div>
           {mounted && (
             <Suspense
-              fallback={<p role="status">{copy.saas.calendarLoading}</p>}
+              fallback={<p role="status">{copy.site.saas.calendarLoading}</p>}
             >
               <Calendar url={config.cal_com_url} />
             </Suspense>
           )}
         </>
       ) : (
-        <p>{copy.saas.calendarUnavailable}</p>
+        <p>{copy.site.saas.calendarUnavailable}</p>
       )}
     </section>
   );

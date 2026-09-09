@@ -1,86 +1,54 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
 import { randomUUID } from "node:crypto";
 import { Client as PgClient } from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
-import { createApp } from "../src/app.js";
-import { createRuntime } from "../src/main.js";
-import { environment } from "../src/env.js";
 import { keyInstallation } from "../src/auth/installation.js";
 import { requireCaller } from "../src/services/context.js";
+import { adminToolNames, readToolNames } from "../src/services/mcp.js";
+import { mcpClient, startApp, type StartedApp } from "./app.js";
+import { testEnvelope, textRecord } from "./envelopes.js";
 import {
   provisionOrganization,
   provisionMember,
+  releaser,
   testAuthConfiguration,
 } from "./support.js";
 
-import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import { traceServices } from "./trace-services.js";
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let native: ReturnType<typeof traceServices>;
 let fixtures: TraceFixtures;
-let runtime: Awaited<ReturnType<typeof createRuntime>>;
-let app: Awaited<ReturnType<typeof createApp>>;
+let runtime: StartedApp["runtime"];
+let app: StartedApp["app"];
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let member: Awaited<ReturnType<typeof provisionMember>>;
 let address: string;
-const clients: Client[] = [];
-const shutdown: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 const headers = (key: string) => ({ authorization: `Bearer ${key}` });
 function envelope(
   installationId: string,
   options: { hostname?: string; hookSha256?: string } = {},
 ) {
-  return {
-    envelopeVersion: 2,
+  return testEnvelope({
     hook: {
       sha256: options.hookSha256 ?? "a".repeat(64),
       extensionSha256: null,
     },
-    harness: "CLAUDE_CODE",
-    harnessSessionId: randomUUID(),
-    behavior: "sync",
-    nativeEvent: "Stop",
-    batchId: randomUUID(),
     installationId,
     sentAt: "2026-01-01T00:00:00.000Z",
-    sourcePos: 0,
     context: {
       cwd: "/rollout",
-      installation: {
-        hostname: options.hostname ?? "rollout-device",
-        osUser: "developer",
-        platform: "linux",
-        arch: "x64",
-      },
-      git: null,
-      parentHint: null,
+      installation: { hostname: options.hostname ?? "rollout-device" },
     },
     records: [
-      {
-        pos: 0,
-        sourceVersion: 0,
-        key: "rollout-message",
-        line: JSON.stringify({
-          type: "user",
-          uuid: "rollout-message",
-          message: {
-            content: [{ type: "text", text: "Installation rollout evidence" }],
-          },
-        }),
-      },
+      textRecord(0, "Installation rollout evidence", {
+        uuid: "rollout-message",
+      }),
     ],
-    cursor: "1",
-    end: null,
-  };
+  });
 }
 async function ingest(
   key: string,
@@ -111,53 +79,27 @@ async function search(key: string) {
   });
   expect(response.statusCode, response.body).toBe(200);
 }
-async function client(key: string) {
-  const value = new Client({ name: "installation-rollout", version: "1" });
-  clients.push(value);
-  await value.connect(
-    new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
-      requestInit: { headers: headers(key) },
-    }) as Transport,
-  );
-  return value;
-}
+const client = (key: string) =>
+  mcpClient(address, key, { name: "installation-rollout", defer });
 beforeAll(async () => {
   db = await startTraceDatabase();
-  shutdown.push(() => db.close());
+  defer(() => db.close());
   native = traceServices(db);
-  shutdown.push(() => native.close());
+  defer(() => native.close());
   fixtures = new TraceFixtures(db);
-  shutdown.push(() => fixtures.close());
+  defer(() => fixtures.close());
   owner = await provisionOrganization(db, "rollout-primary");
   other = await provisionOrganization(db, "rollout-other");
   member = await provisionMember(db, owner.owner, "rollout-member@example.com");
-  const env = environment({
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    LOG_LEVEL: "silent",
-    TRUST_PROXY: "loopback",
-    EMBEDDINGS_ENABLED: "false",
-  });
-  runtime = await createRuntime(env);
-  shutdown.push(() => runtime.close());
-  app = await createApp({ env, services: runtime.services, static: false });
-  shutdown.push(() => app.close());
-  address = await app.listen({ host: "127.0.0.1", port: 0 });
+  const started = await startApp(
+    db,
+    { TRUST_PROXY: "loopback" },
+    { listen: true },
+  );
+  defer(() => started.close());
+  ({ runtime, app, address } = started);
 });
-afterAll(async () => {
-  const errors = await cleanupAll([
-    ...clients.map((value) => () => value.close()),
-    ...shutdown.splice(0).reverse(),
-  ]);
-  if (errors.length)
-    throw new AggregateError(errors, "Rollout test cleanup failed.");
-});
-
-/** Read keys list search, get, sql and the five dashboard tools; admin keys add set_visibility, purge, audit, status and dashboard_set_default. */
-const READ_TOOL_COUNT = 8;
-const ADMIN_TOOL_COUNT = 13;
+afterAll(release);
 
 // @req R-AUD-04
 it("attributes audit to the latest accepted key/org receipt, including the first ingest transaction", async () => {
@@ -229,16 +171,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   const memberClient = await client(member.key);
   expect(
     (await memberClient.listTools()).tools.map((tool) => tool.name),
-  ).toEqual([
-    "dashboard_list",
-    "dashboard_get",
-    "dashboard_render",
-    "dashboard_save",
-    "dashboard_delete",
-    "search",
-    "get",
-    "sql",
-  ]);
+  ).toEqual([...readToolNames]);
   const unassociated = await db.auth.createKey(owner.owner, {
     name: "Unassociated reader",
     permissions: { sessions: ["read"] },
@@ -288,7 +221,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   expect(JSON.stringify(change.detail)).not.toContain("ac_" + "b".repeat(32));
   expect((await ownerClient.listTools()).tools).toEqual([]);
   expect((await memberClient.listTools()).tools).toEqual([]);
-  expect((await reader.listTools()).tools).toHaveLength(READ_TOOL_COUNT);
+  expect((await reader.listTools()).tools).toHaveLength(readToolNames.length);
   const count = await db.prisma.auditEvent.count({
     where: {
       apiKeyId: z.string().parse(member.context.caller?.apiKeyId),
@@ -334,7 +267,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   // The same UUID in another organization is a separate installation and rollout cohort.
   await ingest(other.key, installation);
   expect((await (await client(other.key)).listTools()).tools).toHaveLength(
-    ADMIN_TOOL_COUNT,
+    readToolNames.length + adminToolNames.length,
   );
   expect(
     (
@@ -347,7 +280,9 @@ it("disables current installation keys immediately on cached MCP clients while i
   ).toBe(true);
   const moved = randomUUID();
   await ingest(member.key, moved);
-  expect((await memberClient.listTools()).tools).toHaveLength(READ_TOOL_COUNT);
+  expect((await memberClient.listTools()).tools).toHaveLength(
+    readToolNames.length,
+  );
   expect(
     (
       await memberClient.callTool({
@@ -366,7 +301,9 @@ it("disables current installation keys immediately on cached MCP clients while i
     payload: { enabled: true, reason: "Finish staged comparison" },
   });
   expect(enabled.statusCode, enabled.body).toBe(200);
-  expect((await ownerClient.listTools()).tools).toHaveLength(ADMIN_TOOL_COUNT);
+  expect((await ownerClient.listTools()).tools).toHaveLength(
+    readToolNames.length + adminToolNames.length,
+  );
 });
 
 // @req R-DASH-14
@@ -605,9 +542,7 @@ it("exposes distinct visible reuse counts and pages both directions from real at
       arguments: { session_id: id },
     });
     expect(result.isError).not.toBe(true);
-    while ((await native.traceAudit.flush()) === 100) {
-      /* Drain committed audit observations. */
-    }
+    await native.drainTraceAudit();
   };
   await get(target);
   await get(target);

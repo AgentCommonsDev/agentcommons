@@ -1,19 +1,17 @@
-import { cleanup as cleanupAll } from "../../../scripts/cleanup.js";
-import { setTimeout as delay } from "node:timers/promises";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { JOB_QUEUES, Prisma } from "@agentcommons/db";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
-import { traceServices } from "./trace-services.js";
+import { traceServices, waitForJob } from "./trace-services.js";
 import { requireCaller } from "../src/services/context.js";
 import type { JobService } from "../src/services/jobs.js";
 import { AdminService } from "../src/services/admin.js";
 import { PolicyService } from "../src/services/policies.js";
 import { CursorCodec } from "../src/services/cursor.js";
-import { provisionOrganization, provisionMember } from "./support.js";
+import { provisionOrganization, provisionMember, releaser } from "./support.js";
+import { sourceRecord, testEnvelope } from "./envelopes.js";
 import { wireValue } from "../src/services/read-budget.js";
 import type { Harness, IngestEnvelope } from "@agentcommons/core";
-import type { ServiceContext } from "../src/services/context.js";
 
 let database: Awaited<ReturnType<typeof startTraceDatabase>>;
 let first: Awaited<ReturnType<typeof provisionOrganization>>;
@@ -27,43 +25,26 @@ function request(
   records: unknown[],
   harness: Harness = "CLAUDE_CODE",
 ): IngestEnvelope {
-  return {
-    envelopeVersion: 2,
-    hook: { sha256: "a".repeat(64), extensionSha256: null },
+  return testEnvelope({
     harness,
     harnessSessionId: uuidv7(),
-    behavior: "sync",
-    start: null,
-    nativeEvent: "Stop",
     batchId: uuidv7(),
     installationId: uuidv7(),
-    sentAt: new Date().toISOString(),
     context: {
       cwd: "/repo/private-phrase",
-      installation: {
-        hostname: "test",
-        osUser: "test",
-        platform: "linux",
-        arch: "x64",
-      },
+      installation: { hostname: "test", osUser: "test" },
       git: {
         root: "/repo",
         remoteUrl: "git@github.com:rek7/agentcommons.git",
         branch: "private-phrase",
         head: "abc",
       },
-      parentHint: null,
     },
-    records: records.map((payload, pos) => ({
-      pos,
-      sourceVersion: 0,
-      key: String(pos),
-      line: JSON.stringify(payload),
-    })),
+    records: records.map((payload, pos) =>
+      sourceRecord(pos, payload, String(pos)),
+    ),
     sourcePos: records.length,
-    cursor: String(records.length),
-    end: null,
-  };
+  });
 }
 async function scope(sessionId: string) {
   const control = await database.prisma.traceSessionControl.findFirstOrThrow({
@@ -95,33 +76,17 @@ const textRecord = (text: string) => ({
   type: "user",
   message: { content: [{ type: "text", text }] },
 });
-async function waitFor(
-  context: ServiceContext,
-  id: string,
-  state: "completed" | "failed",
-) {
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    const progress = (await jobs.progress(context, id)).result;
-    if (progress.state === state) return progress;
-    if (Date.now() >= deadline)
-      throw new Error(
-        `Rescan remained ${progress.state}: ${progress.error ?? "no worker error"}`,
-      );
-    await delay(100);
-  }
-}
-const release: Array<() => Promise<unknown>> = [];
+const { defer, release } = releaser();
 beforeAll(async () => {
   database = await startTraceDatabase();
-  release.unshift(() => database.close());
+  defer(() => database.close());
   first = await provisionOrganization(database, "jobs-first");
   other = await provisionOrganization(database, "jobs-other");
   const cursors = new CursorCodec("jobs-cursor-secret");
   services = traceServices(database, undefined, { auditRetentionDays: 30 });
   jobs = services.jobs;
   workerErrors = services.errors;
-  release.unshift(() => jobs.stop());
+  defer(() => services.close());
   admin = new AdminService({
     ...database,
     readers: database.traceReaders,
@@ -135,9 +100,7 @@ beforeAll(async () => {
   });
   await jobs.start();
 });
-afterAll(async () => {
-  expect(await cleanupAll(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 describe("native pg-boss rescan and maintenance", () => {
   // @req R-ING-03 @req R-ING-04 @req R-ING-09 @req R-RED-06 @req R-ORG-06
@@ -200,7 +163,7 @@ describe("native pg-boss rescan and maintenance", () => {
     const scan = await admin.rescan(org.owner, {
       reason: "Native identifier policy review",
     });
-    await waitFor(org.owner, scan.result.job_id, "completed");
+    await waitForJob(jobs, org.owner, scan.result.job_id, "completed");
     const stored = await database.prisma.traceSessionControl.findFirstOrThrow({
       where: { id: parent.result.sessionId },
     });
@@ -338,7 +301,8 @@ describe("native pg-boss rescan and maintenance", () => {
     await expect(
       jobs.progress(other.owner, queued.result.job_id),
     ).rejects.toMatchObject({ statusCode: 404 });
-    const completed = await waitFor(
+    const completed = await waitForJob(
+      jobs,
       first.owner,
       queued.result.job_id,
       "completed",
@@ -451,7 +415,8 @@ describe("native pg-boss rescan and maintenance", () => {
       session_id: tombstone.result.sessionId,
       reason: "Purge before queued rescan",
     });
-    const completed = await waitFor(
+    const completed = await waitForJob(
+      jobs,
       organization.owner,
       queued.result.job_id,
       "completed",
@@ -513,7 +478,12 @@ describe("native pg-boss rescan and maintenance", () => {
       const queued = await admin.rescan(organization.owner, {
         reason: "Retry experiment",
       });
-      await waitFor(organization.owner, queued.result.job_id, "completed");
+      await waitForJob(
+        jobs,
+        organization.owner,
+        queued.result.job_id,
+        "completed",
+      );
       expect(interrupted).toBe(true);
       expect(
         await database.prisma.auditEvent.count({
@@ -570,16 +540,17 @@ describe("native pg-boss rescan and maintenance", () => {
       const queued = await admin.rescan(organization.owner, {
         reason: "Check failure audit atomicity",
       });
-      const deadline = Date.now() + 20_000;
-      for (;;) {
-        const state = await database.prisma.$queryRaw<
-          { state: string }[]
-        >`SELECT state FROM pgboss.job WHERE id=${queued.result.job_id}::uuid`;
-        if (state[0]?.state === "retry") break;
-        if (Date.now() >= deadline)
-          throw new Error("The failed operation did not reach native retry.");
-        await delay(25);
-      }
+      await expect
+        .poll(
+          async () =>
+            (
+              await database.prisma.$queryRaw<
+                { state: string }[]
+              >`SELECT state FROM pgboss.job WHERE id=${queued.result.job_id}::uuid`
+            )[0]?.state,
+          { timeout: 20_000, interval: 25 },
+        )
+        .toBe("retry");
       expect(failureAuditRejected).toBe(true);
       expect(
         await database.prisma.redactionRun.findUnique({
@@ -600,7 +571,12 @@ describe("native pg-boss rescan and maintenance", () => {
           },
         }),
       ).toBe(0);
-      await waitFor(organization.owner, queued.result.job_id, "completed");
+      await waitForJob(
+        jobs,
+        organization.owner,
+        queued.result.job_id,
+        "completed",
+      );
       expect(
         await database.prisma.auditEvent.count({
           where: {
@@ -632,7 +608,12 @@ describe("native pg-boss rescan and maintenance", () => {
       data: { enabled: false },
     });
     expect(
-      await waitFor(organization.owner, queued.result.job_id, "failed"),
+      await waitForJob(
+        jobs,
+        organization.owner,
+        queued.result.job_id,
+        "failed",
+      ),
     ).toMatchObject({ processed_sessions: 0 });
     expect(
       await database.prisma.auditEvent.count({
@@ -720,7 +701,12 @@ it("applies anchored policies to stored JSON values during ingestion, rescan and
     reason: "Apply anchored value policy",
     policyIds: [saved.result.id],
   });
-  const progress = await waitFor(org.owner, scan.result.job_id, "completed");
+  const progress = await waitForJob(
+    jobs,
+    org.owner,
+    scan.result.job_id,
+    "completed",
+  );
   expect(progress.processed_sessions).toBe(1);
   const later = request(records);
   later.context.installation.hostname = "needle";

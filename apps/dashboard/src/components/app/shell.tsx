@@ -1,4 +1,3 @@
-import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   Activity,
   BookOpen,
@@ -12,26 +11,29 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
-  Moon,
   Plus,
   ScrollText,
   Search,
   Settings2,
   ShieldCheck,
   Sliders,
-  Sun,
   TerminalSquare,
   Users,
-  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { copy, links } from "../../copy";
+import { copy } from "../../copy";
 import type { Me, Organization } from "../../lib/types";
 import { paths } from "../../lib/routes";
-import { useTheme } from "../../lib/theme";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogTitle,
+  DialogTrigger,
+  SheetContent,
+} from "../ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,6 +42,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/menu";
+import { ThemeToggle } from "./theme-toggle";
 
 interface NavItem {
   to: string;
@@ -122,25 +125,8 @@ export function Brand({
         height={26}
         className="size-[26px] [filter:var(--logo-filter)]"
       />
-      <span>{copy.brand}</span>
+      <span>{copy.site.brand}</span>
     </a>
-  );
-}
-export function ThemeToggle() {
-  const { theme, toggle } = useTheme();
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={toggle}
-      aria-label={
-        theme === "dark"
-          ? copy.app.common.theme.light
-          : copy.app.common.theme.dark
-      }
-    >
-      {theme === "dark" ? <Sun aria-hidden /> : <Moon aria-hidden />}
-    </Button>
   );
 }
 function NavLink({
@@ -243,7 +229,7 @@ function Navigation({
         />
         <NavLink
           item={{
-            to: links.documentation,
+            to: paths.docs,
             label: copy.app.navigation.site,
             icon: ExternalLink,
             external: true,
@@ -354,7 +340,7 @@ export function AppShell({
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-primary-fg"
       >
-        {copy.skip}
+        {copy.site.skip}
       </a>
       {/* The aside stretches with the page so its background never ends early on long
           screens or full-page captures; the nav inside stays pinned while scrolling. */}
@@ -366,8 +352,8 @@ export function AppShell({
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-line bg-bg/90 px-3 backdrop-blur sm:px-5">
-          <DialogPrimitive.Root open={menuOpen} onOpenChange={setMenuOpen}>
-            <DialogPrimitive.Trigger asChild>
+          <Dialog open={menuOpen} onOpenChange={setMenuOpen}>
+            <DialogTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
@@ -376,39 +362,29 @@ export function AppShell({
               >
                 <Menu aria-hidden />
               </Button>
-            </DialogPrimitive.Trigger>
-            <DialogPrimitive.Portal>
-              <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50" />
-              <DialogPrimitive.Content className="fixed inset-y-0 left-0 z-50 flex w-[280px] max-w-[88vw] flex-col gap-6 overflow-y-auto border-r border-line bg-surface px-3 py-4 focus:outline-none">
-                <DialogPrimitive.Title className="sr-only">
-                  {copy.app.navigation.label}
-                </DialogPrimitive.Title>
-                <DialogPrimitive.Description className="sr-only">
-                  {copy.app.navigation.workspace}
-                </DialogPrimitive.Description>
-                <div className="flex items-center justify-between px-2.5">
-                  <Brand />
-                  <DialogPrimitive.Close asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={copy.app.navigation.closeMenu}
-                    >
-                      <X aria-hidden />
-                    </Button>
-                  </DialogPrimitive.Close>
-                </div>
-                <Navigation
-                  pathname={pathname}
-                  admin={admin}
-                  billing={billing}
-                  onNavigate={() => {
-                    setMenuOpen(false);
-                  }}
-                />
-              </DialogPrimitive.Content>
-            </DialogPrimitive.Portal>
-          </DialogPrimitive.Root>
+            </DialogTrigger>
+            <SheetContent
+              side="left"
+              closeLabel={copy.app.navigation.closeMenu}
+              className="gap-6 px-3 py-4"
+            >
+              <DialogTitle className="sr-only">
+                {copy.app.navigation.label}
+              </DialogTitle>
+              <DialogDescription className="sr-only">
+                {copy.app.navigation.workspace}
+              </DialogDescription>
+              <Brand className="px-2.5" />
+              <Navigation
+                pathname={pathname}
+                admin={admin}
+                billing={billing}
+                onNavigate={() => {
+                  setMenuOpen(false);
+                }}
+              />
+            </SheetContent>
+          </Dialog>
           <OrganizationSwitcher
             organizations={organizations}
             current={me.organization}

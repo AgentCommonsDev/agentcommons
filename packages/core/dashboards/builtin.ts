@@ -78,8 +78,6 @@ export const builtinDashboards: readonly BuiltinDashboard[] = [
   teamOverviewDashboard,
   teamActivityDashboard,
 ];
-/** The built-in an organization shows on Home until an admin sets a default. */
-// Team overview is the Home default whenever no saved dashboard is flagged (§10).
 /** The shipped dashboard with this id, if any. */
 export function builtinDashboard(id: string): BuiltinDashboard | undefined {
   return builtinDashboards.find((dashboard) => dashboard.id === id);

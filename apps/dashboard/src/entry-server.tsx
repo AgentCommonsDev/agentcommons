@@ -10,43 +10,18 @@ import {
   defaultBillingConfig,
   type BillingConfig,
 } from "@agentcommons/core/schemas/billing";
+import { withPublicConfig } from "@agentcommons/core/format/public-config";
 import { copy, links } from "./copy";
 import { formatPlans } from "@agentcommons/core/format/billing";
+import { documentHead, headMarker } from "./lib/document-head";
+import { publicPage, publicPages } from "./lib/public-pages";
 import posts from "./lib/blog.generated.json";
 export { copy, links, posts, defaultBillingConfig };
-export const publicRoutes = [
-  { path: "/", file: "index.html" },
-  { path: "/docs", file: "docs.html" },
-  { path: "/blog", file: "blog.html" },
-  ...posts.map((post) => ({
-    path: `/blog/${post.slug}`,
-    file: `blog/${post.slug}.html`,
-  })),
-  { path: "/privacy", file: "privacy.html" },
-  { path: "/tos", file: "tos.html" },
-];
-/** Title and description for the non-blog public pages; the landing keeps the site meta. */
-const pageMeta: Record<string, { title: string; description: string }> = {
-  "/docs": {
-    title: copy.publicGuide.title,
-    description: copy.meta.description,
-  },
-  "/blog": { title: copy.blog.title, description: copy.blog.description },
-  "/privacy": {
-    title: copy.legal.privacy.title,
-    description: copy.legal.privacy.description,
-  },
-  "/tos": {
-    title: copy.legal.terms.title,
-    description: copy.legal.terms.description,
-  },
-};
-const escapeHtml = (value: string) =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+/** The prerender script and the API's static routes read this `{ path, file }` list. */
+export const publicRoutes = publicPages.map(({ path, file }) => ({
+  path,
+  file,
+}));
 async function render(
   path = "/",
   billingConfig: BillingConfig = defaultBillingConfig,
@@ -67,97 +42,50 @@ async function render(
   return { html, bootstrap };
 }
 
-import { withPublicConfig } from "@agentcommons/core/format/public-config";
+/** The application document: the landing page's head, no prerendered markup. */
 export function appDocument(
   template: string,
   config: BillingConfig = defaultBillingConfig,
 ) {
-  return withPublicConfig(template, config);
+  return withPublicConfig(
+    template.replace(headMarker, () => documentHead()),
+    config,
+  );
 }
+/** One public page prerendered into the template with its own head. */
 export async function renderDocument(
   template: string,
   path = "/",
   config: BillingConfig = defaultBillingConfig,
 ) {
   const rendered = await render(path, config);
-  const post = posts.find((item) => path === `/blog/${item.slug}`);
-  const meta = pageMeta[path];
-  const title = post
-    ? `${post.title} · ${copy.brand}`
-    : meta
-      ? `${meta.title} · ${copy.brand}`
-      : copy.meta.title;
-  const description =
-    post?.summary ?? meta?.description ?? copy.meta.description;
-  const document = withPublicConfig(template, config)
-    .replace(
-      /<title>[^<]*<\/title>/,
-      () => `<title>${escapeHtml(title)}</title>`,
-    )
-    .replace(
-      /(<meta name="description" content=")[^"]*/,
-      (_match, prefix: string) => `${prefix}${escapeHtml(description)}`,
-    )
-    .replace(
-      /(<meta property="og:title" content=")[^"]*/,
-      (_match, prefix: string) => `${prefix}${escapeHtml(title)}`,
-    )
-    .replace(
-      /(<meta property="og:description" content=")[^"]*/,
-      (_match, prefix: string) => `${prefix}${escapeHtml(description)}`,
-    )
+  return withPublicConfig(template, config)
+    .replace(headMarker, () => documentHead(publicPage(path)))
     .replace(
       '<div id="root"></div>',
       () => `<div id="root">${rendered.html}</div>`,
     )
-    .replace("</body>", () => `${rendered.bootstrap ?? ""}</body>`)
-    .replace(
-      'rel="canonical" href="__PUBLIC_URL__/"',
-      `rel="canonical" href="__PUBLIC_URL__${path}"`,
-    )
-    .replace(
-      'property="og:url" content="__PUBLIC_URL__/"',
-      `property="og:url" content="__PUBLIC_URL__${path}"`,
-    );
-  if (!post) return document;
-  const metadata = JSON.stringify({
-    "@context": "https://schema.org",
-    "@type": "BlogPosting",
-    headline: post.title,
-    description: post.summary,
-    datePublished: post.date,
-    mainEntityOfPage: `__PUBLIC_URL__${path}`,
-    author: { "@type": "Organization", name: copy.brand },
-    publisher: { "@type": "Organization", name: copy.brand },
-  }).replaceAll("<", "\\u003c");
-  return document
-    .replace(
-      'property="og:type" content="website"',
-      'property="og:type" content="article"',
-    )
-    .replace(
-      /<script type="application\/ld\+json">[\s\S]*?<\/script>/,
-      () => `<script type="application/ld+json">${metadata}</script>`,
-    );
+    .replace("</body>", () => `${rendered.bootstrap ?? ""}</body>`);
 }
 
+const site = copy.site;
 export function offeringText(config: BillingConfig): string {
   if (!config.enabled) return "";
   const plans = formatPlans(config);
   return [
-    `## ${copy.saas.pricing}`,
-    `${copy.saas.free}: ${copy.saas.freePrice} ${copy.saas.perMonth}; ${plans.freeAllowance} ${copy.saas.sessionsPerMonth}.`,
-    `${copy.saas.pro}: ${plans.proPrice} ${copy.saas.currency} ${copy.saas.perMonth}; ${plans.proAllowance} ${copy.saas.sessionsPerMonth}.`,
+    `## ${site.saas.pricing}`,
+    `${site.saas.free}: ${site.saas.freePrice} ${site.saas.perMonth}; ${plans.freeAllowance} ${site.saas.sessionsPerMonth}.`,
+    `${site.saas.pro}: ${plans.proPrice} ${site.saas.currency} ${site.saas.perMonth}; ${plans.proAllowance} ${site.saas.sessionsPerMonth}.`,
     plans.captureRate
-      ? `${plans.captureRate} ${copy.saas.captureRate}.`
-      : copy.saas.rateUnavailable,
-    `${copy.saas.embeddingsAddon}: ${plans.embeddingPrice} ${copy.saas.perMonth}; ${plans.embeddingRate ?? copy.saas.rateUnavailable} ${plans.embeddingRate ? copy.saas.embeddingRate : ""}.`,
-    copy.saas.counting,
-    `${copy.saas.signup}: __PUBLIC_URL__/signup`,
-    config.checkout_enabled ? "" : copy.saas.checkoutUnavailable,
+      ? `${plans.captureRate} ${site.saas.captureRate}.`
+      : site.saas.rateUnavailable,
+    `${site.saas.embeddingsAddon}: ${plans.embeddingPrice} ${site.saas.perMonth}; ${plans.embeddingRate ?? site.saas.rateUnavailable} ${plans.embeddingRate ? site.saas.embeddingRate : ""}.`,
+    site.saas.counting,
+    `${site.saas.signup}: __PUBLIC_URL__/signup`,
+    config.checkout_enabled ? "" : site.saas.checkoutUnavailable,
     config.cal_com_url
-      ? `${copy.saas.demo}: ${new URL(config.cal_com_url).href}`
-      : copy.saas.calendarUnavailable,
+      ? `${site.saas.demo}: ${new URL(config.cal_com_url).href}`
+      : site.saas.calendarUnavailable,
   ]
     .filter(Boolean)
     .join("\n\n");

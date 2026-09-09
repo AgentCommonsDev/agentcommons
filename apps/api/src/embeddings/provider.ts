@@ -1,10 +1,11 @@
 import OpenAI from "openai";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { EMBEDDING_DIMENSIONS } from "@agentcommons/traces";
 import type { TokenizedInput } from "./chunker.js";
 
-export const EMBEDDING_DIMENSIONS = 1024;
-const EMBEDDING_MODEL = "text-embedding-3-small";
+/** The one model both providers embed with; `EMBEDDINGS_MODEL` must name it (§11). */
+export const EMBEDDING_MODEL = "text-embedding-3-small";
 export interface EmbeddingProvider {
   readonly name: "fake" | "openai";
   readonly model: string;

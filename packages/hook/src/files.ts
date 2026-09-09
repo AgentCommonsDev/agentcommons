@@ -36,13 +36,13 @@ function syncDirectory(path: string): void {
 export function isCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
-export function writeExclusive(path: string, value: unknown): boolean {
+/** Publishes complete fsynced bytes under `path` with an atomic hard link (§6.2). */
+function publishExclusive(path: string, text: string): boolean {
   if (existsSync(path)) return false;
-  secureDirectory(dirname(path));
   const temp = `${path}.${randomUUID()}.claim`;
   const fd = openSync(temp, "wx", 0o600);
   try {
-    writeFileSync(fd, JSON.stringify(value));
+    writeFileSync(fd, text);
     fsyncSync(fd);
   } finally {
     closeSync(fd);
@@ -60,17 +60,34 @@ export function writeExclusive(path: string, value: unknown): boolean {
     unlinkSync(temp);
   }
 }
-export function writeAtomic(path: string, value: unknown): void {
-  secureDirectory(dirname(path));
+/** Replaces `path` through a temporary file in the same directory, then fsyncs the directory. */
+function replaceAtomically(path: string, text: string): void {
   const temp = `${path}.${randomUUID()}.tmp`;
   try {
-    if (!writeExclusive(temp, value))
+    if (!publishExclusive(temp, text))
       throw new Error("The temporary file already exists.");
     renameSync(temp, path);
     syncDirectory(dirname(path));
   } finally {
     if (existsSync(temp)) unlinkSync(temp);
   }
+}
+export function writeExclusive(path: string, value: unknown): boolean {
+  if (existsSync(path)) return false;
+  secureDirectory(dirname(path));
+  return publishExclusive(path, JSON.stringify(value));
+}
+export function writeAtomic(path: string, value: unknown): void {
+  secureDirectory(dirname(path));
+  replaceAtomically(path, JSON.stringify(value));
+}
+/**
+ * Files outside the data directory that the installer edits in place (harness settings,
+ * instructions, shell rc): a missing parent is created, an existing one keeps its mode.
+ */
+export function writeUserFile(path: string, text: string): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  replaceAtomically(path, text);
 }
 export function removeFile(path: string): void {
   try {
@@ -82,6 +99,19 @@ export function removeFile(path: string): void {
 }
 export function readJson<T>(path: string, schema: z.ZodType<T>): T {
   return schema.parse(JSON.parse(readFileSync(path, "utf8")) as unknown);
+}
+/** `readJson`, with `fallback` for a file that does not exist; every other failure throws. */
+export function readJsonOr<T, F>(
+  path: string,
+  schema: z.ZodType<T>,
+  fallback: F,
+): T | F {
+  try {
+    return readJson(path, schema);
+  } catch (error) {
+    if (isCode(error, "ENOENT")) return fallback;
+    throw error;
+  }
 }
 export function jsonNames(directory: string): string[] {
   try {

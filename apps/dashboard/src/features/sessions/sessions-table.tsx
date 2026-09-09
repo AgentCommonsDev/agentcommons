@@ -18,7 +18,6 @@ import { paths } from "../../lib/routes";
 import type { SessionItem } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
-import { RequestError } from "../../components/app/states";
 import { Button } from "../../components/ui/button";
 import type { ApiFilters } from "./search-state";
 import { SessionStatusBadge } from "./session-header";
@@ -36,7 +35,7 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
           params={{ id: row.original.session_id }}
           className="line-clamp-2 font-medium text-fg hover:underline"
         >
-          {row.original.title ?? copy.sessions.list.untitled}
+          {row.original.title ?? copy.app.common.untitledSession}
         </Link>
       ),
     },
@@ -218,15 +217,6 @@ export function SessionsTable({
     ],
     queryFn: ({ signal }) => fetchPage(pagination.cursor, 50, signal),
   });
-  if (list.error)
-    return (
-      <RequestError
-        error={list.error}
-        retry={() => {
-          void list.refetch();
-        }}
-      />
-    );
   return (
     <div data-testid="sessions-table">
       <DataTable
@@ -235,15 +225,11 @@ export function SessionsTable({
         sorting={pagination.sorting}
         onSortingChange={pagination.onSortingChange}
         loading={list.isPending}
-        page={{
-          index: pagination.pageIndex,
-          hasNext:
-            list.data?.cursor !== null && list.data?.cursor !== undefined,
-          onNext: () => {
-            pagination.next(list.data?.cursor ?? null);
-          },
-          onPrevious: pagination.previous,
+        error={list.error}
+        retry={() => {
+          void list.refetch();
         }}
+        page={pagination.page(list.data?.cursor)}
         label={copy.sessions.list.label}
         csv={{
           name: copy.sessions.list.csvName,

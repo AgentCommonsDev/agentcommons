@@ -19,6 +19,7 @@ import {
   SheetContent,
 } from "../../components/ui/dialog";
 import { Field } from "../../components/ui/field";
+import { NativeSelect } from "../../components/ui/input";
 
 const wideQuery = "(min-width: 640px)";
 function subscribe(callback: () => void) {
@@ -47,11 +48,7 @@ interface FilterControl {
    * bare pair of them never says which end of the range each one is.
    */
   showLabel?: boolean;
-  render: (props: {
-    id: string;
-    "aria-label": string;
-    className: string;
-  }) => ReactNode;
+  render: (props: FilterControlProps) => ReactNode;
 }
 /**
  * Filters for a table. Wide screens get an inline row with Apply and Clear; phones get one
@@ -181,6 +178,71 @@ export function FilterBar({
         <span className="min-w-0 truncate text-xs text-muted">{summary}</span>
       )}
     </div>
+  );
+}
+/** The props `FilterBar` hands each control. */
+interface FilterControlProps {
+  id: string;
+  "aria-label": string;
+  className: string;
+}
+/** Tri-state filter: everything, only `on`, or only `off`. */
+export function BooleanFilterSelect({
+  value,
+  labels,
+  onChange,
+  ...props
+}: FilterControlProps & {
+  value: boolean | undefined;
+  labels: { all: string; on: string; off: string };
+  onChange: (next: boolean | undefined) => void;
+}) {
+  return (
+    <NativeSelect
+      {...props}
+      value={value === undefined ? "" : value ? "on" : "off"}
+      onChange={(event) => {
+        onChange(
+          event.target.value === "" ? undefined : event.target.value === "on",
+        );
+      }}
+    >
+      <option value="">{labels.all}</option>
+      <option value="on">{labels.on}</option>
+      <option value="off">{labels.off}</option>
+    </NativeSelect>
+  );
+}
+/** Filter on one value of a closed set, or everything when cleared. */
+export function EnumFilterSelect<Value extends string>({
+  value,
+  options,
+  optionLabel,
+  allLabel,
+  onChange,
+  ...props
+}: FilterControlProps & {
+  value: Value | undefined;
+  options: readonly Value[];
+  optionLabel: (value: Value) => string;
+  allLabel: string;
+  onChange: (next: Value | undefined) => void;
+}) {
+  return (
+    <NativeSelect
+      {...props}
+      value={value ?? ""}
+      onChange={(event) => {
+        onChange(options.find((option) => option === event.target.value));
+      }}
+    >
+      <option value="">{allLabel}</option>
+      {options.map((option) => (
+        <option key={option} value={option}>
+          {optionLabel(option)}
+        </option>
+      ))}
+    </NativeSelect>
   );
 }
 /** A labelled control sized for a filter form; full width on phones. */

@@ -1,23 +1,21 @@
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
+import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import { startApp, type StartedApp } from "./app.js";
 import {
-  startTraceDatabase,
-  traceEnvironment,
-} from "../../../packages/traces/test/support.js";
-import { cleanup } from "../../../scripts/cleanup.js";
-import { createApp } from "../src/app.js";
-import { createRuntime } from "../src/main.js";
-import { environment } from "../src/env.js";
-import { requireCaller } from "../src/services/context.js";
-import { provisionOrganization, testAuthConfiguration } from "./support.js";
+  injectHeaders,
+  provisionOrganization,
+  releaser,
+  testAuthConfiguration,
+} from "./support.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let owner: Awaited<ReturnType<typeof provisionOrganization>>;
-let customer: Awaited<ReturnType<typeof createApp>>;
-let saas: Awaited<ReturnType<typeof createApp>>;
-let googleOnly: Awaited<ReturnType<typeof createApp>>;
-const release: Array<() => Promise<unknown>> = [];
+let customer: StartedApp["app"];
+let saas: StartedApp["app"];
+let googleOnly: StartedApp["app"];
+const { defer, release } = releaser();
 const documentSchema = z.object({
   paths: z.record(z.string(), z.record(z.string(), z.unknown())),
 });
@@ -51,44 +49,17 @@ function operations(app: { swagger(): unknown }) {
   );
 }
 async function application(overrides: Record<string, string>) {
-  const env = environment({
-    PUBLIC_URL: testAuthConfiguration.publicUrl,
-    BETTER_AUTH_SECRET: testAuthConfiguration.secret,
-    DATABASE_URL: db.urls.app,
-    ...traceEnvironment(db.traceConfig),
-    LOG_LEVEL: "silent",
-    EMBEDDINGS_ENABLED: "false",
-    ...overrides,
-  });
-  const runtime = await createRuntime(env);
-  release.unshift(() => runtime.close());
-  const app = await createApp({
-    env,
-    services: runtime.services,
-    static: false,
-  });
-  release.unshift(() => app.close());
-  await app.ready();
-  return app;
+  const started = await startApp(db, overrides);
+  defer(() => started.close());
+  await started.app.ready();
+  return started.app;
 }
-function headers() {
-  const result: Record<string, string> = {
-    origin: testAuthConfiguration.publicUrl,
-  };
-  owner.owner.headers.forEach((value, key) => {
-    result[key] = value;
-  });
-  return result;
-}
+const headers = () => injectHeaders(owner.owner);
 
 beforeAll(async () => {
   db = await startTraceDatabase();
-  release.unshift(() => db.close());
-  owner = await provisionOrganization(db, "instance-mode");
-  await db.prisma.user.update({
-    where: { id: requireCaller(owner.owner).userId },
-    data: { emailVerified: true },
-  });
+  defer(() => db.close());
+  owner = await provisionOrganization(db, "instance-mode", { verified: true });
   customer = await application({});
   saas = await application({ INSTANCE_MODE: "saas" });
   googleOnly = await application({
@@ -99,9 +70,7 @@ beforeAll(async () => {
     AUTH_SIGNUP_MODE: "invite",
   });
 }, 180_000);
-afterAll(async () => {
-  expect(await cleanup(release.splice(0))).toEqual([]);
-});
+afterAll(release);
 
 // @req R-ARCH-08 @req R-SAAS-01 @req R-SAAS-06 @req R-EMB-01
 it("registers SaaS, domain-enrollment and similarity routes only where active and keeps the build artifact complete", async () => {
