@@ -47,7 +47,9 @@ import {
 import {
   keysInputSchema,
   keyCreateInputSchema,
+  apiKeyRevealOutputSchema,
 } from "@agentcommons/core/schemas";
+import { KeySecretCipher } from "./key-secrets.js";
 
 class AuthResponseFailure extends Error {
   constructor(readonly response: Response) {
@@ -134,6 +136,8 @@ function mapKey(
 export class AuthService {
   readonly native: NativeAuth;
   private readonly cursors: CursorCodec;
+  /** Encrypts stored key plaintext for owner reveal (ADR 0051); derived once per process. */
+  private readonly secrets: KeySecretCipher;
   constructor(
     readonly prisma: PrismaClient,
     readonly config: AuthConfiguration,
@@ -143,6 +147,7 @@ export class AuthService {
   ) {
     this.native = createAuth(prisma, config);
     this.cursors = new CursorCodec(config.secret);
+    this.secrets = new KeySecretCipher(config.secret);
   }
 
   async configuration(context: ServiceContext) {
@@ -244,7 +249,7 @@ export class AuthService {
         this.config.instanceMode === "saas"
       ) {
         const response = Response.redirect(
-          `${this.config.publicUrl}/usage`,
+          `${this.config.publicUrl}/app/billing`,
           303,
         );
         return {
@@ -462,18 +467,8 @@ export class AuthService {
     return listDomains(this.prisma, this.config, this.audit, context, input);
   }
 
-  domain(
-    context: ServiceContext,
-    operation: "register" | "verify",
-    input: z.input<typeof domainInputSchema>,
-  ) {
-    return manageDomain(
-      this.prisma,
-      this.config,
-      context,
-      operation,
-      input.domain,
-    );
+  domain(context: ServiceContext, input: z.input<typeof domainInputSchema>) {
+    return manageDomain(this.prisma, this.config, context, input.domain);
   }
 
   private async onboardingState(
@@ -843,6 +838,14 @@ export class AuthService {
               userId: caller.userId,
             },
           });
+          await tx.apiKeySecret.create({
+            data: {
+              apiKeyId: native.id,
+              organizationId: caller.organizationId,
+              userId: caller.userId,
+              ...this.secrets.seal(native.id, native.key),
+            },
+          });
           const stored = await tx.apikey.findUniqueOrThrow({
             where: { id: native.id },
           });
@@ -904,6 +907,8 @@ export class AuthService {
             await createAuth(tx, this.config).api.updateApiKey({
               body: { keyId, userId: caller.userId, enabled: false },
             });
+          // A revoked key can never be copied again (ADR 0051).
+          await tx.apiKeySecret.deleteMany({ where: { apiKeyId: keyId } });
           const audit = await this.audit.write(
             context,
             {
@@ -919,6 +924,53 @@ export class AuthService {
             audit,
           };
         });
+      },
+    );
+  }
+
+  /**
+   * Return the plaintext of one of the caller's own active keys from its encrypted copy
+   * (ADR 0051). Cookie sessions only: an API key must never be able to read another
+   * key. Keys of other members, other organizations and revoked keys are missing.
+   */
+  async revealKey(context: ServiceContext, keyId: string) {
+    return auditedOperation(
+      this.audit,
+      context,
+      { action: "keys.reveal", resourceType: "key", resourceIds: [keyId] },
+      async () => {
+        const caller = requireCaller(context);
+        if (caller.authMethod !== "cookie")
+          throw new ServiceError(
+            403,
+            "KEY_REVEAL_SESSION_REQUIRED",
+            "Sign in to the dashboard to copy an API key.",
+          );
+        const secret = await this.prisma.apiKeySecret.findFirst({
+          where: {
+            apiKeyId: keyId,
+            organizationId: caller.organizationId,
+            userId: caller.userId,
+          },
+        });
+        const key = secret
+          ? await this.prisma.apikey.findUnique({ where: { id: keyId } })
+          : null;
+        if (
+          !secret ||
+          !key?.enabled ||
+          key.referenceId !== caller.organizationId
+        )
+          throw new ServiceError(404, "NOT_FOUND", "API key not found.");
+        const result = apiKeyRevealOutputSchema.parse({
+          key: this.secrets.open(keyId, secret),
+        });
+        const audit = await this.audit.write(context, {
+          action: "keys.reveal",
+          resourceType: "key",
+          resourceIds: [keyId],
+        });
+        return { result, audit };
       },
     );
   }

@@ -9,7 +9,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { z } from "zod";
 import {
+  builtinDashboardId,
   jsonObjectSchema,
+  metricGroups,
   type metricsOutputSchema,
   searchAdoptionMetricNames,
   type Harness,
@@ -23,7 +25,8 @@ import { TraceProjectionService } from "../src/services/trace-projection.js";
 import { TraceAuditProjectionService } from "../src/services/trace-audit-projection.js";
 import { JobService } from "../src/services/jobs.js";
 import { IngestService } from "../src/services/ingest.js";
-import { HomeService } from "../src/services/home.js";
+import { DashboardService } from "../src/services/dashboards.js";
+import { QueryService } from "../src/services/query.js";
 import { MetricsService } from "../src/services/metrics.js";
 import { PolicyService } from "../src/services/policies.js";
 import { AdminService } from "../src/services/admin.js";
@@ -38,7 +41,7 @@ let foreign: Awaited<ReturnType<typeof provisionOrganization>>;
 let ingest: IngestService;
 let projection: TraceProjectionService;
 const workerErrors: Error[] = [];
-let home: HomeService;
+let dashboards: DashboardService;
 let metrics: MetricsService;
 let admin: AdminService;
 const release: Array<() => Promise<unknown>> = [];
@@ -80,6 +83,7 @@ function envelope(
   const native = randomUUID();
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness,
     harnessSessionId: native,
     batchId: randomUUID(),
@@ -189,6 +193,77 @@ function claudeTool(name: string, id: string, uuid = randomUUID()): JsonObject {
     },
   };
 }
+/** pi transcript rows: the extension's bridge tools are ordinary `toolCall` blocks (ADR 0054). */
+function piRecords(calls: Array<{ name: string; id: string }>): JsonObject[] {
+  const rows: JsonObject[] = [];
+  let parentId: string | null = null;
+  const push = (row: JsonObject) => {
+    const id = randomUUID().slice(0, 8);
+    rows.push({ ...row, id, parentId });
+    parentId = id;
+  };
+  rows.push({
+    type: "session",
+    version: 3,
+    id: randomUUID(),
+    cwd: "/adoption",
+  });
+  push({
+    type: "message",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: "Find prior work on the adoption view." },
+      ],
+    },
+  });
+  for (const call of calls) {
+    push({
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: call.id,
+            name: call.name,
+            arguments: { query: "fixture" },
+          },
+        ],
+      },
+    });
+    push({
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: "fixture result" }],
+        isError: false,
+      },
+    });
+  }
+  return rows;
+}
+/** Home's KPIs are stat tiles of the default dashboard; read this week's captured and searching sessions. */
+async function homeKpis(context: ServiceContext) {
+  const rendered = (
+    await dashboards.render(context, {
+      id: builtinDashboardId,
+      tiles: ["captured_sessions", "search_sessions"],
+      variables: { time_range: "this_week" },
+    })
+  ).result;
+  const value = (id: string) => {
+    const tile = rendered.tiles.find((item) => item.id === id);
+    expect(tile?.error, id).toBeNull();
+    return Number(tile?.result?.rows[0]?.[0]);
+  };
+  return {
+    sessions: value("captured_sessions"),
+    agentcommons_search_sessions: value("search_sessions"),
+  };
+}
 async function usage(
   repo: string,
   metric?: (typeof searchAdoptionMetricNames)[number],
@@ -240,7 +315,11 @@ beforeAll(async () => {
   });
   release.unshift(() => jobs.stop());
   ingest = new IngestService({ ...db, traces: jobs });
-  home = new HomeService(dependencies);
+  dashboards = new DashboardService({
+    prisma: db.prisma,
+    audit: db.audit,
+    query: new QueryService(dependencies),
+  });
   metrics = new MetricsService(dependencies);
   admin = new AdminService({
     ...dependencies,
@@ -353,6 +432,29 @@ it("deduplicates native call IDs, counts failed attempts and uses source order w
   ).toBe(1);
 });
 
+// @req R-DASH-18 @req R-MCP-08
+it("counts pi bridge searches (agentcommons_search) like the MCP-native identities", async () => {
+  const result = await publish(
+    org.context,
+    envelope(
+      "PI",
+      piRecords([
+        { name: "agentcommons_search", id: "bridge-1" },
+        { name: "agentcommons_search", id: "bridge-2" },
+        { name: "grep", id: "native-grep" },
+        { name: "search", id: "unqualified" },
+      ]),
+      "pi-bridge",
+    ),
+  );
+  await one(result.result.sessionId, 2, 1, 1);
+  expect(
+    (await messages(org.context, result.result.sessionId))
+      .filter((row) => row.kind === "TOOL_USE")
+      .map((row) => row.tool_name),
+  ).toEqual(["agentcommons_search", "agentcommons_search", "grep", "search"]);
+});
+
 // @req R-DASH-18
 it("replaces rewritten Gemini document observations instead of accumulating old search calls", async () => {
   const records = await fixture("gemini.json");
@@ -454,9 +556,9 @@ it("uses pi's current projected branch and never invents AgentCommons usage from
   await one(id, 0, 0, 0);
 });
 
-// @req R-DASH-18
-it("shares exact caller-visible adoption with every member's Home and admin Usage, preserving private/purge/org scope, dates, repo filters and null denominators", async () => {
-  const before = (await home.summary(member.owner)).result.search_adoption;
+// @req R-DASH-18 @req R-DASH-16
+it("shares exact caller-visible adoption with every member's Home dashboard and admin Usage, preserving private/purge/org scope, dates, repo filters and null denominators", async () => {
+  const before = await homeKpis(member.owner);
   const native = await fixture("claude.jsonl");
   const visible = await capture(
     "CLAUDE_CODE",
@@ -502,16 +604,9 @@ it("shares exact caller-visible adoption with every member's Home and admin Usag
   expect(
     (await counts(org.owner, ids)).map((row) => row.session_id).sort(),
   ).toEqual([visible.id, zero.id, hidden.id, old.id].sort());
-  const after = (await home.summary(member.owner)).result.search_adoption;
-  expect(after).toEqual({
+  expect(await homeKpis(member.owner)).toEqual({
     sessions: before.sessions + 2,
     agentcommons_search_sessions: before.agentcommons_search_sessions + 1,
-    agentcommons_search_rate:
-      (before.agentcommons_search_sessions + 1) / (before.sessions + 2),
-    agentcommons_search_calls: before.agentcommons_search_calls + 2,
-    repeat_agentcommons_search_calls:
-      before.repeat_agentcommons_search_calls + 1,
-    subsequent_other_search_calls: before.subsequent_other_search_calls + 2,
   });
   const rows = (await usage("window")).result.items;
   expect(
@@ -540,19 +635,165 @@ it("shares exact caller-visible adoption with every member's Home and admin Usag
       .items[0],
   ).toMatchObject({ value: null, numerator: 0, denominator: 0 });
   const empty = await provisionOrganization(db, "adoption-empty");
-  expect((await home.summary(empty.owner)).result.search_adoption).toEqual({
+  expect(await homeKpis(empty.owner)).toEqual({
     sessions: 0,
     agentcommons_search_sessions: 0,
-    agentcommons_search_rate: null,
-    agentcommons_search_calls: 0,
-    repeat_agentcommons_search_calls: 0,
-    subsequent_other_search_calls: 0,
   });
   await expect(
     metrics.get(member.owner, "usage", {
       filters: { date_from: dateFrom, date_to: dateTo },
     }),
   ).rejects.toMatchObject({ statusCode: 403 });
+});
+
+// @req R-DASH-13 @req R-DASH-15 @req R-DASH-16 @req R-DASH-18 @req R-ORG-07
+it("executes every metric group on empty and populated native views with null ratios and keeps Home tiles and Usage in agreement per organization", async () => {
+  const fresh = await provisionOrganization(db, "metric-groups");
+  const freshMember = await provisionMember(
+    db,
+    fresh.owner,
+    "metric-groups-member@example.com",
+  );
+  const window = { date_from: dateFrom, date_to: dateTo };
+  const groups = Object.keys(metricGroups) as (keyof typeof metricGroups)[];
+  expect(await homeKpis(fresh.owner)).toEqual({
+    sessions: 0,
+    agentcommons_search_sessions: 0,
+  });
+  for (const group of groups) {
+    const result = (await metrics.get(fresh.owner, group, { filters: window }))
+      .result;
+    expect(
+      result.items.every(
+        (row) =>
+          row.unit !== "ratio" ||
+          (row.denominator ? row.value === 0 : row.value === null),
+      ),
+    ).toBe(true);
+    expect(
+      result.items.every(
+        (row) => row.value === null || Number.isFinite(row.value),
+      ),
+    ).toBe(true);
+    if (group === "health")
+      expect(
+        result.items.find((row) => row.metric === "capture_latency_seconds")
+          ?.value,
+      ).toBeNull();
+  }
+  const searching: JsonObject[] = [
+    {
+      type: "user",
+      uuid: randomUUID(),
+      message: { role: "user", content: "Native metrics verification" },
+    },
+    {
+      type: "assistant",
+      message: {
+        id: randomUUID(),
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "search-first",
+            name: "mcp__agentcommons__search",
+            input: { query: "existing work" },
+          },
+          {
+            type: "tool_use",
+            id: "search-repeat",
+            name: "mcp__agentcommons__search",
+            input: { query: "prior implementation" },
+          },
+          {
+            type: "tool_use",
+            id: "code-search",
+            name: "Grep",
+            input: { pattern: "implementation" },
+          },
+        ],
+      },
+    },
+  ];
+  const plain: JsonObject[] = [
+    {
+      type: "user",
+      uuid: randomUUID(),
+      message: { role: "user", content: "Captured work" },
+    },
+  ];
+  const others = await homeKpis(org.owner);
+  await capture("CLAUDE_CODE", searching, "metrics-alpha", fresh.context);
+  await capture("CLAUDE_CODE", plain, "metrics-beta", freshMember.context);
+  expect(await homeKpis(fresh.owner)).toEqual({
+    sessions: 2,
+    agentcommons_search_sessions: 1,
+  });
+  expect(await homeKpis(org.owner)).toEqual(others);
+  const usageRows = (
+    await metrics.get(fresh.owner, "usage", {
+      filters: { ...window, repo_name: "github.com/adoption/metrics-alpha" },
+    })
+  ).result;
+  expect(
+    usageRows.items.find((row) => row.metric === "agentcommons_search_rate"),
+  ).toMatchObject({ value: 1, numerator: 1, denominator: 1 });
+  const absent = (
+    await metrics.get(fresh.owner, "usage", {
+      filters: { ...window, repo_name: "github.com/adoption/absent" },
+    })
+  ).result;
+  expect(
+    absent.items.find((row) => row.metric === "agentcommons_search_calls")
+      ?.value,
+  ).toBe(0);
+  expect(
+    absent.items.find((row) => row.metric === "agentcommons_search_rate")
+      ?.value,
+  ).toBeNull();
+  for (const group of groups) {
+    const populated = (
+      await metrics.get(fresh.owner, group, { filters: window })
+    ).result;
+    expect(populated.items.length).toBeGreaterThan(0);
+    expect(
+      populated.items.every(
+        (row) => row.value === null || Number.isFinite(row.value),
+      ),
+    ).toBe(true);
+  }
+  const outcomes = (
+    await metrics.get(fresh.owner, "outcomes", { filters: window })
+  ).result;
+  expect(
+    outcomes.items.find(
+      (row) =>
+        row.metric === "tool_calls_per_session" &&
+        row.repo_name === "github.com/adoption/metrics-alpha",
+    ),
+  ).toMatchObject({ value: 3, numerator: 3, denominator: 1 });
+  await expect(
+    metrics.get(freshMember.owner, "health", { filters: window }),
+  ).rejects.toMatchObject({ statusCode: 403 });
+  const first = (
+    await metrics.get(fresh.owner, "usage", {
+      filters: window,
+      limit: 1,
+      sort: "metric",
+      order: "asc",
+    })
+  ).result;
+  expect(first.cursor).not.toBeNull();
+  const second = (
+    await metrics.get(fresh.owner, "usage", {
+      filters: window,
+      limit: 1,
+      sort: "metric",
+      order: "asc",
+      cursor: first.cursor,
+    })
+  ).result;
+  expect(second.items[0]?.metric).not.toBe(first.items[0]?.metric);
 });
 
 // @req R-DASH-18

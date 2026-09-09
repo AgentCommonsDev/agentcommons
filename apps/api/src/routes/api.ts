@@ -10,12 +10,23 @@ import type { Services } from "./services.js";
 const empty = z.strictObject({});
 // Fastify represents an omitted DELETE body as null; GET arrives as undefined.
 const noBody = z.strictObject({}).nullish();
+/**
+ * Optional route groups. The build-time OpenAPI artifact registers every group so the
+ * dashboard client is complete; a running instance registers only the groups its mode and
+ * configuration activate, so the live reference lists active routes only (§7.6, §11).
+ */
+interface RouteFeatures {
+  /** `/sessions/:id/similar`: operator embeddings flag. */
+  embeddings: boolean;
+  /** Onboarding, organization creation and billing usage/checkout/portal: `INSTANCE_MODE=saas`. */
+  saas: boolean;
+  /** `POST /admin/domains`: Google is the sole login provider and signup is not closed. */
+  domainEnrollment: boolean;
+}
 export function registerApiRoutes(
   app: FastifyInstance,
-  services?: Services,
-  features: { embeddings: boolean } = {
-    embeddings: Boolean(services?.similar),
-  },
+  services: Services | undefined,
+  features: RouteFeatures,
 ): void {
   const streams = new Set<AbortController>();
   app.addHook("preClose", (done) => {
@@ -97,32 +108,66 @@ export function registerApiRoutes(
   const read = { body: noBody, query: empty, params: empty };
   route(
     "GET",
-    "/me/dashboards",
-    "List personal dashboards and their declaration schema",
+    "/dashboards",
+    "List organization dashboards, the definition schema and tile templates",
     { ...read, output: schema.dashboardListOutputSchema },
     (ctx) => runtime().dashboards.list(ctx),
   );
   route(
     "POST",
-    "/me/dashboards",
-    "Create or update a personal dashboard",
+    "/dashboards",
+    "Create or update a dashboard",
     {
       ...read,
       body: schema.dashboardSaveInputSchema,
-      output: schema.dashboardProfileSchema,
+      output: schema.dashboardSchema,
     },
     (ctx, input) => runtime().dashboards.save(ctx, input.body),
   );
   route(
-    "DELETE",
-    "/me/dashboards/:id",
-    "Delete a personal dashboard",
+    "POST",
+    "/dashboards/render",
+    "Run the queries of a dashboard with variable values",
     {
       ...read,
-      params: schema.dashboardIdInputSchema,
+      body: schema.dashboardRenderInputSchema,
+      output: schema.dashboardRenderOutputSchema,
+    },
+    (ctx, input) => runtime().dashboards.render(ctx, input.body),
+  );
+  route(
+    "GET",
+    "/dashboards/:id",
+    "Read a dashboard and its definition",
+    {
+      ...read,
+      params: schema.sessionParamsSchema,
+      output: schema.dashboardSchema,
+    },
+    (ctx, input) => runtime().dashboards.get(ctx, input.params),
+  );
+  route(
+    "DELETE",
+    "/dashboards/:id",
+    "Delete a dashboard",
+    {
+      ...read,
+      params: schema.sessionParamsSchema,
       output: schema.dashboardDeleteOutputSchema,
     },
     (ctx, input) => runtime().dashboards.delete(ctx, input.params),
+  );
+  route(
+    "POST",
+    "/dashboards/:id/default",
+    "Make a dashboard the organization default for Home",
+    {
+      ...read,
+      body: empty,
+      params: schema.sessionParamsSchema,
+      output: schema.dashboardDefaultOutputSchema,
+    },
+    (ctx, input) => runtime().dashboards.setDefault(ctx, input.params),
   );
   route(
     "GET",
@@ -142,61 +187,40 @@ export function registerApiRoutes(
     },
     (ctx, input) => runtime().organizationEmbeddings.set(ctx, input.body),
   );
-  route(
-    "GET",
-    "/billing",
-    "Read the organization's monthly session usage",
-    {
-      ...read,
-      output: schema.billingUsageSchema,
-    },
-    (ctx) => runtime().billing.usage(ctx),
-  );
-  route(
-    "POST",
-    "/billing/checkout",
-    "Open Pro checkout for the current organization",
-    {
-      ...read,
-      body: schema.billingCheckoutSchema,
-      output: schema.billingRedirectSchema,
-    },
-    (ctx, request) => runtime().billing.checkout(ctx, request.body),
-  );
-  route(
-    "POST",
-    "/billing/portal",
-    "Open the current organization's billing portal",
-    {
-      ...read,
-      body: empty,
-      output: schema.billingRedirectSchema,
-    },
-    (ctx) => runtime().billing.portal(ctx),
-  );
-  route(
-    "GET",
-    "/home",
-    "Read the organization's reuse summary and your impact",
-    {
-      ...read,
-      output: schema.homeSummarySchema,
-    },
-    (ctx) => runtime().home.summary(ctx),
-  );
-  route(
-    "GET",
-    "/home/:section",
-    "Browse visible reuse activity and your corpus gaps",
-    {
-      ...read,
-      params: z.strictObject({ section: schema.homeSectionSchema }),
-      query: schema.homeInputSchema,
-      output: schema.homeOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().home.list(ctx, input.params.section, input.query),
-  );
+  if (features.saas) {
+    route(
+      "GET",
+      "/billing",
+      "Read the organization's monthly session usage",
+      {
+        ...read,
+        output: schema.billingUsageSchema,
+      },
+      (ctx) => runtime().billing.usage(ctx),
+    );
+    route(
+      "POST",
+      "/billing/checkout",
+      "Open Pro checkout for the current organization",
+      {
+        ...read,
+        body: schema.billingCheckoutSchema,
+        output: schema.billingRedirectSchema,
+      },
+      (ctx, request) => runtime().billing.checkout(ctx, request.body),
+    );
+    route(
+      "POST",
+      "/billing/portal",
+      "Open the current organization's billing portal",
+      {
+        ...read,
+        body: empty,
+        output: schema.billingRedirectSchema,
+      },
+      (ctx) => runtime().billing.portal(ctx),
+    );
+  }
   route(
     "POST",
     "/ingest",
@@ -335,6 +359,12 @@ export function registerApiRoutes(
       for (const [name, value] of Object.entries(reply.getHeaders()))
         if (value !== undefined) reply.raw.setHeader(name, value);
       reply.hijack();
+      // A comment line every 30 s keeps proxies with idle timeouts (Cloudflare closes
+      // idle responses after 100 s) from cutting a quiet live session's stream.
+      const heartbeat = setInterval(() => {
+        if (!controller.signal.aborted && !reply.raw.destroyed)
+          reply.raw.write(": keepalive\n\n");
+      }, 30_000);
       try {
         let sequence = 0;
         for await (const event of stream.result.changes(controller.signal)) {
@@ -348,6 +378,7 @@ export function registerApiRoutes(
       } catch {
         /* Reauthentication or visibility loss closes the connection. */
       } finally {
+        clearInterval(heartbeat);
         streams.delete(controller);
         reply.raw.end();
       }
@@ -400,50 +431,42 @@ export function registerApiRoutes(
     },
     (ctx, input) => runtime().auth.domains(ctx, input.query),
   );
-  route(
-    "POST",
-    "/admin/domains",
-    "Register a Google SSO domain and return its DNS proof",
-    {
-      ...read,
-      body: schema.domainInputSchema,
-      output: schema.domainOutputSchema,
-    },
-    (ctx, input) => runtime().auth.domain(ctx, "register", input.body),
-  );
-  route(
-    "POST",
-    "/admin/domains/verify",
-    "Verify Google SSO domain DNS ownership",
-    {
-      ...read,
-      body: schema.domainInputSchema,
-      output: schema.domainOutputSchema,
-    },
-    (ctx, input) => runtime().auth.domain(ctx, "verify", input.body),
-  );
-  route(
-    "POST",
-    "/me/organizations",
-    "Create another organization with a verified SaaS identity",
-    {
-      ...read,
-      body: schema.onboardingInputSchema,
-      output: schema.onboardingOutputSchema,
-    },
-    (ctx, input) => runtime().auth.createOrganization(ctx, input.body),
-  );
-  route(
-    "POST",
-    "/onboarding",
-    "Create the verified identity's first organization",
-    {
-      ...read,
-      body: schema.onboardingInputSchema,
-      output: schema.onboardingOutputSchema,
-    },
-    (ctx, input) => runtime().auth.onboard(ctx, input.body),
-  );
+  if (features.domainEnrollment)
+    route(
+      "POST",
+      "/admin/domains",
+      "Allow a Google email domain to join this organization",
+      {
+        ...read,
+        body: schema.domainInputSchema,
+        output: schema.domainOutputSchema,
+      },
+      (ctx, input) => runtime().auth.domain(ctx, input.body),
+    );
+  if (features.saas) {
+    route(
+      "POST",
+      "/me/organizations",
+      "Create another organization with a verified SaaS identity",
+      {
+        ...read,
+        body: schema.onboardingInputSchema,
+        output: schema.onboardingOutputSchema,
+      },
+      (ctx, input) => runtime().auth.createOrganization(ctx, input.body),
+    );
+    route(
+      "POST",
+      "/onboarding",
+      "Create the verified identity's first organization",
+      {
+        ...read,
+        body: schema.onboardingInputSchema,
+        output: schema.onboardingOutputSchema,
+      },
+      (ctx, input) => runtime().auth.onboard(ctx, input.body),
+    );
+  }
   route(
     "GET",
     "/me",
@@ -504,6 +527,17 @@ export function registerApiRoutes(
       output: schema.mutationOutputSchema,
     },
     (ctx, input) => runtime().auth.revokeKey(ctx, input.params.id, input.body),
+  );
+  route(
+    "POST",
+    "/me/keys/:id/reveal",
+    "Reveal one of your API keys",
+    {
+      ...read,
+      params: schema.identityParamsSchema,
+      output: schema.apiKeyRevealOutputSchema,
+    },
+    (ctx, input) => runtime().auth.revealKey(ctx, input.params.id),
   );
   route(
     "GET",

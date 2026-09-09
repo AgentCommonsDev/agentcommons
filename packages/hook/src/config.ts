@@ -26,6 +26,13 @@ export const configSchema = z.looseObject({
     .max(50 * 1024 * 1024)
     .default(65536),
   disabledPaths: z.array(z.string()).default([]),
+  /** Flags the installer was run with; self-update re-runs `install` with the same ones. */
+  installOptions: z
+    .strictObject({
+      configHome: z.string().min(1).optional(),
+      noShellRc: z.boolean().optional(),
+    })
+    .optional(),
 });
 export type HookConfig = z.infer<typeof configSchema>;
 export function dataDirectory(): string {

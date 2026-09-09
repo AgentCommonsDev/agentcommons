@@ -1,7 +1,9 @@
 # ADR 0042: Organization administrators manage Google domain access
 
 Date: 2026-09-08
-Status: Accepted
+Status: Accepted; DNS TXT verification superseded by ADR 0049 (an admin allowlisting a
+domain is the approval). Administrator management, invite-mode admission and the
+Google-only rule remain.
 
 The operator-only domain command left organization administrators without the domain
 access control requested for Users. It also required open signup before a verified

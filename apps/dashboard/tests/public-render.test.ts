@@ -52,6 +52,41 @@ it("keeps pricing, signup links, and hosted discovery out of customer and public
   }
 });
 
+// @req R-WEB-09
+it("prerenders the Privacy Policy and Terms of Service and links them from every public footer", async () => {
+  const { publicRoutes } = await import("../src/entry-server");
+  const documents = [
+    { path: "/privacy", file: "privacy.html", document: copy.legal.privacy },
+    { path: "/tos", file: "tos.html", document: copy.legal.terms },
+  ];
+  const config = { ...defaultBillingConfig, mode: "public" as const };
+  for (const { path, file, document } of documents) {
+    expect(publicRoutes).toContainEqual({ path, file });
+    const html = await renderDocument(template, path, config);
+    expect(html).toContain(`<title>${document.title} · ${copy.brand}</title>`);
+    expect(html).toContain(`content="${document.description}"`);
+    expect(html).toContain(`<h1>${document.title}</h1>`);
+    expect(html).toContain(`<time dateTime="${document.effective}">`);
+    for (const section of document.sections)
+      expect(html).toContain(`>${section.heading}</h2>`);
+    expect(html).toContain(`mailto:${copy.legal.contactEmail}`);
+    expect(html).toContain(`href="__PUBLIC_URL__${path}"`);
+  }
+  for (const path of ["/", "/docs", "/blog", "/privacy", "/tos"]) {
+    const html = await renderDocument(template, path, config);
+    expect(html).toContain('href="/privacy"');
+    expect(html).toContain('href="/tos"');
+  }
+  // Customer instances neither link nor render the hosted-service documents.
+  const customer = await renderDocument(
+    template,
+    "/privacy",
+    defaultBillingConfig,
+  );
+  expect(customer).not.toContain('href="/tos"');
+  expect(customer).toContain(copy.notFound.title);
+});
+
 // @req R-WEB-08
 it("renders Markdown articles with real content, canonical metadata and native hydration", async () => {
   const { posts, publicRoutes } = await import("../src/entry-server");

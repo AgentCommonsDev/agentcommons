@@ -281,6 +281,7 @@ it("counts historical capture receipts even when the same session ingests again 
 it("persists the actual lifecycle decision when opposite events share native and receipt clocks", async () => {
   const base = {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     installationId: randomUUID(),

@@ -131,6 +131,12 @@ function shellRc(home: string, config: HookConfig, uninstall: boolean): void {
         : `${cleaned.endsWith("\n") || !cleaned ? "" : "\n"}# agentcommons-hook begin\n${exports}# agentcommons-hook end\n`),
   );
 }
+/** Supported harnesses whose CLI is on PATH right now; the installer wires exactly these. */
+export function detectHarnesses(): CliHarness[] {
+  return (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
+    present(HARNESSES[name].binary),
+  );
+}
 export function install(
   directory: string,
   config: HookConfig,
@@ -242,15 +248,31 @@ export function install(
         throw new Error(`The ${harness} MCP registration failed.`);
       }
       chmodSync(mcpPath, 0o600);
-      const written = objectSchema.parse(read(mcpPath)[mcpKey] ?? {})[MCP_NAME];
+      const nativeConfig = read(mcpPath);
+      const nativeServers = objectSchema.parse(nativeConfig[mcpKey] ?? {});
+      const written = nativeServers[MCP_NAME];
       if (written === undefined) {
         save(mcpPath, mcpConfig);
         throw new Error(
           `The ${harness} CLI wrote to an unexpected configuration location.`,
         );
       }
+      // The CLI owns its own fields; options it cannot express (Claude's alwaysLoad)
+      // are merged into the entry it wrote.
+      const expected = definition.mcp(new URL("/mcp", config.server).href);
+      const missing = Object.entries(expected ?? {}).filter(
+        ([key]) => !(key in objectSchema.parse(written)),
+      );
+      const installed = missing.length
+        ? { ...objectSchema.parse(written), ...Object.fromEntries(missing) }
+        : written;
+      if (missing.length) {
+        nativeServers[MCP_NAME] = installed;
+        nativeConfig[mcpKey] = nativeServers;
+        save(mcpPath, nativeConfig);
+      }
       const owned = registry[mcpPath];
-      if (owned) registry[mcpPath] = { ...owned, installed: written };
+      if (owned) registry[mcpPath] = { ...owned, installed };
       writeAtomic(registryPath, registry);
     }
   }

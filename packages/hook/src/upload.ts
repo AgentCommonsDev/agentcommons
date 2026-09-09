@@ -4,6 +4,7 @@ import { join } from "node:path";
 import * as z from "zod";
 import {
   ingestEnvelopeSchema,
+  type HookIdentity,
   type IngestEnvelope,
 } from "@agentcommons/core/schemas/ingest";
 import type { HookConfig } from "./config.js";
@@ -21,6 +22,7 @@ import { gitContext, gitEnd } from "./git.js";
 import { HARNESSES } from "./harnesses.js";
 import { spawnUpload } from "./hook.js";
 import { acquireLock, MAX_UPLOADER_MS, type Lock } from "./lock.js";
+import { hookIdentity, reconcileInstall, selfUpdate } from "./update.js";
 import {
   OversizedSourceRecord,
   quarantineOversized,
@@ -75,9 +77,17 @@ interface UploadOptions {
     state: HookState,
   ) => Promise<void>;
   sweep?: boolean;
+  update?: boolean;
 }
 const pause = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
+/** Turn-end hooks (`settle` in HARNESSES) can fire before the harness appends its
+ * final record. After such a drain the uploader polls the source every 250 ms until
+ * it has been quiet for 2 s, never more than 5 s per drain, so the final message
+ * ships in this run rather than at the next hook. Acknowledgment never waits on it. */
+const SETTLE_POLL_MS = 250;
+const SETTLE_QUIET_POLLS = 8;
+const SETTLE_MAX_POLLS = 20;
 function log(directory: string, code: number): void {
   secureDirectory(directory);
   appendFileSync(
@@ -115,6 +125,7 @@ function finishIntent(state: HookState, intent: Intent | undefined): void {
 }
 function envelope(
   config: HookConfig,
+  identity: HookIdentity,
   state: HookState,
   intent: Intent | undefined,
   source: SourceRead | undefined,
@@ -122,6 +133,7 @@ function envelope(
   const behavior = source ? "sync" : (intent?.behavior ?? "sync");
   return ingestEnvelopeSchema.parse({
     envelopeVersion: 2,
+    hook: identity,
     harness: HARNESSES[state.harness].id,
     harnessSessionId: state.sessionId,
     behavior,
@@ -254,21 +266,28 @@ function pendingBase(
 }
 async function drain(
   directory: string,
+  identity: HookIdentity,
   path: string,
   config: HookConfig,
   options: UploadOptions,
-): Promise<{ children: string[]; retry: boolean }> {
+  settle = false,
+): Promise<{ children: string[]; retry: boolean; settle: boolean }> {
   const lock = await acquireLock(ownerPath(path));
-  if (!lock) return { children: [], retry: false };
+  if (!lock) return { children: [], retry: false, settle: false };
   const deadline = setTimeout(() => process.exit(0), MAX_UPLOADER_MS);
   deadline.unref();
   const state = loadState(path);
   let retry = false;
   let stoppedSource: string | null = null;
+  // A first pass never waits: children registered by this drain are flushed before
+  // the caller comes back for the settle pass, so a subagent's final record is not
+  // delayed behind its parent's quiet window.
+  let settleRequested = false;
+  let settlePolls = 0;
   try {
     cleanupAcknowledged(path, state, lock);
     if (state.suspended && state.credentialHash === hash(config.key))
-      return { children: [], retry: false };
+      return { children: [], retry: false, settle: false };
     // A state belongs to its original server. A credential/server switch must not leak its spool.
     if (
       new URL(state.server).origin !== new URL(config.server).origin ||
@@ -282,7 +301,7 @@ async function drain(
       };
       save(path, state, lock);
       log(directory, 409);
-      return { children: [], retry: false };
+      return { children: [], retry: false, settle: false };
     }
     if (!state.organizationId || state.credentialHash !== hash(config.key)) {
       let organizationId: string;
@@ -303,7 +322,7 @@ async function drain(
           state.credentialHash = hash(config.key);
           save(path, state, lock);
           log(directory, error.status);
-          return { children: [], retry: false };
+          return { children: [], retry: false, settle: false };
         }
         throw error;
       }
@@ -314,7 +333,7 @@ async function drain(
         };
         save(path, state, lock);
         log(directory, 409);
-        return { children: [], retry: false };
+        return { children: [], retry: false, settle: false };
       }
       state.organizationId = organizationId;
       state.credentialHash = hash(config.key);
@@ -330,20 +349,26 @@ async function drain(
             state.context = {
               ...state.context,
               ...intent.context,
-              git: state.context.git ?? gitContext(intent.context.cwd),
+              // Start context observes HEAD as of the start hook, not the drain time.
+              git:
+                state.context.git ??
+                gitContext(intent.context.cwd, intent.sentAt),
             };
             state.contextSentAt = intent.sentAt;
             state.transcriptPath =
               intent.transcriptPath ?? state.transcriptPath;
           }
           state.intent = intent.behavior === "end" ? "end" : "sync";
+          settleRequested ||=
+            HARNESSES[state.harness].events[intent.nativeEvent]?.settle ===
+            true;
           registerChildren(directory, state, intent, config);
           if (intent.behavior !== "sync") {
             state.pending = prepare(
               directory,
               path,
               state,
-              envelope(config, state, intent, undefined),
+              envelope(config, identity, state, intent, undefined),
               pendingBase(state, "lifecycle", intent.id, intent.source),
               lock,
             );
@@ -417,7 +442,7 @@ async function drain(
                 directory,
                 path,
                 state,
-                envelope(config, state, intent, read),
+                envelope(config, identity, state, intent, read),
                 {
                   ...pendingBase(state, "source", intent?.id ?? null, {
                     ...observed,
@@ -433,7 +458,7 @@ async function drain(
                 directory,
                 path,
                 state,
-                envelope(config, state, intent, {
+                envelope(config, identity, state, intent, {
                   records: [],
                   cursor: state.ackedCursor,
                   sourcePos: intent.source.watermark,
@@ -445,6 +470,30 @@ async function drain(
               stoppedSource = observed.signature;
             } else {
               stoppedSource = observed.signature;
+              // Everything read so far is acknowledged; only wait for a late final record.
+              let grew = false;
+              for (
+                let quiet = 0;
+                settle &&
+                quiet < SETTLE_QUIET_POLLS &&
+                settlePolls < SETTLE_MAX_POLLS;
+                quiet++
+              ) {
+                settlePolls++;
+                await (options.sleep ?? pause)(SETTLE_POLL_MS);
+                if (
+                  intents(path, state).length ||
+                  snapshot(
+                    state.transcriptPath,
+                    observed,
+                    HARNESSES[state.harness].reader,
+                  ).signature !== observed.signature
+                ) {
+                  grew = true;
+                  break;
+                }
+              }
+              if (grew) continue;
               break;
             }
           }
@@ -607,7 +656,7 @@ async function drain(
       retry = true;
       break;
     }
-    return { children: state.children, retry };
+    return { children: state.children, retry, settle: settleRequested };
   } finally {
     clearTimeout(deadline);
     lock.release();
@@ -622,14 +671,28 @@ export async function upload(
 ): Promise<void> {
   const visited = new Set<string>();
   const queue = [path];
+  const settling: string[] = [];
   let retry = false;
-  while (queue.length) {
+  const identity = hookIdentity(directory, executable);
+  // Every session and child is drained once without waiting; settle passes follow.
+  while (queue.length || settling.length) {
     const current = queue.shift();
-    if (!current || visited.has(current)) continue;
-    visited.add(current);
-    const result = await drain(directory, current, config, options);
+    const settle = current === undefined;
+    const target = current ?? settling.shift();
+    if (target === undefined || (!settle && visited.has(target))) continue;
+    if (!settle) visited.add(target);
+    const result = await drain(
+      directory,
+      identity,
+      target,
+      config,
+      options,
+      settle,
+    );
     retry ||= result.retry;
     queue.push(...result.children);
+    // A failed send already waits for its backoff; the next hook retries it instead.
+    if (result.settle && !settle && !result.retry) settling.push(target);
   }
   if (options.sweep !== false) {
     const candidate = jsonFiles(join(directory, "state"))
@@ -648,10 +711,18 @@ export async function upload(
       )
       .sort((a, b) => a.state.lastSyncAt - b.state.lastSyncAt)[0];
     if (candidate)
-      await drain(directory, candidate.file, config, {
+      await drain(directory, identity, candidate.file, config, {
         ...options,
         sweep: false,
       });
+  }
+  // The served manifest is checked at most hourly; a differing bundle is replaced
+  // atomically for the next hook run, and harness wiring is brought in step with the
+  // bundle and the CLIs present. Failures never reach the durability path.
+  if (options.update !== false) {
+    const updateOptions = options.fetch ? { fetch: options.fetch } : {};
+    await selfUpdate(directory, executable, config, updateOptions);
+    await reconcileInstall(directory, executable, config, updateOptions);
   }
   // Covers a hook that published while the old owner was exiting. Hooks arriving
   // after this check see no owner and start their own uploader.

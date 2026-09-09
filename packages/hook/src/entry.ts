@@ -26,6 +26,12 @@ async function main(): Promise<void> {
     }
     return;
   }
+  if (mode === "version") {
+    // Prints this bundle's own digest; the self-update self-test compares it with the manifest.
+    const { hookIdentity } = await import("./update.js");
+    process.stdout.write(`${hookIdentity(directory, executable).sha256}\n`);
+    return;
+  }
   if (mode === "configure") {
     const { configure } = await import("./install.js");
     configure(directory, JSON.parse(readFileSync(0, "utf8")) as unknown);
@@ -48,8 +54,15 @@ async function main(): Promise<void> {
     noShellRc: args.includes("--no-shell-rc"),
   };
   if (mode === "install" || mode === "uninstall") {
-    const { install, repositorySnippet } = await import("./install.js");
+    const { configure, install, repositorySnippet } =
+      await import("./install.js");
     const names = install(directory, config, options, mode === "uninstall");
+    if (mode === "install") {
+      // Self-update re-runs the installer with these flags after every swap (§6.2).
+      configure(directory, { installOptions: options });
+      const { recordConfigured } = await import("./update.js");
+      recordConfigured(directory, executable, names);
+    }
     process.stdout.write(
       `${mode === "install" ? "Configured" : "Removed"} AgentCommons for ${names.join(", ") || "no detected harnesses"}.\n`,
     );
@@ -68,7 +81,7 @@ async function main(): Promise<void> {
     return;
   }
   throw new Error(
-    "Use a harness name, upload, configure, install, doctor, or uninstall.",
+    "Use a harness name, upload, configure, install, doctor, version, or uninstall.",
   );
 }
 void main().catch((error: unknown) => {

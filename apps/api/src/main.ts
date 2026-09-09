@@ -29,7 +29,6 @@ import { IngestService } from "./services/ingest.js";
 import { AdminService } from "./services/admin.js";
 import { JobService } from "./services/jobs.js";
 import { HealthService } from "./services/health.js";
-import { HomeService } from "./services/home.js";
 import { BillingService } from "./services/billing.js";
 import { operatorContext } from "./auth/bootstrap.js";
 import type { Services } from "./routes/services.js";
@@ -148,13 +147,9 @@ export async function createRuntime(env: Env) {
       embeddings ? ["similar_sessions"] : [],
       jobs,
     );
+    const query = new QueryService(dependencies, env.EMBEDDINGS_ENABLED);
     const services: Services = {
-      dashboards: new DashboardService({
-        prisma,
-        audit,
-        embeddings: env.EMBEDDINGS_ENABLED,
-        saas: env.INSTANCE_MODE === "saas",
-      }),
+      dashboards: new DashboardService({ prisma, audit, query }),
       organizationEmbeddings,
       billing: new BillingService({
         prisma,
@@ -162,7 +157,6 @@ export async function createRuntime(env: Env) {
         configuration: env.billing,
         auth: env.auth,
       }),
-      home: new HomeService(dependencies),
       auth,
       audit,
       ...(embeddings ? { similar: new SimilarService(dependencies) } : {}),
@@ -177,7 +171,7 @@ export async function createRuntime(env: Env) {
         },
         embeddings,
       ),
-      query: new QueryService(dependencies, env.EMBEDDINGS_ENABLED),
+      query,
       sessions: new SessionService(dependencies),
       events: new SessionEventsService({ readers, auth, audit }),
       ingest: new IngestService({

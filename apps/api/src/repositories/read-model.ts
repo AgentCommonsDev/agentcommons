@@ -141,9 +141,21 @@ export async function filterSql(
     if (value !== undefined)
       conditions.push(`m.${key} IN ${params.add(array(value))}`);
   }
-  if (filters.file_prefix !== undefined)
+  // Both file filters test the same session_files row, so "edited a file under src/"
+  // never matches a session that edited elsewhere and merely read src/.
+  const file = [
+    ...(filters.file_prefix === undefined
+      ? []
+      : [
+          `arrayExists(prefix -> startsWith(path,prefix),${params.add(array(filters.file_prefix))})`,
+        ]),
+    ...(filters.file_operation === undefined
+      ? []
+      : [`hasAny(ops,${params.add(array(filters.file_operation))})`]),
+  ];
+  if (file.length)
     conditions.push(
-      `s.session_id IN (SELECT session_id FROM api_ro.session_files WHERE arrayExists(prefix -> startsWith(path,prefix),${params.add(array(filters.file_prefix))}))`,
+      `s.session_id IN (SELECT session_id FROM api_ro.session_files WHERE ${file.join(" AND ")})`,
     );
   for (const key of ["since", "until"] as const) {
     const value = filters[key];
@@ -177,7 +189,8 @@ export async function visibleSession(
     );
   return row;
 }
-const refSql = "session_id,title,parent_relation,agent_type,parent_session_id";
+const refSql =
+  "session_id,title,parent_relation,parent_tool_use_id,agent_type,parent_session_id";
 export async function sessionHeader(
   client: TraceQueryClient,
   row: Record<string, unknown>,
@@ -186,6 +199,26 @@ export async function sessionHeader(
   const header = headers[0];
   if (!header) throw new Error("The session header is unavailable.");
   return header;
+}
+/**
+ * The root of each session's tree, walking parents through the caller-visible view;
+ * a session with no visible parent is its own root. One query for the whole batch.
+ */
+export async function rootSessionIds(
+  client: TraceQueryClient,
+  ids: readonly string[],
+): Promise<Map<string, string>> {
+  if (!ids.length) return new Map();
+  const roots = await client.query(
+    `WITH RECURSIVE ancestors AS (
+      SELECT session_id AS origin,session_id,parent_session_id,[session_id] AS path FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}
+      UNION ALL SELECT a.origin,s.session_id,s.parent_session_id,arrayConcat(a.path,[s.session_id]) FROM api_ro.session_details s JOIN ancestors a ON s.session_id=a.parent_session_id WHERE NOT has(a.path,s.session_id)
+    ) SELECT origin,argMax(session_id,length(path)) AS root_session_id FROM ancestors GROUP BY origin`,
+    { ids: [...ids] },
+  );
+  return new Map(
+    roots.rows.map((row) => [String(row.origin), String(row.root_session_id)]),
+  );
 }
 /** Batch related references for a whole list instead of issuing queries per session. */
 export async function sessionHeaders(
@@ -202,20 +235,12 @@ export async function sessionHeaders(
      UNION ALL SELECT ${refSql} FROM (SELECT * FROM api_ro.session_details WHERE parent_session_id IN {ids:Array(UUID)} ORDER BY started_at,session_id LIMIT 10 BY parent_session_id)`,
     { parents, ids },
   );
-  const roots = await client.query(
-    `WITH RECURSIVE ancestors AS (
-      SELECT session_id AS origin,session_id,parent_session_id,[session_id] AS path FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}
-      UNION ALL SELECT a.origin,s.session_id,s.parent_session_id,arrayConcat(a.path,[s.session_id]) FROM api_ro.session_details s JOIN ancestors a ON s.session_id=a.parent_session_id WHERE NOT has(a.path,s.session_id)
-    ) SELECT origin,argMax(session_id,length(path)) AS root_session_id FROM ancestors GROUP BY origin`,
-    { ids },
-  );
-  const rootById = new Map(
-    roots.rows.map((row) => [String(row.origin), row.root_session_id]),
-  );
+  const rootById = await rootSessionIds(client, ids);
   const ref = (value: Record<string, unknown>) => ({
     session_id: value.session_id,
     title: value.title,
     parent_relation: value.parent_relation,
+    parent_tool_use_id: value.parent_tool_use_id,
     agent_type: value.agent_type,
   });
   return rows.map((row) => {
@@ -363,7 +388,7 @@ export async function sessionTreePage(
     ORDER BY s.started_at,s.id LIMIT ${limit + 1}`;
   if (!graph.length) return [];
   const result = await client.query(
-    `SELECT session_id,title,harness,agent_type,parent_relation,user_email,started_at,status,message_count FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}`,
+    `SELECT session_id,title,harness,agent_type,parent_relation,parent_tool_use_id,user_email,started_at,status,message_count FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}`,
     { ids: graph.map((row) => row.session_id) },
   );
   const byId = new Map(result.rows.map((row) => [String(row.session_id), row]));

@@ -23,7 +23,12 @@ export async function generateOpenApi() {
     transform: openApiTransform,
     transformObject: openApiTransformObject,
   });
-  registerApiRoutes(app, undefined, { embeddings: true });
+  // The checked-in artifact carries every optional group for the generated client.
+  registerApiRoutes(app, undefined, {
+    embeddings: true,
+    saas: true,
+    domainEnrollment: true,
+  });
   registerPublicApiRoutes(app);
   try {
     await app.ready();

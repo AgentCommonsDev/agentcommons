@@ -5,8 +5,18 @@ import {
   createJsonSchemaTransformObject,
 } from "fastify-type-provider-zod";
 
-const registry = z.registry<{ id: string }>();
-registry.add(schemas.jsonValueSchema, { id: "JsonValue" });
+// `.describe()` texts live in zod's global registry; using it as the schema registry keeps
+// every field meaning in the OpenAPI document, while only the schemas given an id here
+// become named components.
+const registry = z.globalRegistry;
+for (const [schema, id] of [
+  [schemas.jsonValueSchema, "JsonValue"],
+  [schemas.dashboardChartSchema, "DashboardChart"],
+  [schemas.dashboardTileSchema, "DashboardTile"],
+  [schemas.dashboardVariableSchema, "DashboardVariable"],
+  [schemas.dashboardDefinitionSchema, "DashboardDefinition"],
+] as const)
+  registry.add(schema, { ...registry.get(schema), id });
 export const openApiTransform: ReturnType<typeof createJsonSchemaTransform> =
   createJsonSchemaTransform({ schemaRegistry: registry });
 export const openApiTransformObject: ReturnType<

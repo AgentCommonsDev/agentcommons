@@ -1,25 +1,25 @@
 // Generated from the server OpenAPI contract. Do not edit.
 import type { JsonValue } from "@agentcommons/core/schemas/common";
 export interface paths {
-  "/api/v1/me/dashboards": {
+  "/api/v1/dashboards": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** List personal dashboards and their declaration schema */
-    get: operations["get_me_dashboards"];
+    /** List organization dashboards, the definition schema and tile templates */
+    get: operations["get_dashboards"];
     put?: never;
-    /** Create or update a personal dashboard */
-    post: operations["post_me_dashboards"];
+    /** Create or update a dashboard */
+    post: operations["post_dashboards"];
     delete?: never;
     options?: never;
     head?: never;
     patch?: never;
     trace?: never;
   };
-  "/api/v1/me/dashboards/{id}": {
+  "/api/v1/dashboards/render": {
     parameters: {
       query?: never;
       header?: never;
@@ -28,9 +28,44 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Run the queries of a dashboard with variable values */
+    post: operations["post_dashboards_render"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dashboards/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read a dashboard and its definition */
+    get: operations["get_dashboards_id"];
+    put?: never;
     post?: never;
-    /** Delete a personal dashboard */
-    delete: operations["delete_me_dashboards_id"];
+    /** Delete a dashboard */
+    delete: operations["delete_dashboards_id"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/dashboards/{id}/default": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Make a dashboard the organization default for Home */
+    post: operations["post_dashboards_id_default"];
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -99,40 +134,6 @@ export interface paths {
     put?: never;
     /** Open the current organization's billing portal */
     post: operations["post_billing_portal"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v1/home": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Read the organization's reuse summary and your impact */
-    get: operations["get_home"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v1/home/{section}": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Browse visible reuse activity and your corpus gaps */
-    get: operations["get_home_section"];
-    put?: never;
-    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -419,25 +420,8 @@ export interface paths {
     /** List Google SSO domain access */
     get: operations["get_admin_domains"];
     put?: never;
-    /** Register a Google SSO domain and return its DNS proof */
+    /** Allow a Google email domain to join this organization */
     post: operations["post_admin_domains"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v1/admin/domains/verify": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Verify Google SSO domain DNS ownership */
-    post: operations["post_admin_domains_verify"];
     delete?: never;
     options?: never;
     head?: never;
@@ -543,6 +527,23 @@ export interface paths {
     post?: never;
     /** Revoke your organization API key */
     delete: operations["delete_me_keys_id"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/me/keys/{id}/reveal": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Reveal one of your API keys */
+    post: operations["post_me_keys_id_reveal"];
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -1150,7 +1151,1381 @@ export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
     JsonValueInput: JsonValue;
+    DashboardChartInput: {
+      series: {
+        /** @enum {string} */
+        type: "line" | "bar" | "pie" | "scatter" | "gauge" | "heatmap";
+        name?: string;
+        encode?: {
+          x?: string;
+          y?: string | string[];
+          value?: string;
+          itemName?: string;
+          tooltip?: string[];
+        };
+        stack?: string;
+        smooth?: boolean;
+        step?: boolean | ("start" | "middle" | "end");
+        showSymbol?: boolean;
+        symbol?: string;
+        symbolSize?: number;
+        connectNulls?: boolean;
+        areaStyle?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        lineStyle?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        itemStyle?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        label?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        labelLine?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        emphasis?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        barWidth?: number | string;
+        barMaxWidth?: number | string;
+        barGap?: string;
+        radius?: (number | string) | (number | string)[];
+        center?: (number | string)[];
+        roseType?: boolean | ("radius" | "area");
+        xAxisIndex?: number;
+        yAxisIndex?: number;
+        min?: number;
+        max?: number;
+        progress?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        detail?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        axisLine?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        pointer?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        splitLine?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        axisLabel?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        axisTick?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        title?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+      }[];
+      xAxis?:
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }[];
+      yAxis?:
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }[];
+      legend?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      tooltip?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      grid?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      color?: string[];
+      dataZoom?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      }[];
+      visualMap?:
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }[];
+      polar?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      radiusAxis?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      angleAxis?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+    };
+    DashboardTileInput:
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "stat";
+          sql: string;
+          value?: string;
+          compare?: string;
+          /**
+           * @default count
+           * @enum {string}
+           */
+          unit:
+            "count" | "ratio" | "seconds" | "milliseconds" | "tokens" | "usd";
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "chart";
+          sql: string;
+          series_by?: string;
+          /** @enum {string} */
+          unit?:
+            "count" | "ratio" | "seconds" | "milliseconds" | "tokens" | "usd";
+          chart: components["schemas"]["DashboardChartInput"];
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "table";
+          sql: string;
+          columns?: string[];
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "text";
+          markdown: string;
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "control";
+          variable: string;
+        };
+    DashboardVariableInput:
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "time_range";
+          /**
+           * @default 30d
+           * @enum {string}
+           */
+          default:
+            | "24h"
+            | "7d"
+            | "14d"
+            | "30d"
+            | "90d"
+            | "this_week"
+            | "last_week"
+            | "this_month"
+            | "all";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "repo";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "harness";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "user";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "text";
+          /** @default  */
+          default: string;
+        };
+    DashboardDefinitionInput: {
+      /** @constant */
+      version: 2;
+      /** @default [] */
+      variables: components["schemas"]["DashboardVariableInput"][];
+      tiles: components["schemas"]["DashboardTileInput"][];
+    };
     JsonValue: JsonValue;
+    DashboardChart: {
+      series: {
+        /** @enum {string} */
+        type: "line" | "bar" | "pie" | "scatter" | "gauge" | "heatmap";
+        name?: string;
+        encode?: {
+          x?: string;
+          y?: string | string[];
+          value?: string;
+          itemName?: string;
+          tooltip?: string[];
+        };
+        stack?: string;
+        smooth?: boolean;
+        step?: boolean | ("start" | "middle" | "end");
+        showSymbol?: boolean;
+        symbol?: string;
+        symbolSize?: number;
+        connectNulls?: boolean;
+        areaStyle?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        lineStyle?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        itemStyle?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        label?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        labelLine?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        emphasis?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        barWidth?: number | string;
+        barMaxWidth?: number | string;
+        barGap?: string;
+        radius?: (number | string) | (number | string)[];
+        center?: (number | string)[];
+        roseType?: boolean | ("radius" | "area");
+        xAxisIndex?: number;
+        yAxisIndex?: number;
+        min?: number;
+        max?: number;
+        progress?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        detail?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        axisLine?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        pointer?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        splitLine?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        axisLabel?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        axisTick?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+        title?: {
+          [key: string]:
+            | (
+                | (string | number | boolean | null)
+                | (string | number | boolean | null)[]
+              )
+            | {
+                [key: string]:
+                  | (
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[]
+                    )
+                  | {
+                      [key: string]:
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[];
+                    };
+              };
+        };
+      }[];
+      xAxis?:
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }[];
+      yAxis?:
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }[];
+      legend?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      tooltip?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      grid?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      color?: string[];
+      dataZoom?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      }[];
+      visualMap?:
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }
+        | {
+            [key: string]:
+              | (
+                  | (string | number | boolean | null)
+                  | (string | number | boolean | null)[]
+                )
+              | {
+                  [key: string]:
+                    | (
+                        | (string | number | boolean | null)
+                        | (string | number | boolean | null)[]
+                      )
+                    | {
+                        [key: string]:
+                          | (string | number | boolean | null)
+                          | (string | number | boolean | null)[];
+                      };
+                };
+          }[];
+      polar?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      radiusAxis?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+      angleAxis?: {
+        [key: string]:
+          | (
+              | (string | number | boolean | null)
+              | (string | number | boolean | null)[]
+            )
+          | {
+              [key: string]:
+                | (
+                    | (string | number | boolean | null)
+                    | (string | number | boolean | null)[]
+                  )
+                | {
+                    [key: string]:
+                      | (string | number | boolean | null)
+                      | (string | number | boolean | null)[];
+                  };
+            };
+      };
+    };
+    DashboardTile:
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "stat";
+          sql: string;
+          value?: string;
+          compare?: string;
+          /**
+           * @default count
+           * @enum {string}
+           */
+          unit:
+            "count" | "ratio" | "seconds" | "milliseconds" | "tokens" | "usd";
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "chart";
+          sql: string;
+          series_by?: string;
+          /** @enum {string} */
+          unit?:
+            "count" | "ratio" | "seconds" | "milliseconds" | "tokens" | "usd";
+          chart: components["schemas"]["DashboardChart"];
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "table";
+          sql: string;
+          columns?: string[];
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "text";
+          markdown: string;
+        }
+      | {
+          id: string;
+          title: string;
+          description?: string;
+          layout: {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
+          };
+          /** @constant */
+          type: "control";
+          variable: string;
+        };
+    DashboardVariable:
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "time_range";
+          /**
+           * @default 30d
+           * @enum {string}
+           */
+          default:
+            | "24h"
+            | "7d"
+            | "14d"
+            | "30d"
+            | "90d"
+            | "this_week"
+            | "last_week"
+            | "this_month"
+            | "all";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "repo";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "harness";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "user";
+        }
+      | {
+          name: string;
+          label?: string;
+          /** @constant */
+          type: "text";
+          /** @default  */
+          default: string;
+        };
+    DashboardDefinition: {
+      /** @constant */
+      version: 2;
+      /** @default [] */
+      variables: components["schemas"]["DashboardVariable"][];
+      tiles: components["schemas"]["DashboardTile"][];
+    };
   };
   responses: never;
   parameters: never;
@@ -1160,7 +2535,7 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-  get_me_dashboards: {
+  get_dashboards: {
     parameters: {
       query?: never;
       header?: never;
@@ -1180,28 +2555,34 @@ export interface operations {
               /** Format: uuid */
               id: string;
               organization_id: string;
-              user_id: string;
               name: string;
-              definition: {
-                /** @enum {number} */
-                version: 1;
-                widgets: {
-                  id: string;
-                  title: string;
-                  sql: string;
-                  /** @enum {string} */
-                  display: "number" | "line" | "bar" | "table";
-                  x?: string;
-                  y?: string;
-                  /** @enum {string} */
-                  unit: "count" | "ratio" | "seconds" | "tokens" | "usd";
-                }[];
-              };
+              description: string;
               revision: number;
+              builtin: boolean;
+              is_default: boolean;
+              can_edit: boolean;
+              created_by: {
+                user_id: string;
+                email: string | null;
+                name: string | null;
+              } | null;
+              tile_count: number;
+              /** Format: date-time */
+              created_at: string;
               /** Format: date-time */
               updated_at: string;
             }[];
+            /** Format: uuid */
+            default_id: string;
             definition_schema: components["schemas"]["JsonValue"];
+            templates: {
+              id: string;
+              title: string;
+              description: string;
+              /** @default [] */
+              variables: components["schemas"]["DashboardVariable"][];
+              tile: components["schemas"]["DashboardTile"];
+            }[];
           };
         };
       };
@@ -1235,7 +2616,7 @@ export interface operations {
       };
     };
   };
-  post_me_dashboards: {
+  post_dashboards: {
     parameters: {
       query?: never;
       header?: never;
@@ -1249,21 +2630,9 @@ export interface operations {
           id?: string;
           revision?: number;
           name: string;
-          definition: {
-            /** @enum {number} */
-            version: 1;
-            widgets: {
-              id: string;
-              title: string;
-              sql: string;
-              /** @enum {string} */
-              display: "number" | "line" | "bar" | "table";
-              x?: string;
-              y?: string;
-              /** @enum {string} */
-              unit: "count" | "ratio" | "seconds" | "tokens" | "usd";
-            }[];
-          };
+          /** @default  */
+          description?: string;
+          definition: components["schemas"]["DashboardDefinitionInput"];
         };
       };
     };
@@ -1278,26 +2647,23 @@ export interface operations {
             /** Format: uuid */
             id: string;
             organization_id: string;
-            user_id: string;
             name: string;
-            definition: {
-              /** @enum {number} */
-              version: 1;
-              widgets: {
-                id: string;
-                title: string;
-                sql: string;
-                /** @enum {string} */
-                display: "number" | "line" | "bar" | "table";
-                x?: string;
-                y?: string;
-                /** @enum {string} */
-                unit: "count" | "ratio" | "seconds" | "tokens" | "usd";
-              }[];
-            };
+            description: string;
             revision: number;
+            builtin: boolean;
+            is_default: boolean;
+            can_edit: boolean;
+            created_by: {
+              user_id: string;
+              email: string | null;
+              name: string | null;
+            } | null;
+            tile_count: number;
+            /** Format: date-time */
+            created_at: string;
             /** Format: date-time */
             updated_at: string;
+            definition: components["schemas"]["DashboardDefinition"];
           };
         };
       };
@@ -1331,7 +2697,195 @@ export interface operations {
       };
     };
   };
-  delete_me_dashboards_id: {
+  post_dashboards_render: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** Format: uuid */
+          id?: string;
+          definition?: components["schemas"]["DashboardDefinitionInput"];
+          /** @default {} */
+          variables?: {
+            [key: string]:
+              | (
+                  | (
+                      | "24h"
+                      | "7d"
+                      | "14d"
+                      | "30d"
+                      | "90d"
+                      | "this_week"
+                      | "last_week"
+                      | "this_month"
+                      | "all"
+                    )
+                  | {
+                      /** Format: date-time */
+                      from: string;
+                      /** Format: date-time */
+                      to: string;
+                    }
+                )
+              | string[]
+              | string;
+          };
+          tiles?: string[];
+          /** @default false */
+          refresh?: boolean;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            tiles: {
+              id: string;
+              result: {
+                columns: {
+                  name: string;
+                  type: string;
+                }[];
+                rows: components["schemas"]["JsonValue"][][];
+                row_count: number;
+                capped: boolean;
+                truncated_cells: [number, number][];
+                duration_ms: number;
+              } | null;
+              error: {
+                code: string;
+                message: string;
+              } | null;
+            }[];
+            variables: {
+              [key: string]:
+                | {
+                    /** Format: date-time */
+                    from: string;
+                    /** Format: date-time */
+                    to: string;
+                  }
+                | string[]
+                | string;
+            };
+            /** Format: date-time */
+            rendered_at: string;
+            cached: boolean;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_dashboards_id: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            /** Format: uuid */
+            id: string;
+            organization_id: string;
+            name: string;
+            description: string;
+            revision: number;
+            builtin: boolean;
+            is_default: boolean;
+            can_edit: boolean;
+            created_by: {
+              user_id: string;
+              email: string | null;
+              name: string | null;
+            } | null;
+            tile_count: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            definition: components["schemas"]["DashboardDefinition"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  delete_dashboards_id: {
     parameters: {
       query?: never;
       header?: never;
@@ -1354,6 +2908,63 @@ export interface operations {
         content: {
           "application/json": {
             deleted: boolean;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_dashboards_id_default: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": Record<string, never>;
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            /** Format: uuid */
+            default_id: string;
           };
         };
       };
@@ -1691,183 +3302,6 @@ export interface operations {
       };
     };
   };
-  get_home: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Default Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            /** Format: date */
-            week: string;
-            weekly: {
-              /** Format: date */
-              week: string;
-              sessions: number;
-              reuse_sessions: number;
-              cross_user_reuse_sessions: number;
-              reuse_rate: number | null;
-              cross_user_reuse_rate: number | null;
-            }[];
-            impact: {
-              user_id: string;
-              sessions_reused_by_others: number;
-              distinct_readers: number;
-              reuses_made: number;
-            };
-            search_adoption: {
-              sessions: number;
-              agentcommons_search_sessions: number;
-              agentcommons_search_rate: number | null;
-              agentcommons_search_calls: number;
-              repeat_agentcommons_search_calls: number;
-              subsequent_other_search_calls: number;
-            };
-          };
-        };
-      };
-      /** @description Default Response */
-      "4XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-      /** @description Default Response */
-      "5XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-    };
-  };
-  get_home_section: {
-    parameters: {
-      query?: {
-        limit?: number;
-        cursor?: string | null;
-        sort?:
-          | "read_at"
-          | "reader_email"
-          | "source_title"
-          | "target_title"
-          | "sessions"
-          | "repo_name"
-          | "searched_at"
-          | "query";
-        order?: "asc" | "desc";
-        format?: "json" | "csv";
-        reader_user_id?: string;
-        query?: string;
-      };
-      header?: never;
-      path: {
-        section:
-          "reused" | "inbound" | "outbound" | "gap_repos" | "zero_results";
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Default Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            items: (
-              | {
-                  /** Format: uuid */
-                  source_session_id: string;
-                  /** Format: uuid */
-                  target_session_id: string;
-                  source_title: string | null;
-                  target_title: string | null;
-                  reader_user_id: string;
-                  reader_email: string;
-                  /** @enum {string} */
-                  reader_harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
-                  /** Format: date-time */
-                  read_at: string;
-                  /** Format: uuid */
-                  audit_id: string;
-                  truncated_fields: string[];
-                }
-              | {
-                  repo_name: string;
-                  sessions: number;
-                  truncated_fields: string[];
-                }
-              | {
-                  /** Format: uuid */
-                  search_id: string;
-                  /** Format: date-time */
-                  searched_at: string;
-                  query: string;
-                  truncated_fields: string[];
-                }
-            )[];
-            /** @default null */
-            cursor: string | null;
-          };
-          "text/csv": string;
-        };
-      };
-      /** @description Default Response */
-      "4XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-      /** @description Default Response */
-      "5XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-    };
-  };
   post_ingest: {
     parameters: {
       query?: never;
@@ -1894,6 +3328,10 @@ export interface operations {
           batchId: string;
           /** Format: uuid */
           installationId: string;
+          hook: {
+            sha256: string;
+            extensionSha256: string | null;
+          };
           /** Format: date-time */
           sentAt: string;
           sourcePos: number;
@@ -2006,23 +3444,44 @@ export interface operations {
     requestBody: {
       content: {
         "application/json": {
+          /** @description Words to find; every word must appear (English stems match). May be empty when a filter is given */
           query: string;
-          /** @default {} */
+          /**
+           * @description Narrow by session or message fields. Each key takes one value or a list (any of); every key given must hold
+           * @default {}
+           */
           filters?: {
+            /** @description Sessions in these repositories: host/org/repo, or an unambiguous short name */
             repo_name?: string | string[];
+            /** @description Sessions on these git branches (exact) */
             branch?: string | string[];
+            /** @description Sessions run by these members (exact email) */
             user_email?: string | string[];
+            /** @description Messages calling or answering these tools, such as Read or Bash */
             tool_name?: string | string[];
+            /** @description Sessions that touched a file whose path starts with this text, such as src/auth/ */
             file_prefix?: string | string[];
+            /** @description Sessions where a file was read, edited, written or deleted; with file_prefix, the same file must match both */
+            file_operation?:
+              | ("read" | "edit" | "write" | "delete")
+              | ("read" | "edit" | "write" | "delete")[];
+            /** @description Messages with these roles */
             role?:
               | ("USER" | "ASSISTANT" | "TOOL_RESULT" | "SYSTEM")
               | ("USER" | "ASSISTANT" | "TOOL_RESULT" | "SYSTEM")[];
+            /** @description Search inside these sessions only */
             session_id?: string | string[];
+            /** @description Messages at or after this UTC time (inclusive) */
             since?: string | string[];
+            /** @description Messages before this UTC time (exclusive) */
             until?: string | string[];
+            /** @description Up to 10 extra conditions that must all hold, on a message field (tool_name, tool_use_id, content, role, kind, model, or a JSON path inside tool_input) or a session field (harness, title, repo_name, branch, user_email, status) */
             where?: (
               | {
-                  /** @enum {string} */
+                  /**
+                   * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                   * @enum {string}
+                   */
                   field:
                     | "tool_name"
                     | "tool_use_id"
@@ -2037,13 +3496,17 @@ export interface operations {
                     | "user_email"
                     | "status"
                     | "tool_input";
+                  /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                   path?: string[];
                   /** @enum {string} */
                   op: "eq";
                   value: string | number | boolean | null;
                 }
               | {
-                  /** @enum {string} */
+                  /**
+                   * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                   * @enum {string}
+                   */
                   field:
                     | "tool_name"
                     | "tool_use_id"
@@ -2058,13 +3521,17 @@ export interface operations {
                     | "user_email"
                     | "status"
                     | "tool_input";
+                  /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                   path?: string[];
                   /** @enum {string} */
                   op: "contains";
                   value: string;
                 }
               | {
-                  /** @enum {string} */
+                  /**
+                   * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                   * @enum {string}
+                   */
                   field:
                     | "tool_name"
                     | "tool_use_id"
@@ -2079,13 +3546,17 @@ export interface operations {
                     | "user_email"
                     | "status"
                     | "tool_input";
+                  /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                   path?: string[];
                   /** @enum {string} */
                   op: "starts_with";
                   value: string;
                 }
               | {
-                  /** @enum {string} */
+                  /**
+                   * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                   * @enum {string}
+                   */
                   field:
                     | "tool_name"
                     | "tool_use_id"
@@ -2100,17 +3571,27 @@ export interface operations {
                     | "user_email"
                     | "status"
                     | "tool_input";
+                  /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                   path?: string[];
                   /** @enum {string} */
                   op: "exists";
                 }
             )[];
           };
-          /** @default 1 */
+          /**
+           * @description Neighbouring non-thinking messages either side of each hit
+           * @default 1
+           */
           context?: number;
-          /** @default 5 */
+          /**
+           * @description Hit messages per page; at most 3 hits per session
+           * @default 5
+           */
           limit?: number;
-          /** @default null */
+          /**
+           * @description Cursor from the previous page; null for the first page
+           * @default null
+           */
           cursor?: string | null;
         };
       };
@@ -2123,38 +3604,89 @@ export interface operations {
         };
         content: {
           "application/json": {
+            /** @description Message windows grouped by session, best match first */
             blocks: {
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Session the messages belong to; pass to get for the full transcript
+               */
               session_id: string;
+              /**
+               * Format: uuid
+               * @description Root of the session tree. Equals session_id unless the hit sits inside a subagent, fork or spawned run; open the root and read the run inline.
+               */
+              root_session_id: string;
+              /** @description How this session relates to its parent; null for a root session. */
+              parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+              /** @description Harness agent type of a subagent run, when the harness reports one. */
+              agent_type: string | null;
+              /** @description The parent's tool call that spawned this run, when recorded and the parent is visible; null for a root session. */
+              parent_tool_use_id: string | null;
+              /** @description Short title derived from the session */
               title: string | null;
-              /** @enum {string} */
+              /**
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @enum {string}
+               */
               harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              /** @description Primary model used */
               model: string | null;
+              /** @description Repository name such as owner/repo; joins repos.repo_name */
               repo_name: string | null;
+              /** @description Git branch at session start */
               branch: string | null;
-              /** Format: email */
+              /**
+               * Format: email
+               * @description Email of the member who ran it
+               */
               user_email: string;
-              /** Format: date-time */
+              /**
+               * Format: date-time
+               * @description When the session started (UTC)
+               */
               started_at: string;
+              /** @description Matched messages and their context, in seq order */
               messages: {
+                /** @description Position of the block within the session, ascending */
                 seq: number;
-                /** @enum {string} */
+                /**
+                 * @description USER, ASSISTANT, TOOL_RESULT or SYSTEM
+                 * @enum {string}
+                 */
                 role: "USER" | "ASSISTANT" | "TOOL_RESULT" | "SYSTEM";
-                /** @enum {string} */
+                /**
+                 * @description TEXT, THINKING, TOOL_USE, TOOL_RESULT or META
+                 * @enum {string}
+                 */
                 kind: "TEXT" | "THINKING" | "TOOL_USE" | "TOOL_RESULT" | "META";
+                /** @description Tool called or answered, for TOOL_USE and TOOL_RESULT */
                 tool_name?: string | null;
+                /** @description Harness id pairing a tool call with its result */
                 tool_use_id?: string | null;
+                /** @description Excerpt of the message text, centred on the match */
                 content: string;
+                /** @description True for a matched message, false for surrounding context */
                 hit: boolean;
+                /** @description True when content is an excerpt of a longer message */
                 truncated: boolean;
-                /** @default [] */
+                /**
+                 * @description Fields shortened to fit the response
+                 * @default []
+                 */
                 truncated_fields: string[];
               }[];
-              /** @default [] */
+              /**
+               * @description Fields shortened to fit the response
+               * @default []
+               */
               truncated_fields: string[];
             }[];
-            /** @default null */
+            /**
+             * @description Cursor for the next page; null when there is none
+             * @default null
+             */
             cursor: string | null;
+            /** @description True when the page was cut to fit the response size limit; continue with cursor */
             truncated_response: boolean;
           };
         };
@@ -2339,21 +3871,39 @@ export interface operations {
           | "last_activity_at";
         order?: "asc" | "desc";
         format?: "json" | "csv";
+        /** @description Narrow by session or message fields. Each key takes one value or a list (any of); every key given must hold */
         filters?: {
+          /** @description Sessions in these repositories: host/org/repo, or an unambiguous short name */
           repo_name?: string | string[];
+          /** @description Sessions on these git branches (exact) */
           branch?: string | string[];
+          /** @description Sessions run by these members (exact email) */
           user_email?: string | string[];
+          /** @description Messages calling or answering these tools, such as Read or Bash */
           tool_name?: string | string[];
+          /** @description Sessions that touched a file whose path starts with this text, such as src/auth/ */
           file_prefix?: string | string[];
+          /** @description Sessions where a file was read, edited, written or deleted; with file_prefix, the same file must match both */
+          file_operation?:
+            | ("read" | "edit" | "write" | "delete")
+            | ("read" | "edit" | "write" | "delete")[];
+          /** @description Messages with these roles */
           role?:
             | ("USER" | "ASSISTANT" | "TOOL_RESULT" | "SYSTEM")
             | ("USER" | "ASSISTANT" | "TOOL_RESULT" | "SYSTEM")[];
+          /** @description Search inside these sessions only */
           session_id?: string | string[];
+          /** @description Messages at or after this UTC time (inclusive) */
           since?: string | string[];
+          /** @description Messages before this UTC time (exclusive) */
           until?: string | string[];
+          /** @description Up to 10 extra conditions that must all hold, on a message field (tool_name, tool_use_id, content, role, kind, model, or a JSON path inside tool_input) or a session field (harness, title, repo_name, branch, user_email, status) */
           where?: (
             | {
-                /** @enum {string} */
+                /**
+                 * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                 * @enum {string}
+                 */
                 field:
                   | "tool_name"
                   | "tool_use_id"
@@ -2368,13 +3918,17 @@ export interface operations {
                   | "user_email"
                   | "status"
                   | "tool_input";
+                /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                 path?: string[];
                 /** @enum {string} */
                 op: "eq";
                 value: string | number | boolean | null;
               }
             | {
-                /** @enum {string} */
+                /**
+                 * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                 * @enum {string}
+                 */
                 field:
                   | "tool_name"
                   | "tool_use_id"
@@ -2389,13 +3943,17 @@ export interface operations {
                   | "user_email"
                   | "status"
                   | "tool_input";
+                /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                 path?: string[];
                 /** @enum {string} */
                 op: "contains";
                 value: string;
               }
             | {
-                /** @enum {string} */
+                /**
+                 * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                 * @enum {string}
+                 */
                 field:
                   | "tool_name"
                   | "tool_use_id"
@@ -2410,13 +3968,17 @@ export interface operations {
                   | "user_email"
                   | "status"
                   | "tool_input";
+                /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                 path?: string[];
                 /** @enum {string} */
                 op: "starts_with";
                 value: string;
               }
             | {
-                /** @enum {string} */
+                /**
+                 * @description Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status
+                 * @enum {string}
+                 */
                 field:
                   | "tool_name"
                   | "tool_use_id"
@@ -2431,12 +3993,14 @@ export interface operations {
                   | "user_email"
                   | "status"
                   | "tool_input";
+                /** @description JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input */
                 path?: string[];
                 /** @enum {string} */
                 op: "exists";
               }
           )[];
         };
+        roots_only?: boolean;
       };
       header?: never;
       path?: never;
@@ -2452,64 +4016,139 @@ export interface operations {
         content: {
           "application/json": {
             items: {
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Primary key; every other view joins on it
+               */
               session_id: string;
+              /** @description Owning organization (already scoped) */
               organization_id: string;
+              /** @description Short title derived from the session */
               title: string | null;
-              /** @enum {string} */
+              /**
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @enum {string}
+               */
               harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              /** @description Harness version, if reported */
               harness_version: string | null;
+              /** @description How the harness was launched, if reported */
               entrypoint: string | null;
+              /** @description Primary model used */
               model: string | null;
+              /** @description Every model seen in the session */
               models_used: string[];
-              /** Format: email */
+              /**
+               * Format: email
+               * @description Email of the member who ran it
+               */
               user_email: string;
+              /** @description Hostname of the capturing machine */
               installation_hostname: string;
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Machine install that captured it; joins installations.installation_id
+               */
               installation_id: string;
+              /** @description Repository name such as owner/repo; joins repos.repo_name */
               repo_name: string | null;
+              /** @description Remote URL of the repository */
               repo_url: string | null;
+              /** @description Git branch at session start */
               branch: string | null;
+              /** @description cwd relative to repo_root */
               cwd_relative: string | null;
+              /** @description HEAD SHA at session start */
               start_commit: string | null;
+              /** @description HEAD SHA at session end */
               end_commit: string | null;
-              /** Format: date-time */
+              /**
+               * Format: date-time
+               * @description When the session started (UTC)
+               */
               started_at: string;
+              /** @description When the session ended; NULL while active */
               ended_at: string | null;
-              /** @enum {string} */
+              /**
+               * @description ACTIVE, ENDED or INACTIVE
+               * @enum {string}
+               */
               status: "ACTIVE" | "ENDED" | "INACTIVE";
-              /** @enum {string} */
+              /**
+               * @description PUBLIC or PRIVATE
+               * @enum {string}
+               */
               visibility: "PUBLIC" | "PRIVATE";
+              /** @description When content was purged; NULL otherwise */
+              purged_at: string | null;
+              /** @description Why the session ended, as the harness reported it */
               end_reason: string | null;
+              /** @description Rows in messages for this session */
               message_count: number;
+              /** @description Tool calls made */
               tool_call_count: number;
+              /** @description Input tokens consumed */
               input_tokens: string | null;
+              /** @description Output tokens produced */
               output_tokens: string | null;
+              /** @description Distinct tool names called; see session_tools */
               tools_used: string[];
+              /** @description Files read, edited, written or deleted; see session_files */
               file_count: number;
+              /** @description Commits observed during the session */
               observed_commit_count: number;
+              /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
+              /** @description Subagent type when the session is a subagent */
               agent_type: string | null;
+              /** @description Parent session of a subagent, fork or spawned session */
               parent_session_id: string | null;
+              /** @description SUBAGENT, FORK or SPAWNED */
               parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+              /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+              parent_tool_use_id: string | null;
+              /** @description Parent session when visible; null for a root session */
               parent: {
-                /** Format: uuid */
+                /**
+                 * Format: uuid
+                 * @description Related session; pass to get
+                 */
                 session_id: string;
+                /** @description Short title derived from the session */
                 title: string | null;
+                /** @description SUBAGENT, FORK or SPAWNED */
                 parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+                /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+                parent_tool_use_id: string | null;
+                /** @description Subagent type when the session is a subagent */
                 agent_type: string | null;
               } | null;
+              /** @description Up to 10 direct child sessions: subagents, forks and spawned runs */
               children: {
-                /** Format: uuid */
+                /**
+                 * Format: uuid
+                 * @description Related session; pass to get
+                 */
                 session_id: string;
+                /** @description Short title derived from the session */
                 title: string | null;
+                /** @description SUBAGENT, FORK or SPAWNED */
                 parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+                /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+                parent_tool_use_id: string | null;
+                /** @description Subagent type when the session is a subagent */
                 agent_type: string | null;
               }[];
+              /** @description Direct child sessions */
               child_count: number;
+              /** @description True when more children exist than are listed */
               children_truncated: boolean;
+              /** @description Fields shortened to fit the response */
               truncated_fields: string[];
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Top of this session's parent chain; equals session_id for a root session
+               */
               root_session_id: string;
               duration_seconds: number | null;
               /** Format: date-time */
@@ -2572,64 +4211,139 @@ export interface operations {
         content: {
           "application/json": {
             sessions: {
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Primary key; every other view joins on it
+               */
               session_id: string;
+              /** @description Owning organization (already scoped) */
               organization_id: string;
+              /** @description Short title derived from the session */
               title: string | null;
-              /** @enum {string} */
+              /**
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @enum {string}
+               */
               harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              /** @description Harness version, if reported */
               harness_version: string | null;
+              /** @description How the harness was launched, if reported */
               entrypoint: string | null;
+              /** @description Primary model used */
               model: string | null;
+              /** @description Every model seen in the session */
               models_used: string[];
-              /** Format: email */
+              /**
+               * Format: email
+               * @description Email of the member who ran it
+               */
               user_email: string;
+              /** @description Hostname of the capturing machine */
               installation_hostname: string;
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Machine install that captured it; joins installations.installation_id
+               */
               installation_id: string;
+              /** @description Repository name such as owner/repo; joins repos.repo_name */
               repo_name: string | null;
+              /** @description Remote URL of the repository */
               repo_url: string | null;
+              /** @description Git branch at session start */
               branch: string | null;
+              /** @description cwd relative to repo_root */
               cwd_relative: string | null;
+              /** @description HEAD SHA at session start */
               start_commit: string | null;
+              /** @description HEAD SHA at session end */
               end_commit: string | null;
-              /** Format: date-time */
+              /**
+               * Format: date-time
+               * @description When the session started (UTC)
+               */
               started_at: string;
+              /** @description When the session ended; NULL while active */
               ended_at: string | null;
-              /** @enum {string} */
+              /**
+               * @description ACTIVE, ENDED or INACTIVE
+               * @enum {string}
+               */
               status: "ACTIVE" | "ENDED" | "INACTIVE";
-              /** @enum {string} */
+              /**
+               * @description PUBLIC or PRIVATE
+               * @enum {string}
+               */
               visibility: "PUBLIC" | "PRIVATE";
+              /** @description When content was purged; NULL otherwise */
+              purged_at: string | null;
+              /** @description Why the session ended, as the harness reported it */
               end_reason: string | null;
+              /** @description Rows in messages for this session */
               message_count: number;
+              /** @description Tool calls made */
               tool_call_count: number;
+              /** @description Input tokens consumed */
               input_tokens: string | null;
+              /** @description Output tokens produced */
               output_tokens: string | null;
+              /** @description Distinct tool names called; see session_tools */
               tools_used: string[];
+              /** @description Files read, edited, written or deleted; see session_files */
               file_count: number;
+              /** @description Commits observed during the session */
               observed_commit_count: number;
+              /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
+              /** @description Subagent type when the session is a subagent */
               agent_type: string | null;
+              /** @description Parent session of a subagent, fork or spawned session */
               parent_session_id: string | null;
+              /** @description SUBAGENT, FORK or SPAWNED */
               parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+              /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+              parent_tool_use_id: string | null;
+              /** @description Parent session when visible; null for a root session */
               parent: {
-                /** Format: uuid */
+                /**
+                 * Format: uuid
+                 * @description Related session; pass to get
+                 */
                 session_id: string;
+                /** @description Short title derived from the session */
                 title: string | null;
+                /** @description SUBAGENT, FORK or SPAWNED */
                 parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+                /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+                parent_tool_use_id: string | null;
+                /** @description Subagent type when the session is a subagent */
                 agent_type: string | null;
               } | null;
+              /** @description Up to 10 direct child sessions: subagents, forks and spawned runs */
               children: {
-                /** Format: uuid */
+                /**
+                 * Format: uuid
+                 * @description Related session; pass to get
+                 */
                 session_id: string;
+                /** @description Short title derived from the session */
                 title: string | null;
+                /** @description SUBAGENT, FORK or SPAWNED */
                 parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+                /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+                parent_tool_use_id: string | null;
+                /** @description Subagent type when the session is a subagent */
                 agent_type: string | null;
               }[];
+              /** @description Direct child sessions */
               child_count: number;
+              /** @description True when more children exist than are listed */
               children_truncated: boolean;
+              /** @description Fields shortened to fit the response */
               truncated_fields: string[];
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Top of this session's parent chain; equals session_id for a root session
+               */
               root_session_id: string;
             }[];
           };
@@ -2668,10 +4382,15 @@ export interface operations {
   get_sessions_id: {
     parameters: {
       query?: {
+        /** @description First message seq to return (inclusive) */
         from?: number;
+        /** @description Last message seq to return (inclusive) */
         to?: number;
+        /** @description The next value of a previous page; omit to start at from */
         cursor?: {
+          /** @description Message position (seq) to continue from */
           seq: number;
+          /** @description Byte offset inside that message's content */
           offset: number;
         } | null;
       };
@@ -2690,98 +4409,210 @@ export interface operations {
         };
         content: {
           "application/json": {
+            /** @description Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions */
             header: {
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Primary key; every other view joins on it
+               */
               session_id: string;
+              /** @description Owning organization (already scoped) */
               organization_id: string;
+              /** @description Short title derived from the session */
               title: string | null;
-              /** @enum {string} */
+              /**
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @enum {string}
+               */
               harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              /** @description Harness version, if reported */
               harness_version: string | null;
+              /** @description How the harness was launched, if reported */
               entrypoint: string | null;
+              /** @description Primary model used */
               model: string | null;
+              /** @description Every model seen in the session */
               models_used: string[];
-              /** Format: email */
+              /**
+               * Format: email
+               * @description Email of the member who ran it
+               */
               user_email: string;
+              /** @description Hostname of the capturing machine */
               installation_hostname: string;
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Machine install that captured it; joins installations.installation_id
+               */
               installation_id: string;
+              /** @description Repository name such as owner/repo; joins repos.repo_name */
               repo_name: string | null;
+              /** @description Remote URL of the repository */
               repo_url: string | null;
+              /** @description Git branch at session start */
               branch: string | null;
+              /** @description cwd relative to repo_root */
               cwd_relative: string | null;
+              /** @description HEAD SHA at session start */
               start_commit: string | null;
+              /** @description HEAD SHA at session end */
               end_commit: string | null;
-              /** Format: date-time */
+              /**
+               * Format: date-time
+               * @description When the session started (UTC)
+               */
               started_at: string;
+              /** @description When the session ended; NULL while active */
               ended_at: string | null;
-              /** @enum {string} */
+              /**
+               * @description ACTIVE, ENDED or INACTIVE
+               * @enum {string}
+               */
               status: "ACTIVE" | "ENDED" | "INACTIVE";
-              /** @enum {string} */
+              /**
+               * @description PUBLIC or PRIVATE
+               * @enum {string}
+               */
               visibility: "PUBLIC" | "PRIVATE";
+              /** @description When content was purged; NULL otherwise */
+              purged_at: string | null;
+              /** @description Why the session ended, as the harness reported it */
               end_reason: string | null;
+              /** @description Rows in messages for this session */
               message_count: number;
+              /** @description Tool calls made */
               tool_call_count: number;
+              /** @description Input tokens consumed */
               input_tokens: string | null;
+              /** @description Output tokens produced */
               output_tokens: string | null;
+              /** @description Distinct tool names called; see session_tools */
               tools_used: string[];
+              /** @description Files read, edited, written or deleted; see session_files */
               file_count: number;
+              /** @description Commits observed during the session */
               observed_commit_count: number;
+              /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
+              /** @description Subagent type when the session is a subagent */
               agent_type: string | null;
+              /** @description Parent session of a subagent, fork or spawned session */
               parent_session_id: string | null;
+              /** @description SUBAGENT, FORK or SPAWNED */
               parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+              /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+              parent_tool_use_id: string | null;
+              /** @description Parent session when visible; null for a root session */
               parent: {
-                /** Format: uuid */
+                /**
+                 * Format: uuid
+                 * @description Related session; pass to get
+                 */
                 session_id: string;
+                /** @description Short title derived from the session */
                 title: string | null;
+                /** @description SUBAGENT, FORK or SPAWNED */
                 parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+                /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+                parent_tool_use_id: string | null;
+                /** @description Subagent type when the session is a subagent */
                 agent_type: string | null;
               } | null;
+              /** @description Up to 10 direct child sessions: subagents, forks and spawned runs */
               children: {
-                /** Format: uuid */
+                /**
+                 * Format: uuid
+                 * @description Related session; pass to get
+                 */
                 session_id: string;
+                /** @description Short title derived from the session */
                 title: string | null;
+                /** @description SUBAGENT, FORK or SPAWNED */
                 parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+                /** @description Parent tool_use_id of the call that spawned this child; NULL when unrecorded */
+                parent_tool_use_id: string | null;
+                /** @description Subagent type when the session is a subagent */
                 agent_type: string | null;
               }[];
+              /** @description Direct child sessions */
               child_count: number;
+              /** @description True when more children exist than are listed */
               children_truncated: boolean;
+              /** @description Fields shortened to fit the response */
               truncated_fields: string[];
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Top of this session's parent chain; equals session_id for a root session
+               */
               root_session_id: string;
             };
+            /** @description Messages in seq order within the requested range */
             messages: {
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Primary key of the block
+               */
               message_id: string;
-              /** Format: uuid */
+              /**
+               * Format: uuid
+               * @description Session; joins sessions.session_id
+               */
               session_id: string;
+              /** @description Raw harness record the block came from */
               raw_record_id: string | null;
+              /** @description Upload batch that delivered it */
               ingest_batch_id: string | null;
+              /** @description Position of the block within the session, ascending */
               seq: number;
-              /** @enum {string} */
+              /**
+               * @description USER, ASSISTANT, TOOL_RESULT or SYSTEM
+               * @enum {string}
+               */
               role: "USER" | "ASSISTANT" | "TOOL_RESULT" | "SYSTEM";
-              /** @enum {string} */
+              /**
+               * @description TEXT, THINKING, TOOL_USE, TOOL_RESULT or META
+               * @enum {string}
+               */
               kind: "TEXT" | "THINKING" | "TOOL_USE" | "TOOL_RESULT" | "META";
+              /** @description Redacted text of the block; tool results and metadata are stored as text */
               content: string;
+              /** @description Set when content continues beyond this page; pass it as cursor to read on */
               content_cursor: {
+                /** @description Message position (seq) to continue from */
                 seq: number;
+                /** @description Byte offset inside that message's content */
                 offset: number;
               } | null;
+              /** @description Tool called or answered, for TOOL_USE and TOOL_RESULT */
               tool_name: string | null;
+              /** @description Harness id pairing a tool call with its result */
               tool_use_id: string | null;
+              /** @description Model that produced the block */
               model: string | null;
+              /** @description When the harness recorded the block */
               timestamp: string | null;
-              /** Format: date-time */
+              /**
+               * Format: date-time
+               * @description When the server received it
+               */
               received_at: string;
+              /** @description Input tokens reported for the block */
               input_tokens: string | null;
+              /** @description Output tokens reported for the block */
               output_tokens: string | null;
+              /** @description Subagent id when a subagent produced the block */
               agent_id: string | null;
-              /** @default [] */
+              /**
+               * @description Fields shortened to fit the response
+               * @default []
+               */
               truncated_fields: string[];
             }[];
+            /** @description Cursor for the following page; null when the range is complete */
             next: {
+              /** @description Message position (seq) to continue from */
               seq: number;
+              /** @description Byte offset inside that message's content */
               offset: number;
             } | null;
           };
@@ -2923,6 +4754,7 @@ export interface operations {
               agent_type: string | null;
               parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
               parent_session_id: string | null;
+              parent_tool_use_id: string | null;
               /** Format: email */
               user_email: string;
               /** Format: date-time */
@@ -3088,6 +4920,7 @@ export interface operations {
               os_user: string;
               platform: string;
               arch: string;
+              hook_sha256: string | null;
               /** Format: date-time */
               first_seen_at: string;
               /** Format: date-time */
@@ -3215,8 +5048,7 @@ export interface operations {
         limit?: number;
         cursor?: string;
         domain?: string;
-        verified?: "true" | "false";
-        sort?: "domain" | "verified";
+        sort?: "domain";
         order?: "asc" | "desc";
       };
       header?: never;
@@ -3238,12 +5070,6 @@ export interface operations {
               domain: string;
               provider_id: string;
               verified: boolean;
-              dns_record: {
-                /** @enum {string} */
-                type: "TXT";
-                name: string;
-                value: string;
-              } | null;
             }[];
             cursor: string | null;
           };
@@ -3305,77 +5131,6 @@ export interface operations {
             domain: string;
             provider_id: string;
             verified: boolean;
-            dns_record: {
-              /** @enum {string} */
-              type: "TXT";
-              name: string;
-              value: string;
-            } | null;
-          };
-        };
-      };
-      /** @description Default Response */
-      "4XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-      /** @description Default Response */
-      "5XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-    };
-  };
-  post_admin_domains_verify: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": {
-          domain: string;
-        };
-      };
-    };
-    responses: {
-      /** @description Default Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            organization_id: string;
-            domain: string;
-            provider_id: string;
-            verified: boolean;
-            dns_record: {
-              /** @enum {string} */
-              type: "TXT";
-              name: string;
-              value: string;
-            } | null;
           };
         };
       };
@@ -3477,7 +5232,7 @@ export interface operations {
       content: {
         "application/json": {
           name: string;
-          slug: string;
+          slug?: string;
         };
       };
     };
@@ -3535,7 +5290,7 @@ export interface operations {
       content: {
         "application/json": {
           name: string;
-          slug: string;
+          slug?: string;
         };
       };
     };
@@ -3924,6 +5679,62 @@ export interface operations {
           "application/json": {
             id: string;
             updated: boolean;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_me_keys_id_reveal: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": Record<string, never> | null;
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            key: string;
           };
         };
       };
@@ -4891,7 +6702,13 @@ export interface operations {
               numerator: number | null;
               denominator: number | null;
               /** @enum {string} */
-              unit: "count" | "ratio" | "seconds" | "tokens" | "usd";
+              unit:
+                | "count"
+                | "ratio"
+                | "seconds"
+                | "milliseconds"
+                | "tokens"
+                | "usd";
               /** @default [] */
               truncated_fields: string[];
             }[];

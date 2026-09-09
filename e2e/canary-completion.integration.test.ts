@@ -55,6 +55,7 @@ it("waits past a valid earlier end and the final source sync until both native s
   let clock = Date.parse("2026-09-08T00:00:00.000Z");
   const envelope = (sessionId: string): IngestEnvelope => ({
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "PI",
     harnessSessionId: sessionId,
     installationId: randomUUID(),

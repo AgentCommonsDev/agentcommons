@@ -6,16 +6,11 @@ import { createApp } from "../src/app.js";
 import { createRuntime } from "../src/main.js";
 import { environment } from "../src/env.js";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
-import * as dns from "node:dns/promises";
-import { createSocket } from "node:dgram";
-import { once } from "node:events";
 import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { syncBuiltinESMExports } from "node:module";
-import packet from "dns-packet";
 import { generateKeyPair, exportJWK, SignJWT } from "jose";
 import { z } from "zod";
 import { cleanup } from "../../../scripts/cleanup.js";
@@ -49,8 +44,6 @@ const configuration: AuthConfiguration = {
 const release: Array<() => Promise<unknown>> = [];
 const nativeFetch = globalThis.fetch;
 const tokens = new Map<string, string>();
-const txtRecords = new Map<string, string[]>();
-const dnsQueries: string[] = [];
 beforeAll(async () => {
   database = await startTraceDatabase(configuration);
   release.unshift(() => database.close());
@@ -63,36 +56,6 @@ beforeAll(async () => {
     database.audit,
   );
   signing = await generateKeyPair("RS256", { extractable: true });
-  const server = createSocket("udp4");
-  server.on("message", (bytes, remote) => {
-    const query = packet.decode(bytes);
-    const answers = (query.questions ?? []).flatMap((question) => {
-      dnsQueries.push(question.name);
-      const data = txtRecords.get(question.name);
-      return question.type === "TXT" && data
-        ? [{ type: "TXT" as const, name: question.name, ttl: 0, data }]
-        : [];
-    });
-    const response = packet.encode({
-      type: "response",
-      id: query.id ?? 0,
-      flags: packet.AUTHORITATIVE_ANSWER,
-      questions: query.questions ?? [],
-      answers,
-    });
-    server.send(response, remote.port, remote.address);
-  });
-  server.bind(0, "127.0.0.1");
-  await once(server, "listening");
-  release.unshift(() => new Promise<void>((resolve) => server.close(resolve)));
-  const previous = dns.getServers();
-  dns.setServers([`127.0.0.1:${String(server.address().port)}`]);
-  syncBuiltinESMExports();
-  release.unshift(() => {
-    dns.setServers(previous);
-    syncBuiltinESMExports();
-    return Promise.resolve();
-  });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -202,12 +165,9 @@ async function google(
 }
 
 // @req R-ORG-11 @req R-AUD-01
-it("registers only through native owner authentication, verifies actual TXT values, and retries idempotently", async () => {
+it("allows a domain only through native owner authentication, admits it immediately without a DNS proof, and retries idempotently", async () => {
   await expect(
-    enrollDomain(database.prisma, configuration, operatorContext(), {
-      ...input,
-      operation: "register",
-    }),
+    enrollDomain(database.prisma, configuration, operatorContext(), input),
   ).rejects.toBeDefined();
   await expect(
     enrollDomain(
@@ -217,30 +177,25 @@ it("registers only through native owner authentication, verifies actual TXT valu
         ...owner.context,
         headers: new Headers({ authorization: `Bearer ${owner.key}` }),
       },
-      { ...input, operation: "register" },
+      input,
     ),
   ).rejects.toMatchObject({ code: "COOKIE_REQUIRED" });
   await expect(
-    enrollDomain(database.prisma, configuration, foreign.owner, {
-      ...input,
-      operation: "register",
-    }),
+    enrollDomain(database.prisma, configuration, foreign.owner, input),
   ).rejects.toMatchObject({ code: "ADMIN_REQUIRED" });
   const first = await enrollDomain(
     database.prisma,
     configuration,
     owner.owner,
-    { ...input, operation: "register" },
+    input,
   );
-  expect(first.result.verified).toBe(false);
-  const record = z
-    .object({ name: z.string(), value: z.string() })
-    .parse(first.result.dns_record);
+  expect(first.result).toMatchObject({ domain: input.domain, verified: true });
+  expect(first.result).not.toHaveProperty("dns_record");
   const again = await enrollDomain(
     database.prisma,
     configuration,
     owner.owner,
-    { ...input, operation: "register" },
+    input,
   );
   expect(again.result).toEqual(first.result);
   expect(await database.prisma.ssoProvider.count()).toBe(1);
@@ -251,53 +206,12 @@ it("registers only through native owner authentication, verifies actual TXT valu
   ).toMatchObject({
     oidcConfig: null,
     samlConfig: null,
-    domainVerified: false,
+    domainVerified: true,
   });
-  const before = await google("before-verification@example.com");
-  expect(
-    (await service.authenticate(before.headers, operatorContext())).caller,
-  ).toBeNull();
-  txtRecords.set(record.name, ["incorrect-token"]);
-  await expect(
-    enrollDomain(database.prisma, configuration, owner.owner, {
-      ...input,
-      operation: "verify",
-    }),
-  ).rejects.toBeDefined();
-  expect(
-    (
-      await database.prisma.ssoProvider.findUniqueOrThrow({
-        where: { providerId: first.result.provider_id },
-      })
-    ).domainVerified,
-  ).toBe(false);
-  txtRecords.set(record.name, [
-    record.value.slice(0, 8),
-    record.value.slice(8),
-  ]);
-  expect(await dns.resolveTxt(record.name)).toEqual([
-    [record.value.slice(0, 8), record.value.slice(8)],
-  ]);
-  const verified = await enrollDomain(
-    database.prisma,
-    configuration,
-    owner.owner,
-    { ...input, operation: "verify" },
-  );
-  expect(verified.result).toMatchObject({ verified: true, dns_record: null });
-  expect(dnsQueries).toContain(record.name);
-  expect(
-    (
-      await enrollDomain(database.prisma, configuration, owner.owner, {
-        ...input,
-        operation: "verify",
-      })
-    ).result,
-  ).toEqual(verified.result);
   expect(
     (
       await database.prisma.auditEvent.findFirstOrThrow({
-        where: { action: "operator.domain.verify", statusCode: 200 },
+        where: { action: "operator.domain.register", statusCode: 200 },
         orderBy: { ts: "desc" },
       })
     ).organizationId,
@@ -410,7 +324,6 @@ it("rolls back native registration and callback membership when the audit fails"
     enrollDomain(database.prisma, config, owner.owner, {
       ...input,
       domain: "example.net",
-      operation: "register",
     }),
   ).rejects.toBeDefined();
   expect(
@@ -447,7 +360,6 @@ it("runs the operator CLI with a private real cookie file and rejects permissive
   await writeFile(file, cookie, { mode: 0o600 });
   const args = [
     "db:domain",
-    "register",
     "--organization",
     input.organization,
     "--domain",
@@ -487,20 +399,9 @@ it("runs the operator CLI with a private real cookie file and rejects permissive
 
 // @req R-ORG-11
 it("refuses ambiguous verified domains and non-Google configuration without changing existing roles", async () => {
-  const registered = await enrollDomain(
-    database.prisma,
-    configuration,
-    foreign.owner,
-    { ...input, organization: "domain-foreign", operation: "register" },
-  );
-  const record = z
-    .object({ name: z.string(), value: z.string() })
-    .parse(registered.result.dns_record);
-  txtRecords.set(record.name, [record.value]);
   await enrollDomain(database.prisma, configuration, foreign.owner, {
     ...input,
     organization: "domain-foreign",
-    operation: "verify",
   });
   const ambiguous = await google("ambiguous@example.com");
   expect(
@@ -522,7 +423,7 @@ it("refuses ambiguous verified domains and non-Google configuration without chan
         },
       },
       owner.owner,
-      { ...input, operation: "register" },
+      input,
     ),
   ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
   const existing = await google(owner.email);
@@ -722,21 +623,15 @@ it("lets organization administrators manage native domain access under invite wh
     database.audit,
   );
   const domain = "invite-members.example.org";
-  const pending = await invite.domain(owner.owner, "register", { domain });
-  expect(pending.result.verified).toBe(false);
-  const proof = z
-    .object({ name: z.string(), value: z.string() })
-    .parse(pending.result.dns_record);
-  const denied = await google(`pending@${domain}`, true, undefined, invite);
+  const denied = await google(`early@${domain}`, true, undefined, invite);
   expect(denied.response.headers.get("location")).toContain(
     "account_not_provisioned",
   );
   expect(
-    await database.prisma.user.count({ where: { email: `pending@${domain}` } }),
+    await database.prisma.user.count({ where: { email: `early@${domain}` } }),
   ).toBe(0);
-  txtRecords.set(proof.name, [proof.value]);
-  const verified = await invite.domain(owner.owner, "verify", { domain });
-  expect(verified.result.verified).toBe(true);
+  const allowed = await invite.domain(owner.owner, { domain });
+  expect(allowed.result.verified).toBe(true);
   const admitted = await google(`member@${domain}`, true, undefined, invite);
   const identity = await invite.authenticate(
     admitted.headers,
@@ -761,9 +656,9 @@ it("lets organization administrators manage native domain access under invite wh
     ...owner.context,
     headers: new Headers({ authorization: `Bearer ${owner.key}` }),
   };
-  await expect(
-    invite.domain(keyContext, "register", { domain }),
-  ).rejects.toMatchObject({ code: "COOKIE_REQUIRED" });
+  await expect(invite.domain(keyContext, { domain })).rejects.toMatchObject({
+    code: "COOKIE_REQUIRED",
+  });
   const unverified = await google(
     `unverified@${domain}`,
     false,
@@ -793,9 +688,9 @@ it("lets organization administrators manage native domain access under invite wh
     ).response.headers.get("location"),
   ).toContain("account_not_provisioned");
   expect((await closed.domains(owner.owner, {})).result.enabled).toBe(false);
-  await expect(
-    closed.domain(owner.owner, "register", { domain }),
-  ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
+  await expect(closed.domain(owner.owner, { domain })).rejects.toMatchObject({
+    code: "DOMAIN_ENROLLMENT_DISABLED",
+  });
   const restricted = new AuthService(
     database.prisma,
     { ...inviteConfiguration, allowedEmailDomains: ["example.com"] },
@@ -807,7 +702,7 @@ it("lets organization administrators manage native domain access under invite wh
     ).response.headers.get("location"),
   ).toContain("email_domain_not_allowed");
   await expect(
-    restricted.domain(owner.owner, "register", { domain }),
+    restricted.domain(owner.owner, { domain }),
   ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
   expect(
     await database.prisma.auditEvent.count({
@@ -820,8 +715,8 @@ it("lets organization administrators manage native domain access under invite wh
   ).toBeGreaterThan(0);
 });
 
-// @req R-ORG-11 @req R-AUD-01
-it("serves scoped DNS registration and verification through generated REST routes with bounded domain pagination", async () => {
+// @req R-ORG-11 @req R-DASH-29 @req R-AUD-01
+it("serves scoped domain allowlisting through generated REST routes with bounded domain pagination", async () => {
   const env = environment({
     PUBLIC_URL: configuration.publicUrl,
     BETTER_AUTH_SECRET: configuration.secret,
@@ -856,25 +751,17 @@ it("serves scoped DNS registration and verification through generated REST route
     });
     expect(registered.statusCode, registered.body).toBe(200);
     expect(await database.prisma.auditEvent.count()).toBe(before + 1);
-    const proof = z
-      .object({ dns_record: z.object({ name: z.string(), value: z.string() }) })
-      .parse(registered.json<unknown>()).dns_record;
-    const invalid = await app.inject({
+    expect(registered.json<unknown>()).toMatchObject({
+      domain,
+      verified: true,
+    });
+    const gone = await app.inject({
       method: "POST",
       url: "/api/v1/admin/domains/verify",
       headers,
       payload: { domain },
     });
-    expect(invalid.statusCode).toBeGreaterThanOrEqual(400);
-    txtRecords.set(proof.name, [proof.value]);
-    const verified = await app.inject({
-      method: "POST",
-      url: "/api/v1/admin/domains/verify",
-      headers,
-      payload: { domain },
-    });
-    expect(verified.statusCode, verified.body).toBe(200);
-    expect(verified.json<unknown>()).toMatchObject({ domain, verified: true });
+    expect(gone.statusCode).toBe(404);
     const listed = await app.inject({
       method: "GET",
       url: "/api/v1/admin/domains?limit=1&sort=domain&order=asc",
@@ -927,76 +814,34 @@ it("serves scoped DNS registration and verification through generated REST route
 });
 
 // @req R-ORG-11
-it("fits the native TXT proof within DNS name limits and rejects the next character before writing", async () => {
-  const config: AuthConfiguration = {
-    ...configuration,
-    allowedEmailDomains: [],
-  };
-  const domains = new AuthService(database.prisma, config, database.audit);
-  const domain = [
-    "a".repeat(63),
-    "b".repeat(63),
-    "c".repeat(63),
-    "d".repeat(10),
-  ].join(".");
-  expect(domain).toHaveLength(202);
-  const registered = await domains.domain(owner.owner, "register", { domain });
-  const proof = z
-    .object({ name: z.string(), value: z.string() })
-    .parse(registered.result.dns_record);
-  expect(proof.name).toHaveLength(253);
-  txtRecords.set(proof.name, [proof.value]);
-  expect(
-    (await domains.domain(owner.owner, "verify", { domain })).result.verified,
-  ).toBe(true);
-  const count = await database.prisma.ssoProvider.count();
-  await expect(
-    domains.domain(owner.owner, "register", { domain: `${domain}d` }),
-  ).rejects.toBeDefined();
-  expect(await database.prisma.ssoProvider.count()).toBe(count);
-});
-
-// @req R-ORG-11
-it("filters domains literally and sorts verification state on the server", async () => {
+it("filters domains literally and sorts them on the server", async () => {
   const domains = new AuthService(
     database.prisma,
     { ...configuration, allowedEmailDomains: [] },
     database.audit,
   );
-  await domains.domain(owner.owner, "register", {
-    domain: "pending-filter.example.org",
+  await domains.domain(owner.owner, { domain: "alpha-filter.example.org" });
+  await domains.domain(owner.owner, { domain: "beta-filter.example.org" });
+  const filtered = await domains.domains(owner.owner, {
+    domain: "alpha-filter",
   });
-  const pending = await domains.domains(owner.owner, {
-    verified: "false",
-    domain: "pending-filter",
-    sort: "verified",
-    order: "asc",
+  expect(filtered.result.items).toHaveLength(1);
+  expect(filtered.result.items[0]).toMatchObject({
+    domain: "alpha-filter.example.org",
+    verified: true,
   });
-  expect(pending.result.items).toHaveLength(1);
-  expect(pending.result.items[0]).toMatchObject({
-    domain: "pending-filter.example.org",
-    verified: false,
-  });
-  expect(
-    (
-      await domains.domains(owner.owner, {
-        verified: "true",
-        domain: "pending-filter",
-      })
-    ).result.items,
-  ).toEqual([]);
   for (const domain of ["%", "_", "\\"])
     expect(
       (await domains.domains(owner.owner, { domain })).result.items,
     ).toEqual([]);
   const ascending = (
-    await domains.domains(owner.owner, { sort: "verified", order: "asc" })
-  ).result.items;
+    await domains.domains(owner.owner, { domain: "-filter", order: "asc" })
+  ).result.items.map((row) => row.domain);
   const descending = (
-    await domains.domains(owner.owner, { sort: "verified", order: "desc" })
-  ).result.items;
-  expect(ascending[0]?.verified).toBe(false);
-  expect(descending[0]?.verified).toBe(true);
+    await domains.domains(owner.owner, { domain: "-filter", order: "desc" })
+  ).result.items.map((row) => row.domain);
+  expect(ascending).toEqual([...descending].reverse());
+  expect(ascending[0]).toBe("alpha-filter.example.org");
 });
 
 // @req R-ORG-11
@@ -1013,7 +858,7 @@ it("keeps the native Google-only eligibility predicate consistent for mixed prov
   const mixed = new AuthService(database.prisma, config, database.audit);
   expect((await mixed.domains(owner.owner, {})).result.enabled).toBe(false);
   await expect(
-    mixed.domain(owner.owner, "register", { domain: "mixed.example.org" }),
+    mixed.domain(owner.owner, { domain: "mixed.example.org" }),
   ).rejects.toMatchObject({ code: "DOMAIN_ENROLLMENT_DISABLED" });
   const signed = await google(
     "mixed-provider@invite-members.example.org",

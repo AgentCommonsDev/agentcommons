@@ -303,6 +303,7 @@ export function createNormalizer(
       ...config.sessionDelta(prepare(records), context),
     }),
     links: (records) => config.links(prepare(records)),
+    spawns: (records) => config.spawns(prepare(records)),
     toolUses: (records) =>
       config
         .toMessages(order(records))

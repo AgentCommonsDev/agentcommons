@@ -1,475 +1,184 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
+import { useEffect, useState, type ReactNode } from "react";
 import { Search, X } from "lucide-react";
-import {
-  searchFiltersSchema,
-  type SearchCondition,
-} from "@agentcommons/core/schemas/search";
-import { formatSearch } from "@agentcommons/core/format";
 import { copy } from "../copy";
-import { api, unwrap, defined } from "../lib/api/client";
-import { searchFilterKeys, sessionSortKeys } from "../lib/api/options";
-import { dateTime, number, textValue, harnessLabel } from "../lib/display";
-import { usePagination } from "../lib/pagination";
-import type { SessionItem } from "../lib/types";
-import { useWorkspace } from "../components/workspace/context";
-import { DataTable } from "../components/workspace/data-table";
-import {
-  CopyButton,
-  EmptyState,
-  LoadingState,
-  PageHeading,
-  RequestError,
-  StatusBadge,
-  ShortenedFields,
-} from "../components/workspace/primitives";
+import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button";
-import { SearchConditions } from "../components/workspace/search-conditions";
+import { Alert, EmptyState, PageHeader } from "../components/ui/feedback";
+import { Input } from "../components/ui/input";
+import { FilterChips } from "../features/sessions/filter-chips";
+import { FilterPopover } from "../features/sessions/filter-popover";
+import { MessageResults } from "../features/sessions/search-results";
+import {
+  apiFilters,
+  effectiveView,
+  hasFilters,
+  type ResultView,
+} from "../features/sessions/search-state";
+import { SessionsTable } from "../features/sessions/sessions-table";
+import { useSearchState } from "../features/sessions/use-search-state";
 
-export function sessionColumns(): ColumnDef<SessionItem>[] {
-  return [
-    {
-      accessorKey: "title",
-      header: copy.workspace.fields.title,
-      cell: ({ row }) => (
-        <a className="table-cell-title" href={`/s/${row.original.session_id}`}>
-          {row.original.title ?? copy.workspace.sessions.untitled}
-        </a>
-      ),
-    },
-    {
-      accessorKey: "harness",
-      header: copy.workspace.fields.harness,
-      cell: ({ row }) => harnessLabel(row.original.harness),
-    },
-    {
-      accessorKey: "harness_version",
-      header: copy.workspace.fields.harness_version,
-      cell: ({ getValue }) => textValue(getValue()),
-    },
-    {
-      accessorKey: "model",
-      header: copy.workspace.fields.model,
-      cell: ({ getValue }) => textValue(getValue()),
-    },
-    {
-      accessorKey: "repo_name",
-      header: copy.workspace.fields.repo_name,
-      cell: ({ getValue }) => textValue(getValue()),
-    },
-    {
-      accessorKey: "branch",
-      header: copy.workspace.fields.branch,
-      cell: ({ getValue }) => textValue(getValue()),
-    },
-    { accessorKey: "user_email", header: copy.workspace.fields.user_email },
-    {
-      accessorKey: "installation_hostname",
-      header: copy.workspace.fields.installation_hostname,
-    },
-    {
-      accessorKey: "started_at",
-      header: copy.workspace.fields.started_at,
-      cell: ({ row }) => dateTime(row.original.started_at),
-    },
-    {
-      accessorKey: "duration_seconds",
-      header: copy.workspace.fields.duration_seconds,
-      cell: ({ row }) => number(row.original.duration_seconds),
-    },
-    {
-      accessorKey: "message_count",
-      header: copy.workspace.fields.message_count,
-      cell: ({ row }) => number(row.original.message_count),
-    },
-    {
-      accessorKey: "tool_call_count",
-      header: copy.workspace.fields.tool_call_count,
-      cell: ({ row }) => number(row.original.tool_call_count),
-    },
-    {
-      accessorKey: "observed_commit_count",
-      header: copy.workspace.fields.observed_commit_count,
-      cell: ({ row }) => number(row.original.observed_commit_count),
-    },
-    {
-      accessorKey: "reuse_count",
-      header: copy.workspace.fields.reuse_count,
-      cell: ({ row }) => number(row.original.reuse_count),
-    },
-    {
-      accessorKey: "status",
-      header: copy.workspace.fields.status,
-      cell: ({ row }) => <StatusBadge value={row.original.status} />,
-    },
-  ];
-}
-export function FilterChips({
-  filters,
-  onChange,
+function Segment({
+  active,
+  onClick,
+  children,
+  testId,
 }: {
-  filters: Record<string, string | string[]>;
-  onChange: (value: Record<string, string | string[]>) => void;
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+  testId: string;
 }) {
-  const [field, setField] = useState<string>(searchFilterKeys[0]);
-  const [value, setValue] = useState("");
-  const labels: Record<string, string> = copy.workspace.fields;
   return (
-    <>
-      <form
-        className="filter-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (value.trim()) {
-            const existing = filters[field];
-            const values =
-              existing === undefined
-                ? []
-                : Array.isArray(existing)
-                  ? existing
-                  : [existing];
-            onChange({
-              ...filters,
-              [field]: [...new Set([...values, value.trim()])],
-            });
-            setValue("");
-          }
-        }}
-      >
-        <select
-          aria-label={copy.workspace.sessions.filterField}
-          value={field}
-          onChange={(event) => {
-            setField(event.target.value);
-          }}
-        >
-          {searchFilterKeys.map((key) => (
-            <option value={key} key={key}>
-              {labels[key] ?? key}
-            </option>
-          ))}
-        </select>
-        <input
-          aria-label={copy.workspace.sessions.filterValue}
-          placeholder={labels[field] ?? field}
-          value={value}
-          onChange={(event) => {
-            setValue(event.target.value);
-          }}
-        />
-        <Button type="submit" variant="secondary" disabled={!value.trim()}>
-          {copy.workspace.sessions.addFilter}
-        </Button>
-      </form>
-      <div className="filter-chips">
-        {Object.entries(filters).flatMap(([key, values]) =>
-          (Array.isArray(values) ? values : [values]).map((content) => (
-            <span className="filter-chip" key={`${key}:${content}`}>
-              {labels[key] ?? key}
-              {copy.workspace.common.separator}
-              {content}
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`${copy.workspace.sessions.removeFilter} ${labels[key] ?? key}`}
-                onClick={() => {
-                  const remaining = (
-                    Array.isArray(values) ? values : [values]
-                  ).filter((item) => item !== content);
-                  onChange(
-                    Object.fromEntries(
-                      Object.entries(filters).flatMap(([name, entry]) =>
-                        name !== key
-                          ? [[name, entry]]
-                          : remaining.length > 0
-                            ? [[name, remaining]]
-                            : [],
-                      ),
-                    ),
-                  );
-                }}
-              >
-                <X size={12} aria-hidden />
-              </Button>
-            </span>
-          )),
-        )}
-      </div>
-    </>
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      data-testid={testId}
+      onClick={onClick}
+      className={cn(
+        "h-8 cursor-pointer rounded-md px-3 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        active ? "bg-surface text-fg shadow-sm" : "text-muted hover:text-fg",
+      )}
+    >
+      {children}
+    </button>
   );
 }
+/** One search experience: words plus filters in the URL, results as sessions or messages. */
 export function SessionsPage() {
-  const { organization } = useWorkspace();
-  const pagination = usePagination("started_at", sessionSortKeys);
-  const [filters, setFilters] = useState<Record<string, string | string[]>>({});
-  const [conditions, setConditions] = useState<SearchCondition[]>([]);
-  const requestFilters = {
-    ...filters,
-    ...(conditions.length ? { where: conditions } : {}),
+  const { state, update } = useSearchState();
+  const [draft, setDraft] = useState(state.query);
+  useEffect(() => {
+    setDraft(state.query);
+  }, [state.query]);
+  const view = effectiveView(state);
+  const filters = apiFilters(state);
+  const filtered = hasFilters(state);
+  const chooseView = (next: ResultView) => {
+    update({ view: next });
   };
-  const [query, setQuery] = useState("");
-  const [submitted, setSubmitted] = useState("");
-  const [searchCursors, setSearchCursors] = useState<(string | null)[]>([null]);
-  const columns = useMemo(sessionColumns, []);
-  const list = useQuery({
-    queryKey: [
-      organization.id,
-      "sessions",
-      requestFilters,
-      pagination.cursor,
-      pagination.sort,
-      pagination.direction,
-    ],
-    queryFn: async ({ signal }) =>
-      unwrap(
-        await api.GET("/api/v1/sessions", {
-          params: {
-            query: {
-              filters: defined(searchFiltersSchema.parse(requestFilters)),
-              cursor: pagination.cursor,
-              sort: pagination.sort,
-              order: pagination.direction,
-              limit: 50,
-              format: "json",
-            },
-          },
-          signal,
-        }),
-      ),
-    enabled: submitted === "",
-  });
-  const search = useQuery({
-    queryKey: [
-      organization.id,
-      "search",
-      submitted,
-      requestFilters,
-      searchCursors.at(-1),
-    ],
-    queryFn: async ({ signal }) =>
-      unwrap(
-        await api.POST("/api/v1/search", {
-          body: {
-            query: submitted,
-            filters: defined(searchFiltersSchema.parse(requestFilters)),
-            cursor: searchCursors.at(-1) ?? null,
-            context: 1,
-            limit: 5,
-          },
-          signal,
-        }),
-      ),
-    enabled: submitted !== "",
-  });
-  const changeFilters = (next: Record<string, string | string[]>) => {
-    setFilters(next);
-    pagination.reset();
-    setSearchCursors([null]);
-  };
-  const result = search.data ? formatSearch(search.data) : null;
   return (
-    <>
-      <PageHeading
-        title={copy.workspace.sessions.title}
-        description={copy.workspace.sessions.description}
+    <div className="flex flex-col gap-5">
+      <PageHeader
+        title={copy.sessions.title}
+        description={copy.sessions.description}
       />
-      <form
-        className="workspace-search"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setSubmitted(query.trim());
-          setSearchCursors([null]);
-        }}
-      >
-        <div>
-          <Search size={18} aria-hidden />
-          <input
-            aria-label={copy.workspace.common.search}
-            placeholder={copy.workspace.common.searchPlaceholder}
-            type="search"
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-            }}
-          />
+      <section className="flex flex-col gap-3 rounded-lg border border-line bg-surface p-3 sm:p-4">
+        <form
+          role="search"
+          className="flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const query = draft.trim();
+            update({ query, view: query ? null : state.view });
+          }}
+        >
+          <div className="relative min-w-0 flex-1">
+            <Search
+              size={16}
+              aria-hidden
+              className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-muted"
+            />
+            <Input
+              type="search"
+              data-testid="sessions-search"
+              aria-label={copy.sessions.search.label}
+              placeholder={copy.sessions.search.placeholder}
+              value={draft}
+              className="pl-9"
+              onChange={(event) => {
+                setDraft(event.target.value);
+              }}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button type="submit" className="flex-1 sm:flex-none">
+              {copy.sessions.search.submit}
+            </Button>
+            {state.query && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={copy.sessions.search.clear}
+                onClick={() => {
+                  setDraft("");
+                  update({ query: "", view: null });
+                }}
+              >
+                <X aria-hidden />
+              </Button>
+            )}
+          </div>
+        </form>
+        <div className="flex flex-wrap items-center gap-2">
+          <FilterPopover state={state} onChange={update} />
+          <FilterChips state={state} onChange={update} />
         </div>
-        <Button type="submit">{copy.workspace.sessions.search}</Button>
-        {submitted && (
-          <Button
-            variant="secondary"
+      </section>
+      {filters.error && <Alert variant="danger">{filters.error}</Alert>}
+      <div className="flex flex-wrap items-center gap-3">
+        <div
+          role="tablist"
+          aria-label={copy.sessions.views.label}
+          className="inline-flex items-center gap-0.5 rounded-lg border border-line bg-raised p-0.5"
+        >
+          <Segment
+            active={view === "sessions"}
+            testId="sessions-view-sessions"
             onClick={() => {
-              setQuery("");
-              setSubmitted("");
+              chooseView("sessions");
             }}
           >
-            {copy.workspace.sessions.showList}
-          </Button>
-        )}
-      </form>
-      <FilterChips filters={filters} onChange={changeFilters} />
-      <SearchConditions
-        conditions={conditions}
-        onChange={(next) => {
-          setConditions(next);
-          pagination.reset();
-          setSearchCursors([null]);
-        }}
-      />
-      {submitted ? (
-        <>
-          {search.isPending && <LoadingState />}
-          {search.error && (
-            <RequestError
-              error={search.error}
-              retry={() => {
-                void search.refetch();
-              }}
+            {copy.sessions.views.sessions}
+          </Segment>
+          <Segment
+            active={view === "messages"}
+            testId="sessions-view-messages"
+            onClick={() => {
+              chooseView("messages");
+            }}
+          >
+            {copy.sessions.views.messages}
+          </Segment>
+        </div>
+      </div>
+      {filters.filters &&
+        (view === "messages" ? (
+          state.query.trim() || filtered ? (
+            <MessageResults
+              query={state.query.trim()}
+              filters={filters.filters}
             />
-          )}
-          {result && (
-            <>
-              <div className="workspace-page-actions">
-                <CopyButton
-                  value={result.text}
-                  label={copy.workspace.common.copy}
-                />
-              </div>
-              {result.structuredContent.blocks.length === 0 && (
-                <EmptyState title={copy.workspace.sessions.noResults} />
-              )}
-              {result.structuredContent.blocks.map((block, index) => (
-                <article
-                  className="search-block"
-                  key={`${block.session_id}-${String(index)}`}
-                >
-                  <header className="search-block-header">
-                    <h2>
-                      <a href={`/s/${block.session_id}`}>
-                        {block.title ?? copy.workspace.sessions.untitled}
-                      </a>
-                    </h2>
-                    <div>
-                      <span>{harnessLabel(block.harness)}</span>
-                      <span>{block.model}</span>
-                      <span>{block.repo_name}</span>
-                      <span>{block.branch}</span>
-                      <span>{block.user_email}</span>
-                      <time dateTime={block.started_at}>
-                        {dateTime(block.started_at)}
-                      </time>
-                    </div>
-                  </header>
-                  <ShortenedFields fields={block.truncated_fields} />
-                  {block.messages.map((message) => (
-                    <div
-                      className={
-                        message.hit ? "search-message hit" : "search-message"
-                      }
-                      key={message.seq}
-                    >
-                      <div className="search-message-meta">
-                        <a
-                          href={`/s/${block.session_id}#${String(message.seq)}`}
-                        >
-                          {message.seq}
-                        </a>
-                        <StatusBadge value={message.role} />
-                        <StatusBadge value={message.kind} />
-                        {message.tool_name && <span>{message.tool_name}</span>}
-                        {message.hit && (
-                          <span>{copy.workspace.sessions.hit}</span>
-                        )}
-                        {message.truncated && (
-                          <span>
-                            {copy.workspace.sessions.truncatedMessage}
-                          </span>
-                        )}
-                      </div>
-                      <ShortenedFields fields={message.truncated_fields} />
-                      <pre>{message.content}</pre>
-                    </div>
-                  ))}
-                </article>
-              ))}
-              {result.structuredContent.truncated_response && (
-                <p className="form-success">
-                  {copy.workspace.sessions.truncated}
-                </p>
-              )}
-              <div className="table-pagination">
-                <Button
-                  variant="secondary"
-                  disabled={searchCursors.length === 1}
-                  onClick={() => {
-                    setSearchCursors((prior) => prior.slice(0, -1));
-                  }}
-                >
-                  {copy.workspace.common.previous}
-                </Button>
-                <Button
-                  variant="secondary"
-                  disabled={!result.structuredContent.cursor}
-                  onClick={() => {
-                    const cursor = result.structuredContent.cursor;
-                    if (cursor) setSearchCursors((prior) => [...prior, cursor]);
-                  }}
-                >
-                  {copy.workspace.common.next}
-                </Button>
-              </div>
-            </>
-          )}
-        </>
-      ) : (
-        <>
-          {list.error && (
-            <RequestError
-              error={list.error}
-              retry={() => {
-                void list.refetch();
-              }}
+          ) : (
+            <EmptyState
+              compact
+              title={copy.sessions.results.needQuery}
+              description={copy.sessions.results.needQueryHint}
             />
-          )}
-          {!list.error && (
-            <DataTable
-              summaryColumnIds={["title", "repo_name", "harness", "status"]}
-              data={list.data?.items ?? []}
-              columns={columns}
-              sorting={pagination.sorting}
-              onSortingChange={pagination.onSortingChange}
-              loading={list.isPending}
-              nextCursor={list.data?.cursor ?? null}
-              pageIndex={pagination.pageIndex}
-              onNext={() => {
-                pagination.next(list.data?.cursor ?? null);
-              }}
-              onPrevious={pagination.previous}
-              label={copy.workspace.sessions.list}
-              csvName={copy.workspace.sessions.csvName}
-              fetchExportPage={async (cursor, signal) =>
-                unwrap(
-                  await api.GET("/api/v1/sessions", {
-                    params: {
-                      query: {
-                        filters: defined(
-                          searchFiltersSchema.parse(requestFilters),
-                        ),
-                        cursor,
-                        sort: pagination.sort,
-                        order: pagination.direction,
-                        limit: 100,
-                        format: "json",
-                      },
-                    },
-                    signal,
-                  }),
-                )
-              }
-            />
-          )}
-        </>
-      )}
-    </>
+          )
+        ) : (
+          <>
+            {state.query.trim() && (
+              <Alert
+                action={
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      chooseView("messages");
+                    }}
+                  >
+                    {copy.sessions.views.showMessages}
+                  </Button>
+                }
+              >
+                {copy.sessions.views.wordsHint}
+              </Alert>
+            )}
+            <SessionsTable filters={filters.filters} filtered={filtered} />
+          </>
+        ))}
+    </div>
   );
 }

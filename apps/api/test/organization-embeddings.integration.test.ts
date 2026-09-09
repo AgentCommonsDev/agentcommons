@@ -11,6 +11,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import {
+  errorSchema,
   organizationEmbeddingsOutputSchema,
   type IngestEnvelope,
 } from "@agentcommons/core";
@@ -49,6 +50,7 @@ function env(enabled: boolean) {
 function envelope(text: string): IngestEnvelope {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     behavior: "sync",
@@ -287,6 +289,34 @@ it("disables retained vectors and SQL discovery immediately while REST and MCP s
       },
     });
     expect(denied.isError).toBe(true);
+    // The agent learns which capability needs embeddings, why they are off and who can
+    // change that, instead of a generic "unavailable view" rejection.
+    const deniedError = errorSchema.parse(
+      JSON.parse(
+        z
+          .array(z.object({ type: z.literal("text"), text: z.string() }))
+          .parse(denied.content)[0]?.text ?? "",
+      ),
+    );
+    expect(deniedError).toMatchObject({
+      code: "EMBEDDINGS_DISABLED",
+      message:
+        "similar_sessions needs embeddings, which are turned off for this organization. An organization admin can turn them on under Settings. Use search_messages(q='words') for keyword search.",
+      detail: { position: 15 },
+    });
+    for (const sql of [
+      "SELECT count() FROM message_chunks",
+      "SELECT cosineDistance([1],[1])",
+    ])
+      await expect(
+        runtime.services.query.execute(first.context, { sql }),
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        code: "EMBEDDINGS_DISABLED",
+        message: expect.stringContaining(
+          "turned off for this organization",
+        ) as string,
+      });
     const id = z.string().parse(
       (
         await db.prisma.traceSessionControl.findFirst({
@@ -298,13 +328,15 @@ it("disables retained vectors and SQL discovery immediately while REST and MCP s
         })
       )?.id,
     );
-    expect(
-      (
-        await fetch(`${address}/api/v1/sessions/${id}/similar`, {
-          headers: { authorization: `Bearer ${first.key}` },
-        })
-      ).status,
-    ).toBe(404);
+    const similar = await fetch(`${address}/api/v1/sessions/${id}/similar`, {
+      headers: { authorization: `Bearer ${first.key}` },
+    });
+    expect(similar.status).toBe(404);
+    expect(errorSchema.parse(await similar.json())).toEqual({
+      code: "EMBEDDINGS_DISABLED",
+      message:
+        "Similar sessions needs embeddings, which are turned off for this organization. An organization admin can turn them on under Settings.",
+    });
     expect(await vectorCount()).toBe(before);
   } finally {
     dispatch.mockRestore();
@@ -394,6 +426,18 @@ it("keeps the global operator kill switch authoritative and records failed enabl
       code: "EMBEDDINGS_UNAVAILABLE",
       audited: true,
     });
+    // Without an operator provider the SQL surface says so, even for an opted-in organization.
+    await expect(
+      off.services.query.execute(first.context, {
+        sql: "SELECT * FROM similar_sessions(source='00000000-0000-0000-0000-000000000000',max_rows=5)",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: "EMBEDDINGS_DISABLED",
+      message:
+        "similar_sessions needs embeddings, and this instance has no embedding provider configured. The instance operator has to configure one. Use search_messages(q='words') for keyword search.",
+    });
+    expect(off.services.similar).toBeUndefined();
     expect(
       await db.prisma.auditEvent.count({
         where: {

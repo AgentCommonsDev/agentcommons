@@ -1,4 +1,7 @@
-import { organizationEmbeddingSetting } from "../embeddings/settings.js";
+import {
+  embeddingAvailability,
+  embeddingsDisabledMessage,
+} from "../embeddings/settings.js";
 import { canonicalSessionColumns, sqlIdentifier } from "@agentcommons/traces";
 import { ServiceError } from "./context.js";
 import {
@@ -22,20 +25,19 @@ export class SimilarService {
         detail: input,
       },
       async (caller) => {
-        if (
-          !(
-            await organizationEmbeddingSetting(
-              this.dependencies.prisma,
-              caller.organizationId,
-              false,
-              Boolean(this.dependencies.saas),
-            )
-          ).enabled
-        )
+        // This service exists only when the operator enabled a provider, so the
+        // remaining gates are the organization's own setting and, in SaaS, its plan.
+        const availability = await embeddingAvailability(
+          this.dependencies.prisma,
+          caller.organizationId,
+          true,
+          Boolean(this.dependencies.saas),
+        );
+        if (!availability.enabled)
           throw new ServiceError(
             404,
             "EMBEDDINGS_DISABLED",
-            "Similar sessions are disabled for this organization.",
+            embeddingsDisabledMessage("Similar sessions", availability),
           );
         sessionIdSchema.parse(id);
         const request = similarInputSchema.parse(input);

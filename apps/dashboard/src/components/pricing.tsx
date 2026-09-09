@@ -91,7 +91,7 @@ export function Pricing() {
         <h3>{copy.saas.embeddingsAddon}</h3>
         <p>
           {formatted.embeddingPrice} {copy.saas.perMonth}
-          {copy.workspace.common.separator}
+          {copy.app.common.separator}
           {formatted.embeddingRate ? (
             <>
               {formatted.embeddingRate} {copy.saas.embeddingRate}

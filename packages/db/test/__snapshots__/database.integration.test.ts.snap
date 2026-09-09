@@ -8,16 +8,19 @@ ALTER TABLE "api_key_owner" DROP CONSTRAINT "api_key_owner_organization";
 ALTER TABLE "api_key_owner" DROP CONSTRAINT "key_owner";
 
 -- DropForeignKey
+ALTER TABLE "api_key_secret" DROP CONSTRAINT "api_key_secret_owner";
+
+-- DropForeignKey
 ALTER TABLE "audit_event" DROP CONSTRAINT "audit_event_organization";
 
 -- DropForeignKey
 ALTER TABLE "billing_meter_event" DROP CONSTRAINT "billing_meter_event_organization_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "dashboard_profile" DROP CONSTRAINT "dashboard_profile_organization_id_fkey";
+ALTER TABLE "dashboard" DROP CONSTRAINT "dashboard_created_by_user_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "dashboard_profile" DROP CONSTRAINT "dashboard_profile_user_id_fkey";
+ALTER TABLE "dashboard" DROP CONSTRAINT "dashboard_organization_id_fkey";
 
 -- DropForeignKey
 ALTER TABLE "embedding_budget" DROP CONSTRAINT "embedding_budget_organization_id_fkey";

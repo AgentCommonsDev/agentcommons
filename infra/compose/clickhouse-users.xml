@@ -1,0 +1,11 @@
+<!-- Single-node per-query limits for every profile that inherits default
+     (docker-compose.caddy.yml mounts this into users.d). One query may not take more
+     than 2 GiB or run longer than 60 s, so no single query can exhaust the server. -->
+<clickhouse>
+    <profiles>
+        <default>
+            <max_memory_usage>2147483648</max_memory_usage>
+            <max_execution_time>60</max_execution_time>
+        </default>
+    </profiles>
+</clickhouse>

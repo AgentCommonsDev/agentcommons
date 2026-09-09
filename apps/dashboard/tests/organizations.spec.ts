@@ -1,123 +1,103 @@
-import { test } from "./browser-test";
-import { selectOrganization } from "./organization-controls";
-import { expect } from "@playwright/test";
-import AxeBuilder from "@axe-core/playwright";
+import {
+  accessible,
+  activate,
+  cookieSchema,
+  setTheme,
+  test,
+} from "./browser-test";
+import { selectOrganization, switcher } from "./organization-controls";
+import { expect, type APIRequestContext } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { copy } from "../src/copy";
+import { paths } from "../src/lib/routes";
+import { saasStatePath } from "../playwright.shared";
 const fixtureSchema = z.object({
   organizationId: z.string(),
-  ownerCookies: z.array(
-    z.object({
-      name: z.string(),
-      value: z.string(),
-      domain: z.string(),
-      path: z.string(),
-      httpOnly: z.boolean(),
-      secure: z.boolean(),
-      sameSite: z.enum(["Strict", "Lax", "None"]),
-    }),
-  ),
+  ownerCookies: z.array(cookieSchema),
 });
-// @req R-SAAS-01 @req R-WEB-02
+const keyIds = async (request: APIRequestContext) => {
+  const response = await request.get("/api/v1/me/keys");
+  expect(response.ok()).toBe(true);
+  return z
+    .object({ items: z.array(z.object({ id: z.string() })) })
+    .parse(await response.json())
+    .items.map((item) => item.id)
+    .sort();
+};
+const activeOrganization = async (request: APIRequestContext) =>
+  z
+    .object({
+      organization: z.object({ id: z.string(), name: z.string() }).nullable(),
+    })
+    .parse(await (await request.get("/api/v1/me")).json()).organization;
+
+// @req R-SAAS-01 @req R-SAAS-09 @req R-WEB-02 @req R-DASH-27
 for (const theme of ["dark", "light"] as const)
-  test(`organization creation leads to isolated installation in ${theme}`, async ({
+  test(`name-only organization creation leads to an isolated install page in ${theme}`, async ({
     page,
     context,
-  }, testInfo) => {
+    isMobile,
+  }) => {
     const fixture = fixtureSchema.parse(
-      JSON.parse(
-        await readFile("/tmp/agentcommons-saas-browser-state.json", "utf8"),
-      ),
+      JSON.parse(await readFile(saasStatePath, "utf8")),
     );
     await context.addCookies(fixture.ownerCookies);
-    await page.addInitScript((value) => {
-      localStorage.setItem("agentcommons-theme", value);
-    }, theme);
-    const input = testInfo.project.use.hasTouch ? "tap" : "click";
-    await page.goto("/home");
-    const picker = page.getByLabel(copy.workspace.navigation.organization, {
-      exact: true,
-    });
-    await selectOrganization(page, fixture.organizationId);
-    await expect(picker).toHaveAttribute(
-      "data-organization-id",
-      fixture.organizationId,
+    await setTheme(page, theme);
+    await page.goto(paths.home);
+    await selectOrganization(page, fixture.organizationId, isMobile);
+    await expect(page.getByTestId("dashboard-picker")).toBeVisible();
+    const beforeKeys = await keyIds(context.request);
+    await selectOrganization(page, "__create", isMobile);
+    await expect(page).toHaveURL(new RegExp(`${paths.organizationsNew}$`));
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      copy.app.navigation.newOrganization,
     );
-    const before = await context.request.get("/api/v1/me/keys");
-    expect(before.ok()).toBe(true);
-    const beforeKeys = z
-      .object({ items: z.array(z.object({ id: z.string() })) })
-      .parse(await before.json());
-    await selectOrganization(page, "__create");
-    await expect(page).toHaveURL(/\/organizations\/new$/);
+    const nameInput = page.getByTestId("onboarding-organization-name");
+    await expect(nameInput).toBeVisible();
     await expect(
-      page.getByLabel(copy.signup.organizationName, { exact: true }),
-    ).toBeVisible();
-    await expect(page).toHaveScreenshot(`saas-new-organization-${theme}.png`);
+      page.getByLabel(copy.signup.slug, { exact: true }),
+    ).toHaveCount(0);
+    await accessible(page);
+    await expect(page).toHaveScreenshot(`saas-new-organization-${theme}.png`, {
+      fullPage: true,
+    });
     const name = `Browser team ${randomUUID().slice(0, 8)}`;
-    await page
-      .getByLabel(copy.signup.organizationName, { exact: true })
-      .fill(name);
-    await page
-      .getByLabel(copy.signup.slug, { exact: true })
-      .fill(name.toLowerCase().replaceAll(" ", "-"));
+    await nameInput.fill(name);
     const created = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/v1/me/organizations") &&
         response.request().method() === "POST",
     );
-    await page
-      .getByRole("button", {
-        name: copy.signup.organizationSubmit,
-        exact: true,
-      })
-      [input]();
+    await activate(page.getByTestId("onboarding-submit"), isMobile);
     expect((await created).status()).toBe(200);
-    await expect(page).toHaveURL(/\/installation$/);
-    await expect(picker).toHaveText(name);
-    const newId = z
-      .string()
-      .min(1)
-      .parse(await picker.getAttribute("data-organization-id"));
-    expect(newId).not.toBe(fixture.organizationId);
-    const keys = await context.request.get("/api/v1/me/keys");
-    expect(
-      z.object({ items: z.array(z.unknown()) }).parse(await keys.json()).items,
-    ).toEqual([]);
-    await page.goto("/usage");
-    await expect(
-      page.getByText(copy.saas.free, { exact: true }).first(),
-    ).toBeVisible();
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth),
-    ).toBeLessThanOrEqual(testInfo.project.use.viewport?.width ?? 1440);
-    expect(
-      (await new AxeBuilder({ page }).analyze()).violations.filter((item) =>
-        ["serious", "critical"].includes(item.impact ?? ""),
-      ),
-    ).toEqual([]);
-    await selectOrganization(page, fixture.organizationId);
-    await expect(picker).toHaveAttribute(
-      "data-organization-id",
-      fixture.organizationId,
+    await expect(page).toHaveURL(new RegExp(`${paths.install}$`));
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      copy.install.title,
     );
-    const restored = await context.request.get("/api/v1/me/keys");
-    expect(
-      z
-        .object({ items: z.array(z.object({ id: z.string() })) })
-        .parse(await restored.json())
-        .items.map((item) => item.id)
-        .sort(),
-    ).toEqual(beforeKeys.items.map((item) => item.id).sort());
-    await selectOrganization(page, newId);
-    await expect(picker).toHaveAttribute("data-organization-id", newId);
-    await page.goto("/installation");
+    await expect(page.getByTestId("install-command")).toBeVisible();
+    await expect(switcher(page)).toHaveText(name);
+    const current = await activeOrganization(context.request);
+    if (!current)
+      throw new Error("Expected the new organization to be active.");
+    expect(current.id).not.toBe(fixture.organizationId);
+    expect(current.name).toBe(name);
+    expect(await keyIds(context.request)).toEqual([]);
+    await page.goto(paths.billing);
+    await expect(page.getByTestId("billing-plan")).toContainText(
+      copy.saas.free,
+    );
+    await accessible(page);
+    await selectOrganization(page, fixture.organizationId, isMobile);
+    expect(await keyIds(context.request)).toEqual(beforeKeys);
+    await selectOrganization(page, current.id, isMobile);
+    await expect(switcher(page)).toHaveText(name);
+    await page.goto(paths.home);
+    await expect(page.getByTestId("dashboard-picker")).toHaveText(
+      /Team overview/,
+    );
     await expect(
-      page.getByRole("heading", {
-        name: copy.workspace.installation.title,
-        exact: true,
-      }),
+      page.getByText(copy.dashboards.status.noSessions, { exact: true }),
     ).toBeVisible();
   });

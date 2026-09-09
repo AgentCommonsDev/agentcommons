@@ -1,4 +1,9 @@
-export { repositoryLinks, messageBranches } from "./session-navigation.js";
+export {
+  repositoryLinks,
+  messageBranches,
+  spawnPlacements,
+} from "./session-navigation.js";
+export type { SpawnedRun } from "./session-navigation.js";
 import { searchOutputSchema, type SearchOutput } from "../schemas/search.js";
 import {
   getOutputSchema,
@@ -58,6 +63,12 @@ export function formatSearch(value: SearchOutput): Formatted<SearchOutput> {
       `session_id: ${block.session_id} | ${inline(block.title ?? "Untitled session")}`,
       `repo_name: ${inline(block.repo_name)} | branch: ${inline(block.branch)} | user_email: ${inline(block.user_email)}`,
       `harness: ${block.harness} | model: ${inline(block.model)} | started_at: ${block.started_at}`,
+      // A hit inside a run names its root so a reader opens the whole tree with get.
+      ...(block.parent_relation
+        ? [
+            `root_session_id: ${block.root_session_id} | parent_relation: ${block.parent_relation} | agent_type: ${inline(block.agent_type)} | parent_tool_use_id: ${inline(block.parent_tool_use_id)}`,
+          ]
+        : []),
       ...(block.truncated_fields.length
         ? [`truncated_fields: ${JSON.stringify(block.truncated_fields)}`]
         : []),
@@ -83,6 +94,17 @@ export function formatSessionHeader(header: SessionHeader): string {
   const lines: string[] = [];
   for (let offset = 0; offset < facts.length; offset += 3)
     lines.push(facts.slice(offset, offset + 3).join(" | "));
+  if (header.child_count > 0) {
+    // Child sessions are part of this session; name them so a reader knows to follow up with get.
+    // `spawned_by` is the tool_use_id of the TOOL_USE message here that started the child.
+    const runs = header.children.map(
+      (child) =>
+        `${child.session_id} ${child.parent_relation ?? "CHILD"}${child.agent_type ? ` agent_type=${inline(child.agent_type)}` : ""}${child.parent_tool_use_id ? ` spawned_by=${child.parent_tool_use_id}` : ""}`,
+    );
+    lines.push(
+      `subagent_runs: ${String(header.child_count)} child sessions (subagents, forks or spawned runs) belong to this session${header.children_truncated ? "; the list below is truncated, use the tree" : ""} | ids: ${runs.join("; ") || "none listed"}`,
+    );
+  }
   return lines.join("\n");
 }
 export function formatMessage(message: Message): string {
@@ -134,6 +156,11 @@ export function formatSql(value: SqlOutput): Formatted<SqlOutput> {
   return { text, structuredContent: result };
 }
 export { formatCsv } from "./csv.js";
+export {
+  formatSchemaContext,
+  schemaContextExamples,
+  schemaContextLimits,
+} from "./schema-context.js";
 export function formatJson<T extends JsonValue>(value: T): Formatted<T> {
   return { text: JSON.stringify(value, null, 2), structuredContent: value };
 }

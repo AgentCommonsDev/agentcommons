@@ -3,6 +3,7 @@ import {
   createListInputSchema,
   opaqueCursorSchema,
   utcDateTimeSchema,
+  metricUnitSchema,
 } from "./common.js";
 
 export const searchAdoptionMetricNames = [
@@ -95,7 +96,7 @@ export const metricRowSchema = z.strictObject({
   value: z.number().nullable(),
   numerator: z.number().nullable(),
   denominator: z.number().nullable(),
-  unit: z.enum(["count", "ratio", "seconds", "tokens", "usd"]),
+  unit: metricUnitSchema,
   truncated_fields: z.array(z.string()).default([]),
 });
 export const metricsOutputSchema = z.strictObject({

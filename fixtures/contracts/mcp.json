@@ -2,177 +2,109 @@
   "tools": [
     {
       "name": "dashboard_list",
-      "description": "Use this when the user asks to view or manage their dashboard profiles. List your personal dashboard profiles in the current organization and the versioned declaration schema.",
+      "description": "Use this when the user asks to view, build or change dashboards. List the organization's dashboards, which one is the Home default, the JSON Schema for definitions and starter tile templates. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers).",
       "inputSchema": {
         "type": "object",
         "properties": {},
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
-      "outputSchema": {
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_get",
+      "description": "Use this when the user asks to view, build or change dashboards. Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
+      "inputSchema": {
         "type": "object",
         "properties": {
-          "items": {
-            "maxItems": 20,
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                },
-                "organization_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "user_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "name": {
-                  "type": "string"
-                },
-                "definition": {
-                  "type": "object",
-                  "properties": {
-                    "version": {
-                      "type": "number",
-                      "const": 1
-                    },
-                    "widgets": {
-                      "minItems": 1,
-                      "maxItems": 12,
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string",
-                            "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,39}$"
-                          },
-                          "title": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 80
-                          },
-                          "sql": {
-                            "type": "string"
-                          },
-                          "display": {
-                            "type": "string",
-                            "enum": [
-                              "number",
-                              "line",
-                              "bar",
-                              "table"
-                            ]
-                          },
-                          "x": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "y": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "unit": {
-                            "type": "string",
-                            "enum": [
-                              "count",
-                              "ratio",
-                              "seconds",
-                              "tokens",
-                              "usd"
-                            ]
-                          }
-                        },
-                        "required": [
-                          "id",
-                          "title",
-                          "sql",
-                          "display",
-                          "unit"
-                        ],
-                        "additionalProperties": false
-                      }
-                    }
-                  },
-                  "required": [
-                    "version",
-                    "widgets"
-                  ],
-                  "additionalProperties": false
-                },
-                "revision": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "updated_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                }
-              },
-              "required": [
-                "id",
-                "organization_id",
-                "user_id",
-                "name",
-                "definition",
-                "revision",
-                "updated_at"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "definition_schema": {
-            "$ref": "#/$defs/__schema0"
+          "id": {
+            "type": "string",
+            "format": "uuid"
           }
         },
         "required": [
-          "items",
-          "definition_schema"
+          "id"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "anyOf": [
-              {
-                "type": "string"
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_render",
+      "description": "Use this when the user asks to view, build or change dashboards. Run the queries of a dashboard (by id or an inline definition) with variable values such as {\"time_range\":\"7d\",\"repo\":[\"github.com/org/repo\"]} and return each tile's rows. Pass tiles to render a subset.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "definition": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "const": 2
               },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              },
-              {
+              "variables": {
+                "default": [],
+                "maxItems": 8,
                 "type": "array",
                 "items": {
-                  "$ref": "#/$defs/__schema0"
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
                 }
               },
-              {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {
-                  "$ref": "#/$defs/__schema0"
+              "tiles": {
+                "minItems": 1,
+                "maxItems": 24,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
                 }
               }
-            ]
+            },
+            "required": [
+              "version",
+              "tiles"
+            ],
+            "additionalProperties": false,
+            "description": "Dashboard definition. dashboard_list returns its complete JSON Schema as definition_schema with starter templates; dashboard_render validates an inline definition and names the failing path."
+          },
+          "variables": {
+            "default": {},
+            "description": "Values by variable name: a preset (24h|7d|14d|30d|90d|this_week|last_week|this_month|all) or {from, to} in UTC for time_range; a list of strings for repo, harness and user; text for text.",
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {}
+          },
+          "tiles": {
+            "minItems": 1,
+            "maxItems": 24,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,39}$"
+            }
+          },
+          "refresh": {
+            "default": false,
+            "type": "boolean"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "annotations": {
         "readOnlyHint": true,
@@ -182,14 +114,13 @@
     },
     {
       "name": "dashboard_save",
-      "description": "Use this when the user asks to view or manage their dashboard profiles. Create or update your personal dashboard with number, line, bar or table widgets over guarded SELECT queries. Use id and revision to update an existing profile.",
+      "description": "Use this when the user asks to view, build or change dashboards. Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "revision": {
             "type": "integer",
@@ -201,200 +132,53 @@
             "minLength": 1,
             "maxLength": 80
           },
+          "description": {
+            "default": "",
+            "type": "string",
+            "maxLength": 400
+          },
           "definition": {
             "type": "object",
             "properties": {
               "version": {
                 "type": "number",
-                "const": 1
+                "const": 2
               },
-              "widgets": {
-                "minItems": 1,
-                "maxItems": 12,
+              "variables": {
+                "default": [],
+                "maxItems": 8,
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string",
-                      "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,39}$"
-                    },
-                    "title": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 80
-                    },
-                    "sql": {
-                      "type": "string"
-                    },
-                    "display": {
-                      "type": "string",
-                      "enum": [
-                        "number",
-                        "line",
-                        "bar",
-                        "table"
-                      ]
-                    },
-                    "x": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 128
-                    },
-                    "y": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 128
-                    },
-                    "unit": {
-                      "type": "string",
-                      "enum": [
-                        "count",
-                        "ratio",
-                        "seconds",
-                        "tokens",
-                        "usd"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "title",
-                    "sql",
-                    "display",
-                    "unit"
-                  ],
-                  "additionalProperties": false
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
+                }
+              },
+              "tiles": {
+                "minItems": 1,
+                "maxItems": 24,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
                 }
               }
             },
             "required": [
               "version",
-              "widgets"
+              "tiles"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Dashboard definition. dashboard_list returns its complete JSON Schema as definition_schema with starter templates; dashboard_render validates an inline definition and names the failing path."
           }
         },
         "required": [
           "name",
           "definition"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-          },
-          "organization_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "user_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "name": {
-            "type": "string"
-          },
-          "definition": {
-            "type": "object",
-            "properties": {
-              "version": {
-                "type": "number",
-                "const": 1
-              },
-              "widgets": {
-                "minItems": 1,
-                "maxItems": 12,
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string",
-                      "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,39}$"
-                    },
-                    "title": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 80
-                    },
-                    "sql": {
-                      "type": "string"
-                    },
-                    "display": {
-                      "type": "string",
-                      "enum": [
-                        "number",
-                        "line",
-                        "bar",
-                        "table"
-                      ]
-                    },
-                    "x": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 128
-                    },
-                    "y": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 128
-                    },
-                    "unit": {
-                      "type": "string",
-                      "enum": [
-                        "count",
-                        "ratio",
-                        "seconds",
-                        "tokens",
-                        "usd"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "title",
-                    "sql",
-                    "display",
-                    "unit"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "version",
-              "widgets"
-            ],
-            "additionalProperties": false
-          },
-          "revision": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-          }
-        },
-        "required": [
-          "id",
-          "organization_id",
-          "user_id",
-          "name",
-          "definition",
-          "revision",
-          "updated_at"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
       "annotations": {
@@ -405,33 +189,18 @@
     },
     {
       "name": "dashboard_delete",
-      "description": "Use this when the user asks to view or manage their dashboard profiles. Delete one of your personal dashboards in the current organization.",
+      "description": "Use this when the user asks to view, build or change dashboards. Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "required": [
           "id"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "deleted": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "deleted"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
       "annotations": {
@@ -442,18 +211,21 @@
     },
     {
       "name": "search",
-      "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results contain message windows grouped by session; use session_id and seq with get or sql.",
+      "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {\"query\":\"\",\"filters\":{\"file_prefix\":\"src/auth/\",\"file_operation\":\"edit\"}}.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "query": {
-            "type": "string"
+            "type": "string",
+            "description": "Words to find; every word must appear (English stems match). May be empty when a filter is given"
           },
           "filters": {
             "default": {},
+            "description": "Narrow by session or message fields. Each key takes one value or a list (any of); every key given must hold",
             "type": "object",
             "properties": {
               "repo_name": {
+                "description": "Sessions in these repositories: host/org/repo, or an unambiguous short name",
                 "anyOf": [
                   {
                     "type": "string",
@@ -470,6 +242,7 @@
                 ]
               },
               "branch": {
+                "description": "Sessions on these git branches (exact)",
                 "anyOf": [
                   {
                     "type": "string",
@@ -486,24 +259,24 @@
                 ]
               },
               "user_email": {
+                "description": "Sessions run by these members (exact email)",
                 "anyOf": [
                   {
                     "type": "string",
-                    "format": "email",
-                    "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                    "format": "email"
                   },
                   {
                     "minItems": 1,
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "format": "email",
-                      "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                      "format": "email"
                     }
                   }
                 ]
               },
               "tool_name": {
+                "description": "Messages calling or answering these tools, such as Read or Bash",
                 "anyOf": [
                   {
                     "type": "string",
@@ -520,6 +293,7 @@
                 ]
               },
               "file_prefix": {
+                "description": "Sessions that touched a file whose path starts with this text, such as src/auth/",
                 "anyOf": [
                   {
                     "type": "string",
@@ -535,7 +309,35 @@
                   }
                 ]
               },
+              "file_operation": {
+                "description": "Sessions where a file was read, edited, written or deleted; with file_prefix, the same file must match both",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "read",
+                      "edit",
+                      "write",
+                      "delete"
+                    ]
+                  },
+                  {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "read",
+                        "edit",
+                        "write",
+                        "delete"
+                      ]
+                    }
+                  }
+                ]
+              },
               "role": {
+                "description": "Messages with these roles",
                 "anyOf": [
                   {
                     "type": "string",
@@ -562,258 +364,124 @@
                 ]
               },
               "session_id": {
+                "description": "Search inside these sessions only",
                 "anyOf": [
                   {
                     "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    "format": "uuid"
                   },
                   {
                     "minItems": 1,
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      "format": "uuid"
                     }
                   }
                 ]
               },
               "since": {
+                "description": "Messages at or after this UTC time (inclusive)",
                 "anyOf": [
                   {
                     "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    "format": "date-time"
                   },
                   {
                     "minItems": 1,
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      "format": "date-time"
                     }
                   }
                 ]
               },
               "until": {
+                "description": "Messages before this UTC time (exclusive)",
                 "anyOf": [
                   {
                     "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    "format": "date-time"
                   },
                   {
                     "minItems": 1,
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      "format": "date-time"
                     }
                   }
                 ]
               },
               "where": {
+                "description": "Up to 10 extra conditions that must all hold, on a message field (tool_name, tool_use_id, content, role, kind, model, or a JSON path inside tool_input) or a session field (harness, title, repo_name, branch, user_email, status)",
                 "minItems": 1,
                 "maxItems": 10,
                 "type": "array",
                 "items": {
-                  "oneOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "field": {
-                          "type": "string",
-                          "enum": [
-                            "tool_name",
-                            "tool_use_id",
-                            "content",
-                            "role",
-                            "kind",
-                            "model",
-                            "harness",
-                            "title",
-                            "repo_name",
-                            "branch",
-                            "user_email",
-                            "status",
-                            "tool_input"
-                          ]
-                        },
-                        "path": {
-                          "minItems": 1,
-                          "maxItems": 8,
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "maxLength": 256
-                          }
-                        },
-                        "op": {
-                          "type": "string",
-                          "const": "eq"
-                        },
-                        "value": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "maxLength": 4096
-                            },
-                            {
-                              "type": "number"
-                            },
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "field",
-                        "op",
-                        "value"
+                  "type": "object",
+                  "properties": {
+                    "field": {
+                      "type": "string",
+                      "enum": [
+                        "tool_name",
+                        "tool_use_id",
+                        "content",
+                        "role",
+                        "kind",
+                        "model",
+                        "harness",
+                        "title",
+                        "repo_name",
+                        "branch",
+                        "user_email",
+                        "status",
+                        "tool_input"
                       ],
-                      "additionalProperties": false
+                      "description": "Field to test"
                     },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "field": {
-                          "type": "string",
-                          "enum": [
-                            "tool_name",
-                            "tool_use_id",
-                            "content",
-                            "role",
-                            "kind",
-                            "model",
-                            "harness",
-                            "title",
-                            "repo_name",
-                            "branch",
-                            "user_email",
-                            "status",
-                            "tool_input"
-                          ]
-                        },
-                        "path": {
-                          "minItems": 1,
-                          "maxItems": 8,
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "maxLength": 256
-                          }
-                        },
-                        "op": {
-                          "type": "string",
-                          "const": "contains"
-                        },
-                        "value": {
+                    "op": {
+                      "type": "string",
+                      "enum": [
+                        "eq",
+                        "contains",
+                        "starts_with",
+                        "exists"
+                      ],
+                      "description": "eq: exact, case-sensitive, null matches missing; contains and starts_with: literal, case-insensitive; exists: non-null, takes no value"
+                    },
+                    "path": {
+                      "description": "JSON keys or array positions inside tool_input; only with field tool_input",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "value": {
+                      "description": "Text for text fields; any JSON primitive for a tool_input path",
+                      "anyOf": [
+                        {
                           "type": "string",
                           "maxLength": 4096
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "boolean"
+                        },
+                        {
+                          "type": "null"
                         }
-                      },
-                      "required": [
-                        "field",
-                        "op",
-                        "value"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "field": {
-                          "type": "string",
-                          "enum": [
-                            "tool_name",
-                            "tool_use_id",
-                            "content",
-                            "role",
-                            "kind",
-                            "model",
-                            "harness",
-                            "title",
-                            "repo_name",
-                            "branch",
-                            "user_email",
-                            "status",
-                            "tool_input"
-                          ]
-                        },
-                        "path": {
-                          "minItems": 1,
-                          "maxItems": 8,
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "maxLength": 256
-                          }
-                        },
-                        "op": {
-                          "type": "string",
-                          "const": "starts_with"
-                        },
-                        "value": {
-                          "type": "string",
-                          "maxLength": 4096
-                        }
-                      },
-                      "required": [
-                        "field",
-                        "op",
-                        "value"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "field": {
-                          "type": "string",
-                          "enum": [
-                            "tool_name",
-                            "tool_use_id",
-                            "content",
-                            "role",
-                            "kind",
-                            "model",
-                            "harness",
-                            "title",
-                            "repo_name",
-                            "branch",
-                            "user_email",
-                            "status",
-                            "tool_input"
-                          ]
-                        },
-                        "path": {
-                          "minItems": 1,
-                          "maxItems": 8,
-                          "type": "array",
-                          "items": {
-                            "type": "string",
-                            "maxLength": 256
-                          }
-                        },
-                        "op": {
-                          "type": "string",
-                          "const": "exists"
-                        }
-                      },
-                      "required": [
-                        "field",
-                        "op"
-                      ],
-                      "additionalProperties": false
+                      ]
                     }
-                  ]
+                  },
+                  "required": [
+                    "field",
+                    "op"
+                  ],
+                  "additionalProperties": false
                 }
               }
             },
@@ -821,18 +489,21 @@
           },
           "context": {
             "default": 1,
+            "description": "Neighbouring non-thinking messages either side of each hit",
             "type": "integer",
             "minimum": 0,
             "maximum": 3
           },
           "limit": {
             "default": 5,
+            "description": "Hit messages per page; at most 3 hits per session",
             "type": "integer",
             "minimum": 1,
             "maximum": 50
           },
           "cursor": {
             "default": null,
+            "description": "Cursor from the previous page; null for the first page",
             "anyOf": [
               {
                 "type": "string",
@@ -847,180 +518,6 @@
         "required": [
           "query"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "blocks": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "session_id": {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                },
-                "title": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "harness": {
-                  "type": "string",
-                  "enum": [
-                    "CLAUDE_CODE",
-                    "CODEX",
-                    "GEMINI_CLI",
-                    "PI"
-                  ]
-                },
-                "model": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "repo_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "branch": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "user_email": {
-                  "type": "string",
-                  "format": "email",
-                  "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
-                },
-                "started_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                },
-                "messages": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "seq": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "role": {
-                        "type": "string",
-                        "enum": [
-                          "USER",
-                          "ASSISTANT",
-                          "TOOL_RESULT",
-                          "SYSTEM"
-                        ]
-                      },
-                      "kind": {
-                        "type": "string",
-                        "enum": [
-                          "TEXT",
-                          "THINKING",
-                          "TOOL_USE",
-                          "TOOL_RESULT",
-                          "META"
-                        ]
-                      },
-                      "tool_name": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      },
-                      "tool_use_id": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      },
-                      "content": {
-                        "type": "string"
-                      },
-                      "hit": {
-                        "type": "boolean"
-                      },
-                      "truncated": {
-                        "type": "boolean"
-                      },
-                      "truncated_fields": {
-                        "default": [],
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
-                      }
-                    },
-                    "required": [
-                      "seq",
-                      "role",
-                      "kind",
-                      "content",
-                      "hit",
-                      "truncated",
-                      "truncated_fields"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "truncated_fields": {
-                  "default": [],
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "session_id",
-                "title",
-                "harness",
-                "model",
-                "repo_name",
-                "branch",
-                "user_email",
-                "started_at",
-                "messages",
-                "truncated_fields"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "cursor": {
-            "default": null,
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "truncated_response": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "blocks",
-          "cursor",
-          "truncated_response"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
       "annotations": {
@@ -1031,21 +528,24 @@
     },
     {
       "name": "get",
-      "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Read a session header and messages by session_id. Bound a range with from/to; use next and content_cursor to continue.",
+      "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Read one session by session_id: a header (who ran it, harness, model, repository, branch, start, end, status, message, tool call, token, file, commit and reuse counts, tools_used, root_session_id, parent and child sessions) and its messages in seq order with role, kind, tool_name, tool_use_id and content. Each child ref carries parent_tool_use_id, the tool_use_id of the TOOL_USE message here that spawned it (null when unrecorded), so a subagent run reads in place under its call. Bound a range with from/to; when next is not null, pass it as cursor. Example: {\"session_id\":\"<uuid>\",\"from\":0,\"to\":40}.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "from": {
+            "description": "First message seq to return (inclusive)",
             "type": "integer",
             "minimum": 0,
             "maximum": 9007199254740991
           },
           "to": {
+            "description": "Last message seq to return (inclusive)",
             "type": "integer",
             "minimum": 0,
             "maximum": 9007199254740991
           },
           "cursor": {
+            "description": "The next value of a previous page; omit to start at from",
             "anyOf": [
               {
                 "type": "object",
@@ -1053,19 +553,22 @@
                   "seq": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 9007199254740991
+                    "maximum": 9007199254740991,
+                    "description": "Message position (seq) to continue from"
                   },
                   "offset": {
                     "type": "integer",
                     "minimum": 0,
-                    "maximum": 9007199254740991
+                    "maximum": 9007199254740991,
+                    "description": "Byte offset inside that message's content"
                   }
                 },
                 "required": [
                   "seq",
                   "offset"
                 ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Position inside a session's messages for continuing a read"
               },
               {
                 "type": "null"
@@ -1075,624 +578,12 @@
           "session_id": {
             "type": "string",
             "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "description": "Session to read, from a search result or the sessions view"
           }
         },
         "required": [
           "session_id"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "header": {
-            "type": "object",
-            "properties": {
-              "session_id": {
-                "type": "string",
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-              },
-              "organization_id": {
-                "type": "string",
-                "minLength": 1
-              },
-              "title": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "harness": {
-                "type": "string",
-                "enum": [
-                  "CLAUDE_CODE",
-                  "CODEX",
-                  "GEMINI_CLI",
-                  "PI"
-                ]
-              },
-              "harness_version": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "entrypoint": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "model": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "models_used": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "user_email": {
-                "type": "string",
-                "format": "email",
-                "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
-              },
-              "installation_hostname": {
-                "type": "string"
-              },
-              "installation_id": {
-                "type": "string",
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-              },
-              "repo_name": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "repo_url": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "branch": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "cwd_relative": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "start_commit": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "end_commit": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "started_at": {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              "ended_at": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "ACTIVE",
-                  "ENDED",
-                  "INACTIVE"
-                ]
-              },
-              "visibility": {
-                "type": "string",
-                "enum": [
-                  "PUBLIC",
-                  "PRIVATE"
-                ]
-              },
-              "end_reason": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "message_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "tool_call_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "input_tokens": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^\\d+$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "output_tokens": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^\\d+$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "tools_used": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "file_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "observed_commit_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "reuse_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "agent_type": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "parent_session_id": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "parent_relation": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "enum": [
-                      "SUBAGENT",
-                      "FORK",
-                      "SPAWNED"
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "parent": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "session_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                      },
-                      "title": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      },
-                      "parent_relation": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "enum": [
-                              "SUBAGENT",
-                              "FORK",
-                              "SPAWNED"
-                            ]
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "agent_type": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "session_id",
-                      "title",
-                      "parent_relation",
-                      "agent_type"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "children": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "session_id": {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                    },
-                    "title": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "parent_relation": {
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "enum": [
-                            "SUBAGENT",
-                            "FORK",
-                            "SPAWNED"
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_type": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "session_id",
-                    "title",
-                    "parent_relation",
-                    "agent_type"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "child_count": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "children_truncated": {
-                "type": "boolean"
-              },
-              "truncated_fields": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "root_session_id": {
-                "type": "string",
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-              }
-            },
-            "required": [
-              "session_id",
-              "organization_id",
-              "title",
-              "harness",
-              "harness_version",
-              "entrypoint",
-              "model",
-              "models_used",
-              "user_email",
-              "installation_hostname",
-              "installation_id",
-              "repo_name",
-              "repo_url",
-              "branch",
-              "cwd_relative",
-              "start_commit",
-              "end_commit",
-              "started_at",
-              "ended_at",
-              "status",
-              "visibility",
-              "end_reason",
-              "message_count",
-              "tool_call_count",
-              "input_tokens",
-              "output_tokens",
-              "tools_used",
-              "file_count",
-              "observed_commit_count",
-              "reuse_count",
-              "agent_type",
-              "parent_session_id",
-              "parent_relation",
-              "parent",
-              "children",
-              "child_count",
-              "children_truncated",
-              "truncated_fields",
-              "root_session_id"
-            ],
-            "additionalProperties": false
-          },
-          "messages": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "message_id": {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                },
-                "session_id": {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                },
-                "raw_record_id": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "ingest_batch_id": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "seq": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "role": {
-                  "type": "string",
-                  "enum": [
-                    "USER",
-                    "ASSISTANT",
-                    "TOOL_RESULT",
-                    "SYSTEM"
-                  ]
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "TEXT",
-                    "THINKING",
-                    "TOOL_USE",
-                    "TOOL_RESULT",
-                    "META"
-                  ]
-                },
-                "content": {
-                  "type": "string"
-                },
-                "content_cursor": {
-                  "anyOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "seq": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        "offset": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        }
-                      },
-                      "required": [
-                        "seq",
-                        "offset"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "tool_name": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "tool_use_id": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "model": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "timestamp": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "received_at": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                },
-                "input_tokens": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "pattern": "^\\d+$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "output_tokens": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "pattern": "^\\d+$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "agent_id": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "truncated_fields": {
-                  "default": [],
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              },
-              "required": [
-                "message_id",
-                "session_id",
-                "raw_record_id",
-                "ingest_batch_id",
-                "seq",
-                "role",
-                "kind",
-                "content",
-                "content_cursor",
-                "tool_name",
-                "tool_use_id",
-                "model",
-                "timestamp",
-                "received_at",
-                "input_tokens",
-                "output_tokens",
-                "agent_id",
-                "truncated_fields"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "next": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "seq": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "offset": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "seq",
-                  "offset"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "header",
-          "messages",
-          "next"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
       "annotations": {
@@ -1703,7 +594,7 @@
     },
     {
       "name": "sql",
-      "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions'. Limits: 500 rows, 5 seconds.",
+      "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1714,118 +605,7 @@
         "required": [
           "sql"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "columns": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "type": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name",
-                "type"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "rows": {
-            "maxItems": 500,
-            "type": "array",
-            "items": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/__schema0"
-              }
-            }
-          },
-          "row_count": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 500
-          },
-          "capped": {
-            "type": "boolean"
-          },
-          "truncated_cells": {
-            "type": "array",
-            "items": {
-              "type": "array",
-              "prefixItems": [
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              ],
-              "items": false,
-              "minItems": 2,
-              "maxItems": 2
-            }
-          },
-          "duration_ms": {
-            "type": "number",
-            "minimum": 0
-          }
-        },
-        "required": [
-          "columns",
-          "rows",
-          "row_count",
-          "capped",
-          "truncated_cells",
-          "duration_ms"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              },
-              {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/__schema0"
-                }
-              },
-              {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {
-                  "$ref": "#/$defs/__schema0"
-                }
-              }
-            ]
-          }
-        }
       },
       "annotations": {
         "readOnlyHint": true,
@@ -1841,8 +621,7 @@
         "properties": {
           "session_id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "visibility": {
             "type": "string",
@@ -1861,25 +640,6 @@
           "visibility",
           "reason"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "updated": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "id",
-          "updated"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
       "annotations": {
@@ -1896,8 +656,7 @@
         "properties": {
           "session_id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "reason": {
             "type": "string",
@@ -1908,143 +667,6 @@
           "session_id",
           "reason"
         ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "updated": {
-            "type": "boolean"
-          },
-          "cleanup": {
-            "type": "string",
-            "enum": [
-              "queued",
-              "completed"
-            ]
-          },
-          "manifest": {
-            "type": "object",
-            "properties": {
-              "deleted": {
-                "type": "object",
-                "properties": {
-                  "raw_records": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "messages": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "session_files": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "message_chunks": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "session_embeddings": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "redaction_events": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "required": [
-                  "raw_records",
-                  "messages",
-                  "session_files",
-                  "message_chunks",
-                  "session_embeddings",
-                  "redaction_events"
-                ],
-                "additionalProperties": false
-              },
-              "nulled_fields": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "reset_fields": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "retained": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": [
-              "deleted",
-              "nulled_fields",
-              "reset_fields",
-              "retained"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "id",
-          "updated",
-          "cleanup",
-          "manifest"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
       "annotations": {
@@ -2116,203 +738,17 @@
               },
               "since": {
                 "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "format": "date-time"
               },
               "until": {
                 "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                "format": "date-time"
               }
             },
             "additionalProperties": false
           }
         },
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                },
-                "organization_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "ts": {
-                  "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                },
-                "request_id": {
-                  "type": "string"
-                },
-                "user_id": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "api_key_id": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "installation_id": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "uuid",
-                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "auth_method": {
-                  "type": "string"
-                },
-                "ip": {
-                  "type": "string"
-                },
-                "user_agent": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "transport": {
-                  "type": "string",
-                  "enum": [
-                    "rest",
-                    "mcp",
-                    "web"
-                  ]
-                },
-                "action": {
-                  "type": "string"
-                },
-                "resource_type": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "resource_ids": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "status_code": {
-                  "type": "integer",
-                  "minimum": 100,
-                  "maximum": 599
-                },
-                "duration_ms": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "detail": {
-                  "$ref": "#/$defs/__schema0"
-                }
-              },
-              "required": [
-                "id",
-                "organization_id",
-                "ts",
-                "request_id",
-                "user_id",
-                "api_key_id",
-                "installation_id",
-                "auth_method",
-                "ip",
-                "user_agent",
-                "transport",
-                "action",
-                "resource_type",
-                "resource_ids",
-                "status_code",
-                "duration_ms",
-                "detail"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "cursor": {
-            "default": null,
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "items",
-          "cursor"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              },
-              {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/__schema0"
-                }
-              },
-              {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {
-                  "$ref": "#/$defs/__schema0"
-                }
-              }
-            ]
-          }
-        }
       },
       "annotations": {
         "readOnlyHint": true,
@@ -2326,164 +762,32 @@
       "inputSchema": {
         "type": "object",
         "properties": {},
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "properties": {
-          "projection": {
-            "type": "object",
-            "properties": {
-              "queued_sessions": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "outbox_batches": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "oldest_accepted_at": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "format": "date-time",
-                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "failed_sessions": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "waiting_source_sessions": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              "pending_audit_events": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              }
-            },
-            "required": [
-              "queued_sessions",
-              "outbox_batches",
-              "oldest_accepted_at",
-              "failed_sessions",
-              "waiting_source_sessions",
-              "pending_audit_events"
-            ],
-            "additionalProperties": false
-          },
-          "ingest_per_day": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "date": {
-                  "type": "string",
-                  "format": "date",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
-                },
-                "count": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "date",
-                "count"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "redaction_hits": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "policy_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "count": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "policy_id",
-                "count"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "failures": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "date": {
-                  "type": "string",
-                  "format": "date",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
-                },
-                "count": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
-              "required": [
-                "date",
-                "count"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "queue_depth": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "embedding_backlog": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "embedding_daily_tokens": {
-            "type": "string",
-            "pattern": "^\\d+$"
-          },
-          "embedding_daily_cost": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "projection",
-          "ingest_per_day",
-          "redaction_hits",
-          "failures",
-          "queue_depth",
-          "embedding_backlog",
-          "embedding_daily_tokens",
-          "embedding_daily_cost"
-        ],
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false
       },
       "annotations": {
         "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_set_default",
+      "description": "Use this when the user asks to view, build or change dashboards. Make a saved dashboard the organization's Home default. Pass the built-in Team overview's id to restore the shipped default; other built-ins must be duplicated first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
         "destructiveHint": false,
         "openWorldHint": false
       }
@@ -2493,6 +797,10 @@
     "blocks": [
       {
         "session_id": "00000000-0000-4000-8000-000000000001",
+        "root_session_id": "00000000-0000-4000-8000-000000000001",
+        "parent_relation": null,
+        "agent_type": null,
+        "parent_tool_use_id": null,
         "title": "Investigate the transport session index",
         "harness": "CLAUDE_CODE",
         "model": null,
@@ -2535,13 +843,14 @@
       "repo_name": "github.com/rek7/agentcommons",
       "repo_url": "github.com/rek7/agentcommons",
       "branch": "main",
-      "cwd_relative": "",
+      "cwd_relative": ".",
       "start_commit": "abc123",
       "end_commit": null,
       "started_at": "2026-09-07T01:00:00.000Z",
       "ended_at": null,
       "status": "ACTIVE",
       "visibility": "PUBLIC",
+      "purged_at": null,
       "end_reason": null,
       "message_count": 1,
       "tool_call_count": 0,
@@ -2554,6 +863,7 @@
       "agent_type": null,
       "parent_session_id": null,
       "parent_relation": null,
+      "parent_tool_use_id": null,
       "parent": null,
       "children": [],
       "child_count": 0,

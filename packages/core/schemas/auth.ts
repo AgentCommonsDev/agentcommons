@@ -42,16 +42,29 @@ export const meOutputSchema = z.strictObject({
     .strictObject({ id: identityIdSchema, name: z.string().nullable() })
     .nullable(),
 });
+export const organizationSlugSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+/** The slug is derived from the name when omitted; only automation needs to pin one. */
 export const onboardingInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(128),
-  slug: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .min(1)
-    .max(64)
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  slug: organizationSlugSchema.optional(),
 });
+/** Deterministic URL-safe slug from an organization name; callers add a suffix on collision. */
+export function organizationSlugFromName(name: string): string {
+  const slug = name
+    .normalize("NFKD")
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .replaceAll(/-+$/g, "");
+  return slug.length > 0 ? slug : "organization";
+}
 export const onboardingOutputSchema = z.strictObject({
   organization_id: identityIdSchema,
   created: z.boolean(),
@@ -79,29 +92,20 @@ const domainNameSchema = z
   .regex(
     /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/,
   );
-// The native TXT proof adds a 50-character label and one dot to the domain.
 export const domainInputSchema = z.strictObject({
-  domain: domainNameSchema.max(202),
+  domain: domainNameSchema,
 });
 export const domainOutputSchema = z.strictObject({
   organization_id: identityIdSchema,
   domain: domainNameSchema,
   provider_id: z.string(),
   verified: z.boolean(),
-  dns_record: z
-    .strictObject({
-      type: z.literal("TXT"),
-      name: z.string(),
-      value: z.string(),
-    })
-    .nullable(),
 });
 export const domainsInputSchema = z.strictObject({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().optional(),
   domain: z.string().trim().toLowerCase().max(253).optional(),
-  verified: z.enum(["true", "false"]).optional(),
-  sort: z.enum(["domain", "verified"]).default("domain"),
+  sort: z.enum(["domain"]).default("domain"),
   order: z.enum(["asc", "desc"]).default("asc"),
 });
 export const domainsOutputSchema = z.strictObject({

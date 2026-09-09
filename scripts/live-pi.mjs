@@ -12,14 +12,18 @@ const input = z
     extension: z.string().min(1),
     prompt: z.string().min(1),
     output: z.string().min(1),
+    provider: z.string().min(1).optional(),
+    model: z.string().min(1).optional(),
+    tools: z.array(z.string().min(1)).min(1).nullable().optional(),
+    modelsJson: z.record(z.string(), z.unknown()).optional(),
+    mode: z.enum(["lifecycle", "prompt"]).optional(),
   })
   .parse(JSON.parse(await readFile(inputPath, "utf8")));
 const extension = await import(pathToFileURL(input.extension).href);
 const checkpoints = new Map();
 const result = await piLifecycle({
   ...input,
-  extension(api) {
-    extension.default(api);
+  async extension(api) {
     // Observe the same native shutdown as the installed extension. Detached
     // collectors can outlive this SDK process, so process exit is not an ACK.
     api.on("session_shutdown", (_event, context) => {
@@ -34,6 +38,9 @@ const result = await piLifecycle({
         activeLeafId: context.sessionManager.getLeafId(),
       });
     });
+    // pi awaits extension factories; the installed extension registers the bridge
+    // tools asynchronously, so the driver must await it the same way.
+    await extension.default(api);
   },
 });
 await writeFile(

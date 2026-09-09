@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -8,6 +8,13 @@ export async function piLifecycle({
   directory,
   extension,
   prompt,
+  provider = "google",
+  model: modelId = "gemini-2.5-flash",
+  // null enables pi's defaults plus every extension tool (the AgentCommons bridge).
+  tools = ["read"],
+  modelsJson,
+  // "lifecycle" runs the fork/resume script; "prompt" runs one prompt and disposes.
+  mode = "lifecycle",
 }) {
   const pi = await import(
     pathToFileURL(join(resolve(packageDirectory), "dist/index.js")).href
@@ -16,6 +23,13 @@ export async function piLifecycle({
   const agentDir = join(directory, "config");
   const sessionDir = join(directory, "sessions");
   mkdirSync(sessionDir, { recursive: true });
+  if (modelsJson) {
+    // Custom providers (a local mock, a proxy) come from the private agent directory.
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify(modelsJson), {
+      mode: 0o600,
+    });
+  }
   const createRuntime = async (options) => {
     const services = await pi.createAgentSessionServices({
       cwd: options.cwd,
@@ -29,14 +43,14 @@ export async function piLifecycle({
         agentsFilesOverride: () => ({ agentsFiles: [] }),
       },
     });
-    const model = services.modelRegistry.find("google", "gemini-2.5-flash");
-    if (!model) throw new Error("gemini-2.5-flash is unavailable");
+    const model = services.modelRegistry.find(provider, modelId);
+    if (!model) throw new Error(`${provider}/${modelId} is unavailable`);
     const created = await pi.createAgentSessionFromServices({
       services,
       sessionManager: options.sessionManager,
       sessionStartEvent: options.sessionStartEvent,
       model,
-      tools: ["read"],
+      ...(tools === null ? {} : { tools }),
     });
     await created.session.bindExtensions({});
     return { ...created, services, diagnostics: services.diagnostics };
@@ -53,6 +67,7 @@ export async function piLifecycle({
     const originalLeaf = runtime.session.sessionManager.getLeafId();
     if (!originalPath || !originalLeaf)
       throw new Error("Live session did not persist");
+    if (mode === "prompt") return { originalId, forkId: null };
     await runtime.session.prompt("Reply with exactly: second branch point.");
     await runtime.session.navigateTree(originalLeaf, { summarize: false });
     await runtime.session.prompt("Reply with exactly: alternate branch.");

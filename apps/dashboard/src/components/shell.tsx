@@ -4,9 +4,10 @@ import type { ReactNode } from "react";
 import { usePublicAccount } from "../lib/public-account";
 import { useBillingConfig } from "../lib/billing-config";
 import { copy, links } from "../copy";
+import { paths } from "../lib/routes";
 import { Button } from "./ui/button";
 
-export function Brand({ footer = false }: { footer?: boolean }) {
+function Brand({ footer = false }: { footer?: boolean }) {
   return (
     <a
       className={footer ? "brand brand-footer" : "brand"}
@@ -25,7 +26,7 @@ export function Brand({ footer = false }: { footer?: boolean }) {
   );
 }
 
-export function ThemeToggle() {
+function ThemeToggle() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   useEffect(() => {
     try {
@@ -117,7 +118,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
           <div className="header-actions">
             <ThemeToggle />
-            <Button variant="secondary" size="small" asChild>
+            <Button variant="secondary" size="sm" asChild>
               <a href={account.href}>
                 {account.shortLabel}
                 <ArrowUpRight size={14} aria-hidden />
@@ -159,12 +160,18 @@ export function AppShell({ children }: { children: ReactNode }) {
               </a>
               <a href={links.security}>{copy.footer.links.security}</a>
               <a href={links.license}>{copy.footer.links.license}</a>
+              {billing.mode !== "customer" && (
+                <>
+                  <a href={paths.privacy}>{copy.legal.privacy.title}</a>
+                  <a href={paths.tos}>{copy.legal.terms.title}</a>
+                </>
+              )}
             </nav>
           </div>
           <div className="footer-bottom">
             <span>
               {copy.footer.source}
-              {copy.workspace.common.separator}
+              {copy.app.common.separator}
               {copy.saas.madeIn}
             </span>
             <span>

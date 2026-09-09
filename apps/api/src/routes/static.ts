@@ -96,7 +96,7 @@ export async function registerStaticRoutes(
       html = html.replaceAll("noindex,nofollow,noarchive", "index,follow");
     reply.header(
       "Content-Security-Policy",
-      `default-src 'self'; script-src 'self' 'nonce-${nonce}'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; frame-src ${config.enabled && config.cal_com_url ? `${new URL(config.cal_com_url).origin} https://app.cal.com` : "'none'"}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+      `default-src 'self'; script-src 'self' 'nonce-${nonce}'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'${config.enabled && config.cal_com_url ? " https://app.cal.com" : ""}; frame-src 'self'${config.enabled && config.cal_com_url ? ` ${new URL(config.cal_com_url).origin} https://app.cal.com` : ""}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
     );
     reply.header("Cache-Control", "no-cache");
     if (!indexable)
@@ -109,6 +109,17 @@ export async function registerStaticRoutes(
   app.get("/docs", async (_request, reply) =>
     document("docs.html", options.mode !== "customer", reply),
   );
+  // The legal documents describe the hosted service; like the blog, customer
+  // instances do not serve them.
+  for (const [path, file] of [
+    ["/privacy", "privacy.html"],
+    ["/tos", "tos.html"],
+  ] as const)
+    app.get(path, async (_request, reply) =>
+      options.mode === "customer"
+        ? reply.code(404).send()
+        : document(file, true, reply),
+    );
   const blogDocument = async (
     slug: string | undefined,
     reply: FastifyReply,
@@ -140,7 +151,7 @@ export async function registerStaticRoutes(
       .send(
         options.mode === "customer"
           ? "User-agent: *\nDisallow: /\n"
-          : `User-agent: *\nAllow: /$\nAllow: /docs$\nAllow: /blog$\nAllow: /blog/\nDisallow: /\nSitemap: ${origin}/sitemap.xml\n`,
+          : `User-agent: *\nAllow: /$\nAllow: /docs$\nAllow: /blog$\nAllow: /blog/\nAllow: /privacy$\nAllow: /tos$\nDisallow: /\nSitemap: ${origin}/sitemap.xml\n`,
       ),
   );
   for (const file of ["sitemap.xml", "llms.txt", "llms-full.txt"])

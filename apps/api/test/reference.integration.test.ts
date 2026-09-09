@@ -72,6 +72,8 @@ it("serves the exact live Zod-generated OpenAPI and native local Scalar bundle w
   const csp = first.headers.get("content-security-policy") ?? "";
   expect(csp).toContain("script-src 'self' 'nonce-");
   expect(csp).not.toContain("unsafe-eval");
+  // Same-origin only: the dashboard embeds the reference in its Keys area.
+  expect(csp).toContain("frame-ancestors 'self'");
   expect(first.headers.get("x-robots-tag")).toContain("noindex");
   expect(first.headers.get("x-content-type-options")).toBe("nosniff");
   const nonce = z.string().parse(/'nonce-([^']+)'/.exec(csp)?.[1]);
@@ -86,7 +88,7 @@ it("serves the exact live Zod-generated OpenAPI and native local Scalar bundle w
   expect((await fetch(`${address}/api/v1/sessions`)).status).toBe(401);
 });
 
-// @req R-ARCH-07
+// @req R-ARCH-07 @req R-DASH-28
 it("renders searchable operations and their schemas in an actual browser under CSP with no external requests", async () => {
   const browser = await chromium.launch();
   try {

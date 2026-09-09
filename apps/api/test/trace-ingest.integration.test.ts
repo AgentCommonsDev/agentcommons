@@ -76,6 +76,7 @@ async function captured() {
     .split("\n");
   return ingestEnvelopeSchema.parse({
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     installationId: randomUUID(),

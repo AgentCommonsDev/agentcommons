@@ -50,10 +50,17 @@ rules are, and how to make a change that will be accepted.
 apps/api          Fastify server: REST (/api/v1), MCP (/mcp), Better Auth (/auth), worker,
                   static dashboard, install.sh + versioned hook.js hosting
   src/services/   one service per capability; adapters call these and nothing else
-  src/routes/     REST routes registered explicitly with shared zod schemas
+  src/routes/     REST routes registered explicitly with shared zod schemas; optional
+                  route groups (SaaS, domain enrollment, embeddings) are registered only
+                  when active, so the live OpenAPI lists active routes
   src/mcp/        tools registered explicitly with the SDK from the same schemas
   public/         install.sh, hook manifest
 apps/dashboard    Vite + React + shadcn/ui; talks to the API via an OpenAPI-generated client
+  src/router.tsx  public pages, account pages, and the application under /app
+  src/lib/routes.ts  every in-app path (there are no legacy routes or redirects)
+  src/copy.ts     composes the per-area copy modules in src/copy/*.ts
+  src/pages/      one file per screen; admin screens under src/pages/admin/
+packages/core/dashboards  Team overview definition, tile templates, typed variable resolution
 packages/db       Native Better Auth/Prisma identity and compact control migrations
 packages/traces   ClickHouse corpus, native policies, canonical views/indexes and migrations
 packages/core     zod schemas, normalizers (claude-code, codex), redaction, link detection
@@ -69,8 +76,17 @@ docs              SPEC.md, adr/, reviews/
 - Organizations scope every caller, key, query, mutation, policy, audit, and background
   job. Membership roles, not global user roles, grant organization authority. Use Better
   Auth's organization, membership, API-key, SSO, and credential APIs; no custom identity
-  or invitation system. Admins add email addresses as members; no CSV or invitation email. SaaS mode uses native
-  verification and welcome email, organization onboarding and Stripe billing (§9.6).
+  or invitation system. Admins add email addresses as members; no CSV or invitation email.
+  Admins allowlist Google sign-in domains on Settings without DNS verification (ADR 0049).
+  SaaS mode uses native verification and welcome email, name-only organization onboarding
+  (slug derived server-side) and Stripe billing (§9.6).
+- Dashboards are organization-visible objects (ADR 0048): a shared Zod definition of
+  stat/chart/table/text/control tiles on a 12-column grid, an allowlisted ECharts option,
+  and typed `{name:Type}` variables checked by the SQL guard. Every data tile runs through
+  the existing query service. Home is the organization's default dashboard; there is no
+  separate Home API. The app lives under `/app`; do not add legacy routes, redirects or
+  compatibility paths. This is an early project: make major changes correctly, not
+  backwards compatibly.
 - Core tenet: one implementation per concept. Differences between harnesses, transports,
   and feature flags are data a single implementation reads (the shim's `HARNESSES`
   table, shared zod schemas, the tool registry), never parallel code paths. `if (harness
@@ -127,7 +143,8 @@ docs              SPEC.md, adr/, reviews/
 
 Use the vendored `no-ai-slop` skill (`.agents/skills/no-ai-slop/SKILL.md`, linked into
 `.claude/skills/` and `.codex/skills/`) on text that end users read: README.md, dashboard
-copy (`apps/dashboard/src/copy.ts`), emails, and error messages shown in the UI. Run
+copy (`apps/dashboard/src/copy.ts`, which composes `apps/dashboard/src/copy/*.ts`),
+emails, and error messages shown in the UI. Run
 `/no-ai-slop` over the diff before committing those files. Internal documents (spec,
 this file, ADRs, code comments) are exempt. Rules that matter most for public copy: lead
 with the fact; no "It's not X, it's Y"; no throat-clearing; no colon reveals or dramatic

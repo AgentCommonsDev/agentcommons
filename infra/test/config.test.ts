@@ -2,7 +2,9 @@ import { expect, it } from "vitest";
 import {
   applicationSecretsSchema,
   environmentSchema,
+  clickhouseCloudUrlSchema,
   settingsSchema,
+  singleNodeSettingsSchema,
 } from "../config.js";
 
 // @req R-INF-02
@@ -103,4 +105,90 @@ it("requires explicit verified-identity scope and sender only for SES delivery",
       environment: { EMAIL_TRANSPORT: "ses", EMAIL_FROM: "invalid" },
     }).success,
   ).toBe(false);
+});
+
+// @req R-INF-07
+it("selects the Fargate shape by default and validates single-node settings separately", () => {
+  const fargate = settingsSchema.parse({
+    stack: "dev",
+    hostname: "dev.example.com",
+    certificateArn: "arn:aws:acm:us-west-2:123456789012:certificate/test",
+    githubRepository: "example/agentcommons",
+    githubOidcProviderArn:
+      "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com",
+  });
+  expect(fargate.deployment).toBe("fargate");
+  const node = singleNodeSettingsSchema.parse({
+    deployment: "single-node",
+    stack: "zpghl",
+    hostname: "hooks.example.com",
+    environment: { INSTANCE_MODE: "customer", EMBEDDINGS_ENABLED: "false" },
+  });
+  expect(node).toMatchObject({
+    instanceType: "t4g.large",
+    volumeSize: 60,
+    snapshotRetention: 7,
+  });
+  expect(
+    singleNodeSettingsSchema.safeParse({
+      deployment: "single-node",
+      stack: "zpghl",
+      hostname: "hooks.example.com",
+      volumeSize: "30",
+    }).success,
+  ).toBe(false);
+  expect(
+    singleNodeSettingsSchema.safeParse({
+      deployment: "single-node",
+      stack: "Prod Stack",
+      hostname: "hooks.example.com",
+    }).success,
+  ).toBe(false);
+  expect(
+    singleNodeSettingsSchema.safeParse({
+      deployment: "single-node",
+      stack: "zpghl",
+      hostname: "hooks.example.com",
+      environment: { OPENAI_API_KEY: "value" },
+    }).success,
+  ).toBe(false);
+});
+
+// @req R-INF-07
+it("requires a ClickHouse Cloud endpoint for the cloud trace store and parses its provider and region", () => {
+  expect(
+    clickhouseCloudUrlSchema.parse(
+      "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+    ),
+  ).toEqual({
+    origin: "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+    provider: "aws",
+    region: "us-west-2",
+  });
+  for (const value of [
+    "http://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+    "https://user:pw@cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+    "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443/db",
+    "https://example.com:8443",
+  ])
+    expect(clickhouseCloudUrlSchema.safeParse(value).success).toBe(false);
+  const base = {
+    deployment: "single-node",
+    stack: "zpghl",
+    hostname: "hooks.example.com",
+  };
+  expect(singleNodeSettingsSchema.parse(base).traceStore).toBe("local");
+  expect(
+    singleNodeSettingsSchema.safeParse({
+      ...base,
+      traceStore: "clickhouse-cloud",
+    }).success,
+  ).toBe(false);
+  expect(
+    singleNodeSettingsSchema.parse({
+      ...base,
+      traceStore: "clickhouse-cloud",
+      clickhouseCloudUrl: "https://abc.us-west-2.aws.clickhouse.cloud:8443",
+    }).clickhouseCloudUrl,
+  ).toMatchObject({ provider: "aws", region: "us-west-2" });
 });

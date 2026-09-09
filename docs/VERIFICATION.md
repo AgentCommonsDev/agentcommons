@@ -53,21 +53,49 @@ isolated native hook configuration. It never changes the workstation's normal
 Claude or Codex settings. Codex uses an exclusively created temporary native profile
 that is removed afterward; its existing local authentication remains available.
 
-| Harness     | Captured version | Required live observations                                                              |
-| ----------- | ---------------- | --------------------------------------------------------------------------------------- |
-| Claude Code | 2.1.263          | Prompt, Read call/result, Explore subagent, end, Git state                              |
-| Codex       | 0.153.4          | Prompt, shell call/result, subagent, end, Git state                                     |
-| Gemini CLI  | 0.35.3           | Prompt, generalist delegation call/result, rewritten document, duplicate end, Git state |
-| pi          | 0.73.1           | Prompt, read result, native tree navigation, fork, resume, shutdown, Git state          |
+| Harness     | Captured version | Required live observations                                                              | Native MCP usage (second hooked session)                                                       |
+| ----------- | ---------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Claude Code | 2.1.265          | Prompt, Read call/result, Explore subagent, end, Git state                              | `mcp__agentcommons__search`, `get`, `sql`, `dashboard_render`                                  |
+| Codex       | 0.153.4          | Prompt, shell call/result, subagent, end, Git state                                     | typed `McpToolCall` projected as `mcp__agentcommons__search`, `get`, `sql`, `dashboard_render` |
+| Gemini CLI  | 0.35.3           | Prompt, generalist delegation call/result, rewritten document, duplicate end, Git state | `mcp_agentcommons_search`, `get`, `sql`, `dashboard_render`                                    |
+| pi          | 0.73.1           | Prompt, read result, native tree navigation, fork, resume, shutdown, Git state          | `agentcommons_search`, `get`, `sql`, `dashboard_render` through the extension bridge           |
 
 Every session must be complete, searchable through REST and MCP, readable through
-both transports, and visible in the mobile dashboard. A separate native Claude
+both transports, and visible in the mobile dashboard. Every harness also starts from a
+deliberately stale `hook.js` and `pi-extension.mjs`: the first uploader run must replace
+both with the served artifacts (digests equal to `/hook/manifest.json`, `hook.log`
+records the update) and the installation's recorded `hook_sha256` must end as the served
+digest (R-CAP-16), and `hook.log` must record that the new bundle re-ran `install` with the recorded flags (R-CAP-17). A separate native Claude
 agent receives only the four search markers, finds the session IDs through MCP,
 and calls `get` for each one. Its completed tool calls and returned identities are
 checked against the ingested sessions. An SDK client alone does not satisfy this
 agent check. The report and screenshots are written to `test-results/live-canary/`.
 Harness versions are checked before use; capture and review a changed contract
 before changing a pinned version.
+
+After that agent check, every MCP-capable harness runs a second native session in the
+same repository with the same installed hooks and the MCP registration `install.sh`
+wrote (Claude `--mcp-config` on the private `.claude.json`, a Codex profile carrying
+`mcp_servers`, the copied Gemini project settings, pi's installed extension). The prompt asks the agent to
+`search` for the earlier capture marker, `get` a returned session, run one `sql`
+query and render the default dashboard. The canary requires that the hook captured
+this session as a second root session, that its transcript holds `TOOL_USE` and
+`TOOL_RESULT` rows for `search`, `get`, `sql` and `dashboard_render` under the
+harness's native tool names with no error envelope, that `search` returned the
+capture session and `get` read an id `search` returned, that `sql` saw the harness's
+own sessions, that `dashboard_render` returned tile rows without a tile error, and
+that the audit log holds `transport=mcp` rows for the installed member key: a
+`mcp.tools.list` row plus a successful `search`, `get`, `sql` and `dashboard.render`
+row, with no `mcp.call` failure rows. The stage also requires eager loading: the first
+AgentCommons call must not be preceded by the harness's deferred-tool loader (Claude
+Code `ToolSearch`), and the live `tools/list` catalog must stay under the R-MCP-09
+budget (15 KB for a read key, 20 KB for an admin key), recorded under `catalog`. The
+report records the prompt, native tool names, every invoked tool and any tool or audit
+error under `native_tools`. pi has no
+MCP client; its stage runs through the extension's tool bridge (ADR 0054), which
+registers the same catalog as `agentcommons_<tool>` natives, driven by the scripted
+mock model (`scripts/pi-mock-model.mjs`) when `CANARY_PI_*` selects it or by the
+Gemini provider key otherwise.
 
 Local canaries use the CLI's existing Claude/Codex authentication and a
 `GEMINI_API_KEY` for Gemini and pi. The `Live harness canary` workflow runs nightly

@@ -450,31 +450,15 @@ exports[`Codex normalization > normalizes observed response variants and keeps d
   {
     "agentId": null,
     "blockIndex": 0,
-    "content": "<recommended_plugins>
-Here is a list of plugins that are available but not installed.
-
-- Atlassian Rovo (atlassian-rovo@openai-curated-remote)
-- Box (box@openai-curated-remote)
-- Figma (figma@openai-curated-remote)
-- GitHub (github@openai-curated-remote)
-- Gmail (gmail@openai-curated-remote)
-- Google Calendar (google-calendar@openai-curated-remote)
-- Google Drive (google-drive@openai-curated-remote)
-- Notion (notion@openai-curated-remote)
-- Outlook Calendar (outlook-calendar@openai-curated-remote)
-- Outlook Email (outlook-email@openai-curated-remote)
-- SharePoint (sharepoint@openai-curated-remote)
-- Slack (slack@openai-curated-remote)
-- Teams (teams@openai-curated-remote)
-</recommended_plugins>",
+    "content": "[metadata preserved]",
     "inputTokens": null,
-    "kind": "TEXT",
+    "kind": "META",
     "model": null,
     "nativeId": "msg_01a07dec-4d88-7dd2-b38e-084d693f0761",
     "outputTokens": null,
     "parentId": null,
     "rawRecordId": "raw-30549-0",
-    "role": "USER",
+    "role": "SYSTEM",
     "timestamp": "2026-09-07T22:10:33.481Z",
     "toolInput": null,
     "toolName": null,
@@ -483,21 +467,15 @@ Here is a list of plugins that are available but not installed.
   {
     "agentId": null,
     "blockIndex": 1,
-    "content": "<environment_context>
-  <cwd>/tmp/agentcommons-live-capture/codex/repo</cwd>
-  <shell>bash</shell>
-  <current_date>2026-09-07</current_date>
-  <timezone>Etc/UTC</timezone>
-  <filesystem><workspace_roots><root>/tmp/agentcommons-live-capture/codex/repo</root></workspace_roots><permission_profile type="managed"><file_system type="restricted"><entry access="read"><special>:root</special></entry></file_system></permission_profile></filesystem>
-</environment_context>",
+    "content": "[metadata preserved]",
     "inputTokens": null,
-    "kind": "TEXT",
+    "kind": "META",
     "model": null,
     "nativeId": "msg_01a07dec-4d88-7dd2-b38e-084d693f0761",
     "outputTokens": null,
     "parentId": null,
     "rawRecordId": "raw-30549-0",
-    "role": "USER",
+    "role": "SYSTEM",
     "timestamp": "2026-09-07T22:10:33.481Z",
     "toolInput": null,
     "toolName": null,
@@ -559,7 +537,14 @@ Here is a list of plugins that are available but not installed.
     "agentId": null,
     "blockIndex": 0,
     "content": "",
-    "files": [],
+    "files": [
+      {
+        "ops": [
+          "read",
+        ],
+        "path": "/tmp/agentcommons-live-capture/codex/repo/probe.txt",
+      },
+    ],
     "inputTokens": null,
     "kind": "TOOL_USE",
     "model": "gpt-6-astra",
@@ -678,7 +663,7 @@ exports[`Gemini CLI normalization > projects the latest captured version without
     "kind": "TEXT",
     "model": "gemini-3-flash-preview",
     "nativeId": "14d2470f-44b3-4117-b7e2-0570571cc072",
-    "outputTokens": "75",
+    "outputTokens": "196",
     "parentId": null,
     "rawRecordId": "raw-1-1",
     "role": "ASSISTANT",
@@ -783,7 +768,7 @@ capture-second-tool",
     "kind": "TEXT",
     "model": "gemini-3-flash-preview",
     "nativeId": "585c2086-2adb-4e9f-a5c4-3537ae3d1a0d",
-    "outputTokens": "32",
+    "outputTokens": "93",
     "parentId": null,
     "rawRecordId": "raw-2-1",
     "role": "ASSISTANT",

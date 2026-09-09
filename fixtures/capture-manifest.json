@@ -270,5 +270,21 @@
       ],
       "matches": 0
     }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/claude-2.1.265/raw/hooks.jsonl",
+    "destination": "fixtures/hooks/claude-code-2.1.265-hook-events.jsonl",
+    "jsonl": true,
+    "sessionId": "e950a669-1794-49a3-8c06-bd8feab1b3c3",
+    "sourceSha256": "0d668b9a222a8c22c3661f5295dfa9252f10ba0850466201877047ad18402aef",
+    "sha256": "0d668b9a222a8c22c3661f5295dfa9252f10ba0850466201877047ad18402aef",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
   }
 ]

@@ -36,6 +36,7 @@ export function latestRowsSql(
 }
 export const sessionDetailColumns = [
   ...Object.keys(sessionColumns),
+  "parent_tool_use_id",
   "visibility",
   "purged_at",
   "user_email",
@@ -81,7 +82,9 @@ export function baseViews(database: string): string[] {
       "hostname",
       `(${alias}.organization_id,${alias}.installation_id)`,
     );
-  const base = `SELECT ${headerSelect},${sessionMetadata("parent_session_id")} AS parent_session_id,${sessionMetadata("parent_relation")} AS parent_relation,if(${traceScopeSql.admin},${sessionMetadata("parent_native_ref")},NULL) AS parent_native_ref,${sessionMetadata("status")} AS status,${sessionMetadata("ended_at")} AS ended_at,${sessionMetadata("last_activity_at")} AS last_activity_at,${sessionMetadata("visibility")} AS visibility,${sessionMetadata("purged_at")} AS purged_at,${userMetadata("s", "email")} AS user_email,${userMetadata("s", "name")} AS user_name,${installationMetadata("s")} AS installation_hostname FROM (${latestRowsSql(database, "sessions", sessionColumns, "session_id")}) s`;
+  // Control owns parent links, including the spawning call: the parent's evidence can
+  // arrive after the child's last projection, so it is read live, never from the row.
+  const base = `SELECT ${headerSelect},${sessionMetadata("parent_session_id")} AS parent_session_id,${sessionMetadata("parent_relation")} AS parent_relation,if(${traceScopeSql.admin},${sessionMetadata("parent_native_ref")},NULL) AS parent_native_ref,${sessionMetadata("parent_tool_use_id")} AS parent_tool_use_id,${sessionMetadata("status")} AS status,${sessionMetadata("ended_at")} AS ended_at,${sessionMetadata("last_activity_at")} AS last_activity_at,${sessionMetadata("visibility")} AS visibility,${sessionMetadata("purged_at")} AS purged_at,${userMetadata("s", "email")} AS user_email,${userMetadata("s", "name")} AS user_name,${installationMetadata("s")} AS installation_hostname FROM (${latestRowsSql(database, "sessions", sessionColumns, "session_id")}) s`;
   const empty = emptyTraceRow("sessions");
   const retained = new Set([
     "session_id",
@@ -120,37 +123,38 @@ export function baseViews(database: string): string[] {
     ...retained,
   ]
     .filter((name) => !["organization_id", "session_id"].includes(name))
-    .concat(["visibility", "purged_at", "published_revision"])
+    .concat([
+      "parent_tool_use_id",
+      "visibility",
+      "purged_at",
+      "published_revision",
+    ])
     .map(
       (name) =>
         `${metadata("session_scope", name, "(i.organization_id,i.session_id)")} AS ${sqlIdentifier(name)}`,
     )
     .join(",")} FROM ${sqlIdentifier(database)}.session_identities i FINAL`;
-  const skeletonSql = `SELECT ${skeleton},c.visibility AS visibility,c.purged_at AS purged_at,${userMetadata("c", "email")} AS user_email,${userMetadata("c", "name")} AS user_name,${installationMetadata("c")} AS installation_hostname FROM (${skeletonControl}) c WHERE c.organization_id=${traceScopeSql.organization} AND ${traceScopeSql.admin} AND c.purged_at IS NOT NULL AND c.published_revision>0`;
+  const skeletonSql = `SELECT ${skeleton},c.parent_tool_use_id AS parent_tool_use_id,c.visibility AS visibility,c.purged_at AS purged_at,${userMetadata("c", "email")} AS user_email,${userMetadata("c", "name")} AS user_name,${installationMetadata("c")} AS installation_hostname FROM (${skeletonControl}) c WHERE c.organization_id=${traceScopeSql.organization} AND ${traceScopeSql.admin} AND c.purged_at IS NOT NULL AND c.published_revision>0`;
   // The skeleton retains only native IDs; current compact metadata comes from PostgreSQL.
-  const baseOrder = [
+  const baseNames = [
     ...headerNames,
+    "parent_tool_use_id",
     "visibility",
     "purged_at",
     "user_email",
     "user_name",
     "installation_hostname",
-  ]
-    .map(sqlIdentifier)
-    .join(",");
-  const publicFields = [
-    ...headerNames,
-    "visibility",
-    "purged_at",
-    "user_email",
-    "user_name",
-    "installation_hostname",
-  ]
+  ];
+  const baseOrder = baseNames.map(sqlIdentifier).join(",");
+  const publicFields = baseNames
     .filter(
       (name) =>
-        !["parent_session_id", "parent_relation", "parent_native_ref"].includes(
-          name,
-        ),
+        ![
+          "parent_session_id",
+          "parent_relation",
+          "parent_native_ref",
+          "parent_tool_use_id",
+        ].includes(name),
     )
     .map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`)
     .join(",");
@@ -166,7 +170,7 @@ export function baseViews(database: string): string[] {
     ),
     view(
       "session_details",
-      `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,p.title AS parent_title,coalesce(c.child_count,0) AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count FROM api_ro.session_base s LEFT ANY JOIN api_ro.session_base p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT parent_session_id,count(*) child_count FROM api_ro.session_base WHERE parent_session_id IS NOT NULL GROUP BY parent_session_id)c ON c.parent_session_id=s.session_id LEFT ANY JOIN (SELECT session_id,count(*) file_count FROM (${latestRowsSql(database, "session_files", fileColumns, "file_id")}) GROUP BY session_id)f ON f.session_id=s.session_id`,
+      `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,if(p.session_id IS NOT NULL,s.parent_tool_use_id,NULL) AS parent_tool_use_id,p.title AS parent_title,coalesce(c.child_count,0) AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count FROM api_ro.session_base s LEFT ANY JOIN api_ro.session_base p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT parent_session_id,count(*) child_count FROM api_ro.session_base WHERE parent_session_id IS NOT NULL GROUP BY parent_session_id)c ON c.parent_session_id=s.session_id LEFT ANY JOIN (SELECT session_id,count(*) file_count FROM (${latestRowsSql(database, "session_files", fileColumns, "file_id")}) GROUP BY session_id)f ON f.session_id=s.session_id`,
     ),
     view("sessions", "SELECT * FROM api_ro.session_details"),
     view(
@@ -222,7 +226,7 @@ export function baseViews(database: string): string[] {
     ),
     view(
       "installations",
-      `SELECT i.organization_id,i.id AS installation_id,any(i.hostname) AS hostname,any(i.os_user) AS os_user,any(i.platform) AS platform,any(i.arch) AS arch,toBool(any(i.tools_enabled)) AS tools_enabled,min(s.started_at) AS first_seen_at,max(s.last_activity_at) AS last_seen_at,count(*) AS session_count FROM ${sqlIdentifier(database)}.control_installations i JOIN api_ro.session_base s ON i.organization_id=s.organization_id AND i.id=s.installation_id GROUP BY i.organization_id,i.id`,
+      `SELECT i.organization_id,i.id AS installation_id,any(i.hostname) AS hostname,any(i.os_user) AS os_user,any(i.platform) AS platform,any(i.arch) AS arch,any(i.hook_sha256) AS hook_sha256,toBool(any(i.tools_enabled)) AS tools_enabled,min(s.started_at) AS first_seen_at,max(s.last_activity_at) AS last_seen_at,count(*) AS session_count FROM ${sqlIdentifier(database)}.control_installations i JOIN api_ro.session_base s ON i.organization_id=s.organization_id AND i.id=s.installation_id GROUP BY i.organization_id,i.id`,
     ),
     view(
       "session_tools",

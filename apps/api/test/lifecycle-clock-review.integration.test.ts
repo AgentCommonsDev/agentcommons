@@ -37,6 +37,7 @@ it("a final source flush cannot suppress its earlier-captured end at the same so
     );
   const base: IngestEnvelope = {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "GEMINI_CLI",
     harnessSessionId: randomUUID(),
     installationId: randomUUID(),

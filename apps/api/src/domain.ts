@@ -14,9 +14,9 @@ const { values, positionals } = parseArgs({
     "cookie-file": { type: "string" },
   },
 });
-if (positionals.length !== 1) throw new Error("Choose register or verify.");
+if (positionals.length !== 0)
+  throw new Error("Pass --organization, --domain and --cookie-file only.");
 const input = domainEnrollmentInputSchema.parse({
-  operation: positionals[0],
   organization: values.organization,
   domain: values.domain,
 });

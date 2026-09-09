@@ -12,6 +12,7 @@ import { z } from "zod";
 import {
   filterSql,
   Parameters,
+  rootSessionIds,
   traceJson,
 } from "../repositories/read-model.js";
 import {
@@ -168,8 +169,8 @@ export class SearchService {
           const headers = new Map<string, Omit<SearchBlock, "messages">>();
           const pageHits = hits.slice(0, request.limit);
           const ids = [...new Set(pageHits.map((hit) => hit.session_id))];
-          // Fetch all context and headers in two queries for the whole page.
-          const [neighbours, values] = await Promise.all([
+          // Fetch all context, headers and tree roots in three queries for the whole page.
+          const [neighbours, values, roots] = await Promise.all([
             ids.length
               ? client.query(
                   `WITH ordered AS (
@@ -193,24 +194,26 @@ export class SearchService {
               : Promise.resolve({ rows: [] }),
             ids.length
               ? client.query(
-                  "SELECT session_id,title,harness,model,repo_name,branch,user_email,started_at FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}",
+                  "SELECT session_id,parent_relation,agent_type,parent_tool_use_id,title,harness,model,repo_name,branch,user_email,started_at FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}",
                   { ids },
                 )
               : Promise.resolve({ rows: [] }),
+            rootSessionIds(client, ids),
           ]);
           for (const row of values.rows)
             headers.set(
               String(row.session_id),
-              searchBlockSchema
-                .omit({ messages: true })
-                .parse(
-                  compactMetadata(wireRow(row), [
-                    "title",
-                    "model",
-                    "repo_name",
-                    "branch",
-                  ]),
+              searchBlockSchema.omit({ messages: true }).parse(
+                compactMetadata(
+                  {
+                    ...wireRow(row),
+                    root_session_id:
+                      roots.get(String(row.session_id)) ??
+                      String(row.session_id),
+                  },
+                  ["title", "model", "repo_name", "branch", "agent_type"],
                 ),
+              ),
             );
           const payloadBatches = messagePayloadBatches(
             neighbours.rows,

@@ -75,16 +75,16 @@ export async function nativeCheckout(
         : {}),
       customerType: "organization",
       referenceId: caller.organizationId,
-      successUrl: `${config.publicUrl}/usage`,
-      cancelUrl: `${config.publicUrl}/usage`,
-      returnUrl: `${config.publicUrl}/usage`,
+      successUrl: `${config.publicUrl}/app/billing`,
+      cancelUrl: `${config.publicUrl}/app/billing`,
+      returnUrl: `${config.publicUrl}/app/billing`,
       disableRedirect: true,
     },
   });
   const result = z.object({ url: z.url() }).parse(response);
   await lockTracePublication(tx, caller.organizationId, "write");
   return {
-    url: result.url === `${config.publicUrl}/usage` ? null : result.url,
+    url: result.url === `${config.publicUrl}/app/billing` ? null : result.url,
   };
 }
 
@@ -99,7 +99,7 @@ export async function nativeBillingPortal(
     body: {
       customerType: "organization",
       referenceId: caller.organizationId,
-      returnUrl: `${config.publicUrl}/usage`,
+      returnUrl: `${config.publicUrl}/app/billing`,
       disableRedirect: true,
     },
   });

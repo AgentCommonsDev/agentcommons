@@ -66,6 +66,13 @@ export interface NativeLink {
   parentNativeRef: string;
   agentType?: string;
 }
+/** A parent transcript's record of the tool call that started one child session. */
+export interface NativeSpawn {
+  /** The spawning call's native tool-use id, as the parent's `TOOL_USE` message records it. */
+  toolUseId: string;
+  /** The child's native session reference in the form the child's own upload uses. */
+  childNativeRef: string;
+}
 export interface ResultSource {
   rawRecordId: string;
   toolUseId: string | null;
@@ -86,6 +93,8 @@ export interface Normalizer {
     context?: NormalizerContext,
   ): SessionDelta;
   links(records: readonly SourceRecord[]): NativeLink[];
+  /** Child sessions this transcript started, keyed by the spawning tool call (§5.5). */
+  spawns(records: readonly SourceRecord[]): NativeSpawn[];
   toolUses(records: readonly SourceRecord[]): NormalizedMessage[];
   toolResults(record: SourceRecord): ResultSource[];
   toolIdentities(

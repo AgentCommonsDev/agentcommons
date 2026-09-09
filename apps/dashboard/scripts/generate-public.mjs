@@ -28,7 +28,7 @@ const blogIndex = `\n## ${copy.blog.navigation}\n\n${posts.map((post) => `- [${p
 const blogFull = posts
   .map((post) => `# ${post.title}\n\n${post.date}\n\n${post.body}`)
   .join("\n\n");
-const summary = `${guide}\n## ${copy.discovery.documentation}\n\n- [${copy.discovery.guide}](__PUBLIC_URL__/docs)\n- [${copy.footer.links.specification}](${links.specification})\n- [${copy.discovery.full}](__PUBLIC_URL__/llms-full.txt)\n`;
+const summary = `${guide}\n## ${copy.discovery.documentation}\n\n- [${copy.discovery.guide}](__PUBLIC_URL__/docs)\n- [${copy.footer.links.specification}](${links.specification})\n- [${copy.discovery.full}](__PUBLIC_URL__/llms-full.txt)\n- [${copy.legal.privacy.title}](__PUBLIC_URL__/privacy)\n- [${copy.legal.terms.title}](__PUBLIC_URL__/tos)\n`;
 const readme = await readFile(
   new URL("../../../README.md", import.meta.url),
   "utf8",

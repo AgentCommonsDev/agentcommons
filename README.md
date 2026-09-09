@@ -1,19 +1,79 @@
-<img src="docs/assets/readme-logo.png" alt="AgentCommons logo" width="96" height="96">
+<p align="center">
+  <img src="docs/assets/readme-logo.png" alt="AgentCommons logo" width="120" height="120">
+</p>
 
-# AgentCommons
+<h1 align="center">AgentCommons</h1>
 
-Find your team's prior coding-agent work before repeating it.
+<p align="center">Shared history, governance, and observability for your team's coding agents.</p>
+
+<p align="center">
+  <a href="#get-your-team-started">Install</a> ·
+  <a href="docs/README.md">Docs</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/rek7/agentcommons/actions/workflows/ci.yml"><img src="https://github.com/rek7/agentcommons/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/rek7/agentcommons/actions/workflows/installer.yml"><img src="https://github.com/rek7/agentcommons/actions/workflows/installer.yml/badge.svg" alt="Installer platforms status"></a>
+  <a href="https://github.com/rek7/agentcommons/actions/workflows/live-canary.yml"><img src="https://github.com/rek7/agentcommons/actions/workflows/live-canary.yml/badge.svg" alt="Live harness canary status"></a>
+</p>
 
 AgentCommons keeps sessions from Claude Code, Codex, Gemini CLI, and pi searchable
-in one place. Read an earlier debugging session, inspect tool output, and understand
-why a teammate chose an approach. People and agents search the same history.
+in one place. People and agents search the same history, so nobody repeats an
+investigation. Dashboards and SQL show what every agent did. Redaction, visibility,
+purge, and audit rules apply once across the organization. Teams and their agents get
+more effective because nobody repeats work, leaders see what agents are doing, and
+admins enforce controls once for everyone.
 
-## Agent observability and governance
+## See it
 
-- **Find prior work.** Search prompts, decisions, and tool calls across your team's coding tools.
-- **Follow the evidence.** Open the source session, its subagents, and the work that reused it.
-- **See adoption.** Track captured sessions, search use, and reuse across the team.
-- **Control access.** Manage organizations, members, and keys. Redact secrets before storage, add custom policies, and hide or purge sessions.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/home-dark.png">
+  <img src="docs/assets/screenshots/home-light.png" alt="The Team overview dashboard seen by an admin: captured sessions, sessions that searched, sessions reusing prior work and the reuse rate as stat tiles, a weekly reuse rate chart, a donut of sessions by coding tool, sessions per day and the most active repositories." width="100%">
+</picture>
+
+<p align="center"><sub><b>Home, as an admin.</b> The organization's default dashboard. Every tile is a SQL query over the captured sessions, and members can add their own dashboards.</sub></p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/sessions-dark.png">
+        <img src="docs/assets/screenshots/sessions-light.png" alt="The Sessions list seen by an admin: full-text search over messages, filters, one row per captured session with its title, coding tool, repository and branch, user, start time, duration and status, and the Organization admin section in the sidebar." width="100%">
+      </picture>
+      <p align="center"><sub><b>Sessions, as an admin.</b> Search prompts, decisions and tool output across every coding tool, or browse each captured session. Admins also see the Organization section: people, keys, audit log, moderation, redaction, status and settings.</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/session-dark.png">
+        <img src="docs/assets/screenshots/session-light.png" alt="One session page: header with coding tool, model, user and repository, the sessions that reused it, and the transcript with a subagent run expanded inline under the Agent call that spawned it." width="100%">
+      </picture>
+      <p align="center"><sub><b>Session, as a member.</b> The transcript with thinking, tool calls and a subagent run nested under the call that spawned it. The header lists later sessions that read this one.</sub></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/sql-dark.png">
+        <img src="docs/assets/screenshots/sql-light.png" alt="The SQL page: a schema explorer of read-only views, an editor with a query grouping sessions by repository and coding tool, and the result table." width="100%">
+      </picture>
+      <p align="center"><sub><b>SQL, as a member.</b> ClickHouse SQL over read-only views of sessions, messages, files and tools, with completions and a schema briefing your assistant can use.</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/install-dark.png">
+        <img src="docs/assets/screenshots/install-light.png" alt="The Install page: a form to create a key for a machine, a picker for an existing key, per-tool notes, and the one-line install command with the key masked." width="100%">
+      </picture>
+      <p align="center"><sub><b>Install, as a member.</b> Create a key for the machine and run one command. It installs the capture hook for every coding tool and connects the agents over MCP.</sub></p>
+    </td>
+  </tr>
+</table>
+
+## History, governance, and observability
+
+- **Find prior work.** Search prompts, decisions, and tool calls across Claude Code, Codex, Gemini CLI, and pi sessions. Agents search through MCP; people search in the app.
+- **Follow the evidence.** Open the source session, its subagent runs, and the later sessions that read it.
+- **See what agents do.** Home is your organization's default dashboard, and you can add more in the visual editor or through MCP. The SQL page queries every session with completions, live diagnostics, and a schema briefing you can copy for your assistant.
+- **Control access.** Manage members, keys, and Google sign-in domains. Redact secrets before storage, add custom policies, hide or purge sessions, review the audit log, and check each machine's hook status.
 
 Your history stays with your team when you change tools or model vendors.
 Versioned `AGENTS.md`, `CLAUDE.md`, and skills capture your instructions; session
@@ -21,12 +81,30 @@ history supplies the evidence behind them.
 
 ## Get your team started
 
-1. Sign in and create or join your organization.
-2. Open **Installation**, create a key, and copy the terminal command.
-3. Start a coding session, then open **Sessions** to see it arrive.
+1. Sign in and create or join your organization. A new organization needs only a name.
+2. Open **Install**. Create a key for your machine and copy the command. Run it in a
+   terminal with Node.js 20 or newer; it installs the capture hook for every coding tool
+   on that machine. Codex asks you to trust the hooks once. Installed hooks update
+   themselves within an hour of a server upgrade, so re-run the installer only on a new
+   machine or for a new key.
+3. Start a coding session. It appears on the Install page within seconds and stays under
+   **Sessions**. **Home** shows captured sessions, search use, reuse, and the charts your
+   team adds.
+4. Ask your agent: “Has anyone already worked on this problem?” The installer also
+   connects Claude Code, Codex, and Gemini CLI on that machine to AgentCommons over MCP
+   with the same key, so the agent can search before it starts. It can search, open
+   source sessions, run SQL, and save dashboards. pi reaches the same tools through its
+   AgentCommons extension.
 
-Ask your agent: “Has anyone already worked on this problem?” It can search, open
-source sessions, and query the shared history through MCP.
+If the installer did not detect a tool, or a machine has no hook, add the server by hand:
+
+```bash
+claude mcp add -s user -t http agentcommons https://your-server/mcp -H "Authorization: Bearer <key>"
+codex mcp add agentcommons --url https://your-server/mcp --bearer-token-env-var AGENTCOMMONS_API_KEY
+```
+
+Gemini CLI takes an `mcpServers` entry in its settings. **API reference** in the app
+documents the same REST routes.
 
 SaaS plans start with **1,000 captured records/month free**. **Pro is $100/month**
 with 10,000 included records and configured usage charges; embeddings add
@@ -36,17 +114,21 @@ public hosted launch is implied.
 
 ## Run it for your team
 
-Copy `.env.example` to `.env` and follow the [deployment guide](docs/customer-deployment.md)
-to set the address and credentials. Then start the application and create an owner:
+Copy `.env.example` to `.env`. Set `PUBLIC_URL`, the PostgreSQL and ClickHouse
+passwords, and `BETTER_AUTH_SECRET`, and point the database URLs at host `db` as the
+comments describe. Then start the application and create an owner:
 
 ```bash
 docker compose up -d --build
 docker compose exec api pnpm db:seed --admin you@example.com --organization your-team --name "Your team"
 ```
 
-Open the returned setup link and continue with **Installation**. Customer instances
-keep public discovery disabled. Operators can enable hosted signup and billing with
-`INSTANCE_MODE=saas`; see [environment settings](.env.example) for email, Stripe, and plans.
+The seed prints a setup link. Open it, set your password, and continue with **Install**.
+For HTTPS on one host, add `docker-compose.caddy.yml`: Caddy obtains the certificate for
+`PUBLIC_URL` and proxies to the API.
+Customer instances keep public discovery disabled. Operators can enable hosted signup
+and billing with `INSTANCE_MODE=saas`; see [environment settings](.env.example) for
+email, Stripe, and plans. AWS deployment uses Pulumi from `infra/`.
 
 For local development, see [Contributing](CONTRIBUTING.md) and the
 [configuration guide](docs/SPEC.md#appendix-b-configuration).
@@ -58,9 +140,12 @@ For local development, see [Contributing](CONTRIBUTING.md) and the
 [Shopify's River](https://shopify.engineering/under-the-river) leaves searchable
 public Slack transcripts that teams use to improve skills and prompts.
 AgentCommons applies that idea to coding work in terminals, IDEs, and CI, where
-failed experiments and decisions often never reach a pull request.
+failed experiments and decisions often never reach a pull request. It works the same
+across Claude Code, Codex, Gemini CLI, and pi, and with any tool that can call MCP or
+REST, so a team can change chat apps or agent harnesses and keep its history.
 
 Pre-release. See [verification](docs/VERIFICATION.md) for completed tests and live
-capture checks. Threat detection and runtime tool-policy enforcement are future work.
+capture checks. AgentCommons records and indexes sessions. It does not block tool
+calls or detect suspicious behavior.
 
 [Spec](docs/SPEC.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)

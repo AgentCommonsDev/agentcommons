@@ -19,8 +19,19 @@ import { createApp } from "../../api/src/app.ts";
 import { environment } from "../../api/src/env.ts";
 import { cleanup } from "../../../scripts/cleanup.ts";
 
-const statePath = "/tmp/agentcommons-saas-browser-state.json";
-const origin = "http://localhost:3600";
+// One SaaS fixture per port so a developer can run beside a live instance; the
+// calendar fallback instance takes the next port. CI keeps 3600.
+const basePort = z.coerce
+  .number()
+  .int()
+  .min(1024)
+  .max(65534)
+  .parse(process.env.DASHBOARD_SAAS_PORT ?? 3600);
+const statePath =
+  process.env.DASHBOARD_SAAS_STATE ??
+  `/tmp/agentcommons-saas-browser-state${basePort === 3600 ? "" : `-${String(basePort)}`}.json`;
+const origin = `http://localhost:${String(basePort)}`;
+const calendarOrigin = `http://localhost:${String(basePort + 1)}`;
 const dashboardDirectory = process.env.DASHBOARD_BROWSER_ASSETS;
 const release = [];
 const signingSecret = "whsec_local_browser_protocol";
@@ -98,10 +109,10 @@ try {
     ...(dashboardDirectory ? { dashboardDirectory } : {}),
   });
   release.unshift(() => app.close());
-  await app.listen({ port: 3600, host: "127.0.0.1" });
+  await app.listen({ port: basePort, host: "127.0.0.1" });
   const calendarEnv = environment({
     ...traceEnvironment(database.traceConfig),
-    PUBLIC_URL: "http://localhost:3601",
+    PUBLIC_URL: calendarOrigin,
     DATABASE_URL: database.urls.app,
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     INSTANCE_MODE: "saas",
@@ -127,7 +138,7 @@ try {
     ...(dashboardDirectory ? { dashboardDirectory } : {}),
   });
   release.unshift(() => calendarApp.close());
-  await calendarApp.listen({ port: 3601, host: "127.0.0.1" });
+  await calendarApp.listen({ port: basePort + 1, host: "127.0.0.1" });
   const control = createServer((request, response) => {
     const handle = async () => {
       if (request.headers.authorization !== `Bearer ${controlToken}`) {
@@ -226,7 +237,7 @@ try {
     { mode: 0o600 },
   );
   release.unshift(() => unlink(statePath));
-  process.stdout.write("SaaS browser fixture ready at http://localhost:3600\n");
+  process.stdout.write(`SaaS browser fixture ready at ${origin}\n`);
 } catch (error) {
   await cleanup(release);
   throw error;

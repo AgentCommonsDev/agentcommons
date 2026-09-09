@@ -15,7 +15,13 @@ import {
   TraceReaders,
   type TraceTable,
 } from "../src/index.js";
-import { traceViews } from "@agentcommons/core/sql";
+import {
+  traceColumnDescriptions,
+  traceEmbeddingViews,
+  traceViews,
+} from "@agentcommons/core/sql";
+import { formatSchemaContext } from "@agentcommons/core/format";
+import { schemaOutputSchema } from "@agentcommons/core/schemas/rest";
 import { searchTermsSql } from "../src/views/search.js";
 import { postgresTlsSql } from "../src/postgres.js";
 import { sqlString } from "../src/client.js";
@@ -1087,8 +1093,8 @@ it("derives parent metadata, child counts, repositories and installations only f
   }
 });
 
-// @req R-SQL-05
-it("discovers actual native columns and migration-added descriptions without rebuilding the catalog", async () => {
+// @req R-SQL-05 @req R-DASH-22
+it("discovers actual native columns with catalog descriptions and migration-added descriptions without rebuilding the catalog", async () => {
   const native = createTraceClient({
     url: db.traceMigration.url,
     username: db.traceMigration.username,
@@ -1120,6 +1126,39 @@ it("discovers actual native columns and migration-added descriptions without reb
     arguments: "q=String",
     result_type: "session_id UUID, seq UInt32, rank Float64",
   });
+  // The shared catalog names exactly the native columns of every canonical and embeddings
+  // view, every visible column carries its catalog meaning, and the assistant reference
+  // built from the real schema stays prompt-sized.
+  const meanings = new Map(
+    traceColumnDescriptions().map((row) => [
+      `${row.view}.${row.column}`,
+      row.description,
+    ]),
+  );
+  const nativeColumns = z
+    .array(z.object({ view_name: z.string(), column_name: z.string() }))
+    .parse(
+      await (
+        await native.query({
+          query: `SELECT table AS view_name,name AS column_name FROM system.columns WHERE database='api_ro' AND table IN (${[...traceViews, ...traceEmbeddingViews].map(sqlString).join(",")})`,
+          format: "JSONEachRow",
+        })
+      ).json(),
+    );
+  expect(
+    nativeColumns
+      .map((column) => `${column.view_name}.${column.column_name}`)
+      .sort(),
+  ).toEqual([...meanings.keys()].sort());
+  const reference = schemaOutputSchema.parse({ columns, functions });
+  for (const column of reference.columns)
+    expect(column.description).toBe(
+      meanings.get(`${column.view_name}.${column.column_name}`),
+    );
+  const briefing = formatSchemaContext(reference);
+  expect(briefing).toContain("# AgentCommons schema reference");
+  expect(briefing).toContain("### metrics_own_zero_results");
+  expect(new TextEncoder().encode(briefing).length).toBeLessThan(28 * 1024);
   const definition = await native.query({
     query: "SHOW CREATE TABLE api_ro.session_tools",
     format: "JSONEachRow",

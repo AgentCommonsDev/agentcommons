@@ -1,8 +1,45 @@
-# Goodhart Labs customer deployment draft
+# Goodhart Labs customer deployment
 
-Status: preparation only, 2026-09-08. No cloud resources, DNS records, deployment
-credentials, or customer data have been created by this preparation. Deployment waits
-for the remaining hosted verification and the operator's approval of the concrete plan.
+Status: single-node plan prepared 2026-09-09 (stack `zpghl`, `deployment: single-node`,
+us-west-2, `pulumi preview` reviewed). No application resources exist until the operator
+runs `pulumi up`; only the private Pulumi state bucket has been created. The Fargate plan
+below remains the reference for a larger footprint and was not selected.
+
+## Selected plan: one host behind Caddy
+
+`infra/OPERATIONS.md` (section "Single-node deployment") is the runbook. Summary:
+
+| Setting                  | Value                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| Application origin       | `https://hooks.tools.goodhartlabs.com`                                               |
+| Pulumi stack             | `zpghl`, S3 state backend in the account, passphrase secrets provider                |
+| Region                   | `us-west-2`, default VPC public subnet                                               |
+| Host                     | arm64 Ubuntu 24.04 `t4g.large`, 60 GiB encrypted gp3, Elastic IP, IMDSv2             |
+| Access                   | HTTPS and HTTP only; SSM Session Manager, no SSH                                     |
+| DNS                      | Cloudflare-proxied record to the Elastic IP; Caddy trusts Cloudflare's ranges        |
+| Instance mode            | `customer`, Google sign-in plus the owner's password fallback, no email              |
+| Signup                   | `invite`; operator allowlist `zeropath.com,goodhartlabs.com`                         |
+| Organization             | slug and name `zpghl`; owner `raphael@zeropath.com`                                  |
+| Enrolled sign-in domains | `zeropath.com`, `goodhartlabs.com` (members join automatically, ADR 0049)            |
+| Embeddings               | off; enable later per the runbook (`EMBEDDINGS_ENABLED`, `OPENAI_API_KEY`)           |
+| Trace store              | ClickHouse Cloud (`cjudcc6tio.us-west-2.aws.clickhouse.cloud`), billed by ClickHouse |
+| Backups                  | daily EBS snapshots, seven retained                                                  |
+| Estimated cost           | about $59 to $61 per month                                                           |
+
+Operator sequence after the final commit is pushed: `pulumi up`, then
+`infra/scripts/single-node-release.sh <commit>`, then
+`infra/scripts/single-node-bootstrap.sh --admin raphael@zeropath.com --organization zpghl --name zpghl --domain zeropath.com --domain goodhartlabs.com`.
+
+Founder actions: keep the Cloudflare-proxied `A` record for `hooks.tools` pointing at the
+`publicIp` stack output (DNS-only also works), set the zone's SSL/TLS mode to Full
+(strict) once the certificate exists, leave "Always Use HTTPS" off, and add
+`https://hooks.tools.goodhartlabs.com/auth/callback/google` to the Google OAuth client's
+authorized redirect URIs (origin `https://hooks.tools.goodhartlabs.com`). Caddy obtains
+the certificate within a minute of the record resolving.
+
+## Fargate alternative (not selected)
+
+The remainder of this document is the earlier Fargate/RDS plan, kept for reference.
 
 ## Target and verified prerequisites
 
@@ -109,14 +146,12 @@ AUTH_SIGNUP_MODE: open
 EMBEDDINGS_ENABLED: "false"
 ```
 
-The existing domain allowlist verifies the Google email domain and rejects unverified
-OAuth identities. **Open signup currently creates an identity without organization
-membership.** It does not yet satisfy automatic access for every Goodhart Labs user.
-The authorized opt-in auto-enrollment change must bind verified Google logins from this
-exact domain to the configured organization with native role `member` (the requested
-ordinary user role). It must preserve existing roles and suspensions. Its final shared
-configuration keys and acceptance tests belong to the authentication change; no guessed
-keys are included in this draft. Release that change before announcing domain access.
+The operator allowlist restricts which email domains may sign in and rejects unverified
+OAuth identities. Membership comes from the organization's sign-in domains: an owner or
+admin adds `goodhartlabs.com` on **Admin → Settings** (or the operator runs
+`pnpm db:domain` with a real owner session), and every Google-verified login from that
+exact domain then joins the organization as `member`. No DNS record is required (ADR
+0049). Existing roles, suspensions and removals are preserved.
 
 ## Non-secret Pulumi configuration draft
 

@@ -4,7 +4,8 @@ import * as pulumi from "@pulumi/pulumi";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 
-function unwrap(value: unknown): unknown {
+/** Resolves mock inputs, unwrapping RPC secrets so tests can assert on values. */
+export function unwrap(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item: unknown) => unwrap(item));
   if (value !== null && typeof value === "object") {
     const record = z.record(z.string(), z.unknown()).parse(value);
@@ -123,7 +124,9 @@ export function stackContract(stack: "dev" | "prod") {
   describe(`${stack} resource contract`, () => {
     beforeAll(async () => {
       await mocksReady;
-      const outputs = await import("../index.js");
+      const outputs = (await import("../index.js")).default();
+      if (!("serviceName" in outputs))
+        throw new Error("The Fargate shape must export its service outputs.");
       await new Promise<void>((resolve) => {
         pulumi
           .all([

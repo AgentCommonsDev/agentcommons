@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { projectionIdentity } from "../redaction/tool-results.js";
 import { claudeCode, codex, geminiCli, NORMALIZERS, pi } from "./index.js";
+import { projectTrace } from "./projection.js";
+import { searchableMessage } from "../metadata/index.js";
 import type { NormalizedMessage, SourceRecord } from "./types.js";
 
 const fixtures = new URL("../../../fixtures/transcripts/", import.meta.url);
@@ -126,6 +128,21 @@ describe("Claude Code normalization", () => {
       claudeCode.sessionDelta(jsonl("claude-code/subagent.jsonl"))
         .harnessSessionId,
     ).toBe("93db0511-4472-4f3b-90be-899be97a89d1:agent-ab38e423152bb70b9");
+    // The parent's `Agent` result names the finished child next to the spawning call
+    // (parent.jsonl line 20: `toolUseResult.agentId` beside the `tool_result` block).
+    expect(claudeCode.spawns(records)).toEqual([
+      {
+        toolUseId: "toolu_018ydYKiWpoWYg2gEdqffW48",
+        childNativeRef:
+          "93db0511-4472-4f3b-90be-899be97a89d1:agent-ab38e423152bb70b9",
+      },
+    ]);
+    expect(
+      messages.find(
+        (item) => item.toolName === "Agent" && item.kind === "TOOL_USE",
+      )?.toolUseId,
+    ).toBe("toolu_018ydYKiWpoWYg2gEdqffW48");
+    expect(claudeCode.spawns(jsonl("claude-code/subagent.jsonl"))).toEqual([]);
     expect(claudeCode.sessionDelta(records)).toMatchObject({
       harnessVersion: "2.1.263",
       harnessSessionId: "93db0511-4472-4f3b-90be-899be97a89d1",
@@ -148,6 +165,58 @@ describe("Claude Code normalization", () => {
     ]);
     expect(claudeCode.sessionDelta(records).title).toBe("Captured title");
     expect(records[2]?.payload).toEqual(unknown);
+  });
+
+  // Captured live 2026-09-08: Claude Code writes API errors as assistant rows with
+  // model "<synthetic>", and stamps gitBranch "HEAD" in a detached repository.
+  it("keeps API-error rows as assistant text without a model and treats a detached HEAD as no branch @req R-HRN-01 @req R-GET-03", () => {
+    const records = jsonl("claude-code/synthetic-error.jsonl");
+    const messages = claudeCode.toMessages(records);
+    expect(messages.at(-1)).toMatchObject({
+      role: "ASSISTANT",
+      kind: "TEXT",
+      model: null,
+    });
+    expect(messages.at(-1)?.content).toContain("API Error");
+    expect(messages.map((item) => item.model)).toEqual([
+      null,
+      "claude-fable-5-1",
+      null,
+    ]);
+    const delta = claudeCode.sessionDelta(records);
+    expect(delta.modelsUsed).toEqual(["claude-fable-5-1"]);
+    expect(delta.model).toBe("claude-fable-5-1");
+    expect(delta.branch).toBe("main");
+    // parent.jsonl was captured with a detached HEAD; the shim's git context wins.
+    expect(
+      claudeCode.sessionDelta(jsonl("claude-code/parent.jsonl")).branch,
+    ).toBeUndefined();
+  });
+
+  // Captured live 2026-09-08: subagent transcripts append attachments stamped later
+  // than the prompt record that follows them.
+  it("starts the session at the earliest source timestamp, not the first record's @req R-HRN-01 @req R-ING-13", () => {
+    const records = [
+      source(
+        {
+          type: "attachment",
+          attachment: { type: "date", date: "2026-09-08" },
+          timestamp: "2026-09-08T19:10:57.468Z",
+        },
+        0n,
+      ),
+      source(
+        {
+          type: "user",
+          message: { role: "user", content: "prompt" },
+          timestamp: "2026-09-08T19:10:57.286Z",
+        },
+        1n,
+      ),
+    ];
+    expect(claudeCode.sessionDelta(records).startedAt?.toISOString()).toBe(
+      "2026-09-08T19:10:57.286Z",
+    );
   });
 });
 
@@ -175,6 +244,27 @@ describe("Codex normalization", () => {
         parentNativeRef: "01a07df5-0e59-77c1-8d3d-d649da83637e",
       },
     ]);
+    // The parent's `SubAgentActivity` `started` item (parent-with-subagent.jsonl line 20)
+    // carries the `spawn_agent` call id and the child thread id the child's
+    // `session_meta.id` repeats (subagent.jsonl line 1).
+    const parent = jsonl("codex/parent-with-subagent.jsonl");
+    expect(codex.spawns(parent)).toEqual([
+      {
+        toolUseId: "call_3waswfBVF9bVkIXj3EqoZSiY",
+        childNativeRef: "01a07df5-3d12-7ea1-9f0d-a8f906f862b3",
+      },
+    ]);
+    expect(
+      codex.sessionDelta(jsonl("codex/subagent.jsonl")).harnessSessionId,
+    ).toBe("01a07df5-3d12-7ea1-9f0d-a8f906f862b3");
+    expect(
+      codex
+        .toMessages(parent)
+        .find(
+          (item) => item.toolName === "spawn_agent" && item.kind === "TOOL_USE",
+        )?.toolUseId,
+    ).toBe("call_3waswfBVF9bVkIXj3EqoZSiY");
+    expect(codex.spawns(jsonl("codex/subagent.jsonl"))).toEqual([]);
   });
 
   it("derives usage from ordered cumulative events once and leaves missing usage null @req R-ING-14", () => {
@@ -243,6 +333,195 @@ describe("Codex normalization", () => {
       { path: "src/gone.ts", ops: ["delete"] },
     ]);
     expect(codex.sessionDelta(records).resumeCount).toBe(1);
+  });
+
+  // Live 0.153.4 rollouts: the human prompt is tagged user.text; plugin lists and
+  // environment context arrive with the user role and must not become the title.
+  it("classifies injected user-role context as META and titles the session by the human prompt @req R-HRN-02", () => {
+    const records = jsonl("codex/edit-with-subagent.jsonl");
+    const messages = codex.toMessages(records);
+    const prompts = messages.filter((item) => item.role === "USER");
+    expect(prompts).toHaveLength(1);
+    expect(
+      prompts[0]?.content.startsWith(
+        "acprobe4484bebed1cfd409codex. Do these steps in order.",
+      ),
+    ).toBe(true);
+    expect(
+      messages.filter(
+        (item) =>
+          item.kind === "META" &&
+          /^<(?:recommended_plugins|environment_context)>/.test(item.content),
+      ),
+    ).toHaveLength(2);
+    const delta = codex.sessionDelta(records);
+    expect(
+      delta.title?.startsWith(
+        "acprobe4484bebed1cfd409codex. Do these steps in order.",
+      ),
+    ).toBe(true);
+    expect(delta.title).toHaveLength(120);
+    expect(delta.firstPrompt?.startsWith("acprobe4484bebed1cfd409codex.")).toBe(
+      true,
+    );
+    const user = (text: string, pos: bigint) =>
+      source(
+        {
+          type: "response_item",
+          payload: {
+            type: "message",
+            id: `msg-${String(pos)}`,
+            role: "user",
+            content: [{ type: "input_text", text }],
+          },
+        },
+        pos,
+      );
+    // Rollouts without content kinds are classified by the injected wrapper tags.
+    expect(
+      codex
+        .toMessages([
+          user(
+            "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>",
+            0n,
+          ),
+          user("# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>", 1n),
+          user("Real prompt", 2n),
+        ])
+        .map((item) => [item.role, item.kind]),
+    ).toEqual([
+      ["SYSTEM", "META"],
+      ["SYSTEM", "META"],
+      ["USER", "TEXT"],
+    ]);
+  });
+
+  it("projects FileChange items as apply_patch calls with file operations and attaches Codex-parsed reads to the owning exec call @req R-HRN-02", () => {
+    const records = jsonl("codex/edit-with-subagent.jsonl");
+    const messages = codex.toMessages(records);
+    const patch = messages.find(
+      (item) => item.kind === "TOOL_USE" && item.toolName === "apply_patch",
+    );
+    expect(patch?.toolUseId).toBe("exec-c9d35c77-822c-4da8-911d-4be8efe549f0");
+    expect(patch?.files).toEqual([
+      {
+        path: "/tmp/agentcommons-live-canary-72D1ld/codex/repo/notes.txt",
+        ops: ["edit"],
+      },
+    ]);
+    expect(patch?.toolInput).toMatchObject({
+      "/tmp/agentcommons-live-canary-72D1ld/codex/repo/notes.txt": {
+        type: "update",
+      },
+    });
+    const result = messages.find(
+      (item) =>
+        item.kind === "TOOL_RESULT" && item.toolUseId === patch?.toolUseId,
+    );
+    expect(result?.toolName).toBe("apply_patch");
+    expect(result?.content).toContain("Success. Updated the following files");
+    expect(
+      messages
+        .filter((item) => item.kind === "TOOL_USE" && item.toolName === "exec")
+        .flatMap((item) => item.files ?? []),
+    ).toEqual([
+      {
+        path: "/tmp/agentcommons-live-canary-72D1ld/codex/repo/probe.txt",
+        ops: ["read"],
+      },
+      {
+        path: "/tmp/agentcommons-live-canary-72D1ld/codex/repo/notes.txt",
+        ops: ["read"],
+      },
+      {
+        path: "/tmp/agentcommons-live-canary-72D1ld/codex/repo/notes.txt",
+        ops: ["read"],
+      },
+    ]);
+    const uses = new Set(
+      messages
+        .filter((item) => item.kind === "TOOL_USE")
+        .map((item) => item.toolUseId),
+    );
+    expect(uses.size).toBe(8);
+    expect(
+      messages
+        .filter((item) => item.kind === "TOOL_RESULT")
+        .every((item) => uses.has(item.toolUseId)),
+    ).toBe(true);
+    const projection = projectTrace(
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        harness: "CODEX",
+        cwd: "/tmp/agentcommons-live-canary-72D1ld/codex/repo",
+        repoRoot: "/tmp/agentcommons-live-canary-72D1ld/codex/repo",
+        normalizerContext: {},
+        projectedContext: {},
+      },
+      records,
+      [],
+    );
+    expect(projection?.files).toEqual([
+      { path: "probe.txt", ops: ["read"] },
+      { path: "notes.txt", ops: ["edit", "read"] },
+    ]);
+  });
+
+  it("keeps inter-agent messages as searchable system text and names subagent threads by agent_path @req R-HRN-02", () => {
+    const parent = codex.toMessages(jsonl("codex/edit-with-subagent.jsonl"));
+    const answer = parent.find(
+      (item) => item.role === "SYSTEM" && item.kind === "TEXT",
+    );
+    expect(answer?.content).toContain("Message Type: FINAL_ANSWER");
+    expect(answer?.content).toContain("AgentCommons observed git state codex.");
+    expect(answer ? searchableMessage(answer).searchable : false).toBe(true);
+    const child = jsonl("codex/edit-subagent-child.jsonl");
+    expect(codex.sessionDelta(child)).toMatchObject({
+      title: "/root/probe_read",
+      harnessSessionId: "01a0826e-3513-7033-89ce-97433f12deaa",
+    });
+    expect(codex.sessionDelta(child).firstPrompt).toBeUndefined();
+    expect(codex.links(child)).toEqual([
+      {
+        relation: "SUBAGENT",
+        parentNativeRef: "01a0826d-cdbe-77e1-b486-924639bd791c",
+      },
+    ]);
+    const messages = codex.toMessages(child);
+    expect(messages.filter((item) => item.role === "USER")).toHaveLength(0);
+    expect(
+      messages.find((item) => item.role === "SYSTEM" && item.kind === "TEXT")
+        ?.content,
+    ).toContain("Message Type: NEW_TASK");
+    // Encrypted inter-agent payload blocks are never projected as text.
+    expect(messages.some((item) => item.content.includes("gAAAA"))).toBe(false);
+  });
+  // The child rollout carries agent_role null and the random nickname "Lagrange";
+  // the hook reports agent_type "default", which the header keeps when the delta is empty.
+  it("derives agent_type from a configured agent_role and never from the random nickname @req R-HRN-02", () => {
+    const child = jsonl("codex/edit-subagent-child.jsonl");
+    expect(codex.sessionDelta(child).agentType).toBeUndefined();
+    const meta = child[0]?.payload;
+    if (!meta) throw new Error("Missing child session_meta.");
+    const withRole = (payload: Record<string, unknown>) =>
+      codex.sessionDelta([source({ ...meta, payload }, 0n)]).agentType;
+    const native = payloadSchema.parse(meta.payload);
+    expect(withRole({ ...native, agent_role: "explorer" })).toBe("explorer");
+    expect(
+      withRole({
+        ...native,
+        source: {
+          subagent: {
+            thread_spawn: {
+              parent_thread_id: "01a0826d-cdbe-77e1-b486-924639bd791c",
+              agent_role: "reviewer",
+              agent_nickname: "Lagrange",
+            },
+          },
+        },
+      }),
+    ).toBe("reviewer");
+    expect(withRole({ ...native, agent_role: null })).toBeUndefined();
   });
 });
 
@@ -364,6 +643,28 @@ describe("pi normalization", () => {
       "META",
     ]);
     expect(pi.sessionDelta(records).title).toBe("named session");
+  });
+  it("maps the extension's host metadata to harness_version and entrypoint @req R-HRN-06", () => {
+    const records = jsonl("pi/cli-tool.jsonl");
+    const observed = pi.sessionDelta(records, {
+      transcriptMetadata: {
+        harnessVersion: "0.73.1",
+        entrypoint: "interactive",
+      },
+    });
+    expect(observed.harnessVersion).toBe("0.73.1");
+    expect(observed.entrypoint).toBe("interactive");
+    expect(observed.harnessSessionId).toBe(
+      "01a07deb-d8cc-7158-bdc6-d421ec5341f4",
+    );
+    // The transcript itself never provides either value.
+    const bare = pi.sessionDelta(records, {});
+    expect(bare.harnessVersion).toBeUndefined();
+    expect(bare.entrypoint).toBeUndefined();
+    expect(
+      pi.sessionDelta(records, { transcriptMetadata: { entrypoint: 7 } })
+        .entrypoint,
+    ).toBeUndefined();
   });
 });
 

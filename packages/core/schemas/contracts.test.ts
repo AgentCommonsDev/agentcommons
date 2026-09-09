@@ -1,14 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import * as schemas from "./index.js";
-import { callerContextSchema, utf8ByteLength } from "./common.js";
-import { contentCursorSchema, getInputSchema } from "./get.js";
+import {
+  callerContextSchema,
+  fileOperationSchema,
+  utf8ByteLength,
+} from "./common.js";
+import {
+  contentCursorSchema,
+  getInputSchema,
+  getOutputSchema,
+  messageSchema,
+  sessionHeaderSchema,
+} from "./get.js";
 import { ingestEnvelopeSchema } from "./ingest.js";
 import {
   createSearchInputSchema,
+  searchBlockSchema,
+  searchConditionToolSchema,
+  searchFilterKeys,
   searchFiltersSchema,
   searchInputSchema,
+  searchMessageSchema,
+  searchOutputSchema,
+  searchToolInputSchema,
 } from "./search.js";
+import { traceViewCatalog } from "../schema-catalog.js";
 import { sqlInputSchema, sqlOutputSchema } from "./sql.js";
 import { keyCreateInputSchema, memberAddInputSchema } from "./admin.js";
 
@@ -16,13 +33,14 @@ const sessionId = "0192a3f0-7c1e-7d1a-9b0e-3f2a1c9d4e55";
 const timestamp = "2026-08-01T00:00:00Z";
 describe("shared search contract", () => {
   // @req R-SRCH-03 @req R-SRCH-04
-  it("accepts scalars and nonempty arrays for the nine basic filters", () => {
+  it("accepts scalars and nonempty arrays for the ten basic filters", () => {
     const values = {
       repo_name: "host/org/repo",
       branch: "main",
       user_email: "person@example.com",
       tool_name: "Read",
       file_prefix: "src/",
+      file_operation: "edit",
       role: "USER",
       session_id: sessionId,
       since: timestamp,
@@ -42,14 +60,98 @@ describe("shared search contract", () => {
       ).toBe(false);
     }
   });
+  // @req R-SRCH-03 @req R-SRCH-14
+  it("accepts only the recorded file operations", () => {
+    expect(fileOperationSchema.options).toEqual([
+      "read",
+      "edit",
+      "write",
+      "delete",
+    ]);
+    expect(
+      searchFiltersSchema.parse({ file_operation: ["read", "write"] }),
+    ).toEqual({ file_operation: ["read", "write"] });
+    for (const file_operation of ["Read", "create", "search", ""]) {
+      expect(searchFiltersSchema.safeParse({ file_operation }).success).toBe(
+        false,
+      );
+      expect(
+        searchFiltersSchema.safeParse({
+          file_operation: ["edit", file_operation],
+        }).success,
+      ).toBe(false);
+    }
+  });
   // @req R-SRCH-03
   it("rejects unknown filters with the valid key list", () => {
     const result = searchFiltersSchema.safeParse({ repository: "repo" });
     expect(result.success).toBe(false);
     if (!result.success)
       expect(result.error.issues[0]?.message).toContain(
-        "repo_name, branch, user_email, tool_name, file_prefix, role, session_id, since, until",
+        "repo_name, branch, user_email, tool_name, file_prefix, file_operation, role, session_id, since, until",
       );
+  });
+  // @req R-SRCH-14
+  it("describes every search and get field once, in the schema", () => {
+    const described = (schema: z.ZodObject<Record<string, z.ZodType>>) =>
+      Object.entries(schema.shape).map(([key, field]) => ({
+        key,
+        description: z.string().optional().parse(field.description),
+      }));
+    for (const [name, schema] of Object.entries({
+      searchInputSchema,
+      searchFiltersSchema,
+      searchBlockSchema,
+      searchMessageSchema,
+      searchOutputSchema,
+      getInputSchema,
+      sessionHeaderSchema,
+      messageSchema,
+      getOutputSchema,
+    }))
+      for (const { key, description } of described(schema))
+        expect(description ?? "", `${name}.${key}`).toMatch(/\S/);
+    // The catalog rendering keeps every filter meaning while collapsing the four condition
+    // variants into one object; anything it advertises still parses under the strict schema.
+    for (const [key, field] of Object.entries(searchToolInputSchema.shape))
+      expect(field.description ?? "", `tool.${key}`).toMatch(/\S/);
+    expect(
+      Object.keys(searchToolInputSchema.shape.filters.def.innerType.shape),
+    ).toEqual(searchFilterKeys);
+    for (const condition of [
+      { field: "tool_name", op: "contains", value: "Rea" },
+      { field: "tool_input", op: "exists", path: ["file_path"] },
+      { field: "tool_input", op: "eq", path: ["limit"], value: 3 },
+    ]) {
+      expect(searchConditionToolSchema.safeParse(condition).success).toBe(true);
+      expect(
+        searchFiltersSchema.safeParse({ where: [condition] }).success,
+        JSON.stringify(condition),
+      ).toBe(true);
+    }
+    // The catalog is the one source for column meanings, so `schema_columns` and the tool schemas agree.
+    expect(sessionHeaderSchema.shape.file_count.description).toBe(
+      traceViewCatalog.sessions.columns.file_count,
+    );
+    expect(searchBlockSchema.shape.repo_name.description).toBe(
+      traceViewCatalog.sessions.columns.repo_name,
+    );
+    const json = z.toJSONSchema(searchInputSchema, { io: "input" });
+    const filters = z
+      .object({
+        properties: z.object({
+          filters: z.object({
+            properties: z.record(
+              z.string(),
+              z.object({ description: z.string().min(1) }),
+            ),
+          }),
+        }),
+      })
+      .parse(json);
+    expect(Object.keys(filters.properties.filters.properties)).toEqual(
+      searchFilterKeys,
+    );
   });
   it("requires UTC bounds on scalar and array values", () => {
     for (const since of [
@@ -156,6 +258,7 @@ it("validates v2 envelopes and preserves source lines with source versions", () 
   });
   const envelope = {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CODEX",
     harnessSessionId: "native",
     behavior: "sync",

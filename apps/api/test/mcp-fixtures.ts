@@ -57,7 +57,7 @@ function normalizeMcpFixture(value: unknown): z.infer<typeof mcpFixtureSchema> {
 export async function renderAppendix(
   fixture: z.infer<typeof mcpFixtureSchema>,
 ): Promise<string> {
-  const markdown = `${appendixMarker}\n\nGenerated from the real PostgreSQL and ClickHouse and official MCP SDK contract fixture at\n\`fixtures/contracts/mcp.json\`. Regenerate with\n\`UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts\`.\nIdentifiers, receipt timestamps, and SQL timings are normalized for reproducibility.\n\nRead keys list \`search\`, \`get\`, \`sql\`, \`dashboard_list\`, \`dashboard_save\`, and\n\`dashboard_delete\`; effective admin keys also list\n\`set_visibility\`, \`purge\`, \`audit\`, and \`status\`.\n\n\`tools/list\` input contracts (output schemas are present in the fixture):\n\n\`\`\`json\n${JSON.stringify(
+  const markdown = `${appendixMarker}\n\nGenerated from the real PostgreSQL and ClickHouse and official MCP SDK contract fixture at\n\`fixtures/contracts/mcp.json\`. Regenerate with\n\`UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts\`.\nIdentifiers, receipt timestamps, and SQL timings are normalized for reproducibility.\n\nRead keys list \`dashboard_list\`, \`dashboard_get\`, \`dashboard_render\`, \`dashboard_save\`,\n\`dashboard_delete\`, \`search\`, \`get\`, and \`sql\`; effective admin keys also list\n\`set_visibility\`, \`purge\`, \`audit\`, \`status\`, and \`dashboard_set_default\`.\n\n\`tools/list\` as an effective admin key receives it, complete. Output schemas are not shipped (§8.2);\nresults are validated server-side and returned as \`structuredContent\`. The read-key catalog is\nthe first eight tools; both catalogs stay within the byte budgets of §8.2.\n\n\`\`\`json\n${JSON.stringify(
     fixture.tools.map(({ name, description, inputSchema, annotations }) => ({
       name,
       description,
@@ -79,22 +79,28 @@ export async function renderAppendix(
     )
     .join(
       "\n\n",
-    )}\n\nTool failures return \`isError: true\` and a text JSON error. They omit structuredContent\nbecause it would otherwise be validated against the tool's success output schema.\n`;
+    )}\n\nTool failures return \`isError: true\` and a text JSON error without structuredContent.\n`;
   return format(markdown, {
     ...(await resolveConfig(specUrl)),
     parser: "markdown",
   });
+}
+/** Rewrite the generated Appendix C block of the specification from a fixture. */
+async function writeAppendix(
+  fixture: z.infer<typeof mcpFixtureSchema>,
+): Promise<void> {
+  const spec = await readFile(specUrl, "utf8");
+  await writeFile(
+    specUrl,
+    `${spec.slice(0, spec.indexOf(appendixMarker))}${await renderAppendix(fixture)}`,
+  );
 }
 export async function checkMcpFixture(value: unknown): Promise<void> {
   const fixture = normalizeMcpFixture(value);
   if (process.env.UPDATE_MCP_FIXTURES === "1") {
     await mkdir(new URL(".", fixtureUrl), { recursive: true });
     await writeFile(fixtureUrl, `${JSON.stringify(fixture, null, 2)}\n`);
-    const spec = await readFile(specUrl, "utf8");
-    await writeFile(
-      specUrl,
-      `${spec.slice(0, spec.indexOf(appendixMarker))}${await renderAppendix(fixture)}`,
-    );
+    await writeAppendix(fixture);
   } else {
     const expected = mcpFixtureSchema.parse(
       JSON.parse(await readFile(fixtureUrl, "utf8")),

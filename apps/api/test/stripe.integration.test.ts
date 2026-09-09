@@ -378,13 +378,13 @@ it("binds native checkout and portal to the owner organization, published price 
   expect(checkout?.body.get("line_items[0][price]")).toBe("price_pro");
   expect(checkout?.body.get("line_items[0][quantity]")).toBe("1");
   expect(checkout?.body.get("cancel_url")).toBe(
-    `${testAuthConfiguration.publicUrl}/usage`,
+    `${testAuthConfiguration.publicUrl}/app/billing`,
   );
   const success = new URL(z.string().parse(checkout?.body.get("success_url")));
   expect(success.origin).toBe(testAuthConfiguration.publicUrl);
   expect(success.pathname).toBe("/auth/subscription/success");
   expect(success.searchParams.get("callbackURL")).toBe(
-    `${testAuthConfiguration.publicUrl}/usage`,
+    `${testAuthConfiguration.publicUrl}/app/billing`,
   );
   const usage = await app.inject({
     method: "GET",
@@ -403,7 +403,7 @@ it("binds native checkout and portal to the owner organization, published price 
   });
   expect(returned.statusCode).toBe(303);
   expect(returned.headers.location).toBe(
-    `${testAuthConfiguration.publicUrl}/usage`,
+    `${testAuthConfiguration.publicUrl}/app/billing`,
   );
   expect(stripe.requests).toHaveLength(beforeReturn);
   expect((await runtime.services.billing.usage(org.owner)).result.plan).toBe(
@@ -418,7 +418,7 @@ it("binds native checkout and portal to the owner organization, published price 
   expect(portalRequest?.path).toBe("/v1/billing_portal/sessions");
   expect(portalRequest?.body.get("customer")).toBe(org.customer);
   expect(portalRequest?.body.get("return_url")).toBe(
-    `${testAuthConfiguration.publicUrl}/usage`,
+    `${testAuthConfiguration.publicUrl}/app/billing`,
   );
 });
 

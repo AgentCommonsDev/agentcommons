@@ -67,6 +67,7 @@ async function session(
     organization?: string;
     visibility?: string;
     parent?: string;
+    parentToolUseId?: string;
     repo?: string;
     title?: string;
   } = {},
@@ -79,6 +80,9 @@ async function session(
     keyId: org === "org-a" ? "key-a" : "key-b",
     installationId,
     ...(options.parent ? { parent: options.parent } : {}),
+    ...(options.parentToolUseId
+      ? { parentToolUseId: options.parentToolUseId }
+      : {}),
     visibility: options.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC",
     fields: {
       title: options.title ?? "Read service fixture",
@@ -672,6 +676,49 @@ describe("read services on ClickHouse", () => {
       sessions.get(context(), { session_id: ids.long, from: 2, to: 1 }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
+  // @req R-DASH-11
+  it("lists root sessions only on request and carries caller-visible child counts", async () => {
+    const listed = (page: { result: { items: { session_id: string }[] } }) =>
+      page.result.items.map((item) => item.session_id);
+    const filters = { repo_name: "host/team/repo" };
+    const everything = await sessions.list(context(), { filters, limit: 100 });
+    expect(listed(everything)).toEqual(
+      expect.arrayContaining([ids.public, ids.child, ids.leaf]),
+    );
+    const roots = await sessions.list(context(), {
+      filters,
+      limit: 100,
+      roots_only: true,
+    });
+    // The child of a hidden parent is a visible root for members; its own child is not.
+    expect(listed(roots)).toEqual(
+      expect.arrayContaining([ids.public, ids.child]),
+    );
+    expect(listed(roots)).not.toContain(ids.leaf);
+    expect(listed(roots)).not.toContain(ids.private);
+    const byId = new Map(
+      roots.result.items.map((item) => [item.session_id, item]),
+    );
+    expect(byId.get(ids.child)?.child_count).toBe(1);
+    expect(byId.get(ids.public)?.child_count).toBe(0);
+    const adminRoots = await sessions.list(context("org-a", true), {
+      filters,
+      limit: 100,
+      roots_only: true,
+    });
+    expect(listed(adminRoots)).toContain(ids.public);
+    expect(listed(adminRoots)).not.toContain(ids.private);
+    expect(listed(adminRoots)).not.toContain(ids.child);
+    expect(
+      adminRoots.result.items.find((item) => item.session_id === ids.public)
+        ?.child_count,
+    ).toBe(1);
+    const formatted = formatGet(
+      (await sessions.get(context(), { session_id: ids.child })).result,
+    ).text;
+    expect(formatted).toContain("subagent_runs: 1");
+    expect(formatted).toContain(ids.leaf);
+  });
   // @req R-SQL-01 @req R-SQL-02 @req R-SQL-03 @req R-SQL-04
   it("executes guarded composable SQL with precise types, row/cell/body limits and SQL error positions", async () => {
     const result = await query.execute(context(), {
@@ -781,6 +828,40 @@ describe("read services on ClickHouse", () => {
     ]);
     expect(valid.result.rows).toEqual([[1, 1, null]]);
   });
+  // @req R-LNK-07 @req R-GET-01
+  it("carries a child's spawning tool call through the header, child references and tree", async () => {
+    const parent = randomUUID();
+    const nested = randomUUID();
+    const listed = randomUUID();
+    const toolUseId = `redacted-${"b".repeat(64)}`;
+    await session(parent, { title: "Spawning parent" });
+    await session(nested, { parent, parentToolUseId: toolUseId });
+    await session(listed, { parent });
+    const page = await sessions.get(context(), { session_id: parent });
+    expect(page.result.header.parent_tool_use_id).toBeNull();
+    expect(
+      page.result.header.children.map((child) => [
+        child.session_id,
+        child.parent_tool_use_id,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        [nested, toolUseId],
+        [listed, null],
+      ]),
+    );
+    const child = await sessions.get(context(), { session_id: nested });
+    expect(child.result.header.parent_tool_use_id).toBe(toolUseId);
+    const tree = await sessions.tree(context(), parent, {});
+    expect(
+      tree.result.nodes.find((node) => node.session_id === nested)
+        ?.parent_tool_use_id,
+    ).toBe(toolUseId);
+    const rows = await query.execute(context(), {
+      sql: `SELECT parent_tool_use_id FROM sessions WHERE session_id='${nested}'`,
+    });
+    expect(rows.result.rows).toEqual([[toolUseId]]);
+  });
   // @req R-GET-01 @req R-GET-02 @req R-LNK-06
   it("bounds pathological header fields and pages all visible child references", async () => {
     const parent = randomUUID();
@@ -875,7 +956,7 @@ describe("read services on ClickHouse", () => {
       sessions.raw(context(), ids.long, { limit: 1, cursor: firstCursor }),
     ).rejects.toMatchObject({ code: "INVALID_CURSOR", audited: true });
   });
-  // @req R-LNK-06 @req R-ORG-07
+  // @req R-LNK-06 @req R-ORG-07 @req R-DASH-30
   it("isolates every read surface and returns hidden-node gaps without hidden facts", async () => {
     const sql = await query.execute(context(), {
       sql: "SELECT session_id FROM sessions",

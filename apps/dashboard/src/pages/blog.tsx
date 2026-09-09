@@ -3,7 +3,7 @@ import remarkGfm from "remark-gfm";
 import posts from "../lib/blog.generated.json";
 import { copy } from "../copy";
 import { useBillingConfig } from "../lib/billing-config";
-import { NotFoundPage } from "./login";
+import { NotFoundPage } from "./not-found";
 export function BlogPage({ slug }: { slug?: string }) {
   const config = useBillingConfig();
   const post = slug ? posts.find((item) => item.slug === slug) : undefined;

@@ -16,9 +16,11 @@ production authorization, or a successful reuse of prior work.
 | Gemini CLI 0.35.3   | `mcp_agentcommons_search`                                                                               | `grep_search`, `glob`              | `google_web_search`                                                                   |
 | pi 0.73.1           | No built-in AgentCommons MCP integration                                                                | `grep`, `find`                     | No native web search captured                                                         |
 
-The installed pi capture extension registers lifecycle callbacks, not tools. Its
-`HARNESSES` entry has no MCP config path or command. A third-party pi extension may
-register any name, including `search`; that name alone cannot identify AgentCommons.
+At capture time the installed pi capture extension registered lifecycle callbacks, not
+tools, and its `HARNESSES` entry has no MCP config path or command. Since ADR 0054 the
+extension registers the key's MCP catalog as `agentcommons_<tool>`; that qualified name
+is pi's AgentCommons identity. A third-party pi extension may still register any name,
+including `search`; that name alone cannot identify AgentCommons.
 `find`, `glob`, and `Glob` search filenames, while the grep tools search file content.
 Arbitrary shell commands, `exec` source, textual mentions of tools, and suffix matches
 are excluded from this evidence.

@@ -209,6 +209,7 @@ it("a rescan invalidates an in-flight raw fragment without changing reset-record
   const services = runtime.services;
   const input: IngestEnvelope = {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: `identity-review-${randomUUID()}`,
     batchId: randomUUID(),

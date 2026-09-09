@@ -15,9 +15,10 @@ import type { FastifyInstance } from "fastify";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import {
-  dashboardSaveInputSchema,
+  dashboardSaveToolInputSchema,
   dashboardIdInputSchema,
-  searchInputSchema,
+  dashboardRenderToolInputSchema,
+  searchToolInputSchema,
   getInputSchema,
   sqlInputSchema,
   searchOutputSchema,
@@ -25,11 +26,11 @@ import {
 import { formatSearch } from "@agentcommons/core/format";
 import { createAuth } from "../src/auth/config.js";
 import { createApp } from "../src/app.js";
+import { toolJsonSchema } from "../src/services/mcp.js";
 import { environment } from "../src/env.js";
 import { MembershipService } from "../src/services/membership.js";
 import { SearchService } from "../src/services/search.js";
 import { SessionService } from "../src/services/session.js";
-import { HomeService } from "../src/services/home.js";
 import { BillingService } from "../src/services/billing.js";
 import { QueryService } from "../src/services/query.js";
 import { PolicyService } from "../src/services/policies.js";
@@ -57,6 +58,7 @@ function headers(key = organization.key) {
 function upload(text: string) {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     behavior: "sync",
@@ -113,8 +115,9 @@ beforeAll(async () => {
   native = traceServices(database);
   const jobs = native.jobs;
   close.push(() => jobs.stop());
+  const query = new QueryService(deps);
   const services: Services = {
-    dashboards: new DashboardService({ ...deps, embeddings: false }),
+    dashboards: new DashboardService({ ...deps, query }),
     organizationEmbeddings: new OrganizationEmbeddingsService({
       ...deps,
       jobs,
@@ -133,7 +136,6 @@ beforeAll(async () => {
         calComUrl: null,
       },
     }),
-    home: new HomeService(deps),
     auth: database.auth,
     members: new MembershipService(
       database.prisma,
@@ -142,7 +144,7 @@ beforeAll(async () => {
     ),
     search: new SearchService(deps),
     sessions: new SessionService(deps),
-    query: new QueryService(deps),
+    query,
     ingest: native.ingest,
     policies: new PolicyService({ ...deps, cache: database.policies }),
     health: new HealthService(database.prisma, database.traces),
@@ -583,6 +585,7 @@ it("enforces private visibility through REST, SQL, MCP and the uploader's read-o
 // @req R-MCP-03
 // @req R-MCP-04
 // @req R-MCP-05
+// @req R-MCP-09
 it("uses the official stateless MCP client with permission-filtered tools, structured results and immediate demotion", async () => {
   // This contract also runs alone; the SSE test changes this shared session status.
   await database.prisma.traceSessionControl.update({
@@ -606,6 +609,8 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   const tools = await client.listTools();
   expect(tools.tools.map((tool) => tool.name)).toEqual([
     "dashboard_list",
+    "dashboard_get",
+    "dashboard_render",
     "dashboard_save",
     "dashboard_delete",
     "search",
@@ -623,13 +628,25 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   expect(tools.tools.map((tool) => tool.inputSchema)).toEqual(
     [
       z.strictObject({}),
-      dashboardSaveInputSchema,
       dashboardIdInputSchema,
-      searchInputSchema,
+      dashboardRenderToolInputSchema,
+      dashboardSaveToolInputSchema,
+      dashboardIdInputSchema,
+      searchToolInputSchema,
       getInputSchema,
       sqlInputSchema,
-    ].map((input) => z.toJSONSchema(input, { io: "input" })),
+    ].map(toolJsonSchema),
   );
+  // Claude Code defers every MCP tool behind a search step once definitions near 10% of
+  // the context window, so the catalog itself is budgeted (§8.2): no output schemas, no
+  // draft URL, no recursion or references, and dashboard inputs in their compact form.
+  const catalogBytes = (listed: typeof tools) =>
+    new TextEncoder().encode(JSON.stringify(listed.tools)).length;
+  expect(catalogBytes(tools)).toBeLessThan(20 * 1024);
+  expect(tools.tools.map((tool) => tool.outputSchema)).toEqual(
+    tools.tools.map(() => undefined),
+  );
+  expect(JSON.stringify(tools.tools)).not.toMatch(/"\$(ref|defs|schema)"/);
   const result = await client.callTool({
     name: "search",
     arguments: { query: "transport" },
@@ -659,6 +676,8 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   const adminTools = await adminClient.listTools();
   expect(adminTools.tools.map((tool) => tool.name)).toEqual([
     "dashboard_list",
+    "dashboard_get",
+    "dashboard_render",
     "dashboard_save",
     "dashboard_delete",
     "search",
@@ -668,7 +687,12 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
     "purge",
     "audit",
     "status",
+    "dashboard_set_default",
   ]);
+  expect(catalogBytes(adminTools)).toBeLessThan(25 * 1024);
+  expect(JSON.stringify(adminTools.tools)).not.toMatch(
+    /"\$(ref|defs|schema)"|"outputSchema"/,
+  );
   const getResult = await client.callTool({
     name: "get",
     arguments: { session_id: publicId },
@@ -701,6 +725,8 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
     (await adminClient.listTools()).tools.map((tool) => tool.name),
   ).toEqual([
     "dashboard_list",
+    "dashboard_get",
+    "dashboard_render",
     "dashboard_save",
     "dashboard_delete",
     "search",

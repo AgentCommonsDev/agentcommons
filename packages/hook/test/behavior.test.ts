@@ -511,6 +511,55 @@ it("keeps bridge lifecycle identity and native ordering when detached hooks arri
   expect(f.received.filter((body) => body.start?.resume)).toHaveLength(2);
 });
 
+// @req R-HRN-05
+it("forwards bridge host metadata as normalizer context on every pi envelope", async () => {
+  const f = fixture();
+  const metadata = { harnessVersion: "0.73.1", entrypoint: "headless" };
+  const event = {
+    session_id: randomUUID(),
+    cwd: f.directory,
+    hook_event_name: "session_start",
+    reason: "startup",
+    event_id: "host-metadata-start",
+    timestamp: "2026-09-08T00:00:01.000Z",
+    activeLeafId: null,
+    transcript_metadata: metadata,
+  };
+  const path = recordHook(f.directory, "/none", f.config, "pi", event);
+  if (!path) throw new Error("Missing state.");
+  expect(intents(path, loadState(path))[0]?.context.transcriptMetadata).toEqual(
+    metadata,
+  );
+  recordHook(f.directory, "/none", f.config, "pi", {
+    ...event,
+    hook_event_name: "session_shutdown",
+    reason: "quit",
+    event_id: "host-metadata-end",
+    timestamp: "2026-09-08T00:00:02.000Z",
+  });
+  await upload(f.directory, "/none", path, f.config, {
+    fetch: f.fetcher,
+    sweep: false,
+  });
+  expect(
+    f.received.map((body) => [body.behavior, body.context.transcriptMetadata]),
+  ).toEqual([
+    ["start", metadata],
+    ["end", metadata],
+  ]);
+  // Hooks without host metadata (other harnesses) leave the context untouched.
+  const plain = recordHook(f.directory, "/none", f.config, "claude", {
+    session_id: randomUUID(),
+    transcript_path: f.transcript,
+    cwd: f.directory,
+    hook_event_name: "SessionStart",
+  });
+  if (!plain) throw new Error("Missing state.");
+  expect(
+    intents(plain, loadState(plain))[0]?.context.transcriptMetadata,
+  ).toBeUndefined();
+});
+
 it("quarantines an actually oversized complete JSONL record and still uploads the next record", async () => {
   const f = fixture();
   const oversized =
@@ -581,4 +630,60 @@ it("reads indexed backlog heads without losing the latest source or lifecycle ph
   expect(recent.length).toBeLessThanOrEqual(3);
   expect(latestSource(state, recent)).toEqual(latestSource(state, all));
   expect(latestPhase(state, recent)).toEqual(latestPhase(state, all));
+});
+
+// @req R-CAP-12
+it("reports the commit the session started from even when the first upload drains after a later commit", async () => {
+  const f = fixture();
+  const git = (env: Record<string, string>, ...args: string[]) =>
+    execFileSync("git", ["-C", f.directory, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, ...env },
+    }).trim();
+  const dated = (time: string) => ({
+    GIT_AUTHOR_DATE: time,
+    GIT_COMMITTER_DATE: time,
+  });
+  git({}, "init");
+  git({}, "config", "user.name", "Fixture");
+  git({}, "config", "user.email", "fixture@example.test");
+  writeFileSync(join(f.directory, "tracked"), "first\n");
+  git({}, "add", "tracked");
+  git(dated("2026-09-08T00:00:00Z"), "commit", "-m", "before start");
+  const before = git({}, "rev-parse", "HEAD");
+  const path = recordHook(
+    f.directory,
+    "/none",
+    f.config,
+    "claude",
+    {
+      ...f.event,
+      hook_event_name: "SessionStart",
+      timestamp: "2026-09-08T00:00:05.000Z",
+    },
+    "launch",
+  );
+  if (!path) throw new Error("Missing state.");
+  // The agent commits before the detached uploader gets to observe git context.
+  writeFileSync(join(f.directory, "tracked"), "first\nsecond\n");
+  git(dated("2026-09-08T00:00:10Z"), "commit", "-am", "during session");
+  const after = git({}, "rev-parse", "HEAD");
+  await upload(f.directory, "/none", path, f.config, {
+    fetch: f.fetcher,
+    sweep: false,
+  });
+  expect(f.received[0]?.context.git?.head).toBe(before);
+  expect(gitContext(f.directory)?.head).toBe(after);
+  expect(gitContext(f.directory, "2026-09-08T00:00:05Z")?.head).toBe(before);
+  // A start older than the whole reflog falls back to the current HEAD.
+  expect(gitContext(f.directory, "2020-01-01T00:00:00Z")?.head).toBe(after);
+  f.hook({ ...f.event, hook_event_name: "SessionEnd" });
+  await upload(f.directory, "/none", path, f.config, {
+    fetch: f.fetcher,
+    sweep: false,
+  });
+  expect(
+    f.received.find((body) => body.behavior === "end")?.end?.observedCommits,
+  ).toMatchObject([{ sha: after, subject: "during session" }]);
 });

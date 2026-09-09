@@ -47,10 +47,8 @@
   },
   "devDependencies": {
     "@clickhouse/client": "1.23.1",
-    "@types/dns-packet": "^5.6.5",
     "@types/nodemailer": "^8.0.1",
     "@types/qs": "^6.14.0",
-    "dns-packet": "^5.6.1",
     "esbuild": "0.28.2",
     "jose": "6.2.12",
     "testcontainers": "11.12.0",

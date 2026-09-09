@@ -39,6 +39,7 @@ import {
 import { createRateLimiter } from "./routes/rate-limit.js";
 import { registerPublicApiRoutes } from "./routes/public.js";
 import { registerApiRoutes } from "./routes/api.js";
+import { domainEnrollmentEnabled } from "./auth/config.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerStaticRoutes } from "./routes/static.js";
 import { McpService } from "./services/mcp.js";
@@ -130,6 +131,12 @@ export async function createApp(options: {
     origin: env.PUBLIC_URL,
     credentials: true,
     exposedHeaders: ["X-Next-Cursor", "Retry-After"],
+  });
+  // Registered before the compression plugin so its onRoute hook sees the flag: the
+  // API reference document receives a response nonce and must stay uncompressed.
+  app.addHook("onRoute", (route) => {
+    if (route.url === "/api/docs/")
+      route.config = { ...route.config, compress: false };
   });
   await app.register(compress, {
     global: true,
@@ -280,7 +287,11 @@ export async function createApp(options: {
     );
   });
   registerPublicApiRoutes(app, services);
-  registerApiRoutes(app, services);
+  registerApiRoutes(app, services, {
+    embeddings: Boolean(services.similar),
+    saas: env.INSTANCE_MODE === "saas",
+    domainEnrollment: domainEnrollmentEnabled(env.auth),
+  });
   registerAuthRoutes(app, services.auth, env.PUBLIC_URL);
   registerMcpRoutes(app, new McpService(services), limit);
   if (options.static !== false)

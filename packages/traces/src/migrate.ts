@@ -26,6 +26,7 @@ const controlTables = {
     os_user: "String",
     platform: "String",
     arch: "String",
+    hook_sha256: "Nullable(String)",
     tools_enabled: "Int32",
     first_seen_at: "DateTime64(6,'UTC')",
     last_seen_at: "DateTime64(6,'UTC')",

@@ -1,0 +1,76 @@
+# Self-hosting on one host. Adds Caddy for automatic HTTPS in front of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build
+# Caddy serves PUBLIC_URL with a Let's Encrypt certificate (HTTP-01, which also works
+# behind Cloudflare's proxy) and plain HTTP on the host address. At every start its
+# entrypoint refreshes Cloudflare's published ranges as trusted proxies, so the API
+# receives the real client address whether the DNS record is proxied or not; the API
+# itself trusts forwarded headers only from the Compose network.
+# Memory limits size the stack for one 8 GiB host: ClickHouse 3.5 GiB (server limit 3 GiB
+# in infra/compose/clickhouse-server.xml, 2 GiB per query in clickhouse-users.xml),
+# PostgreSQL 1 GiB with matching shared_buffers, API 1 GiB, Caddy 256 MiB.
+services:
+  caddy:
+    image: caddy:2.11.4
+    entrypoint: ["/bin/sh", "/etc/caddy/entrypoint.sh"]
+    command:
+      [
+        "caddy",
+        "run",
+        "--config",
+        "/etc/caddy/Caddyfile",
+        "--adapter",
+        "caddyfile",
+      ]
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+      # cloudflare (default): trust Cloudflare's published ranges, refreshed at every
+      # start; none: trust no proxy (DNS-only); or space-separated CIDRs of another proxy.
+      CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-cloudflare}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infra/caddy/entrypoint.sh:/etc/caddy/entrypoint.sh:ro
+      - ./infra/caddy/cloudflare-ranges.txt:/etc/caddy/cloudflare-ranges.txt:ro
+      - agentcommons-caddy-data:/data
+      - agentcommons-caddy-config:/config
+    depends_on:
+      api:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    restart: unless-stopped
+  api:
+    environment:
+      TRUST_PROXY: uniquelocal
+      NODE_OPTIONS: --max-old-space-size=768
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+  migrate:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+  db:
+    command: ["sh", "/etc/postgresql/start.sh"]
+    volumes:
+      - ./infra/compose/postgres-start.sh:/etc/postgresql/start.sh:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+  clickhouse:
+    volumes:
+      - ./infra/compose/clickhouse-server.xml:/etc/clickhouse-server/config.d/single-node.xml:ro
+      - ./infra/compose/clickhouse-users.xml:/etc/clickhouse-server/users.d/single-node.xml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 3.5G
+
+volumes:
+  agentcommons-caddy-data:
+  agentcommons-caddy-config:

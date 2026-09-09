@@ -1,12 +1,15 @@
 import { z } from "zod";
 import {
+  catalogDescription,
   emailSchema,
+  fileOperationSchema,
   harnessSchema,
   messageKindSchema,
   messageRoleSchema,
   nullableTextSchema,
   nonnegativeIntegerSchema,
   opaqueCursorSchema,
+  parentRelationSchema,
   scalarOrArray,
   sessionIdSchema,
   utcDateTimeSchema,
@@ -28,9 +31,15 @@ export const searchConditionFields = {
   status: "session",
   tool_input: "message",
 } as const;
-const conditionFieldSchema = z.enum(
-  Object.keys(searchConditionFields) as (keyof typeof searchConditionFields)[],
-);
+const conditionFieldSchema = z
+  .enum(
+    Object.keys(
+      searchConditionFields,
+    ) as (keyof typeof searchConditionFields)[],
+  )
+  .describe(
+    "Field to test. Message fields: tool_name, tool_use_id, content, role, kind, model, tool_input (JSON, needs path). Session fields: harness, title, repo_name, branch, user_email, status",
+  );
 const conditionText = z
   .string()
   .max(4096)
@@ -46,26 +55,41 @@ const conditionTarget = {
     )
     .min(1)
     .max(8)
-    .optional(),
+    .optional()
+    .describe(
+      'JSON keys or array positions inside tool_input, such as ["file_path"]; only with field tool_input',
+    ),
 };
 export const searchConditionSchema = z
   .discriminatedUnion("op", [
-    z.strictObject({
-      ...conditionTarget,
-      op: z.literal("eq"),
-      value: z.union([conditionText, z.number(), z.boolean(), z.null()]),
-    }),
-    z.strictObject({
-      ...conditionTarget,
-      op: z.literal("contains"),
-      value: conditionText.refine((value) => value.length > 0),
-    }),
-    z.strictObject({
-      ...conditionTarget,
-      op: z.literal("starts_with"),
-      value: conditionText.refine((value) => value.length > 0),
-    }),
-    z.strictObject({ ...conditionTarget, op: z.literal("exists") }),
+    z
+      .strictObject({
+        ...conditionTarget,
+        op: z.literal("eq"),
+        value: z.union([conditionText, z.number(), z.boolean(), z.null()]),
+      })
+      .describe(
+        "Exact, case-sensitive match; null matches a missing value. tool_input compares a JSON primitive with its type",
+      ),
+    z
+      .strictObject({
+        ...conditionTarget,
+        op: z.literal("contains"),
+        value: conditionText.refine((value) => value.length > 0),
+      })
+      .describe(
+        "Case-insensitive literal substring match; no wildcards or regex",
+      ),
+    z
+      .strictObject({
+        ...conditionTarget,
+        op: z.literal("starts_with"),
+        value: conditionText.refine((value) => value.length > 0),
+      })
+      .describe("Case-insensitive literal prefix match"),
+    z
+      .strictObject({ ...conditionTarget, op: z.literal("exists") })
+      .describe("The field, or the tool_input path, has a non-null value"),
   ])
   .superRefine((condition, context) => {
     if ((condition.field === "tool_input") !== (condition.path !== undefined))
@@ -97,25 +121,109 @@ function filter<T extends z.ZodType>(
       `Choose at least one filter value. Valid filters: ${searchFilterKeys.join(", ")}.`,
   );
 }
+/** One value or a list per key: any listed value matches, and every key must hold. */
 const filterShape = {
-  repo_name: filter(z.string().min(1)).optional(),
-  branch: filter(z.string().min(1)).optional(),
-  user_email: filter(emailSchema).optional(),
-  tool_name: filter(z.string().min(1)).optional(),
-  file_prefix: filter(z.string().min(1)).optional(),
-  role: filter(messageRoleSchema).optional(),
-  session_id: filter(sessionIdSchema).optional(),
-  since: filter(utcDateTimeSchema).optional(),
-  until: filter(utcDateTimeSchema).optional(),
-  where: z.array(searchConditionSchema).min(1).max(10).optional(),
+  repo_name: filter(z.string().min(1))
+    .optional()
+    .describe(
+      "Sessions in these repositories: host/org/repo, or an unambiguous short name",
+    ),
+  branch: filter(z.string().min(1))
+    .optional()
+    .describe("Sessions on these git branches (exact)"),
+  user_email: filter(emailSchema)
+    .optional()
+    .describe("Sessions run by these members (exact email)"),
+  tool_name: filter(z.string().min(1))
+    .optional()
+    .describe(
+      "Messages calling or answering these tools, such as Read or Bash",
+    ),
+  file_prefix: filter(z.string().min(1))
+    .optional()
+    .describe(
+      "Sessions that touched a file whose path starts with this text, such as src/auth/",
+    ),
+  file_operation: filter(fileOperationSchema)
+    .optional()
+    .describe(
+      "Sessions where a file was read, edited, written or deleted; with file_prefix, the same file must match both",
+    ),
+  role: filter(messageRoleSchema)
+    .optional()
+    .describe("Messages with these roles"),
+  session_id: filter(sessionIdSchema)
+    .optional()
+    .describe("Search inside these sessions only"),
+  since: filter(utcDateTimeSchema)
+    .optional()
+    .describe("Messages at or after this UTC time (inclusive)"),
+  until: filter(utcDateTimeSchema)
+    .optional()
+    .describe("Messages before this UTC time (exclusive)"),
 };
-export const searchFilterKeys: string[] = Object.keys(filterShape);
-export const searchFiltersSchema = z.strictObject(filterShape, {
-  error: (issue) =>
-    issue.code === "unrecognized_keys"
-      ? `Unknown filter. Valid filters: ${searchFilterKeys.join(", ")}.`
-      : undefined,
+const whereDescription =
+  "Up to 10 extra conditions that must all hold, on a message field (tool_name, tool_use_id, content, role, kind, model, or a JSON path inside tool_input) or a session field (harness, title, repo_name, branch, user_email, status)";
+export const searchFilterKeys: string[] = [
+  ...Object.keys(filterShape),
+  "where",
+];
+const filtersDescription =
+  "Narrow by session or message fields. Each key takes one value or a list (any of); every key given must hold";
+function filtersSchema<Where extends z.ZodOptional<z.ZodType>>(where: Where) {
+  return z
+    .strictObject(
+      { ...filterShape, where },
+      {
+        error: (issue) =>
+          issue.code === "unrecognized_keys"
+            ? `Unknown filter. Valid filters: ${searchFilterKeys.join(", ")}.`
+            : undefined,
+      },
+    )
+    .describe(filtersDescription);
+}
+export const searchFiltersSchema = filtersSchema(
+  z
+    .array(searchConditionSchema)
+    .min(1)
+    .max(10)
+    .optional()
+    .describe(whereDescription),
+);
+/**
+ * The condition shape advertised in the MCP catalog: one object instead of four
+ * discriminated variants, so `tools/list` stays inside its budget (§8.2). Calls are still
+ * parsed with `searchConditionSchema`.
+ */
+export const searchConditionToolSchema = z.strictObject({
+  field: conditionFieldSchema.describe("Field to test"),
+  op: z
+    .enum(["eq", "contains", "starts_with", "exists"])
+    .describe(
+      "eq: exact, case-sensitive, null matches missing; contains and starts_with: literal, case-insensitive; exists: non-null, takes no value",
+    ),
+  path: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "JSON keys or array positions inside tool_input; only with field tool_input",
+    ),
+  // A bounded string keeps the union rendered as anyOf branches (one type each), which
+  // Gemini's function-declaration schema accepts; a bare primitive union flattens to a type array.
+  value: z
+    .union([z.string().max(4096), z.number(), z.boolean(), z.null()])
+    .optional()
+    .describe("Text for text fields; any JSON primitive for a tool_input path"),
 });
+export const searchToolFiltersSchema = filtersSchema(
+  z
+    .array(searchConditionToolSchema)
+    .min(1)
+    .max(10)
+    .optional()
+    .describe(whereDescription),
+);
 export function createSearchInputSchema(
   defaults: { context: number; limit: number } = { context: 1, limit: 5 },
 ) {
@@ -125,11 +233,21 @@ export function createSearchInputSchema(
   limit.parse(defaults.limit);
   return z
     .strictObject({
-      query: z.string(),
-      filters: searchFiltersSchema.default({}),
-      context: context.default(defaults.context),
-      limit: limit.default(defaults.limit),
-      cursor: opaqueCursorSchema,
+      query: z
+        .string()
+        .describe(
+          "Words to find; every word must appear (English stems match). May be empty when a filter is given",
+        ),
+      filters: searchFiltersSchema.default({}).describe(filtersDescription),
+      context: context
+        .default(defaults.context)
+        .describe("Neighbouring non-thinking messages either side of each hit"),
+      limit: limit
+        .default(defaults.limit)
+        .describe("Hit messages per page; at most 3 hits per session"),
+      cursor: opaqueCursorSchema.describe(
+        "Cursor from the previous page; null for the first page",
+      ),
     })
     .refine(
       (input) =>
@@ -142,33 +260,84 @@ export function createSearchInputSchema(
     );
 }
 export const searchInputSchema = createSearchInputSchema();
+/** Catalog rendering of `searchInputSchema` with the compact condition shape; calls parse the strict one. */
+export const searchToolInputSchema = z.strictObject({
+  ...searchInputSchema.shape,
+  filters: searchToolFiltersSchema.default({}).describe(filtersDescription),
+});
+const truncatedFields = z
+  .array(z.string())
+  .default([])
+  .describe("Fields shortened to fit the response");
 export const searchMessageSchema = z.strictObject({
-  seq: nonnegativeIntegerSchema,
-  role: messageRoleSchema,
-  kind: messageKindSchema,
-  tool_name: nullableTextSchema.optional(),
-  tool_use_id: nullableTextSchema.optional(),
-  content: z.string(),
-  hit: z.boolean(),
-  truncated: z.boolean(),
-  truncated_fields: z.array(z.string()).default([]),
+  seq: nonnegativeIntegerSchema.describe(catalogDescription("messages", "seq")),
+  role: messageRoleSchema.describe(catalogDescription("messages", "role")),
+  kind: messageKindSchema.describe(catalogDescription("messages", "kind")),
+  tool_name: nullableTextSchema
+    .optional()
+    .describe(catalogDescription("messages", "tool_name")),
+  tool_use_id: nullableTextSchema
+    .optional()
+    .describe(catalogDescription("messages", "tool_use_id")),
+  content: z
+    .string()
+    .describe("Excerpt of the message text, centred on the match"),
+  hit: z
+    .boolean()
+    .describe("True for a matched message, false for surrounding context"),
+  truncated: z
+    .boolean()
+    .describe("True when content is an excerpt of a longer message"),
+  truncated_fields: truncatedFields,
 });
 export const searchBlockSchema = z.strictObject({
-  session_id: sessionIdSchema,
-  title: nullableTextSchema,
-  harness: harnessSchema,
-  model: nullableTextSchema,
-  repo_name: nullableTextSchema,
-  branch: nullableTextSchema,
-  user_email: emailSchema,
-  started_at: utcDateTimeSchema,
-  messages: z.array(searchMessageSchema),
-  truncated_fields: z.array(z.string()).default([]),
+  session_id: sessionIdSchema.describe(
+    "Session the messages belong to; pass to get for the full transcript",
+  ),
+  root_session_id: sessionIdSchema.describe(
+    "Root of the session tree. Equals session_id unless the hit sits inside a subagent, fork or spawned run; open the root and read the run inline.",
+  ),
+  parent_relation: parentRelationSchema
+    .nullable()
+    .describe(
+      "How this session relates to its parent; null for a root session.",
+    ),
+  agent_type: nullableTextSchema.describe(
+    "Harness agent type of a subagent run, when the harness reports one.",
+  ),
+  parent_tool_use_id: nullableTextSchema.describe(
+    "The parent's tool call that spawned this run, when recorded and the parent is visible; null for a root session.",
+  ),
+  title: nullableTextSchema.describe(catalogDescription("sessions", "title")),
+  harness: harnessSchema.describe(catalogDescription("sessions", "harness")),
+  model: nullableTextSchema.describe(catalogDescription("sessions", "model")),
+  repo_name: nullableTextSchema.describe(
+    catalogDescription("sessions", "repo_name"),
+  ),
+  branch: nullableTextSchema.describe(catalogDescription("sessions", "branch")),
+  user_email: emailSchema.describe(
+    catalogDescription("sessions", "user_email"),
+  ),
+  started_at: utcDateTimeSchema.describe(
+    catalogDescription("sessions", "started_at"),
+  ),
+  messages: z
+    .array(searchMessageSchema)
+    .describe("Matched messages and their context, in seq order"),
+  truncated_fields: truncatedFields,
 });
 export const searchOutputSchema = z.strictObject({
-  blocks: z.array(searchBlockSchema),
-  cursor: opaqueCursorSchema,
-  truncated_response: z.boolean(),
+  blocks: z
+    .array(searchBlockSchema)
+    .describe("Message windows grouped by session, best match first"),
+  cursor: opaqueCursorSchema.describe(
+    "Cursor for the next page; null when there is none",
+  ),
+  truncated_response: z
+    .boolean()
+    .describe(
+      "True when the page was cut to fit the response size limit; continue with cursor",
+    ),
 });
 export type SearchFilters = z.infer<typeof searchFiltersSchema>;
 export type SearchInput = z.infer<typeof searchInputSchema>;

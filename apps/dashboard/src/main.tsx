@@ -6,9 +6,11 @@ import { makeRouter } from "./router";
 import { BillingProvider, browserBillingConfig } from "./lib/billing-config";
 import { copy } from "./copy";
 import "./styles.css";
-import "./workspace.css";
+import "./app.css";
+import { applyStoredTheme } from "./lib/theme";
 
 async function start() {
+  applyStoredTheme();
   const billingConfig = await browserBillingConfig();
   const router = makeRouter();
   const container = document.getElementById("root");

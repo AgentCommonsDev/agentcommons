@@ -79,6 +79,7 @@ export class TraceFixtures {
     keyId: string;
     installationId: string;
     parent?: string;
+    parentToolUseId?: string;
     visibility?: "PUBLIC" | "PRIVATE";
     fields?: Record<string, unknown>;
   }) {
@@ -98,6 +99,7 @@ export class TraceFixtures {
         lastActivityAt: now,
         parentSessionId: options.parent ?? null,
         parentRelation: options.parent ? "SUBAGENT" : null,
+        parentToolUseId: options.parentToolUseId ?? null,
         visibility: options.visibility ?? "PUBLIC",
         projectionState: "published",
       },

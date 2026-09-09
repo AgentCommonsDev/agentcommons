@@ -83,6 +83,19 @@ it("recovers after actual SIGKILL before send, after acceptance, and after local
           );
           return;
         }
+        // The uploader's hourly self-update check reads the manifest; the served bundle
+        // is the one under test, so the shim stays current and nothing is downloaded.
+        if (request.method === "GET") {
+          if (request.url === "/hook/manifest.json") {
+            response.end(
+              readFileSync(resolve("apps/api/public/hook/manifest.json")),
+            );
+            return;
+          }
+          response.writeHead(404);
+          response.end();
+          return;
+        }
         const chunks: Buffer[] = [];
         request.on("data", (chunk: Buffer) => chunks.push(chunk));
         request.on("end", () => {
@@ -198,6 +211,9 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
     writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const env = {
     ...process.env,
+    // Spawned shims must never see the developer's real home: a reconfigure run would
+    // otherwise edit real harness settings. The fixture directory stands in for HOME.
+    HOME: directory,
     AGENTCOMMONS_DIR: join(directory, "data"),
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     SHELL: "/bin/bash",

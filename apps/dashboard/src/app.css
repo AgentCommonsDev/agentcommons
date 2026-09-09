@@ -1,0 +1,276 @@
+/* Authenticated app: layout helpers that Tailwind utilities do not express well. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.app-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+/* Stacked rows on phones: each cell shows its column label. */
+@media (max-width: 639px) {
+  .stacked-table thead {
+    display: none;
+  }
+  .stacked-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding: 10px 14px;
+  }
+  .stacked-table td {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 10px;
+    padding: 3px 0;
+    align-items: baseline;
+  }
+  .stacked-table td::before {
+    content: attr(data-label);
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .stacked-table td[data-actions] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .stacked-table td[data-actions]::before {
+    content: none;
+  }
+}
+/* Dashboard grid (react-grid-layout) */
+.react-grid-layout {
+  position: relative;
+  transition: height 200ms ease;
+}
+.react-grid-item {
+  transition: all 200ms ease;
+  transition-property: left, top, width, height;
+}
+.react-grid-item.cssTransforms {
+  transition-property: transform, width, height;
+}
+.react-grid-item.resizing,
+.react-grid-item.react-draggable-dragging {
+  transition: none;
+  z-index: 3;
+  will-change: transform;
+}
+.react-grid-item.react-grid-placeholder {
+  background: var(--accent-bg);
+  border: 1px dashed var(--accent);
+  border-radius: 10px;
+  opacity: 0.6;
+  transition-duration: 100ms;
+  z-index: 2;
+  user-select: none;
+}
+.react-grid-item > .react-resizable-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  bottom: 0;
+  right: 0;
+  cursor: se-resize;
+}
+.react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  border-radius: 1px;
+}
+.tile-drag-handle {
+  cursor: grab;
+}
+.react-draggable-dragging .tile-drag-handle {
+  cursor: grabbing;
+}
+/* CodeMirror */
+.cm-editor {
+  height: 100%;
+  font-size: 13px;
+  background: var(--surface);
+  color: var(--text);
+}
+.cm-editor.cm-focused {
+  outline: none;
+}
+.cm-editor .cm-gutters {
+  background: var(--surface);
+  color: var(--subtle);
+  border-right: 1px solid var(--line-soft);
+}
+.cm-editor .cm-activeLine,
+.cm-editor .cm-activeLineGutter {
+  background: var(--raised);
+}
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: var(--accent-bg) !important;
+}
+.cm-editor .cm-cursor {
+  border-left-color: var(--text);
+}
+.cm-editor .cm-content {
+  font-family: "IBM Plex Mono", monospace;
+  padding: 10px 0;
+}
+.cm-editor .cm-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 25%);
+  overflow: hidden;
+}
+.cm-editor .cm-tooltip-autocomplete ul li {
+  padding: 4px 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+}
+.cm-editor .cm-tooltip-autocomplete ul li[aria-selected] {
+  background: var(--accent-bg);
+  color: var(--text);
+}
+.cm-editor .cm-completionDetail {
+  color: var(--muted);
+  font-style: normal;
+  margin-left: 8px;
+}
+.cm-editor .cm-completionInfo {
+  background: var(--raised);
+  border-color: var(--line);
+  color: var(--text);
+  font-size: 12px;
+}
+.cm-editor .cm-diagnostic-error {
+  border-left-color: var(--danger);
+}
+.cm-editor .cm-lintRange-error {
+  background-image: none;
+  text-decoration: underline wavy var(--danger);
+  text-decoration-skip-ink: none;
+}
+.cm-editor .cm-lintPoint-error::after {
+  border-bottom-color: var(--danger);
+}
+.cm-editor .cm-tooltip-lint {
+  padding: 4px 8px;
+  font-size: 12.5px;
+}
+/* Rendered markdown inside transcripts and text tiles */
+.prose-app {
+  line-height: 1.6;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.prose-app > :first-child {
+  margin-top: 0;
+}
+.prose-app > :last-child {
+  margin-bottom: 0;
+}
+.prose-app p,
+.prose-app ul,
+.prose-app ol,
+.prose-app blockquote {
+  margin: 0.6em 0;
+}
+.prose-app ul,
+.prose-app ol {
+  padding-left: 1.4em;
+}
+.prose-app ul {
+  list-style: disc;
+}
+.prose-app ol {
+  list-style: decimal;
+}
+.prose-app h1,
+.prose-app h2,
+.prose-app h3,
+.prose-app h4 {
+  margin: 1em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.prose-app h1 {
+  font-size: 1.35em;
+}
+.prose-app h2 {
+  font-size: 1.2em;
+}
+.prose-app h3 {
+  font-size: 1.05em;
+}
+.prose-app a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prose-app code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.9em;
+  background: var(--raised);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.prose-app pre {
+  margin: 0.6em 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: var(--raised);
+  padding: 10px 12px;
+}
+.prose-app pre code {
+  background: none;
+  padding: 0;
+}
+.prose-app blockquote {
+  border-left: 3px solid var(--line);
+  padding-left: 12px;
+  color: var(--muted);
+}
+.prose-app table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.prose-app th,
+.prose-app td {
+  border: 1px solid var(--line-soft);
+  padding: 4px 8px;
+  text-align: left;
+}
+.prose-app hr {
+  border: 0;
+  border-top: 1px solid var(--line-soft);
+  margin: 1em 0;
+}
+.highlighted-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+:root[data-theme="light"] .highlighted-code pre,
+:root[data-theme="light"] .highlighted-code span {
+  color: var(--shiki-light) !important;
+  background-color: var(--shiki-light-bg) !important;
+}
+:root:not([data-theme="light"]) .highlighted-code pre,
+:root:not([data-theme="light"]) .highlighted-code span {
+  color: var(--shiki-dark) !important;
+  background-color: var(--shiki-dark-bg) !important;
+}

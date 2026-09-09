@@ -26,13 +26,26 @@ const fileRules = {
   write_file: { paths: ["file_path", "path"], ops: ["write"] },
   replace: { paths: ["file_path", "path"], ops: ["edit"] },
 };
+/** Gemini CLI 0.35.3 records a thought as `{ subject, description, timestamp }`
+ * (`ChatRecordingService.recordThought`); older shapes used a plain `text`. */
+function thoughtText(thought: unknown): string {
+  const data = object(thought);
+  const subject = string(data.subject)?.trim() ?? "";
+  const body = (string(data.description) ?? string(data.text))?.trim() ?? "";
+  if (subject && body) return `**${subject}**\n\n${body}`;
+  return subject || body || text(thought);
+}
 export const geminiCli = createNormalizer({
   harness: "GEMINI_CLI",
   redactionStructure: protocolObject(["id", "timestamp", "model", "content"], {
     timestamp: protocolTimestamp,
     type: protocolLiterals("user", "gemini"),
-    thoughts: protocolArray(protocolObject(["text", "subject", "timestamp"])),
-    tokens: protocolObject(["input", "output"]),
+    thoughts: protocolArray(
+      protocolObject(["text", "subject", "description", "timestamp"], {
+        timestamp: protocolTimestamp,
+      }),
+    ),
+    tokens: protocolObject(["input", "output", "cached", "thoughts", "tool"]),
     toolCalls: protocolArray(
       protocolObject(["id", "name", "args", "timestamp", "resultDisplay"], {
         timestamp: protocolTimestamp,
@@ -123,7 +136,7 @@ export const geminiCli = createNormalizer({
           message(record, blockIndex++, {
             role: "ASSISTANT",
             kind: "THINKING",
-            content: text(object(thought).text ?? thought),
+            content: thoughtText(thought),
             model,
           }),
         );
@@ -164,8 +177,18 @@ export const geminiCli = createNormalizer({
           );
         }
       }
+      // Gemini reports `input` (promptTokenCount, cached tokens included), `output`
+      // (candidatesTokenCount) and `thoughts` (thoughtsTokenCount) separately:
+      // total = input + output + thoughts. Generated thinking counts as output, as it
+      // does in the Claude Code and Codex usage records.
       const usage = object(data.tokens);
-      assignUsage(result, tokens(usage.input), tokens(usage.output));
+      const output = tokens(usage.output);
+      const thoughts = tokens(usage.thoughts);
+      assignUsage(
+        result,
+        tokens(usage.input),
+        output === null ? null : output + (thoughts ?? 0n),
+      );
       return result;
     });
   },
@@ -179,6 +202,10 @@ export const geminiCli = createNormalizer({
     return delta;
   },
   links() {
+    return [];
+  },
+  // Delegation stays inside the parent document; there is no child session to attach.
+  spawns() {
     return [];
   },
 });

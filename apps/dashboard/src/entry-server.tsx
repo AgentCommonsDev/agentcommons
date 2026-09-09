@@ -22,7 +22,25 @@ export const publicRoutes = [
     path: `/blog/${post.slug}`,
     file: `blog/${post.slug}.html`,
   })),
+  { path: "/privacy", file: "privacy.html" },
+  { path: "/tos", file: "tos.html" },
 ];
+/** Title and description for the non-blog public pages; the landing keeps the site meta. */
+const pageMeta: Record<string, { title: string; description: string }> = {
+  "/docs": {
+    title: copy.publicGuide.title,
+    description: copy.meta.description,
+  },
+  "/blog": { title: copy.blog.title, description: copy.blog.description },
+  "/privacy": {
+    title: copy.legal.privacy.title,
+    description: copy.legal.privacy.description,
+  },
+  "/tos": {
+    title: copy.legal.terms.title,
+    description: copy.legal.terms.description,
+  },
+};
 const escapeHtml = (value: string) =>
   value
     .replaceAll("&", "&amp;")
@@ -63,16 +81,14 @@ export async function renderDocument(
 ) {
   const rendered = await render(path, config);
   const post = posts.find((item) => path === `/blog/${item.slug}`);
+  const meta = pageMeta[path];
   const title = post
     ? `${post.title} · ${copy.brand}`
-    : path === "/blog"
-      ? `${copy.blog.title} · ${copy.brand}`
-      : path === "/docs"
-        ? `${copy.publicGuide.title} · ${copy.brand}`
-        : copy.meta.title;
+    : meta
+      ? `${meta.title} · ${copy.brand}`
+      : copy.meta.title;
   const description =
-    post?.summary ??
-    (path === "/blog" ? copy.blog.description : copy.meta.description);
+    post?.summary ?? meta?.description ?? copy.meta.description;
   const document = withPublicConfig(template, config)
     .replace(
       /<title>[^<]*<\/title>/,

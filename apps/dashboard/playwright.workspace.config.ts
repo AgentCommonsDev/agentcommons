@@ -1,14 +1,23 @@
 import { defineConfig } from "@playwright/test";
-import { visualDefaults } from "./playwright.shared";
+import {
+  visualDefaults,
+  workspaceOrigin,
+  workspacePort,
+  workspaceStatePath,
+} from "./playwright.shared";
 export default defineConfig({
   ...visualDefaults,
   testDir: "./tests",
   testMatch: [
-    "workspace.spec.ts",
-    "usability.spec.ts",
-    "profiles.spec.ts",
-    "session-navigation.spec.ts",
-    "embeddings-settings.spec.ts",
+    "app-shell.spec.ts",
+    "dashboards.spec.ts",
+    "sessions.spec.ts",
+    "sessions-tree.spec.ts",
+    "keys-sql.spec.ts",
+    "admin.spec.ts",
+    "embeddings.spec.ts",
+    "account.spec.ts",
+    "visual.spec.ts",
   ],
   outputDir: "./test-results/workspace",
   fullyParallel: false,
@@ -16,7 +25,7 @@ export default defineConfig({
   timeout: 90_000,
   use: {
     ...visualDefaults.use,
-    baseURL: "http://localhost:3000",
+    baseURL: workspaceOrigin,
     trace: "retain-on-failure",
   },
   projects: [
@@ -40,8 +49,12 @@ export default defineConfig({
   ],
   webServer: {
     command: "node --import tsx scripts/browser-server.mjs",
+    env: {
+      DASHBOARD_BROWSER_PORT: String(workspacePort),
+      DASHBOARD_BROWSER_STATE: workspaceStatePath,
+    },
     gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
-    url: "http://localhost:3000/ready",
+    url: `${workspaceOrigin}/ready`,
     reuseExistingServer:
       process.env.REUSE_BROWSER_SERVER === "1" && !process.env.CI,
     timeout: 180_000,

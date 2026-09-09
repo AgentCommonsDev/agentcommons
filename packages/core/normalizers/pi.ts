@@ -225,8 +225,14 @@ export const pi = createNormalizer({
       return result;
     });
   },
-  sessionDelta(records) {
+  sessionDelta(records, context) {
     const delta: SessionDelta = {};
+    // The transcript has no host version or mode; the extension reports them per process.
+    const host = object(context?.transcriptMetadata);
+    const harnessVersion = string(host.harnessVersion);
+    if (harnessVersion) delta.harnessVersion = harnessVersion;
+    const entrypoint = string(host.entrypoint);
+    if (entrypoint) delta.entrypoint = entrypoint;
     for (const { payload: data } of records) {
       if (data.type === "session") {
         const id = string(data.id);
@@ -255,6 +261,10 @@ export const pi = createNormalizer({
       });
     }
     return links;
+  },
+  // A fork records its parent file, never a tool call; nothing spawns a pi child.
+  spawns() {
+    return [];
   },
 });
 

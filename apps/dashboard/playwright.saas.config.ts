@@ -1,16 +1,21 @@
 import { defineConfig } from "@playwright/test";
-import { visualDefaults } from "./playwright.shared";
+import {
+  saasOrigin,
+  saasPort,
+  saasStatePath,
+  visualDefaults,
+} from "./playwright.shared";
 export default defineConfig({
   ...visualDefaults,
   testDir: "./tests",
-  testMatch: ["saas.spec.ts", "users-domain.spec.ts", "organizations.spec.ts"],
+  testMatch: ["saas.spec.ts", "organizations.spec.ts"],
   outputDir: "./test-results/saas",
   fullyParallel: false,
   workers: 1,
   timeout: 120_000,
   use: {
     ...visualDefaults.use,
-    baseURL: "http://localhost:3600",
+    baseURL: saasOrigin,
     trace: "retain-on-failure",
   },
   projects: [
@@ -34,8 +39,12 @@ export default defineConfig({
   ],
   webServer: {
     command: "node --import tsx scripts/saas-browser-server.mjs",
+    env: {
+      DASHBOARD_SAAS_PORT: String(saasPort),
+      DASHBOARD_SAAS_STATE: saasStatePath,
+    },
     gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
-    url: "http://localhost:3600/ready",
+    url: `${saasOrigin}/ready`,
     reuseExistingServer:
       process.env.REUSE_BROWSER_SERVER === "1" && !process.env.CI,
     timeout: 180_000,

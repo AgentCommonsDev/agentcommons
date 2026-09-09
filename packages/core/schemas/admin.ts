@@ -201,6 +201,10 @@ export const keyCreateOutputSchema = z.strictObject({
   key: z.string().startsWith("ac_"),
   metadata: keySchema,
 });
+/** `POST /me/keys/:id/reveal`: the caller's own active key, decrypted from its stored copy. */
+export const apiKeyRevealOutputSchema = z.strictObject({
+  key: z.string().startsWith("ac_"),
+});
 export const statusOutputSchema = z.strictObject({
   projection: z.strictObject({
     queued_sessions: nonnegativeIntegerSchema,

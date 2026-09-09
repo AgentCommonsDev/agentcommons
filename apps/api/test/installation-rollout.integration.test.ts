@@ -35,9 +35,16 @@ let address: string;
 const clients: Client[] = [];
 const shutdown: Array<() => Promise<unknown>> = [];
 const headers = (key: string) => ({ authorization: `Bearer ${key}` });
-function envelope(installationId: string) {
+function envelope(
+  installationId: string,
+  options: { hostname?: string; hookSha256?: string } = {},
+) {
   return {
     envelopeVersion: 2,
+    hook: {
+      sha256: options.hookSha256 ?? "a".repeat(64),
+      extensionSha256: null,
+    },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     behavior: "sync",
@@ -49,7 +56,7 @@ function envelope(installationId: string) {
     context: {
       cwd: "/rollout",
       installation: {
-        hostname: "rollout-device",
+        hostname: options.hostname ?? "rollout-device",
         osUser: "developer",
         platform: "linux",
         arch: "x64",
@@ -75,8 +82,12 @@ function envelope(installationId: string) {
     end: null,
   };
 }
-async function ingest(key: string, installationId: string) {
-  const body = envelope(installationId);
+async function ingest(
+  key: string,
+  installationId: string,
+  options: { hostname?: string; hookSha256?: string } = {},
+) {
+  const body = envelope(installationId, options);
   const response = await app.inject({
     method: "POST",
     url: "/api/v1/ingest",
@@ -143,6 +154,10 @@ afterAll(async () => {
   if (errors.length)
     throw new AggregateError(errors, "Rollout test cleanup failed.");
 });
+
+/** Read keys list search, get, sql and the five dashboard tools; admin keys add set_visibility, purge, audit, status and dashboard_set_default. */
+const READ_TOOL_COUNT = 8;
+const ADMIN_TOOL_COUNT = 13;
 
 // @req R-AUD-04
 it("attributes audit to the latest accepted key/org receipt, including the first ingest transaction", async () => {
@@ -216,6 +231,8 @@ it("disables current installation keys immediately on cached MCP clients while i
     (await memberClient.listTools()).tools.map((tool) => tool.name),
   ).toEqual([
     "dashboard_list",
+    "dashboard_get",
+    "dashboard_render",
     "dashboard_save",
     "dashboard_delete",
     "search",
@@ -271,7 +288,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   expect(JSON.stringify(change.detail)).not.toContain("ac_" + "b".repeat(32));
   expect((await ownerClient.listTools()).tools).toEqual([]);
   expect((await memberClient.listTools()).tools).toEqual([]);
-  expect((await reader.listTools()).tools).toHaveLength(6);
+  expect((await reader.listTools()).tools).toHaveLength(READ_TOOL_COUNT);
   const count = await db.prisma.auditEvent.count({
     where: {
       apiKeyId: z.string().parse(member.context.caller?.apiKeyId),
@@ -316,7 +333,9 @@ it("disables current installation keys immediately on cached MCP clients while i
   ).toContainEqual({ installation_id: installation, tools_enabled: false });
   // The same UUID in another organization is a separate installation and rollout cohort.
   await ingest(other.key, installation);
-  expect((await (await client(other.key)).listTools()).tools).toHaveLength(10);
+  expect((await (await client(other.key)).listTools()).tools).toHaveLength(
+    ADMIN_TOOL_COUNT,
+  );
   expect(
     (
       await keyInstallation(
@@ -328,7 +347,7 @@ it("disables current installation keys immediately on cached MCP clients while i
   ).toBe(true);
   const moved = randomUUID();
   await ingest(member.key, moved);
-  expect((await memberClient.listTools()).tools).toHaveLength(6);
+  expect((await memberClient.listTools()).tools).toHaveLength(READ_TOOL_COUNT);
   expect(
     (
       await memberClient.callTool({
@@ -347,7 +366,7 @@ it("disables current installation keys immediately on cached MCP clients while i
     payload: { enabled: true, reason: "Finish staged comparison" },
   });
   expect(enabled.statusCode, enabled.body).toBe(200);
-  expect((await ownerClient.listTools()).tools).toHaveLength(10);
+  expect((await ownerClient.listTools()).tools).toHaveLength(ADMIN_TOOL_COUNT);
 });
 
 // @req R-DASH-14
@@ -377,6 +396,53 @@ it("rolls back a rollout change if its mutation audit cannot be written", async 
     },
   });
   expect(current.toolsEnabled).toBe(true);
+});
+
+// @req R-ING-16
+it("stores the envelope hook digest per installation and exposes it in the installations listing", async () => {
+  const installation = randomUUID();
+  const hostname = `hook-identity-${installation.slice(0, 8)}`;
+  const organizationId = z.string().parse(owner.context.caller?.organizationId);
+  const stored = () =>
+    db.prisma.installation.findUniqueOrThrow({
+      where: { organizationId_id: { organizationId, id: installation } },
+    });
+  await ingest(owner.key, installation, {
+    hostname,
+    hookSha256: "b".repeat(64),
+  });
+  expect((await stored()).hookSha256).toBe("b".repeat(64));
+  // A later upload from an updated shim replaces the recorded digest.
+  await ingest(owner.key, installation, {
+    hostname,
+    hookSha256: "c".repeat(64),
+  });
+  expect((await stored()).hookSha256).toBe("c".repeat(64));
+  const listed = await runtime.services.sessions.installations(owner.context, {
+    filters: { hostname },
+  });
+  expect(
+    listed.result.items.map((row) => [row.installation_id, row.hook_sha256]),
+  ).toEqual([[installation, "c".repeat(64)]]);
+  const query = new URLSearchParams({ filters: JSON.stringify({ hostname }) });
+  const response = await app.inject({
+    method: "GET",
+    url: `/api/v1/installations?${query.toString()}`,
+    headers: headers(owner.key),
+  });
+  expect(response.statusCode, response.body).toBe(200);
+  expect(
+    z
+      .object({
+        items: z.array(
+          z.object({
+            installation_id: z.uuid(),
+            hook_sha256: z.string().nullable(),
+          }),
+        ),
+      })
+      .parse(response.json()).items,
+  ).toEqual([{ installation_id: installation, hook_sha256: "c".repeat(64) }]);
 });
 
 it("normalizes typed audit detail before redaction, retains bounds, and rejects storage failure", async () => {

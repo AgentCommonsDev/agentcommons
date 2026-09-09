@@ -123,6 +123,9 @@ export function recordHook(
       ...(event.activeLeafId !== undefined
         ? { activeLeafId: event.activeLeafId }
         : {}),
+      ...(event.transcript_metadata
+        ? { transcriptMetadata: event.transcript_metadata }
+        : {}),
       ...(parent
         ? { parentHint: { harnessSessionId: parent, relation: "SPAWNED" } }
         : {}),

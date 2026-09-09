@@ -12,6 +12,7 @@ import {
   parentRelationSchema,
   sessionIdSchema,
   sessionStatusSchema,
+  sha256Schema,
   utcDateTimeSchema,
 } from "./common.js";
 import { searchFiltersSchema } from "./search.js";
@@ -36,7 +37,11 @@ export const sessionsInputSchema = createListInputSchema([
   "reuse_count",
   "status",
   "last_activity_at",
-]).extend({ filters: searchFiltersSchema.default({}) });
+]).extend({
+  filters: searchFiltersSchema.default({}),
+  /** Only sessions without a caller-visible parent: subagent, fork and spawned runs stay inside their parent. */
+  roots_only: z.boolean().default(false),
+});
 export const rawInputSchema = paginationSchema;
 export const sessionReuseInputSchema = reuseListInputSchema.extend({
   direction: z.enum(["by", "from"]).default("by"),
@@ -82,6 +87,7 @@ export const treeNodeSchema = z.strictObject({
   agent_type: nullableTextSchema,
   parent_relation: parentRelationSchema.nullable(),
   parent_session_id: sessionIdSchema.nullable(),
+  parent_tool_use_id: nullableTextSchema,
   user_email: emailSchema,
   started_at: utcDateTimeSchema,
   status: sessionStatusSchema,
@@ -144,6 +150,7 @@ export const installationSchema = z.strictObject({
   os_user: z.string(),
   platform: z.string(),
   arch: z.string(),
+  hook_sha256: sha256Schema.nullable(),
   first_seen_at: utcDateTimeSchema,
   last_seen_at: utcDateTimeSchema,
   session_count: nonnegativeIntegerSchema,

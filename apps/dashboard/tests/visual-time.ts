@@ -2,17 +2,25 @@ import type { Page } from "@playwright/test";
 import type { JsonValue } from "@agentcommons/core/schemas/common";
 import { z } from "zod";
 const timestampField = /^(?:date|week|timestamp|ts)$|(?:_at|At)$/;
+const isoValue = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?$/;
 function translatedDate(value: string, delta: number): string {
-  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)?$/.test(value))
-    return value;
+  if (!isoValue.test(value)) return value;
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
   const translated = new Date(timestamp + delta).toISOString();
   return value.length === 10 ? translated.slice(0, 10) : translated;
 }
+/**
+ * Objects translate only known timestamp fields. Arrays are SQL result rows whose
+ * columns carry no names, so any ISO date or datetime cell is translated.
+ */
 function translatedResponse(value: JsonValue, delta: number): JsonValue {
   if (Array.isArray(value))
-    return value.map((item) => translatedResponse(item, delta));
+    return value.map((item) =>
+      typeof item === "string"
+        ? translatedDate(item, delta)
+        : translatedResponse(item, delta),
+    );
   if (value !== null && typeof value === "object")
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [

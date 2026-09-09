@@ -58,6 +58,7 @@ function envelope(
 ) {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: options.nativeId ?? randomUUID(),
     behavior: "start",

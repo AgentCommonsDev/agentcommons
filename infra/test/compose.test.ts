@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,21 +14,29 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
-function compose(file: string) {
+function compose(files: string[], extraEnv = "") {
   const cwd = mkdtempSync(join(tmpdir(), "agentcommons-compose-test-"));
   try {
-    copyFileSync(join(repository, file), join(cwd, file));
+    for (const file of files)
+      copyFileSync(join(repository, file), join(cwd, file));
+    mkdirSync(join(cwd, "infra", "caddy"), { recursive: true });
+    copyFileSync(
+      join(repository, "infra", "caddy", "Caddyfile"),
+      join(cwd, "infra", "caddy", "Caddyfile"),
+    );
     // Compose validates service env_file paths even with --no-env-resolution.
     // Supply the documented example inside the fixture, never the user's .env.
-    copyFileSync(join(repository, ".env.example"), join(cwd, ".env"));
+    writeFileSync(
+      join(cwd, ".env"),
+      readFileSync(join(repository, ".env.example"), "utf8") + extraEnv,
+    );
     const output = execFileSync(
       "docker",
       [
         "compose",
         "--env-file",
         ".env",
-        "-f",
-        file,
+        ...files.flatMap((file) => ["-f", file]),
         "config",
         "--no-env-resolution",
         "--format",
@@ -45,7 +60,7 @@ function compose(file: string) {
 describe("Compose configuration", () => {
   // @req R-INF-01
   it("starts the self-host API only after a healthy database and successful migration", () => {
-    const services = compose("docker-compose.yml");
+    const services = compose(["docker-compose.yml"]);
     expect(Object.keys(services).sort()).toEqual([
       "api",
       "clickhouse",
@@ -87,9 +102,282 @@ describe("Compose configuration", () => {
       ]),
     );
   });
+  // @req R-INF-07
+  it("terminates TLS with Caddy in front of the self-host API and trusts only the Compose network as a proxy", () => {
+    const services = compose([
+      "docker-compose.yml",
+      "docker-compose.caddy.yml",
+    ]);
+    expect(Object.keys(services).sort()).toEqual([
+      "api",
+      "caddy",
+      "clickhouse",
+      "db",
+      "migrate",
+    ]);
+    expect(services.caddy).toMatchObject({
+      image: "caddy:2.11.4",
+      entrypoint: ["/bin/sh", "/etc/caddy/entrypoint.sh"],
+      command: [
+        "caddy",
+        "run",
+        "--config",
+        "/etc/caddy/Caddyfile",
+        "--adapter",
+        "caddyfile",
+      ],
+      environment: {
+        PUBLIC_URL: "http://localhost:5173",
+        CADDY_TRUSTED_PROXIES: "cloudflare",
+      },
+      depends_on: { api: { condition: "service_started" } },
+      restart: "unless-stopped",
+    });
+    expect(services.caddy?.ports).toEqual([
+      expect.objectContaining({ target: 80, published: "80" }),
+      expect.objectContaining({ target: 443, published: "443" }),
+    ]);
+    expect(services.caddy?.volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "bind",
+          target: "/etc/caddy/Caddyfile",
+          read_only: true,
+        }),
+        expect.objectContaining({
+          type: "bind",
+          target: "/etc/caddy/entrypoint.sh",
+          read_only: true,
+        }),
+        expect.objectContaining({
+          type: "bind",
+          target: "/etc/caddy/cloudflare-ranges.txt",
+          read_only: true,
+        }),
+        expect.objectContaining({ type: "volume", target: "/data" }),
+      ]),
+    );
+    expect(services.caddy?.env_file).toBeUndefined();
+    expect(services.api).toMatchObject({
+      environment: {
+        TRUST_PROXY: "uniquelocal",
+        DATABASE_MIGRATION_URL: "",
+        POSTGRES_PASSWORD: "",
+      },
+      ports: [{ host_ip: "127.0.0.1", target: 3000, published: "3000" }],
+    });
+    expect(services.db?.ports).toBeUndefined();
+    expect(services.clickhouse?.ports).toBeUndefined();
+    // Memory limits for one 8 GiB host; every long-running service restarts.
+    const limits = z.object({
+      deploy: z.object({
+        resources: z.object({
+          limits: z.object({ memory: z.coerce.number() }),
+        }),
+      }),
+      restart: z.string().optional(),
+    });
+    expect(limits.parse(services.clickhouse)).toMatchObject({
+      deploy: { resources: { limits: { memory: 3.5 * 1024 ** 3 } } },
+      restart: "unless-stopped",
+    });
+    expect(limits.parse(services.db)).toMatchObject({
+      deploy: { resources: { limits: { memory: 1024 ** 3 } } },
+      restart: "unless-stopped",
+    });
+    expect(limits.parse(services.api)).toMatchObject({
+      deploy: { resources: { limits: { memory: 1024 ** 3 } } },
+      restart: "unless-stopped",
+    });
+    expect(limits.parse(services.migrate)).toMatchObject({
+      deploy: { resources: { limits: { memory: 1024 ** 3 } } },
+    });
+    expect(limits.parse(services.caddy)).toMatchObject({
+      deploy: { resources: { limits: { memory: 256 * 1024 ** 2 } } },
+    });
+    expect(services.db?.command).toEqual(["sh", "/etc/postgresql/start.sh"]);
+    const start = readFileSync(
+      join(repository, "infra", "compose", "postgres-start.sh"),
+      "utf8",
+    );
+    execFileSync("sh", ["-n"], { input: start });
+    expect(start).toContain("-c shared_buffers=256MB");
+    expect(start).toContain("-c ssl=on");
+    expect(start).toContain("-c hba_file=/etc/postgresql/pg_hba.conf");
+    expect(start.trim().endsWith('exec docker-entrypoint.sh "$@"')).toBe(true);
+    expect(services.api?.environment).toMatchObject({
+      NODE_OPTIONS: "--max-old-space-size=768",
+    });
+    expect(services.clickhouse?.volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          target: "/etc/clickhouse-server/config.d/single-node.xml",
+          read_only: true,
+        }),
+        expect.objectContaining({
+          target: "/etc/clickhouse-server/users.d/single-node.xml",
+          read_only: true,
+        }),
+      ]),
+    );
+    const server = readFileSync(
+      join(repository, "infra", "compose", "clickhouse-server.xml"),
+      "utf8",
+    );
+    expect(server).toContain(
+      "<max_server_memory_usage>3221225472</max_server_memory_usage>",
+    );
+    expect(server).toContain(
+      "<max_concurrent_queries>32</max_concurrent_queries>",
+    );
+    expect(
+      readFileSync(
+        join(repository, "infra", "compose", "clickhouse-users.xml"),
+        "utf8",
+      ),
+    ).toContain("<max_memory_usage>2147483648</max_memory_usage>");
+    const agent = z
+      .object({
+        metrics: z.object({
+          metrics_collected: z.object({ mem: z.unknown(), disk: z.unknown() }),
+          aggregation_dimensions: z.array(z.array(z.string())),
+        }),
+      })
+      .parse(
+        JSON.parse(
+          readFileSync(
+            join(repository, "infra", "compose", "cloudwatch-agent.json"),
+            "utf8",
+          ),
+        ),
+      );
+    expect(agent.metrics.aggregation_dimensions).toEqual([["InstanceId"]]);
+    const caddyfile = readFileSync(
+      join(repository, "infra", "caddy", "Caddyfile"),
+      "utf8",
+    );
+    expect(caddyfile).toContain("{$PUBLIC_URL} {");
+    expect(caddyfile).toContain("http:// {");
+    expect(caddyfile.match(/reverse_proxy api:3000/g)).toHaveLength(2);
+    // Forwarded headers are trusted only from configured upstream proxies (empty by
+    // default); the API always receives the real client address.
+    expect(caddyfile).toContain(
+      "trusted_proxies static {$CADDY_TRUSTED_PROXIES}",
+    );
+    expect(caddyfile).toContain("client_ip_headers {$CADDY_CLIENT_IP_HEADER}");
+    // The entrypoint fills the list from Cloudflare (fetched, cached, or shipped) and
+    // starts whatever command Compose passes.
+    const entrypoint = readFileSync(
+      join(repository, "infra", "caddy", "entrypoint.sh"),
+      "utf8",
+    );
+    execFileSync("sh", ["-n"], { input: entrypoint });
+    expect(entrypoint).toContain("https://www.cloudflare.com/ips-v4");
+    expect(entrypoint).toContain("https://www.cloudflare.com/ips-v6");
+    expect(entrypoint).toContain("/data/cloudflare-ranges.txt");
+    expect(entrypoint).toContain("/etc/caddy/cloudflare-ranges.txt");
+    expect(entrypoint.trim().endsWith('exec "$@"')).toBe(true);
+    // Modes: cloudflare (default, CF-Connecting-IP), none (trust nothing), literal list.
+    expect(entrypoint).toContain("mode=${CADDY_TRUSTED_PROXIES:-cloudflare}");
+    expect(entrypoint).toContain("cloudflare)");
+    expect(entrypoint).toContain("none)");
+    expect(entrypoint).toContain("CADDY_CLIENT_IP_HEADER=CF-Connecting-IP");
+    expect(entrypoint).toContain("CADDY_CLIENT_IP_HEADER=X-Forwarded-For");
+    expect(entrypoint).toContain(
+      "export CADDY_TRUSTED_PROXIES CADDY_CLIENT_IP_HEADER",
+    );
+    const shipped = readFileSync(
+      join(repository, "infra", "caddy", "cloudflare-ranges.txt"),
+      "utf8",
+    )
+      .trim()
+      .split("\n");
+    expect(shipped.length).toBeGreaterThanOrEqual(10);
+    for (const range of shipped)
+      expect(range).toMatch(
+        /^(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}$|^[0-9a-f:]+\/\d{1,3}$/,
+      );
+    expect(
+      caddyfile.match(/header_up X-Forwarded-For \{client_ip\}/g),
+    ).toHaveLength(2);
+  });
+  // @req R-INF-07
+  it("moves the trace store to ClickHouse Cloud and publishes PostgreSQL to it over TLS only", () => {
+    const services = compose(
+      [
+        "docker-compose.yml",
+        "docker-compose.caddy.yml",
+        "docker-compose.clickhouse-cloud.yml",
+      ],
+      [
+        "TRACE_STORE=clickhouse-cloud",
+        "CLICKHOUSE_URL=https://abc.us-west-2.aws.clickhouse.cloud:8443",
+        "CLICKHOUSE_POSTGRES_HOST=203.0.113.10",
+        "",
+      ].join("\n"),
+    );
+    // The local clickhouse service is parked behind a profile.
+    expect(Object.keys(services).sort()).toEqual([
+      "api",
+      "caddy",
+      "db",
+      "migrate",
+    ]);
+    expect(services.migrate).toMatchObject({
+      depends_on: { db: { condition: "service_healthy" } },
+      environment: {
+        CLICKHOUSE_URL: "https://abc.us-west-2.aws.clickhouse.cloud:8443",
+        CLICKHOUSE_POSTGRES_HOST: "203.0.113.10",
+        CLICKHOUSE_POSTGRES_PORT: "5432",
+      },
+    });
+    expect(services.migrate?.depends_on).not.toHaveProperty("clickhouse");
+    expect(services.migrate?.volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          target: "/etc/agentcommons/postgres-tls/server.crt",
+          read_only: true,
+        }),
+      ]),
+    );
+    expect(services.api?.environment).toMatchObject({
+      CLICKHOUSE_URL: "https://abc.us-west-2.aws.clickhouse.cloud:8443",
+    });
+    expect(services.db?.ports).toEqual([
+      expect.objectContaining({ target: 5432, published: "5432" }),
+    ]);
+    expect(services.db?.command).toEqual(["sh", "/etc/postgresql/start.sh"]);
+    expect(services.db?.volumes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target: "/etc/postgresql/start.sh" }),
+        expect.objectContaining({ target: "/etc/postgresql/tls/server.crt" }),
+        expect.objectContaining({ target: "/etc/postgresql/tls/server.key" }),
+        expect.objectContaining({ target: "/etc/postgresql/pg_hba.conf" }),
+      ]),
+    );
+    const snapshot = z
+      .object({
+        fetched: z.string(),
+        egress: z.record(z.string(), z.record(z.string(), z.array(z.ipv4()))),
+      })
+      .parse(
+        JSON.parse(
+          readFileSync(
+            join(
+              repository,
+              "infra",
+              "compose",
+              "clickhouse-cloud-egress.json",
+            ),
+            "utf8",
+          ),
+        ),
+      );
+    expect(snapshot.egress.aws?.["us-west-2"]?.length).toBeGreaterThan(0);
+  });
   // @req R-INF-01
   it("exposes both databases only on loopback in development", () => {
-    const services = compose("docker-compose.dev.yml");
+    const services = compose(["docker-compose.dev.yml"]);
     expect(Object.keys(services).sort()).toEqual(["clickhouse", "db"]);
     expect(services.clickhouse).toMatchObject({
       image: "clickhouse/clickhouse-server:26.8.2.7",

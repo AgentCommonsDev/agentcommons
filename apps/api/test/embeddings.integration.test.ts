@@ -51,6 +51,7 @@ const cursors = new CursorCodec("embedding-test-cursor-key");
 function request(text: string): IngestEnvelope {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: uuidv7(),
     behavior: "sync",

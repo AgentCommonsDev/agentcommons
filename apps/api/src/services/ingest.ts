@@ -251,10 +251,15 @@ export class IngestService {
             organizationId: caller.organizationId,
             id: request.installationId,
             ...installation,
+            hookSha256: request.hook.sha256,
             firstSeenAt: receivedAt,
             lastSeenAt: receivedAt,
           },
-          update: { ...installation, lastSeenAt: receivedAt },
+          update: {
+            ...installation,
+            hookSha256: request.hook.sha256,
+            lastSeenAt: receivedAt,
+          },
         });
         if (!session)
           session = await tx.traceSessionControl.create({
@@ -437,12 +442,24 @@ export class IngestService {
               update: call.sensitive ? { sensitive: true } : {},
             });
         }
+        // Spawn evidence is read before redaction so the child reference canonicalizes
+        // exactly as the child's own upload does, and the call id digests to the value
+        // the parent's projected `TOOL_USE` message carries (ADR 0052).
+        const spawns: SpawnClaim[] = [];
+        for (const spawn of adapter.spawns(accepted))
+          spawns.push({
+            childNativeIdentity: projectionIdentity(
+              await identity(spawn.childNativeRef),
+            ),
+            toolUseId: projectionIdentity(spawn.toolUseId),
+          });
         await lockTracePublication(tx, caller.organizationId, "write");
         const conflicts = await this.link(
           tx,
           session,
           sanitized,
           safe.context.parentHint,
+          spawns,
         );
         const byteCount = incoming.reduce(
           (sum, record) => sum + Buffer.byteLength(record.line),
@@ -532,6 +549,7 @@ export class IngestService {
     session: TraceSessionControl,
     records: readonly SourceRecord[],
     hint: Parameters<typeof resolveLink>[1],
+    spawns: readonly SpawnClaim[],
   ): Promise<JsonValue[]> {
     const { link, conflicts } = resolveLink(
       NORMALIZERS[session.harness].links(records),
@@ -613,6 +631,57 @@ export class IngestService {
       },
       data: { parentSessionId: session.id },
     });
+    // A spawn claim names the child by the identity its own upload uses; it is kept
+    // until that child exists and applies only to a child linked to this parent.
+    for (const spawn of spawns) {
+      if (spawn.childNativeIdentity === session.nativeIdentity) {
+        conflicts.push({ spawnToolUseId: spawn.toolUseId, reason: "self" });
+        continue;
+      }
+      await tx.traceSpawnControl.upsert({
+        where: {
+          organizationId_parentSessionId_childNativeIdentity: {
+            organizationId: session.organizationId,
+            parentSessionId: session.id,
+            childNativeIdentity: spawn.childNativeIdentity,
+          },
+        },
+        create: {
+          organizationId: session.organizationId,
+          parentSessionId: session.id,
+          childNativeIdentity: spawn.childNativeIdentity,
+          toolUseId: spawn.toolUseId,
+        },
+        update: { toolUseId: spawn.toolUseId },
+      });
+    }
+    if (spawns.length) {
+      const claimed = await tx.traceSessionControl.findMany({
+        where: {
+          organizationId: session.organizationId,
+          harness: session.harness,
+          nativeIdentity: {
+            in: spawns.map((spawn) => spawn.childNativeIdentity),
+          },
+          parentSessionId: { not: null },
+          NOT: { parentSessionId: session.id },
+        },
+        select: { nativeIdentity: true },
+      });
+      for (const child of claimed)
+        conflicts.push({
+          spawnChildNativeIdentity: child.nativeIdentity,
+          reason: "other_parent",
+        });
+    }
+    // One statement covers both arrival orders: this session's children (including the
+    // waiting ones just adopted) and this session as a child that has just linked.
+    await tx.$executeRaw`UPDATE trace_session_control c SET parent_tool_use_id=s.tool_use_id FROM trace_spawn_control s WHERE s.organization_id=c.organization_id AND s.parent_session_id=c.parent_session_id AND s.child_native_identity=c.native_identity AND c.organization_id=${session.organizationId} AND (c.parent_session_id=${session.id}::uuid OR c.id=${session.id}::uuid) AND c.parent_tool_use_id IS DISTINCT FROM s.tool_use_id`;
     return conflicts;
   }
+}
+/** A parent's spawn evidence after identity canonicalization; both fields are digests. */
+interface SpawnClaim {
+  childNativeIdentity: string;
+  toolUseId: string;
 }

@@ -9,12 +9,8 @@ export async function registerApiReference(
   app: FastifyInstance,
 ): Promise<void> {
   await app.register(async (scope) => {
-    // HTML receives a response nonce before transmission; keep this small document
-    // uncompressed so a parent compression hook cannot turn it into a stream first.
-    scope.addHook("onRoute", (route) => {
-      if (route.url === "/api/docs/")
-        route.config = { ...route.config, compress: false };
-    });
+    // The document stays uncompressed (see the onRoute hook in app.ts) so the response
+    // nonce can be injected into the HTML string here.
     scope.addHook("onSend", async (_request, reply, payload) => {
       reply.header("X-Robots-Tag", "noindex, nofollow, noarchive");
       if (
@@ -26,7 +22,7 @@ export async function registerApiReference(
       reply.header("Cache-Control", "no-store");
       reply.header(
         "Content-Security-Policy",
-        `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'`,
+        `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'`,
       );
       return withScriptNonce(
         payload.replace(
@@ -65,6 +61,7 @@ export async function registerApiReference(
         persistAuth: false,
         proxyUrl: "",
         hideClientButton: true,
+        hideDarkModeToggle: true,
         showDeveloperTools: "never",
       },
     });

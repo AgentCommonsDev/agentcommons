@@ -17,15 +17,17 @@ export const environmentSchema = z.record(
     ),
   z.string(),
 );
+const hostnameSchema = z
+  .string()
+  .regex(
+    /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/,
+  );
 
 export const settingsSchema = z
   .object({
+    deployment: z.literal("fargate").default("fargate"),
     stack: z.enum(["dev", "prod"]),
-    hostname: z
-      .string()
-      .regex(
-        /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/,
-      ),
+    hostname: hostnameSchema,
     databaseInstanceClass: z.enum(["db.t4g.micro", "db.t4g.small"]).optional(),
     hostedZoneId: z.string().min(1).optional(),
     certificateArn: z.string().startsWith("arn:aws:acm:").optional(),
@@ -63,10 +65,77 @@ export const settingsSchema = z
         });
     }
   });
-type Settings = z.infer<typeof settingsSchema>;
+export type FargateSettings = z.infer<typeof settingsSchema>;
+
+/** A ClickHouse Cloud endpoint, `https://<id>.<region>.<provider>.clickhouse.cloud:8443`. */
+export const clickhouseCloudUrlSchema = z
+  .url()
+  .refine((value) => {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      /^[a-z0-9]+\.[a-z0-9-]+\.(?:aws|gcp|azure)\.clickhouse\.cloud$/.test(
+        url.hostname,
+      ) &&
+      url.pathname === "/" &&
+      !url.search &&
+      !url.username
+    );
+  }, "Use the https ClickHouse Cloud endpoint without path or credentials.")
+  .transform((value) => {
+    const url = new URL(value);
+    const [, region, provider] = url.hostname.split(".");
+    return {
+      origin: url.origin,
+      provider: z.string().parse(provider),
+      region: z.string().parse(region),
+    };
+  });
+
+/** One Compose host behind Caddy; the stack name becomes the resource and parameter prefix. */
+export const singleNodeSettingsSchema = z
+  .object({
+    deployment: z.literal("single-node"),
+    stack: z.string().regex(/^[a-z][a-z0-9-]{0,23}$/),
+    hostname: hostnameSchema,
+    instanceType: z
+      .enum(["t4g.medium", "t4g.large", "t4g.xlarge"])
+      .default("t4g.large"),
+    volumeSize: z.coerce.number().int().min(40).max(1000).default(60),
+    snapshotRetention: z.coerce.number().int().min(1).max(35).default(7),
+    alarmEmail: z.email().optional(),
+    traceStore: z.enum(["local", "clickhouse-cloud"]).default("local"),
+    clickhouseCloudUrl: clickhouseCloudUrlSchema.optional(),
+    environment: environmentSchema.default({}),
+  })
+  .refine(
+    (v) => v.traceStore === "local" || v.clickhouseCloudUrl !== undefined,
+    {
+      message: "traceStore clickhouse-cloud requires clickhouseCloudUrl.",
+      path: ["clickhouseCloudUrl"],
+    },
+  );
+export type SingleNodeSettings = z.infer<typeof singleNodeSettingsSchema>;
+type Settings = FargateSettings | SingleNodeSettings;
+
 export function readSettings(): Settings {
   const config = new pulumi.Config();
+  const deployment = config.get("deployment") ?? "fargate";
+  if (deployment === "single-node")
+    return singleNodeSettingsSchema.parse({
+      deployment,
+      stack: pulumi.getStack(),
+      hostname: config.require("hostname"),
+      instanceType: config.get("instanceType"),
+      volumeSize: config.get("volumeSize"),
+      snapshotRetention: config.get("snapshotRetention"),
+      alarmEmail: config.get("alarmEmail"),
+      traceStore: config.get("traceStore"),
+      clickhouseCloudUrl: config.get("clickhouseCloudUrl"),
+      environment: config.getObject<unknown>("environment"),
+    });
   return settingsSchema.parse({
+    deployment,
     stack: pulumi.getStack(),
     hostname: config.require("hostname"),
     databaseInstanceClass: config.get("databaseInstanceClass"),
@@ -82,6 +151,11 @@ export function readSettings(): Settings {
 
 export function readSecrets() {
   const config = new pulumi.Config();
+  const additionalKeys = Object.keys(
+    applicationSecretsSchema.parse(
+      config.getObject<unknown>("applicationSecrets") ?? {},
+    ),
+  );
   return {
     masterPassword: config
       .requireSecret("databaseMigrationPassword")
@@ -108,9 +182,22 @@ export function readSecrets() {
     clickhouseReaderSecret: config
       .requireSecret("clickhouseReaderSecret")
       .apply((value) => z.string().min(32).parse(value)),
+    /** ClickHouse Cloud issues this password for `default`; present only for the cloud trace store. */
+    clickhouseCloudPassword: config
+      .getSecret("clickhouseCloudPassword")
+      ?.apply((value) =>
+        z
+          .string()
+          .min(8)
+          .regex(/^[^'\r\n]+$/)
+          .parse(value),
+      ),
     additional: (
       config.getSecretObject<Record<string, string>>("applicationSecrets") ??
       pulumi.secret<Record<string, string>>({})
     ).apply((value) => applicationSecretsSchema.parse(value)),
+    /** Key names only, so per-key parameters exist at preview time without revealing values. */
+    additionalKeys,
   };
 }
+export type Secrets = ReturnType<typeof readSecrets>;

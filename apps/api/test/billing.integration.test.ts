@@ -43,6 +43,7 @@ const release: Array<() => Promise<unknown>> = [];
 function envelope(native = randomUUID()): IngestEnvelope {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: native,
     installationId: randomUUID(),

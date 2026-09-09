@@ -91,6 +91,7 @@ it("verifies retained canary identities through native SMTP and charges actual S
   ).toBe(2);
   const input = ingestEnvelopeSchema.parse({
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     installationId: randomUUID(),

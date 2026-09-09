@@ -19,6 +19,8 @@ export default function NativeCalendar({ url }: { url: string }) {
       void getCalApi({ namespace }).then((api) => {
         if (active)
           api("ui", {
+            hideEventTypeDetails: false,
+            layout: "month_view",
             theme:
               document.documentElement.dataset.theme === "light"
                 ? "light"

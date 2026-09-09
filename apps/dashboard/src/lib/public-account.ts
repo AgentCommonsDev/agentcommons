@@ -3,6 +3,7 @@ import { authClient } from "./auth-client";
 import { api, unwrap } from "./api/client";
 import { useBillingConfig } from "./billing-config";
 import { copy } from "../copy";
+import { paths } from "./routes";
 
 export function usePublicAccount() {
   const billing = useBillingConfig();
@@ -12,9 +13,7 @@ export function usePublicAccount() {
     queryFn: async () => {
       const result = await authClient.getSession();
       if (result.error)
-        throw new Error(
-          result.error.message ?? copy.workspace.auth.loginRequired,
-        );
+        throw new Error(result.error.message ?? copy.auth.loginRequired);
       return result.data;
     },
     retry: false,
@@ -37,11 +36,11 @@ export function usePublicAccount() {
     ready: !!identity.data,
     href: session.data
       ? setup
-        ? "/onboarding"
-        : "/home"
+        ? paths.onboarding
+        : paths.home
       : billing.enabled
-        ? "/signup"
-        : "/login",
+        ? paths.signup
+        : paths.login,
     shortLabel: session.data
       ? setup
         ? copy.signup.continueSetup

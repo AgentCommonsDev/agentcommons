@@ -92,11 +92,17 @@ export const architecture = {
             : node.type === "MemberExpression" &&
                 propertyName(node) === "harness";
         }
+        // Presence checks (null/undefined) are not harness-specific behavior.
+        const isAbsence = (node) =>
+          (node.type === "Literal" && node.value === null) ||
+          (node.type === "Identifier" && node.name === "undefined");
         return {
           BinaryExpression(node) {
             if (
               ["===", "!==", "==", "!="].includes(node.operator) &&
-              (isHarness(node.left) || isHarness(node.right))
+              (isHarness(node.left) || isHarness(node.right)) &&
+              !isAbsence(node.left) &&
+              !isAbsence(node.right)
             ) {
               context.report({ node, messageId: "branch" });
             }

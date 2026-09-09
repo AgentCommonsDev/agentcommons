@@ -1,7 +1,8 @@
 import { expect } from "@playwright/test";
-import { test } from "./browser-test";
+import { accessible, activate, test } from "./browser-test";
 import AxeBuilder from "@axe-core/playwright";
 import { copy } from "../src/copy";
+import { paths } from "../src/lib/routes";
 
 // @req R-DASH-07
 // @req R-WEB-02
@@ -293,3 +294,85 @@ test("Markdown blog article is complete without JavaScript", async ({
     await context.close();
   }
 });
+
+// @req R-WEB-09 @req R-WEB-02
+for (const [path, document] of [
+  [paths.privacy, copy.legal.privacy],
+  [paths.tos, copy.legal.terms],
+] as const)
+  for (const theme of ["dark", "light"] as const)
+    test(`${document.title} is complete, linked from the public footer and accessible in ${theme}`, async ({
+      page,
+      isMobile,
+    }) => {
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => {
+        if (message.type() === "error") errors.push(message.text());
+      });
+      page.on("requestfailed", (request) => errors.push(request.url()));
+      await page.addInitScript((value) => {
+        localStorage.setItem("agentcommons-theme", value);
+      }, theme);
+      // Every public page's footer carries both documents.
+      await page.goto("/");
+      const footer = page.locator("footer");
+      await expect(
+        footer.getByRole("link", {
+          name: copy.legal.privacy.title,
+          exact: true,
+        }),
+      ).toHaveAttribute("href", paths.privacy);
+      await expect(
+        footer.getByRole("link", { name: copy.legal.terms.title, exact: true }),
+      ).toHaveAttribute("href", paths.tos);
+      await activate(
+        footer.getByRole("link", { name: document.title, exact: true }),
+        isMobile,
+      );
+      await expect(page).toHaveURL(new RegExp(`${path}$`));
+      await expect(page).toHaveTitle(`${document.title} · ${copy.brand}`);
+      await expect(
+        page.getByRole("heading", {
+          level: 1,
+          name: document.title,
+          exact: true,
+        }),
+      ).toBeVisible();
+      await expect(page.locator("main time")).toHaveAttribute(
+        "datetime",
+        document.effective,
+      );
+      for (const section of document.sections)
+        await expect(
+          page.getByRole("heading", {
+            level: 2,
+            name: section.heading,
+            exact: true,
+          }),
+        ).toBeVisible();
+      await expect(
+        footer.getByRole("link", {
+          name: copy.legal.privacy.title,
+          exact: true,
+        }),
+      ).toHaveAttribute("href", paths.privacy);
+      await expect(
+        footer.getByRole("link", { name: copy.legal.terms.title, exact: true }),
+      ).toHaveAttribute("href", paths.tos);
+      await expect(
+        page.getByRole("link", { name: copy.legal.contactEmail, exact: true }),
+      ).toHaveAttribute("href", `mailto:${copy.legal.contactEmail}`);
+      // The contents list jumps to a section on touch and pointer devices.
+      const last = document.sections.at(-1);
+      if (!last) throw new Error("Legal documents need sections");
+      await activate(
+        page
+          .getByRole("navigation", { name: copy.legal.contents, exact: true })
+          .getByRole("link", { name: last.heading, exact: true }),
+        isMobile,
+      );
+      await expect(page).toHaveURL(/#contact$/);
+      await accessible(page);
+      expect(errors).toEqual([]);
+    });

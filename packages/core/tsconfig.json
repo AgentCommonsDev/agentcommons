@@ -8,6 +8,7 @@
     "normalizers/**/*.ts",
     "redaction/**/*.ts",
     "format/**/*.ts",
-    "metadata/**/*.ts"
+    "metadata/**/*.ts",
+    "dashboards/**/*.ts"
   ]
 }

@@ -12,6 +12,7 @@ import {
 import type { IngestService } from "../src/services/ingest.js";
 import { SessionService } from "../src/services/session.js";
 import { CursorCodec } from "../src/services/cursor.js";
+import { requireCaller } from "../src/services/context.js";
 import { provisionOrganization } from "./support.js";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
@@ -46,6 +47,7 @@ function request(
 ): IngestEnvelope {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness,
     harnessSessionId: nativeId,
     behavior: "sync",
@@ -230,6 +232,179 @@ describe("persisted explicit harness relationships", () => {
     expect(tree.result.nodes.map((node) => node.session_id)).toContain(
       child.result.sessionId,
     );
+  });
+  it("attaches the Claude child to the parent's Agent call once the parent's result names it, in either arrival order @req R-LNK-07", async () => {
+    const parentLines = fixture("claude-code/parent.jsonl");
+    const childLines = fixture("claude-code/subagent.jsonl");
+    const childRecords = source(childLines);
+    const childNativeId = z
+      .string()
+      .parse(
+        NORMALIZERS.CLAUDE_CODE.sessionDelta(childRecords).harnessSessionId,
+      );
+    const spawn = NORMALIZERS.CLAUDE_CODE.spawns(source(parentLines))[0];
+    if (!spawn) throw new Error("The parent fixture lost its Agent result.");
+    expect(spawn.childNativeRef).toBe(childNativeId);
+    const parentRef = z
+      .string()
+      .parse(NORMALIZERS.CLAUDE_CODE.links(childRecords)[0]?.parentNativeRef);
+    // Child first: the shim registers the child at SubagentStart, before the parent's
+    // transcript holds the Agent result.
+    const parent = await ingest.execute(
+      first.context,
+      request("CLAUDE_CODE", parentRef),
+    );
+    const child = request("CLAUDE_CODE", childNativeId, childLines);
+    child.context.parentHint = {
+      harnessSessionId: parentRef,
+      relation: "SUBAGENT",
+      agentType: "Explore",
+    };
+    const created = await ingest.execute(first.context, child);
+    expect(
+      await db.prisma.traceSessionControl.findFirstOrThrow({
+        where: { id: created.result.sessionId },
+      }),
+    ).toMatchObject({
+      parentSessionId: parent.result.sessionId,
+      parentToolUseId: null,
+    });
+    const evidence = await ingest.execute(
+      first.context,
+      request("CLAUDE_CODE", parentRef, parentLines),
+    );
+    expect(evidence.result.sessionId).toBe(parent.result.sessionId);
+    const linked = await db.prisma.traceSessionControl.findFirstOrThrow({
+      where: { id: created.result.sessionId },
+    });
+    // The stored value is the projected identity the parent's TOOL_USE message carries.
+    const call = (
+      await native.messages(
+        requireCaller(first.context).organizationId,
+        parent.result.sessionId,
+      )
+    ).find((item) => item.kind === "TOOL_USE" && item.tool_name === "Agent");
+    expect(call?.tool_use_id).toMatch(/^redacted-[a-f0-9]{64}$/);
+    expect(linked.parentToolUseId).toBe(call?.tool_use_id);
+    const reader = new SessionService({
+      ...db,
+      readers: db.traceReaders,
+      cursors: new CursorCodec("link-cursor-secret"),
+    });
+    const header = await reader.get(first.context, {
+      session_id: parent.result.sessionId,
+    });
+    expect(header.result.header.children).toEqual([
+      expect.objectContaining({
+        session_id: created.result.sessionId,
+        parent_tool_use_id: call?.tool_use_id,
+      }),
+    ]);
+    const childHeader = await reader.get(first.context, {
+      session_id: created.result.sessionId,
+    });
+    expect(childHeader.result.header.parent_tool_use_id).toBe(
+      call?.tool_use_id,
+    );
+    const tree = await reader.tree(first.context, parent.result.sessionId, {});
+    expect(
+      tree.result.nodes.find(
+        (node) => node.session_id === created.result.sessionId,
+      )?.parent_tool_use_id,
+    ).toBe(call?.tool_use_id);
+    expect(
+      tree.result.nodes.find(
+        (node) => node.session_id === parent.result.sessionId,
+      )?.parent_tool_use_id,
+    ).toBeNull();
+    // Parent first: the spawn claim waits for a child that has not been uploaded yet.
+    const laterParentRef = uuidv7();
+    const laterParentLines = parentLines.map((line) =>
+      line.replaceAll(parentRef, laterParentRef),
+    );
+    const laterParent = await ingest.execute(
+      first.context,
+      request("CLAUDE_CODE", laterParentRef, laterParentLines),
+    );
+    const laterChildId = childNativeId.replace(parentRef, laterParentRef);
+    const laterChild = await ingest.execute(
+      first.context,
+      request(
+        "CLAUDE_CODE",
+        laterChildId,
+        childLines.map((line) => line.replaceAll(parentRef, laterParentRef)),
+      ),
+    );
+    expect(
+      await db.prisma.traceSessionControl.findFirstOrThrow({
+        where: { id: laterChild.result.sessionId },
+      }),
+    ).toMatchObject({
+      parentSessionId: laterParent.result.sessionId,
+      parentToolUseId: call?.tool_use_id,
+    });
+    // A claim never attaches a child that belongs to another parent.
+    const foreignParent = await ingest.execute(
+      first.context,
+      request("CLAUDE_CODE", uuidv7(), laterParentLines),
+    );
+    expect(JSON.stringify(foreignParent.audit.detail)).toContain(
+      "other_parent",
+    );
+    expect(
+      (
+        await db.prisma.traceSessionControl.findFirstOrThrow({
+          where: { id: laterChild.result.sessionId },
+        })
+      ).parentSessionId,
+    ).toBe(laterParent.result.sessionId);
+  });
+  it("attaches the Codex child thread to the spawn_agent call named by the parent's SubAgentActivity item @req R-LNK-07 @req R-LNK-02", async () => {
+    const parentLines = fixture("codex/parent-with-subagent.jsonl");
+    const childLines = fixture("codex/subagent.jsonl");
+    const childNativeId = z
+      .string()
+      .parse(
+        NORMALIZERS.CODEX.sessionDelta(source(childLines)).harnessSessionId,
+      );
+    const spawn = NORMALIZERS.CODEX.spawns(source(parentLines))[0];
+    if (!spawn)
+      throw new Error("The parent fixture lost its SubAgentActivity item.");
+    expect(spawn.childNativeRef).toBe(childNativeId);
+    const parentRef = z
+      .string()
+      .parse(
+        NORMALIZERS.CODEX.sessionDelta(source(parentLines)).harnessSessionId,
+      );
+    // Parent first, as Codex writes the started item at spawn time.
+    const parent = await ingest.execute(
+      first.context,
+      request("CODEX", parentRef, parentLines),
+    );
+    const child = await ingest.execute(
+      first.context,
+      request("CODEX", childNativeId, childLines),
+    );
+    const organizationId = requireCaller(first.context).organizationId;
+    const call = (
+      await native.messages(organizationId, parent.result.sessionId)
+    ).find(
+      (item) => item.kind === "TOOL_USE" && item.tool_name === "spawn_agent",
+    );
+    expect(call?.tool_use_id).toMatch(/^redacted-[a-f0-9]{64}$/);
+    expect(
+      await db.prisma.traceSessionControl.findFirstOrThrow({
+        where: { id: child.result.sessionId },
+      }),
+    ).toMatchObject({
+      parentSessionId: parent.result.sessionId,
+      parentRelation: "SUBAGENT",
+      parentToolUseId: call?.tool_use_id,
+    });
+    for (const harness of ["GEMINI_CLI", "PI"] as const)
+      expect(
+        NORMALIZERS[harness].spawns(source(fixture("pi/fork.jsonl"))),
+      ).toEqual([]);
   });
   it("uses the live pi fork header over a conflicting spawned hint and audits later conflicts without silently relinking @req R-LNK-03", async () => {
     const lines = fixture("pi/fork.jsonl");

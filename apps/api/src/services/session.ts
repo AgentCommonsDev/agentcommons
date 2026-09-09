@@ -334,9 +334,13 @@ export class SessionService {
               (condition) =>
                 searchConditionFields[condition.field] === "message",
             );
-          const predicate = messageFilter
+          const scoped = messageFilter
             ? `s.session_id IN (SELECT m.session_id FROM api_ro.messages m JOIN api_ro.sessions s ON s.session_id=m.session_id WHERE ${conditions})`
             : conditions;
+          // parent_session_id is the caller-visible parent, so a child of a hidden session lists as a root.
+          const predicate = request.roots_only
+            ? `(${scoped}) AND s.parent_session_id IS NULL`
+            : scoped;
           const rows = await client.query(
             `SELECT s.* FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(request.limit + 1)} OFFSET ${params.add(offset)}`,
             params.values,

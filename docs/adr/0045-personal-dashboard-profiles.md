@@ -1,5 +1,9 @@
 # 0045. Persistent dashboard profiles over the existing query service
 
+Status: superseded by ADR 0048 (organization dashboards). The personal-profile scope,
+JSON Forms/Recharts choice and no-layout-engine decision below no longer apply; the
+rule that every tile runs through the existing guarded query service remains.
+
 The user requests a preset Home dashboard and persistent editable profiles, usable
 through a form, JSON, and MCP. Perspective5 was prototyped in a real browser and
 rejected for phone authoring (see implementation/dashboard-usability-review.md).

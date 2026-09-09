@@ -26,6 +26,7 @@ beforeAll(async () => {
   release.unshift(() => native.jobs.stop());
   await native.publish(org.context, {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     batchId: randomUUID(),

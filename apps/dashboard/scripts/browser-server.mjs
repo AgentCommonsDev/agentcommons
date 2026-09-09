@@ -63,8 +63,10 @@ try {
     BETTER_AUTH_SECRET: testAuthConfiguration.secret,
     LOG_LEVEL: "silent",
     TRUST_PROXY: "loopback",
-    EMBEDDINGS_ENABLED: "true",
-    EMBEDDINGS_PROVIDER: "fake",
+    // Embeddings default on with the deterministic provider; an operator-off
+    // fixture sets EMBEDDINGS_ENABLED=false to exercise the disabled surface.
+    EMBEDDINGS_ENABLED: process.env.EMBEDDINGS_ENABLED ?? "true",
+    EMBEDDINGS_PROVIDER: process.env.EMBEDDINGS_PROVIDER ?? "fake",
   });
   runtime = await createRuntime(env);
   await runtime.jobs.start();
@@ -79,6 +81,7 @@ try {
   const installationId = randomUUID();
   const sessionIds = [];
   let liveEnvelope;
+  let treeEnvelope;
   for (let index = 0; index < 53; index++) {
     const harnessSessionId = randomUUID();
     const text =
@@ -144,6 +147,7 @@ try {
       });
     const envelope = {
       envelopeVersion: 2,
+      hook: { sha256: "a".repeat(64), extensionSha256: null },
       harness: "CLAUDE_CODE",
       harnessSessionId,
       behavior: "sync",
@@ -182,8 +186,231 @@ try {
       envelope,
     );
     if (index === 0) liveEnvelope = envelope;
+    if (index === 1) treeEnvelope = envelope;
     sessionIds.push(result.result.sessionId);
   }
+  // A subagent run under the first session, so the session page can show child runs inline.
+  if (!liveEnvelope) throw new Error("Expected the seeded transcript.");
+  const childHarnessSessionId = randomUUID();
+  const childEnvelope = (behavior, nativeEvent, records, extra) => ({
+    ...liveEnvelope,
+    harnessSessionId: childHarnessSessionId,
+    batchId: randomUUID(),
+    behavior,
+    nativeEvent,
+    sentAt: new Date().toISOString(),
+    sourcePos: Math.max(0, records.length - 1),
+    records: records.map((record, pos) => ({
+      pos,
+      sourceVersion: 0,
+      key: record.uuid,
+      line: JSON.stringify(record),
+    })),
+    cursor: `${String(records.length)}:0`,
+    context: {
+      ...liveEnvelope.context,
+      parentHint: {
+        harnessSessionId: liveEnvelope.harnessSessionId,
+        relation: "SUBAGENT",
+        agentType: "Explore",
+      },
+    },
+    ...extra,
+  });
+  await runtime.services.ingest.execute(
+    primary.context,
+    childEnvelope("start", "SubagentStart", [], { start: { resume: false } }),
+  );
+  const childResult = await runtime.services.ingest.execute(
+    primary.context,
+    childEnvelope(
+      "end",
+      "SubagentStop",
+      [
+        {
+          type: "user",
+          uuid: "child-user",
+          timestamp: new Date().toISOString(),
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "Subagent task: read /repo/src/upload.ts and report its exports.",
+              },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          uuid: "child-assistant",
+          timestamp: new Date().toISOString(),
+          message: {
+            model: "captured-browser-model",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-child",
+                name: "Read",
+                input: { file_path: "/repo/src/upload.ts" },
+              },
+            ],
+          },
+        },
+        {
+          type: "user",
+          uuid: "child-result",
+          timestamp: new Date().toISOString(),
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-child",
+                content:
+                  "export async function upload(batch) { return persist(batch); }",
+              },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          uuid: "child-final",
+          timestamp: new Date().toISOString(),
+          message: {
+            model: "captured-browser-model",
+            content: [
+              {
+                type: "text",
+                text: "The module exports one function: upload(batch).",
+              },
+            ],
+          },
+        },
+      ],
+      { end: null },
+    ),
+  );
+  sessionIds.push(childResult.result.sessionId);
+  // A second root whose Agent result names the child it spawned, so the transcript can
+  // nest that run under the call. The child uploads first, as SubagentStart fires before
+  // the parent's result record exists; the parent's evidence resolves the link later.
+  if (!treeEnvelope) throw new Error("Expected the second seeded transcript.");
+  const treeAgentId = "browsertreeagent01";
+  const treeChildHarnessSessionId = `${treeEnvelope.harnessSessionId}:agent-${treeAgentId}`;
+  const treeRecord = (record) => ({
+    ...record,
+    sessionId: treeEnvelope.harnessSessionId,
+    timestamp: new Date().toISOString(),
+  });
+  const treeBatch = (harnessSessionId, records, firstPos, extra) => ({
+    ...treeEnvelope,
+    harnessSessionId,
+    batchId: randomUUID(),
+    sentAt: new Date().toISOString(),
+    sourcePos: firstPos + records.length - 1,
+    records: records.map((record, index) => ({
+      pos: firstPos + index,
+      sourceVersion: 0,
+      key: record.uuid,
+      line: JSON.stringify(record),
+    })),
+    cursor: `${String(firstPos + records.length)}:0`,
+    ...extra,
+  });
+  const treeChildResult = await runtime.services.ingest.execute(
+    primary.context,
+    treeBatch(
+      treeChildHarnessSessionId,
+      [
+        treeRecord({
+          type: "user",
+          uuid: "tree-child-user",
+          isSidechain: true,
+          agentId: treeAgentId,
+          message: {
+            content: [
+              {
+                type: "text",
+                text: "Nested subagent task: list the exports of /repo/src/upload.ts.",
+              },
+            ],
+          },
+        }),
+        treeRecord({
+          type: "assistant",
+          uuid: "tree-child-final",
+          isSidechain: true,
+          agentId: treeAgentId,
+          message: {
+            model: "captured-browser-model",
+            content: [
+              {
+                type: "text",
+                text: "Nested subagent answer: the module exports upload(batch).",
+              },
+            ],
+          },
+        }),
+      ],
+      0,
+      {
+        behavior: "end",
+        nativeEvent: "SubagentStop",
+        context: {
+          ...treeEnvelope.context,
+          parentHint: {
+            harnessSessionId: treeEnvelope.harnessSessionId,
+            relation: "SUBAGENT",
+            agentType: "Explore",
+          },
+        },
+      },
+    ),
+  );
+  sessionIds.push(treeChildResult.result.sessionId);
+  await runtime.services.ingest.execute(
+    primary.context,
+    treeBatch(
+      treeEnvelope.harnessSessionId,
+      [
+        treeRecord({
+          type: "assistant",
+          uuid: "tree-agent-call",
+          message: {
+            model: "captured-browser-model",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-tree-agent",
+                name: "Agent",
+                input: {
+                  subagent_type: "Explore",
+                  description: "List the upload exports",
+                  prompt: "List the exports of /repo/src/upload.ts.",
+                },
+              },
+            ],
+          },
+        }),
+        treeRecord({
+          type: "user",
+          uuid: "tree-agent-result",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-tree-agent",
+                content:
+                  "Nested subagent answer: the module exports upload(batch).",
+              },
+            ],
+          },
+          toolUseResult: { agentId: treeAgentId, agentType: "Explore" },
+        }),
+      ],
+      1,
+      {},
+    ),
+  );
   // Visual comparisons use their own real organization so functional mutations
   // cannot alter the baseline dataset between viewport projects.
   const visual = await provisionOrganization(database, "browser-visual");
@@ -260,7 +487,10 @@ try {
     ingestKey: primary.key,
     liveEnvelope,
     sessionId: sessionIds[0],
-    foreignSessionId: sessionIds.at(-1),
+    childSessionId: childResult.result.sessionId,
+    treeSessionId: sessionIds[1],
+    treeChildSessionId: treeChildResult.result.sessionId,
+    foreignSessionId: sessionIds[52],
     organizationId: primary.owner.caller?.organizationId,
     secondaryOrganizationId: secondary.owner.caller?.organizationId,
     ownerEmail: primary.email,

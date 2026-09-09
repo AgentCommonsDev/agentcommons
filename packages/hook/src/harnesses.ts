@@ -17,6 +17,8 @@ export const nativeHookSchema = z.looseObject({
   tool_use_id: z.string().optional(),
   timestamp: z.string().optional(),
   event_id: z.string().optional(),
+  // Host facts a bridge observes that its transcript lacks (pi: version, entry point).
+  transcript_metadata: z.record(z.string(), z.json()).optional(),
 });
 export type NativeHook = z.infer<typeof nativeHookSchema>;
 export type CliHarness = "claude" | "codex" | "gemini" | "pi";
@@ -32,6 +34,8 @@ export interface EventDefinition {
   child?: boolean;
   childBehavior?: "start" | "end";
   parentPath?: boolean;
+  /** The harness may append its final record after this hook fires; the uploader briefly waits for growth (§6.2). */
+  settle?: boolean;
 }
 export interface HarnessDefinition {
   id: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
@@ -52,13 +56,14 @@ const shellEvents: Readonly<Record<string, EventDefinition>> = {
   SessionStart: { behavior: "start", always: true },
   UserPromptSubmit: { behavior: "sync", always: true },
   PostToolUse: { behavior: "sync" },
-  Stop: { behavior: "sync", always: true },
+  Stop: { behavior: "sync", always: true, settle: true },
   SubagentStart: { behavior: "sync", child: true, childBehavior: "start" },
   SubagentStop: {
     behavior: "sync",
     always: true,
     child: true,
     childBehavior: "end",
+    settle: true,
   },
   SessionEnd: { behavior: "end", always: true },
 };
@@ -82,10 +87,14 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     recordKeyFields: ["uuid"],
     binary: "claude",
     processMarkers: ["claude", "@anthropic-ai/claude-code"],
+    // Claude Code 2.1.x defers every MCP tool behind ToolSearch unless the server is
+    // marked always-loaded; the budgeted catalog (ADR 0053) makes eager loading cheap.
+    // `claude mcp add` has no flag for it, so install merges the field after the CLI writes.
     mcp: (url) => ({
       type: "http",
       url,
       headers: { Authorization: "Bearer ${AGENTCOMMONS_API_KEY}" },
+      alwaysLoad: true,
     }),
     configPath: [".claude", "settings.json"],
     configFormat: "json",
@@ -175,7 +184,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
       SessionStart: { behavior: "start", always: true },
       BeforeAgent: { behavior: "sync", always: true },
       AfterTool: { behavior: "sync" },
-      AfterAgent: { behavior: "sync", always: true },
+      AfterAgent: { behavior: "sync", always: true, settle: true },
       SessionEnd: { behavior: "end", always: true },
     },
     child: () => null,
@@ -196,7 +205,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
       session_start: { behavior: "start", always: true },
       input: { behavior: "sync", always: true },
       tool_result: { behavior: "sync" },
-      agent_end: { behavior: "sync", always: true },
+      agent_end: { behavior: "sync", always: true, settle: true },
       session_tree: { behavior: "sync", always: true },
       session_shutdown: { behavior: "end", always: true },
     },

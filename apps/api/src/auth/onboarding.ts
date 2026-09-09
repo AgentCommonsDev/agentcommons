@@ -3,6 +3,7 @@ import type { WelcomeJobs } from "./mail.js";
 import {
   onboardingInputSchema,
   onboardingOutputSchema,
+  organizationSlugFromName,
 } from "@agentcommons/core/schemas";
 import { Prisma, type PrismaClient } from "@agentcommons/db";
 import { createAuth, type AuthConfiguration } from "./config.js";
@@ -84,12 +85,14 @@ export function onboard(
               "Select one of your existing organizations.",
             );
         }
+        const base = parsed.slug ?? organizationSlugFromName(parsed.name);
+        let slug = base;
         if (!organizationId) {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`organization-slug:${parsed.slug}`}, 0))`;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`organization-slug:${base}`}, 0))`;
           const existing = await tx.organization.findUnique({
-            where: { slug: parsed.slug },
+            where: { slug: base },
           });
-          if (existing) {
+          if (existing && parsed.slug !== undefined) {
             if (
               intent !== "explicit" ||
               !memberships.some(
@@ -104,13 +107,20 @@ export function onboard(
                 "This organization address is already in use.",
               );
             organizationId = existing.id;
+          } else if (existing) {
+            // Derived slugs never collide with another organization; pick the next free suffix.
+            for (let suffix = 2; ; suffix++) {
+              slug = `${base}-${String(suffix)}`;
+              if (!(await tx.organization.findUnique({ where: { slug } })))
+                break;
+            }
           }
         }
         if (!organizationId) {
           // Native server-side organization creation follows the verified cookie boundary above.
           const organization = await native.api.createOrganization({
             body: {
-              ...parsed,
+              slug,
               name: await audit.redactText(
                 { ...context, caller: null },
                 parsed.name,

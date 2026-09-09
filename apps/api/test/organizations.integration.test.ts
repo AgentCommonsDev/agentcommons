@@ -311,6 +311,7 @@ it("keeps keys, capture data and monthly billing isolated and returns human-read
   });
   const body = ingestEnvelopeSchema.parse({
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     installationId: randomUUID(),
@@ -406,4 +407,35 @@ it("keeps keys, capture data and monthly billing isolated and returns human-read
     operatorContext(),
   );
   expect(old.caller?.organizationId).toBe(first.organization_id);
+});
+
+// @req R-SAAS-09 @req R-SAAS-01
+it("derives a unique URL slug from the organization name when none is given", async () => {
+  const user = await identity("derived");
+  const first = await app.inject({
+    method: "POST",
+    url: "/api/v1/onboarding",
+    headers: user.headers,
+    payload: { name: "Acme Robotics & Co." },
+  });
+  expect(first.statusCode, first.body).toBe(200);
+  const second = await app.inject({
+    method: "POST",
+    url: "/api/v1/me/organizations",
+    headers: user.headers,
+    payload: { name: "Acme Robotics & Co." },
+  });
+  expect(second.statusCode, second.body).toBe(200);
+  const listed = await app.inject({
+    method: "GET",
+    url: "/api/v1/me/organizations",
+    headers: user.headers,
+  });
+  expect(
+    z
+      .object({ organizations: z.array(z.object({ slug: z.string() })) })
+      .parse(listed.json<unknown>())
+      .organizations.map((organization) => organization.slug)
+      .sort(),
+  ).toEqual(["acme-robotics-co", "acme-robotics-co-2"]);
 });

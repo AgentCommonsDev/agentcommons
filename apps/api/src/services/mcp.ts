@@ -2,7 +2,9 @@ import { z } from "zod";
 import {
   ToolSchema,
   type CallToolResult,
+  type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { CallerContext } from "@agentcommons/core";
 import * as schema from "@agentcommons/core/schemas";
 import {
   formatSearch,
@@ -20,13 +22,18 @@ import {
 } from "./context.js";
 import { hasAdminAuthority } from "@agentcommons/db";
 
+const dashboardInstruction =
+  "Use this when the user asks to view, build or change dashboards.";
 const governingSentence =
   "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids.";
 interface Definition {
   name: string;
   description: string;
   permission: "read" | "admin";
+  /** Strict schema every call is parsed with. */
   input: z.ZodType;
+  /** Compact rendering advertised in `tools/list` when it differs from `input` (§8.2). */
+  toolInput?: z.ZodType;
   output: z.ZodType;
   destructive?: boolean;
   readOnly?: boolean;
@@ -39,17 +46,33 @@ interface Definition {
 }
 const json = (value: unknown) =>
   formatJson(schema.jsonValueSchema.parse(value));
+/**
+ * Tool-facing JSON Schema for the catalog: the shared zod contract without the draft
+ * URL or regex patterns that only restate a `format`. Claude Code defers every MCP tool
+ * behind a search step once the catalog nears its budget, so `tools/list` stays small
+ * (§8.2) while calls are still validated by the full zod schema.
+ */
+export function toolJsonSchema(input: z.ZodType): Record<string, unknown> {
+  const rendered = z.toJSONSchema(input, {
+    io: "input",
+    override: (context) => {
+      if (typeof context.jsonSchema.format === "string")
+        delete context.jsonSchema.pattern;
+    },
+  });
+  delete rendered.$schema;
+  return rendered;
+}
 export class McpService {
   private readonly definitions: Definition[];
   constructor(private readonly services: Services) {
     this.definitions = [
       {
         name: "dashboard_list",
-        instruction:
-          "Use this when the user asks to view or manage their dashboard profiles.",
+        instruction: dashboardInstruction,
         readOnly: true,
         description:
-          "List your personal dashboard profiles in the current organization and the versioned declaration schema.",
+          "List the organization's dashboards, which one is the Home default, the JSON Schema for definitions and starter tile templates. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers).",
         permission: "read",
         input: z.strictObject({}),
         output: schema.dashboardListOutputSchema,
@@ -57,38 +80,63 @@ export class McpService {
         format: json,
       },
       {
+        name: "dashboard_get",
+        instruction: dashboardInstruction,
+        readOnly: true,
+        description:
+          "Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
+        permission: "read",
+        input: schema.dashboardIdInputSchema,
+        output: schema.dashboardSchema,
+        execute: (ctx, input) => services.dashboards.get(ctx, input),
+        format: json,
+      },
+      {
+        name: "dashboard_render",
+        instruction: dashboardInstruction,
+        readOnly: true,
+        description:
+          'Run the queries of a dashboard (by id or an inline definition) with variable values such as {"time_range":"7d","repo":["github.com/org/repo"]} and return each tile\'s rows. Pass tiles to render a subset.',
+        permission: "read",
+        input: schema.dashboardRenderInputSchema,
+        toolInput: schema.dashboardRenderToolInputSchema,
+        output: schema.dashboardRenderOutputSchema,
+        execute: (ctx, input) => services.dashboards.render(ctx, input),
+        format: json,
+      },
+      {
         name: "dashboard_save",
-        instruction:
-          "Use this when the user asks to view or manage their dashboard profiles.",
+        instruction: dashboardInstruction,
         readOnly: false,
         description:
-          "Create or update your personal dashboard with number, line, bar or table widgets over guarded SELECT queries. Use id and revision to update an existing profile.",
+          "Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
         permission: "read",
         input: schema.dashboardSaveInputSchema,
-        output: schema.dashboardProfileSchema,
+        toolInput: schema.dashboardSaveToolInputSchema,
+        output: schema.dashboardSchema,
         execute: (ctx, input) => services.dashboards.save(ctx, input),
         format: json,
       },
       {
         name: "dashboard_delete",
-        instruction:
-          "Use this when the user asks to view or manage their dashboard profiles.",
+        instruction: dashboardInstruction,
         readOnly: false,
+        destructive: true,
         description:
-          "Delete one of your personal dashboards in the current organization.",
+          "Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
         permission: "read",
         input: schema.dashboardIdInputSchema,
         output: schema.dashboardDeleteOutputSchema,
-        destructive: true,
         execute: (ctx, input) => services.dashboards.delete(ctx, input),
         format: json,
       },
       {
         name: "search",
         description:
-          "Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results contain message windows grouped by session; use session_id and seq with get or sql.",
+          'Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {"query":"","filters":{"file_prefix":"src/auth/","file_operation":"edit"}}.',
         permission: "read",
         input: schema.searchInputSchema,
+        toolInput: schema.searchToolInputSchema,
         output: schema.searchOutputSchema,
         execute: (ctx, input) => services.search.execute(ctx, input),
         format: (value) => formatSearch(schema.searchOutputSchema.parse(value)),
@@ -96,7 +144,7 @@ export class McpService {
       {
         name: "get",
         description:
-          "Read a session header and messages by session_id. Bound a range with from/to; use next and content_cursor to continue.",
+          'Read one session by session_id: a header (who ran it, harness, model, repository, branch, start, end, status, message, tool call, token, file, commit and reuse counts, tools_used, root_session_id, parent and child sessions) and its messages in seq order with role, kind, tool_name, tool_use_id and content. Each child ref carries parent_tool_use_id, the tool_use_id of the TOOL_USE message here that spawned it (null when unrecorded), so a subagent run reads in place under its call. Bound a range with from/to; when next is not null, pass it as cursor. Example: {"session_id":"<uuid>","from":0,"to":40}.',
         permission: "read",
         input: schema.getInputSchema,
         output: schema.getOutputSchema,
@@ -106,7 +154,7 @@ export class McpService {
       {
         name: "sql",
         description:
-          "Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions'. Limits: 500 rows, 5 seconds.",
+          "Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds.",
         permission: "read",
         input: schema.sqlInputSchema,
         output: schema.sqlOutputSchema,
@@ -154,6 +202,18 @@ export class McpService {
         execute: (ctx) => services.admin.status(ctx),
         format: json,
       },
+      {
+        name: "dashboard_set_default",
+        instruction: dashboardInstruction,
+        readOnly: false,
+        description:
+          "Make a saved dashboard the organization's Home default. Pass the built-in Team overview's id to restore the shipped default; other built-ins must be duplicated first.",
+        permission: "admin",
+        input: schema.dashboardIdInputSchema,
+        output: schema.dashboardDefaultOutputSchema,
+        execute: (ctx, input) => services.dashboards.setDefault(ctx, input),
+        format: json,
+      },
     ];
   }
   private async current(context: ServiceContext): Promise<ServiceContext> {
@@ -172,6 +232,35 @@ export class McpService {
       );
     return { ...context, caller: identity.caller };
   }
+  /**
+   * The permission-filtered catalog a caller sees. Output schemas stay server-side:
+   * results still carry `structuredContent`, and shipping them would triple the payload.
+   */
+  catalog(caller: CallerContext | null): Tool[] {
+    return this.definitions
+      .filter((definition) =>
+        caller?.toolsEnabled === false
+          ? false
+          : definition.permission === "admin"
+            ? caller && hasAdminAuthority(caller)
+            : caller?.permissions.sessions?.includes("read"),
+      )
+      .map((definition) =>
+        ToolSchema.parse({
+          name: definition.name,
+          description: `${definition.instruction ?? governingSentence} ${definition.description}`,
+          inputSchema: toolJsonSchema(definition.toolInput ?? definition.input),
+          annotations: {
+            readOnlyHint:
+              definition.readOnly ??
+              (definition.permission === "read" ||
+                ["audit", "status"].includes(definition.name)),
+            destructiveHint: definition.destructive ?? false,
+            openWorldHint: false,
+          },
+        }),
+      );
+  }
   list(context: ServiceContext) {
     return auditedOperation(
       this.services.audit,
@@ -179,30 +268,7 @@ export class McpService {
       { action: "mcp.tools.list" },
       async () => {
         const current = await this.current(context);
-        const tools = this.definitions
-          .filter((definition) =>
-            current.caller?.toolsEnabled === false
-              ? false
-              : definition.permission === "admin"
-                ? current.caller && hasAdminAuthority(current.caller)
-                : current.caller?.permissions.sessions?.includes("read"),
-          )
-          .map((definition) =>
-            ToolSchema.parse({
-              name: definition.name,
-              description: `${definition.instruction ?? governingSentence} ${definition.description}`,
-              inputSchema: z.toJSONSchema(definition.input, { io: "input" }),
-              outputSchema: z.toJSONSchema(definition.output, { io: "output" }),
-              annotations: {
-                readOnlyHint:
-                  definition.readOnly ??
-                  (definition.permission === "read" ||
-                    ["audit", "status"].includes(definition.name)),
-                destructiveHint: definition.destructive ?? false,
-                openWorldHint: false,
-              },
-            }),
-          );
+        const tools = this.catalog(current.caller);
         return {
           result: { tools },
           audit: await this.services.audit.write(current, {

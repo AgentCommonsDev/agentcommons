@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { messageSchema, type Message } from "../schemas/get.js";
-import { messageBranches, repositoryLinks } from "./session-navigation.js";
+import {
+  messageBranches,
+  repositoryLinks,
+  spawnPlacements,
+} from "./session-navigation.js";
 
 const id = "0192a3f0-7c1e-7d1a-9b0e-3f2a1c9d4e55";
 function message(
@@ -106,5 +110,40 @@ describe("recorded session navigation", () => {
       "https://github.com/x/\ny",
     ])
       expect(repositoryLinks(input)).toBeNull();
+  });
+});
+
+describe("spawned run placement", () => {
+  const run = (
+    session_id: string,
+    parent_tool_use_id: string | null,
+    parent_session_id: string | null = id,
+  ) => ({ session_id, parent_session_id, parent_tool_use_id });
+  // @req R-DASH-33
+  it("nests a child under the one loaded call that spawned it and keeps the rest listed", () => {
+    const messages = [
+      message(1, "TEXT"),
+      message(2, "TOOL_USE", "agent"),
+      message(3, "TOOL_RESULT", "agent"),
+      message(4, "TOOL_USE", "twice"),
+      message(5, "TOOL_USE", "twice"),
+    ];
+    const nested = run("child-nested", "agent");
+    const ambiguous = run("child-ambiguous", "twice");
+    const unmapped = run("child-unmapped", null);
+    const later = run("child-later-page", "not-loaded");
+    const grandchild = run("grandchild", "agent", "child-nested");
+    const placements = spawnPlacements(
+      messages,
+      [nested, ambiguous, unmapped, later, grandchild],
+      id,
+    );
+    expect(placements.placed.get(messages[1]?.message_id ?? "")).toEqual([
+      nested,
+    ]);
+    expect(placements.placed.size).toBe(1);
+    // Ambiguous, unmapped and not-yet-loaded calls fall back to the listed section;
+    // another session's children are not this transcript's to place.
+    expect(placements.unplaced).toEqual([ambiguous, unmapped, later]);
   });
 });

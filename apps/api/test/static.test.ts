@@ -22,9 +22,11 @@ beforeAll(async () => {
     writeFile(join(directory, "blog", "fixture-post.html"), html),
     writeFile(
       join(directory, "prerender", "entry-server.js"),
-      'exports.publicRoutes=[{path:"/",file:"index.html"},{path:"/docs",file:"docs.html"}];exports.renderDocument=async template=>template;exports.offeringText=()=>"";',
+      'exports.publicRoutes=[{path:"/",file:"index.html"},{path:"/docs",file:"docs.html"},{path:"/privacy",file:"privacy.html"},{path:"/tos",file:"tos.html"}];exports.renderDocument=async template=>template;exports.offeringText=()=>"";',
     ),
     writeFile(join(directory, "docs.html"), html),
+    writeFile(join(directory, "privacy.html"), html),
+    writeFile(join(directory, "tos.html"), html),
     writeFile(
       join(directory, "app.html"),
       '<div id="root"></div><script src="/assets/app.js"></script>',
@@ -63,6 +65,13 @@ it("uses fresh CSP nonces for native bootstrap scripts and keeps customer sites 
   expect(first.headers["content-security-policy"]).toContain(
     `'nonce-${nonce ?? ""}'`,
   );
+  // The app frames its own API reference and nothing else; no page frames the app.
+  expect(first.headers["content-security-policy"]).toContain(
+    "frame-src 'self';",
+  );
+  expect(first.headers["content-security-policy"]).toContain(
+    "frame-ancestors 'none'",
+  );
   expect(first.body).toContain("window.testBootstrap=true");
   expect(second.body).not.toContain(`nonce="${nonce ?? ""}"`);
   expect(first.body).toContain("https://sessions.example.test/");
@@ -96,6 +105,24 @@ it("exposes only public discovery and marks versioned artifacts immutable", asyn
   expect(
     (await app.inject("/hook/manifest.json")).headers["cache-control"],
   ).toBe("no-cache");
+});
+
+// @req R-WEB-09
+it("serves the prerendered Privacy Policy and Terms of Service on public instances and hides them from customer instances", async () => {
+  const publicApp = await application("public");
+  for (const path of ["/privacy", "/tos"]) {
+    const response = await publicApp.inject(path);
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('content="index,follow"');
+    expect(response.body).toContain("https://sessions.example.test/");
+  }
+  const robots = (await publicApp.inject("/robots.txt")).body;
+  expect(robots).toContain("Allow: /privacy$");
+  expect(robots).toContain("Allow: /tos$");
+  const customer = await application("customer");
+  expect((await customer.inject("/privacy")).statusCode).toBe(404);
+  expect((await customer.inject("/tos")).statusCode).toBe(404);
+  expect((await customer.inject("/robots.txt")).body).not.toContain("/privacy");
 });
 
 // @req R-WEB-08

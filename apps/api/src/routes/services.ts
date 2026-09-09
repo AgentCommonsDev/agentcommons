@@ -1,6 +1,5 @@
 import type { OrganizationEmbeddingsService } from "../services/organization-embeddings.js";
 import type { SimilarService } from "../services/similar.js";
-import type { HomeService } from "../services/home.js";
 import type { BillingService } from "../services/billing.js";
 import type { SessionEventsService } from "../services/session-events.js";
 import type { jobProgressSchema } from "@agentcommons/core";
@@ -49,7 +48,6 @@ export interface Services {
   dashboards: DashboardService;
   organizationEmbeddings: OrganizationEmbeddingsService;
   billing: BillingService;
-  home: HomeService;
   similar?: SimilarService;
   events: SessionEventsService;
   jobs: {

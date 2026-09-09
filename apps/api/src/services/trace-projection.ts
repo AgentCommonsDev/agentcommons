@@ -937,7 +937,11 @@ function initialHeader(
     installation_id: control.installationId,
     cwd: envelope.context.cwd,
     repo_root: git?.root ?? null,
-    cwd_relative: git ? posix.relative(git.root, envelope.context.cwd) : null,
+    // A session started at the repository root is "." so readers can tell a known
+    // root directory from an unknown one (every harness canary starts at the root).
+    cwd_relative: git
+      ? posix.relative(git.root, envelope.context.cwd) || "."
+      : null,
     repo_url: git?.remoteUrl ?? null,
     repo_name: git?.remoteUrl ?? null,
     branch: git?.branch ?? null,

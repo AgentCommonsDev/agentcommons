@@ -1,0 +1,29 @@
+# Trace store in ClickHouse Cloud instead of the local container. Use with the other two:
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml -f docker-compose.clickhouse-cloud.yml up -d --build
+# The local clickhouse service is parked behind a profile, the API and the migration talk
+# to CLICKHOUSE_URL (https), and PostgreSQL is published on 5432 with TLS and a pg_hba.conf
+# that admits only ac_trace_control from ClickHouse Cloud's egress addresses, so Cloud can
+# read the control dictionaries and tables (ADR 0047). The certificate, key and pg_hba.conf
+# are rendered by infra/scripts/single-node/apply.sh into /opt/agentcommons/postgres-tls.
+services:
+  clickhouse:
+    profiles: ["local-trace-store"]
+  migrate:
+    depends_on: !override
+      db:
+        condition: service_healthy
+    environment:
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:?Set CLICKHOUSE_URL to the ClickHouse Cloud https endpoint}
+      CLICKHOUSE_POSTGRES_HOST: ${CLICKHOUSE_POSTGRES_HOST:?Set CLICKHOUSE_POSTGRES_HOST to this host's public address}
+      CLICKHOUSE_POSTGRES_PORT: ${CLICKHOUSE_POSTGRES_PORT:-5432}
+    volumes:
+      - /opt/agentcommons/postgres-tls/server.crt:/etc/agentcommons/postgres-tls/server.crt:ro
+  api:
+    environment:
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:?Set CLICKHOUSE_URL to the ClickHouse Cloud https endpoint}
+  db:
+    ports: ["5432:5432"]
+    volumes:
+      - /opt/agentcommons/postgres-tls/server.crt:/etc/postgresql/tls/server.crt:ro
+      - /opt/agentcommons/postgres-tls/server.key:/etc/postgresql/tls/server.key:ro
+      - /opt/agentcommons/postgres-tls/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro

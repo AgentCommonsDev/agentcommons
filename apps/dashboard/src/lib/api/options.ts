@@ -35,6 +35,7 @@ export const searchFilterKeys = [
   "user_email",
   "tool_name",
   "file_prefix",
+  "file_operation",
   "role",
   "session_id",
   "since",

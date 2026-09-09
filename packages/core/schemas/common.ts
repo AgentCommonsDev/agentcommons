@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { traceViewCatalog } from "../schema-catalog.js";
 
 export const harnessSchema = /* @__PURE__ */ z.enum([
   "CLAUDE_CODE",
@@ -30,6 +31,24 @@ export const parentRelationSchema = /* @__PURE__ */ z.enum([
   "SPAWNED",
 ]);
 export const visibilitySchema = /* @__PURE__ */ z.enum(["PUBLIC", "PRIVATE"]);
+/** What a tool call did to a file, as normalizers record it in `session_files.ops`. */
+export const fileOperationSchema = /* @__PURE__ */ z.enum([
+  "read",
+  "edit",
+  "write",
+  "delete",
+]);
+export type FileOperation = z.infer<typeof fileOperationSchema>;
+/** Display units shared by metric rows and dashboard stat tiles. */
+export const metricUnitSchema = /* @__PURE__ */ z.enum([
+  "count",
+  "ratio",
+  "seconds",
+  "milliseconds",
+  "tokens",
+  "usd",
+]);
+export type MetricUnit = z.infer<typeof metricUnitSchema>;
 export const organizationRoleSchema = /* @__PURE__ */ z.enum([
   "owner",
   "admin",
@@ -42,6 +61,8 @@ export const jsonObjectSchema = /* @__PURE__ */ z.record(
   jsonValueSchema,
 );
 export const sessionIdSchema = /* @__PURE__ */ z.uuid();
+/** Lowercase hex SHA-256 digest, as published in the hook manifest. */
+export const sha256Schema = /* @__PURE__ */ z.string().regex(/^[a-f0-9]{64}$/);
 export const identityIdSchema = /* @__PURE__ */ z.string().min(1);
 export const utcDateTimeSchema = /* @__PURE__ */ z.iso.datetime({
   offset: false,
@@ -138,3 +159,16 @@ export const normalizerContextSchema = /* @__PURE__ */ z.strictObject({
   transcriptMetadata: jsonObjectSchema.optional(),
 });
 export type NormalizerContext = z.infer<typeof normalizerContextSchema>;
+
+/** The catalog meaning of an `api_ro` column, so schema descriptions and `schema_columns` read one text. */
+export function catalogDescription(
+  view: "sessions" | "messages" | "session_files",
+  column: string,
+): string {
+  const text: string | undefined = traceViewCatalog[view].columns[column];
+  if (text === undefined)
+    throw new Error(
+      `The view catalog has no description for ${view}.${column}.`,
+    );
+  return text;
+}

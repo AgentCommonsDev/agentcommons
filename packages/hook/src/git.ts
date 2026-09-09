@@ -13,14 +13,40 @@ function git(cwd: string, args: string[]): string | null {
     return null;
   }
 }
-export function gitContext(cwd: string): IngestEnvelope["context"]["git"] {
+/** HEAD as the reflog recorded it at `at`. The uploader collects git context after the
+ * start hook, so a fast first commit would otherwise become the session's start commit
+ * and hide itself from the end observation. Current HEAD when the reflog cannot answer. */
+function headAt(cwd: string, at: string | undefined): string | null {
+  const head = git(cwd, ["rev-parse", "HEAD"]);
+  const time = at === undefined ? NaN : Math.floor(Date.parse(at) / 1000);
+  if (!head || !Number.isFinite(time)) return head;
+  const log = git(cwd, [
+    "reflog",
+    "show",
+    "HEAD",
+    "--format=%H%x00%gD",
+    "--date=unix",
+    "-n",
+    "200",
+  ]);
+  for (const line of log ? log.split("\n") : []) {
+    const [sha, selector] = line.split("\0");
+    const moved = Number(/^HEAD@\{(\d+)\}$/.exec(selector ?? "")?.[1]);
+    if (sha && Number.isFinite(moved) && moved <= time) return sha;
+  }
+  return head;
+}
+export function gitContext(
+  cwd: string,
+  at?: string,
+): IngestEnvelope["context"]["git"] {
   const root = git(cwd, ["rev-parse", "--show-toplevel"]);
   return root
     ? {
         root,
         remoteUrl: git(cwd, ["remote", "get-url", "origin"]),
         branch: git(cwd, ["symbolic-ref", "--short", "HEAD"]),
-        head: git(cwd, ["rev-parse", "HEAD"]),
+        head: headAt(cwd, at),
       }
     : null;
 }

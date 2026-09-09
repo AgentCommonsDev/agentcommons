@@ -1,6 +1,8 @@
 # ADR 0035: Native verified-domain organization enrollment
 
-Status: accepted, 2026-09-08.
+Status: accepted, 2026-09-08. DNS ownership verification and the `verify` command are
+superseded by ADR 0049; native provider storage, Google-only eligibility and the durable
+removal invariants remain.
 
 The customer instance must admit verified Google identities from its configured
 organization domain without an administrator entering each email first. The existing

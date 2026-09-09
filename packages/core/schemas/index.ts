@@ -7,7 +7,6 @@ export * from "./admin.js";
 export * from "./auth.js";
 export * from "./rest.js";
 export * from "./metrics.js";
-export * from "./home.js";
 export * from "./billing.js";
 export * from "./embeddings.js";
 export * from "./dashboards.js";

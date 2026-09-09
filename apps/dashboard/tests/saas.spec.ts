@@ -1,27 +1,24 @@
 import { selectOrganization } from "./organization-controls";
-import { test } from "./browser-test";
 import {
-  expect,
-  type Page,
-  type Locator,
-  type APIRequestContext,
-} from "@playwright/test";
-import AxeBuilder from "@axe-core/playwright";
+  accessible,
+  activate,
+  cookieSchema,
+  test,
+  themeToggle,
+} from "./browser-test";
+import { expect, type Page, type APIRequestContext } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { copy } from "../src/copy";
+import { paths } from "../src/lib/routes";
+import {
+  saasCalendarOrigin,
+  saasOrigin,
+  saasStatePath,
+} from "../playwright.shared";
 import { testAccountPassword } from "../../api/test/support";
-const origin = "http://localhost:3600";
-const cookieSchema = z.object({
-  name: z.string(),
-  value: z.string(),
-  domain: z.string(),
-  path: z.string(),
-  httpOnly: z.boolean(),
-  secure: z.boolean(),
-  sameSite: z.enum(["Lax", "Strict", "None"]),
-});
+const origin = saasOrigin;
 const stateSchema = z.object({
   controlUrl: z.url(),
   controlToken: z.string(),
@@ -30,11 +27,7 @@ const stateSchema = z.object({
   organizationId: z.string(),
 });
 async function fixture() {
-  return stateSchema.parse(
-    JSON.parse(
-      await readFile("/tmp/agentcommons-saas-browser-state.json", "utf8"),
-    ),
-  );
+  return stateSchema.parse(JSON.parse(await readFile(saasStatePath, "utf8")));
 }
 async function control(
   request: APIRequestContext,
@@ -71,62 +64,42 @@ async function emailLink(
     .not.toBe("");
   return z.url().parse(link);
 }
-async function activate(locator: Locator, mobile: boolean) {
-  if (mobile) await locator.tap();
-  else await locator.click();
-}
-async function accessible(page: Page) {
-  await page.evaluate(async () => {
-    await document.fonts.ready;
-  });
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            resolve();
-          });
-        });
-      }),
-  );
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
-  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-}
-async function theme(page: Page, value: string) {
-  const toggle = page.getByRole("button", {
-    name: value === "light" ? copy.theme.light : copy.theme.dark,
-    exact: true,
-  });
+/** Puts the page in one theme through the visible toggle. */
+async function theme(page: Page, value: "light" | "dark", isMobile: boolean) {
   if ((await page.locator("html").getAttribute("data-theme")) !== value)
     await activate(
-      toggle,
-      await page.evaluate(() => navigator.maxTouchPoints > 0),
+      themeToggle(page, value === "light" ? "dark" : "light"),
+      isMobile,
     );
   await expect(page.locator("html")).toHaveAttribute("data-theme", value);
 }
+const exact = (label: string) =>
+  new RegExp(`^${label.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+/** The value under a stat label on the billing page. */
+const stat = (page: Page, label: string) =>
+  page
+    .locator("p")
+    .filter({ hasText: exact(label) })
+    .locator("xpath=following-sibling::p[1]");
+const progress = (page: Page) =>
+  page.getByRole("progressbar", { name: copy.billing.progress, exact: true });
 
-// @req R-SAAS-01 @req R-SAAS-02 @req R-SAAS-03 @req R-SAAS-04 @req R-SAAS-05 @req R-SAAS-06 @req R-DASH-10
-test("native signup, SMTP verification, onboarding, quota and signed Stripe transitions work through the browser", async ({
+// @req R-SAAS-01 @req R-SAAS-02 @req R-SAAS-03 @req R-SAAS-04 @req R-SAAS-05 @req R-SAAS-06 @req R-SAAS-09 @req R-DASH-27
+test("native signup, SMTP verification, name-only onboarding, quota and signed Stripe transitions work through the browser", async ({
   page,
   isMobile,
 }) => {
   const email = `browser-${randomUUID()}@example.test`;
-  await page.goto("/signup");
+  await page.goto(paths.signup);
+  await expect(page.getByTestId("auth-card")).toBeVisible();
   await page
     .getByLabel(copy.signup.name, { exact: true })
     .fill("Browser owner");
-  await page.getByLabel(copy.workspace.auth.email, { exact: true }).fill(email);
+  await page.getByLabel(copy.auth.email, { exact: true }).fill(email);
   await page
-    .getByLabel(copy.workspace.auth.password, { exact: true })
+    .getByLabel(copy.auth.password, { exact: true })
     .fill(testAccountPassword);
-  await activate(
-    page.getByRole("button", { name: copy.signup.submit, exact: true }),
-    isMobile,
-  );
+  await activate(page.getByTestId("signup-submit"), isMobile);
   await expect(
     page.getByRole("heading", { name: copy.signup.verifyTitle }),
   ).toBeVisible();
@@ -136,8 +109,8 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
     email,
     "Verify your AgentCommons email",
   );
-  for (const value of ["light", "dark"]) {
-    await theme(page, value);
+  for (const value of ["light", "dark"] as const) {
+    await theme(page, value, isMobile);
     await expect(page).toHaveScreenshot(
       `saas-verification-notice-${value}.png`,
       { mask: [page.locator(".verified-email")] },
@@ -152,25 +125,42 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
   await expect(
     page.getByRole("heading", { name: copy.signup.onboardingTitle }),
   ).toBeVisible();
-  for (const value of ["light", "dark"]) {
-    await theme(page, value);
+  // The organization form asks for a name only; the server derives the slug.
+  await expect(page.getByLabel(copy.signup.slug, { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("textbox")).toHaveCount(1);
+  for (const value of ["light", "dark"] as const) {
+    await theme(page, value, isMobile);
     await accessible(page);
-    await expect(page).toHaveScreenshot(`saas-onboarding-${value}.png`);
+    // The signed-in address is generated per run.
+    await expect(page).toHaveScreenshot(`saas-onboarding-${value}.png`, {
+      mask: [page.getByText(email, { exact: true })],
+    });
   }
   await page
-    .getByLabel(copy.signup.organizationName, { exact: true })
+    .getByTestId("onboarding-organization-name")
     .fill("Browser organization");
-  await page
-    .getByLabel(copy.signup.slug, { exact: true })
-    .fill(`browser-${randomUUID()}`);
-  await activate(
-    page.getByRole("button", { name: copy.signup.organizationSubmit }),
-    isMobile,
+  const onboarded = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/v1/onboarding" &&
+      response.request().method() === "POST",
   );
-  await expect(page).toHaveURL(/\/home$/);
+  await activate(page.getByTestId("onboarding-submit"), isMobile);
+  expect((await onboarded).status()).toBe(200);
+  await expect(page).toHaveURL(new RegExp(`${paths.install}$`));
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    copy.install.title,
+  );
+  await expect(page.getByTestId("install-command")).toBeVisible();
   const identity = z
-    .object({ caller: z.object({ organizationId: z.string() }) })
+    .object({
+      caller: z.object({ organizationId: z.string() }),
+      organization: z.object({ slug: z.string(), name: z.string() }),
+    })
     .parse(await (await page.request.get("/api/v1/me")).json());
+  expect(identity.organization.name).toBe("Browser organization");
+  expect(identity.organization.slug).toMatch(/^browser-organization(?:-\d+)?$/);
   await expect
     .poll(async () => {
       const response = await control(
@@ -186,8 +176,8 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
         ).length;
     })
     .toBe(1);
-  await page.goto("/usage");
-  await expect(page.getByRole("progressbar")).toHaveAttribute("max", "2");
+  await page.goto(paths.billing);
+  await expect(progress(page)).toHaveAttribute("aria-valuemax", "2");
   const created = await page.request.post("/api/v1/me/keys", {
     headers: { origin },
     data: {
@@ -200,6 +190,7 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
   const installationId = randomUUID();
   const envelope = () => ({
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness: "CLAUDE_CODE",
     harnessSessionId: randomUUID(),
     behavior: "sync",
@@ -254,14 +245,12 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
   expect((await ingest({ ...first, batchId: randomUUID() })).status()).toBe(
     202,
   );
-  await activate(
-    page.getByRole("button", {
-      name: copy.workspace.common.refresh,
-      exact: true,
-    }),
-    isMobile,
-  );
-  await expect(page.getByRole("progressbar")).toHaveAttribute("value", "2");
+  const refresh = page.getByRole("button", {
+    name: copy.app.common.refresh,
+    exact: true,
+  });
+  await activate(refresh, isMobile);
+  await expect(progress(page)).toHaveAttribute("aria-valuenow", "2");
   await expect(page.getByText(copy.billing.cap, { exact: true })).toBeVisible();
   await accessible(page);
   let checkout = "";
@@ -287,41 +276,23 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
     "POST",
   );
   expect(paid.status(), await paid.text()).toBe(200);
-  await page.goto("/usage");
-  await expect(page.getByRole("progressbar")).toHaveAttribute("max", "4");
+  await page.goto(paths.billing);
+  await expect(progress(page)).toHaveAttribute("aria-valuemax", "4");
   // Native Stripe starts a new paid billing period; earlier free usage stays in its UTC month.
-  await expect(page.getByRole("progressbar")).toHaveAttribute("value", "0");
+  await expect(progress(page)).toHaveAttribute("aria-valuenow", "0");
   expect((await ingest(pending)).status()).toBe(202);
   for (let index = 0; index < 4; index++)
     expect((await ingest(envelope())).status()).toBe(202);
-  await activate(
-    page.getByRole("button", {
-      name: copy.workspace.common.refresh,
-      exact: true,
-    }),
-    isMobile,
-  );
-  await expect(page.getByRole("progressbar")).toHaveAttribute("value", "4");
-  await expect(
-    page
-      .locator("dl > div")
-      .filter({ has: page.getByText(copy.billing.used, { exact: true }) })
-      .locator("dd"),
-  ).toHaveText("5");
-  await expect(
-    page
-      .locator("dl > div")
-      .filter({ has: page.getByText(copy.billing.overage, { exact: true }) })
-      .locator("dd"),
-  ).toHaveText("1");
+  await activate(refresh, isMobile);
+  await expect(progress(page)).toHaveAttribute("aria-valuenow", "4");
+  await expect(stat(page, copy.billing.used)).toHaveText("5");
+  await expect(stat(page, copy.billing.overage)).toHaveText("1");
   await expect(page.getByText(copy.billing.cap, { exact: true })).toHaveCount(
     0,
   );
-  await expect(
-    page.getByText(copy.saas.calendarUnavailable, { exact: true }),
-  ).toBeVisible();
-  for (const value of ["light", "dark"]) {
-    await theme(page, value);
+  await expect(page.getByRole("link", { name: copy.saas.demo })).toHaveCount(0);
+  for (const value of ["light", "dark"] as const) {
+    await theme(page, value, isMobile);
     await accessible(page);
   }
   await page
@@ -339,13 +310,10 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
   const changed = await changedPlan;
   expect(changed.status(), await changed.text()).toBe(200);
   expect(await changed.json()).toEqual({ url: null });
-  await expect(
-    page
-      .locator("dl > div")
-      .filter({ has: page.getByText(copy.billing.plan, { exact: true }) })
-      .locator("dd"),
-  ).toHaveText(copy.saas.pro_embeddings);
-  await expect(page).toHaveURL(/\/usage$/);
+  await expect(page.getByTestId("billing-plan")).toContainText(
+    copy.saas.pro_embeddings,
+  );
+  await expect(page).toHaveURL(new RegExp(`${paths.billing}$`));
   let portal = "";
   await page.route("https://billing.stripe.com/**", async (route) => {
     portal = route.request().url();
@@ -363,65 +331,64 @@ test("native signup, SMTP verification, onboarding, quota and signed Stripe tran
     .toBe("https://billing.stripe.com/p/session/test_protocol");
   await page.waitForURL("https://billing.stripe.com/p/session/test_protocol");
   await page.waitForLoadState("load");
-  await page.goto("/forgot-password");
-  await page.getByLabel(copy.workspace.auth.email, { exact: true }).fill(email);
+  await page.goto(paths.forgotPassword);
+  await page.getByLabel(copy.auth.email, { exact: true }).fill(email);
   await activate(
     page.getByRole("button", { name: copy.signup.resetSubmit }),
     isMobile,
   );
-  await expect(page.getByRole("status")).toHaveText(copy.signup.resetSent);
+  await expect(
+    page.getByRole("status").filter({ hasText: copy.signup.resetSent }),
+  ).toBeVisible();
   await page.goto(
     await emailLink(page.request, email, "Reset your AgentCommons password"),
   );
-  for (const value of ["light", "dark"]) {
-    await theme(page, value);
+  for (const value of ["light", "dark"] as const) {
+    await theme(page, value, isMobile);
     await accessible(page);
     await expect(page).toHaveScreenshot(`saas-setup-password-${value}.png`);
   }
   await page
-    .getByLabel(copy.workspace.auth.newPassword, { exact: true })
+    .getByLabel(copy.auth.newPassword, { exact: true })
     .fill(`${testAccountPassword}-reset`);
   await page
-    .getByLabel(copy.workspace.auth.confirmPassword, { exact: true })
+    .getByLabel(copy.auth.confirmPassword, { exact: true })
     .fill(`${testAccountPassword}-reset`);
   await activate(
-    page.getByRole("button", { name: copy.workspace.auth.setupSubmit }),
+    page.getByRole("button", { name: copy.auth.setupSubmit }),
     isMobile,
   );
-  await expect(page.getByRole("status")).toHaveText(
-    copy.workspace.auth.setupDone,
-  );
-  await page.goto("/login");
-  await page.getByLabel(copy.workspace.auth.email, { exact: true }).fill(email);
-  await page
-    .getByLabel(copy.workspace.auth.password, { exact: true })
-    .fill(`${testAccountPassword}-reset`);
-  await activate(
-    page.getByRole("button", { name: copy.workspace.auth.signIn, exact: true }),
-    isMobile,
-  );
-  await expect(page).toHaveURL(/\/home$/);
+  await expect(
+    page.getByRole("status").filter({ hasText: copy.auth.setupDone }),
+  ).toBeVisible();
+  await page.goto(paths.login);
+  await page.getByTestId("login-email").fill(email);
+  await page.getByTestId("login-password").fill(`${testAccountPassword}-reset`);
+  await activate(page.getByTestId("login-submit"), isMobile);
+  await expect(page).toHaveURL(new RegExp(`${paths.home}$`));
+  await expect(page.getByTestId("dashboard-picker")).toBeVisible();
 });
 
-// @req R-SAAS-01 @req R-SAAS-04 @req R-SAAS-07 @req R-DASH-10
-test("SaaS public and billing screens preserve mobile access, ownership and both themes", async ({
+// @req R-SAAS-01 @req R-SAAS-04 @req R-SAAS-07 @req R-DASH-27 @req R-WEB-02
+test("SaaS public, account and billing screens preserve mobile access, ownership and both themes", async ({
   page,
   context,
   browser,
+  isMobile,
 }, info) => {
   const state = await fixture();
   for (const path of [
-    "/",
+    paths.site,
     "/docs",
-    "/signup",
-    "/login",
-    "/verify-email",
-    "/forgot-password",
+    paths.signup,
+    paths.login,
+    paths.verifyEmail,
+    paths.forgotPassword,
   ]) {
     await page.goto(path);
     await expect(page.locator("h1")).toBeVisible();
-    for (const value of ["light", "dark"]) {
-      await theme(page, value);
+    for (const value of ["light", "dark"] as const) {
+      await theme(page, value, isMobile);
       await accessible(page);
       await expect(page).toHaveScreenshot(
         `saas-${path.slice(1) || "landing"}-${value}.png`,
@@ -429,6 +396,19 @@ test("SaaS public and billing screens preserve mobile access, ownership and both
       );
     }
   }
+  await page.goto(paths.login);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    copy.auth.welcomeBack,
+  );
+  await expect(
+    page.getByRole("link", { name: copy.auth.signupLink, exact: true }),
+  ).toHaveAttribute("href", paths.signup);
+  await expect(
+    page.getByRole("link", { name: copy.signup.forgot, exact: true }),
+  ).toHaveAttribute("href", paths.forgotPassword);
+  await expect(
+    page.getByRole("link", { name: copy.signup.verifyEmail, exact: true }),
+  ).toHaveAttribute("href", paths.verifyEmail);
   const noJs = await browser.newContext({
     javaScriptEnabled: false,
     viewport: info.project.use.viewport ?? { width: 390, height: 844 },
@@ -452,7 +432,7 @@ test("SaaS public and billing screens preserve mobile access, ownership and both
     await noJs.close();
   }
   await context.addCookies(state.memberCookies);
-  await page.goto("/usage");
+  await page.goto(paths.billing);
   await expect(
     page.getByText(copy.billing.ownerOnly, { exact: true }),
   ).toBeVisible();
@@ -468,15 +448,16 @@ test("SaaS public and billing screens preserve mobile access, ownership and both
     ).status(),
   ).toBe(403);
   await context.addCookies(state.ownerCookies);
-  await page.goto("/usage");
-  await selectOrganization(page, state.organizationId);
-  await expect(page.getByRole("progressbar")).toHaveAttribute("value", "0");
-  for (const value of ["light", "dark"]) {
-    await theme(page, value);
+  await page.goto(paths.billing);
+  await selectOrganization(page, state.organizationId, isMobile);
+  await expect(progress(page)).toHaveAttribute("aria-valuenow", "0");
+  await expect(page.getByTestId("billing-plan")).toContainText(copy.saas.free);
+  for (const value of ["light", "dark"] as const) {
+    await theme(page, value, isMobile);
     await accessible(page);
-    await expect(page).toHaveScreenshot(`saas-usage-${value}.png`, {
+    await expect(page).toHaveScreenshot(`saas-billing-${value}.png`, {
       fullPage: true,
-      mask: [page.locator(".usage-period dd")],
+      mask: [page.getByTestId("billing-plan").locator("dd")],
     });
   }
 });
@@ -518,7 +499,7 @@ test("official Cal embed loads a controlled provider event and missing Stripe st
       });
     },
   );
-  await page.goto("http://localhost:3601/#demo");
+  await page.goto(`${saasCalendarOrigin}/#demo`);
   const iframe = page.locator("iframe.cal-embed");
   await expect(iframe).toBeVisible();
   await expect(iframe).toHaveAttribute(
@@ -535,23 +516,29 @@ test("official Cal embed loads a controlled provider event and missing Stripe st
   );
   // Axe probes unsafe-eval support itself; inspect provider CSP before injecting axe.
   expect(blocked).toEqual([]);
-  for (const value of ["light", "dark"]) {
-    await theme(page, value);
+  for (const value of ["light", "dark"] as const) {
+    await theme(page, value, isMobile);
     await accessible(page);
   }
   const state = await fixture();
   await context.addCookies(state.ownerCookies);
-  await page.goto("http://localhost:3601/usage");
-  await selectOrganization(page, state.organizationId);
+  await page.goto(`${saasCalendarOrigin}${paths.billing}`);
+  await selectOrganization(page, state.organizationId, isMobile);
   await expect(
     page.getByRole("button", { name: copy.billing.upgrade }),
   ).toBeDisabled();
   await expect(
     page.getByText(copy.saas.checkoutUnavailable, { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: copy.saas.demo }),
+  ).toHaveAttribute(
+    "href",
+    "https://cal.com/agentcommons-provider-fixture/demo",
+  );
   const response = await page.request.post(
-    "http://localhost:3601/api/v1/billing/checkout",
-    { headers: { origin: "http://localhost:3601" }, data: { plan: "pro" } },
+    `${saasCalendarOrigin}/api/v1/billing/checkout`,
+    { headers: { origin: saasCalendarOrigin }, data: { plan: "pro" } },
   );
   expect(response.status()).toBe(503);
 });

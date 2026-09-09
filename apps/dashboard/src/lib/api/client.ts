@@ -38,9 +38,7 @@ export function unwrap<T>(result: {
     throw new ApiError(
       result.response.status,
       parsed.success ? parsed.data.code : "request_failed",
-      parsed.success
-        ? parsed.data.message
-        : copy.workspace.common.requestFailed,
+      parsed.success ? parsed.data.message : copy.app.common.requestFailed,
     );
   }
   return result.data;

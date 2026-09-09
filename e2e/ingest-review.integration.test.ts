@@ -18,6 +18,7 @@ function envelope(
 ): IngestEnvelope & { sourcePos: number } {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness,
     harnessSessionId: randomUUID(),
     behavior: "start",

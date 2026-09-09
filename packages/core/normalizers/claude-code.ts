@@ -22,7 +22,12 @@ import {
   toolFiles,
   SENSITIVE_FILE_MARKER,
 } from "./shared.js";
-import type { NativeLink, NormalizedMessage, SessionDelta } from "./types.js";
+import type {
+  NativeLink,
+  NativeSpawn,
+  NormalizedMessage,
+  SessionDelta,
+} from "./types.js";
 
 const knownRecordTypes = new Set([
   "user",
@@ -35,6 +40,17 @@ const knownRecordTypes = new Set([
   "queue-operation",
   "atis-latch",
 ]);
+/** Claude Code stamps locally generated assistant rows (API errors, interruptions) with this model. */
+const SYNTHETIC_MODEL = "<synthetic>";
+/** A subagent transcript's native session id: the layout the shim registers at `SubagentStart`. */
+function subagentSessionId(sessionId: string, agentId: string): string {
+  return `${sessionId}:agent-${agentId}`;
+}
+/** `gitBranch` is `git rev-parse --abbrev-ref HEAD`, which prints `HEAD` when detached. */
+function branchName(value: unknown): string | null {
+  const branch = string(value);
+  return branch === "HEAD" ? null : branch;
+}
 const fileRules = {
   Read: { paths: ["file_path"], ops: ["read"] },
   Edit: { paths: ["file_path"], ops: ["edit"] },
@@ -184,7 +200,10 @@ export const claudeCode = createNormalizer({
         data.type === "user" ? "USER" : "ASSISTANT",
         anthropicBlocks,
         {
-          model: string(native.model),
+          model:
+            string(native.model) === SYNTHETIC_MODEL
+              ? null
+              : string(native.model),
           nativeId: string(data.uuid),
           parentId: string(data.parentUuid),
         },
@@ -224,7 +243,7 @@ export const claudeCode = createNormalizer({
         harnessVersion: string(data.version),
         entrypoint: string(data.entrypoint),
         cwd: string(data.cwd),
-        branch: string(data.gitBranch),
+        branch: branchName(data.gitBranch),
         title: string(data.aiTitle),
         agentType: string(data.agentType),
       };
@@ -233,10 +252,12 @@ export const claudeCode = createNormalizer({
       const parent = string(data.sessionId);
       const agent = string(data.agentId);
       if (parent && agent && data.isSidechain === true) {
-        delta.harnessSessionId = `${parent}:agent-${agent}`;
+        delta.harnessSessionId = subagentSessionId(parent, agent);
       }
+      // Attachments can be appended before the prompt that precedes them in time.
       const start = timestamp(data.timestamp);
-      if (!delta.startedAt && start) delta.startedAt = start;
+      if (start && (!delta.startedAt || start < delta.startedAt))
+        delta.startedAt = start;
     }
     return delta;
   },
@@ -251,5 +272,27 @@ export const claudeCode = createNormalizer({
       }
     }
     return links;
+  },
+  // The `Agent` result record names the finished child (`toolUseResult.agentId`) next to
+  // the `tool_result` block that carries the spawning `tool_use_id` (Appendix A).
+  spawns(records) {
+    const spawns: NativeSpawn[] = [];
+    for (const { payload: data } of records) {
+      if (data.type !== "user") continue;
+      const parent = string(data.sessionId);
+      const agent = string(object(data.toolUseResult).agentId);
+      if (!parent || !agent) continue;
+      for (const value of array(object(data.message).content)) {
+        const block = object(value);
+        const toolUseId =
+          block.type === "tool_result" ? string(block.tool_use_id) : null;
+        if (toolUseId)
+          spawns.push({
+            toolUseId,
+            childNativeRef: subagentSessionId(parent, agent),
+          });
+      }
+    }
+    return spawns;
   },
 });

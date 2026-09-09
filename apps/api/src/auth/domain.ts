@@ -26,7 +26,6 @@ import {
 } from "../services/context.js";
 
 export const domainEnrollmentInputSchema = z.object({
-  operation: z.enum(["register", "verify"]),
   organization: z.string().min(1),
   domain: domainInputSchema.shape.domain,
 });
@@ -115,67 +114,34 @@ export async function enrollDomain(
         let provider = await tx.ssoProvider.findUnique({
           where: { providerId },
         });
-        let token: string | null = null;
         let updated = false;
-        if (parsed.operation === "register") {
-          if (!provider) {
-            const registered = await native.api.registerSSOProvider({
-              headers: context.headers,
-              body: {
-                providerId,
-                issuer: "https://accounts.google.com",
-                domain: parsed.domain,
-                organizationId: organization.id,
-              },
-            });
-            token = z.string().parse(registered.domainVerificationToken);
-            provider = await tx.ssoProvider.findUniqueOrThrow({
-              where: { providerId },
-            });
-            updated = true;
-          } else if (!provider.domainVerified) {
-            token = (
-              await native.api.requestDomainVerification({
-                headers: context.headers,
-                body: { providerId },
-              })
-            ).domainVerificationToken;
-          }
-        } else {
-          if (!provider)
-            throw new ServiceError(
-              404,
-              "DOMAIN_NOT_REGISTERED",
-              "Register this domain before verifying its DNS record.",
-            );
-          if (!provider.domainVerified) {
-            await native.api.verifyDomain({
-              headers: context.headers,
-              body: { providerId },
-            });
-            provider = await tx.ssoProvider.findUniqueOrThrow({
-              where: { providerId },
-            });
-            updated = true;
-          }
+        if (!provider) {
+          await native.api.registerSSOProvider({
+            headers: context.headers,
+            body: {
+              providerId,
+              issuer: "https://accounts.google.com",
+              domain: parsed.domain,
+              organizationId: organization.id,
+            },
+          });
+          updated = true;
         }
+        // An owner or admin allowlisting a domain is the approval (ADR 0049); no DNS proof step.
+        provider = await tx.ssoProvider.update({
+          where: { providerId },
+          data: { domainVerified: true },
+        });
         const result = domainOutputSchema.parse({
           organization_id: organization.id,
           domain: parsed.domain,
           provider_id: providerId,
           verified: provider.domainVerified === true,
-          dns_record: token
-            ? {
-                type: "TXT" as const,
-                name: `_better-auth-token-${providerId}.${parsed.domain}`,
-                value: token,
-              }
-            : null,
         });
         const written = await audit.write(
           scoped,
           {
-            action: `operator.domain.${parsed.operation}`,
+            action: "operator.domain.register",
             resourceType: "organization",
             resourceIds: [organization.id],
             detail: {
@@ -230,16 +196,8 @@ export async function listDomains(
                   },
                 }
               : {}),
-            ...(parsed.verified
-              ? { domainVerified: parsed.verified === "true" }
-              : {}),
           },
-          orderBy: [
-            parsed.sort === "verified"
-              ? { domainVerified: parsed.order }
-              : { domain: parsed.order },
-            { providerId: "asc" },
-          ],
+          orderBy: [{ domain: parsed.order }, { providerId: "asc" }],
           skip: offset,
           take: parsed.limit + 1,
         });
@@ -250,7 +208,6 @@ export async function listDomains(
             domain: row.domain,
             provider_id: row.providerId,
             verified: row.domainVerified === true,
-            dns_record: null,
           })),
           cursor:
             rows.length > parsed.limit
@@ -279,14 +236,13 @@ export async function manageDomain(
   prisma: PrismaClient,
   config: AuthConfiguration,
   context: ServiceContext,
-  operation: "register" | "verify",
   domain: string,
 ) {
   const audit = new AuditService(prisma, createPolicyCache(prisma));
   return auditedOperation(
     audit,
     context,
-    { action: `operator.domain.${operation}` },
+    { action: "operator.domain.register" },
     async () => {
       const caller = requirePermission(context, "admin");
       requireCookie(context);
@@ -294,7 +250,6 @@ export async function manageDomain(
         where: { id: caller.organizationId },
       });
       return enrollDomain(prisma, config, context, {
-        operation,
         organization: organization.slug,
         domain,
       });

@@ -69,6 +69,7 @@ model Installation {
   osUser         String       @map("os_user")
   platform       String
   arch           String
+  hookSha256     String?      @map("hook_sha256")
   toolsEnabled   Boolean      @default(true) @map("tools_enabled")
   firstSeenAt    DateTime     @default(now()) @map("first_seen_at") @db.Timestamptz
   lastSeenAt     DateTime     @default(now()) @map("last_seen_at") @db.Timestamptz
@@ -153,6 +154,19 @@ model ApiKeyOwner {
   @@unique([organizationId, keyId, userId])
   @@index([organizationId, userId])
   @@map("api_key_owner")
+}
+
+model ApiKeySecret {
+  apiKeyId       String   @id @map("api_key_id")
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")
+  ciphertext     Bytes
+  iv             Bytes
+  tag            Bytes
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([organizationId, userId])
+  @@map("api_key_secret")
 }
 
 model RedactionRun {
@@ -243,18 +257,21 @@ model OrganizationSettings {
   @@map("organization_settings")
 }
 
-model DashboardProfile {
-  id             String   @id @db.Uuid
-  organizationId String   @map("organization_id")
-  userId         String   @map("user_id")
-  name           String
-  definition     Json
-  revision       Int      @default(0)
-  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
+model Dashboard {
+  id              String   @id @db.Uuid
+  organizationId  String   @map("organization_id")
+  createdByUserId String   @map("created_by_user_id")
+  name            String
+  description     String   @default("")
+  definition      Json
+  revision        Int      @default(0)
+  isDefault       Boolean  @default(false) @map("is_default")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   @@unique([organizationId, id])
-  @@index([organizationId, userId])
-  @@map("dashboard_profile")
+  @@index([organizationId, name])
+  @@map("dashboard")
 }
 
 model TraceSessionControl {
@@ -286,6 +303,7 @@ model TraceSessionControl {
   parentSessionId            String?               @map("parent_session_id") @db.Uuid
   parentRelation             ParentRelation?       @map("parent_relation")
   parentNativeRef            String?               @map("parent_native_ref")
+  parentToolUseId            String?               @map("parent_tool_use_id") @db.VarChar(73)
   purgedAt                   DateTime?             @map("purged_at") @db.Timestamptz
   purgedByUserId             String?               @map("purged_by_user_id")
   purgeReason                String?               @map("purge_reason")
@@ -299,11 +317,25 @@ model TraceSessionControl {
   redactionEvents            RedactionEvent[]
   rescanTargets              RedactionRunSession[]
   embeddingState             EmbeddingState?
+  spawns                     TraceSpawnControl[]
 
   @@id([organizationId, id])
   @@unique([organizationId, harness, nativeIdentity])
   @@index([organizationId, publishedRevision])
   @@map("trace_session_control")
+}
+
+/// A parent transcript's record of the tool call that started a child session, kept
+/// until the child exists so `parent_tool_use_id` resolves in either arrival order.
+model TraceSpawnControl {
+  organizationId      String              @map("organization_id")
+  parentSessionId     String              @map("parent_session_id") @db.Uuid
+  childNativeIdentity String              @map("child_native_identity") @db.VarChar(73)
+  toolUseId           String              @map("tool_use_id") @db.VarChar(73)
+  parent              TraceSessionControl @relation(fields: [organizationId, parentSessionId], references: [organizationId, id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([organizationId, parentSessionId, childNativeIdentity])
+  @@map("trace_spawn_control")
 }
 
 model TraceSourceAdmission {

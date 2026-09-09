@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { copy } from "./src/copy";
 
+const apiOrigin =
+  process.env.AGENTCOMMONS_API_ORIGIN ?? "http://localhost:3000";
 const escape = (value: string) =>
   value
     .replaceAll("&", "&amp;")
@@ -31,11 +33,29 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
-    proxy: {
-      "/api": "http://localhost:3000",
-      "/auth": "http://localhost:3000",
-      "/mcp": "http://localhost:3000",
-    },
+    proxy: Object.fromEntries(
+      ["/api", "/auth", "/mcp"].map((path) => [
+        path,
+        {
+          target: apiOrigin,
+          // The API only accepts browser writes from its own public origin; the dev
+          // server stands in for that origin, whatever port it runs on.
+          configure: (proxy: {
+            on(
+              event: "proxyReq",
+              listener: (request: {
+                setHeader(name: string, value: string): void;
+              }) => void,
+            ): void;
+          }) => {
+            proxy.on("proxyReq", (request) => {
+              request.setHeader("origin", apiOrigin);
+              request.setHeader("referer", `${apiOrigin}/`);
+            });
+          },
+        },
+      ]),
+    ),
   },
   build: { outDir: "dist", sourcemap: true, target: "es2022" },
 });

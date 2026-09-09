@@ -8,6 +8,7 @@ import {
   nullableTextSchema,
   sessionIdSchema,
   utcDateTimeSchema,
+  sha256Schema,
 } from "./common.js";
 
 export const sourceRecordSchema = z.strictObject({
@@ -22,6 +23,21 @@ export const observedCommitSchema = z.strictObject({
   author: z.string(),
   timestamp: utcDateTimeSchema.nullable(),
 });
+/** The bundle digests a shim reports; they match `hookManifestSchema` when current. */
+export const hookIdentitySchema = z.strictObject({
+  sha256: sha256Schema,
+  extensionSha256: sha256Schema.nullable(),
+});
+/** `/hook/manifest.json`: the artifacts an instance serves and expects installations to run. */
+export const hookManifestSchema = z.strictObject({
+  version: z.string().min(1).max(64),
+  sha256: sha256Schema,
+  url: z.string().min(1),
+  extensionSha256: sha256Schema,
+  extensionUrl: z.string().min(1),
+});
+export type HookIdentity = z.infer<typeof hookIdentitySchema>;
+export type HookManifest = z.infer<typeof hookManifestSchema>;
 export const ingestEnvelopeSchema = z
   .strictObject({
     envelopeVersion: z.literal(2),
@@ -32,6 +48,8 @@ export const ingestEnvelopeSchema = z
     start: z.strictObject({ resume: z.boolean() }).nullable().default(null),
     batchId: sessionIdSchema,
     installationId: sessionIdSchema,
+    /** Digests of the shim files that produced this batch; the server records them per installation. */
+    hook: hookIdentitySchema,
     sentAt: utcDateTimeSchema,
     sourcePos: nonnegativeIntegerSchema,
     context: ingestContextSchema,

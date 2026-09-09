@@ -20,6 +20,7 @@ export type {
   NormalizerContext,
   SessionDelta,
   NativeLink,
+  NativeSpawn,
   ResultSource,
 } from "./types.js";
 

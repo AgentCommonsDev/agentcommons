@@ -29,6 +29,7 @@ function envelope(
 ): IngestEnvelope {
   return {
     envelopeVersion: 2,
+    hook: { sha256: "a".repeat(64), extensionSha256: null },
     harness,
     harnessSessionId: native,
     behavior: "sync",

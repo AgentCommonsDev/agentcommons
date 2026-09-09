@@ -6,9 +6,9 @@ import { expect, it } from "vitest";
 import { z } from "zod";
 
 // Paid native providers are opt-in; the nightly/adapter workflow runs this exact test.
-// @req R-HRN-08
+// @req R-HRN-08 @req R-MCP-07
 it.runIf(process.env.LIVE_HARNESS_CANARY === "1")(
-  "ingests all four live native sessions, displays them in the dashboard, and lets an agent find them through MCP",
+  "ingests all four live native sessions, displays them in the dashboard, lets an agent find them through MCP, and sees each MCP-capable harness use the tools natively",
   async () => {
     const output = resolve(
       process.env.CANARY_OUTPUT ?? "test-results/live-canary",
@@ -42,12 +42,29 @@ it.runIf(process.env.LIVE_HARNESS_CANARY === "1")(
           passed: z.literal(true),
           completed_calls: z.number().min(8),
         }),
+        // Each hooked native session completed search, get, sql and dashboard_render
+        // through the installed registration (pi through the extension's tool bridge).
+        native_tools: z
+          .array(
+            z.object({
+              harness: z.enum(["CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"]),
+              supported: z.literal(true),
+              passed: z.literal(true),
+              session_id: z.uuid(),
+              tool_errors: z.array(z.unknown()).length(0),
+              audit_errors: z.array(z.unknown()).length(0),
+            }),
+          )
+          .length(4),
       })
       .parse(
         JSON.parse(await readFile(resolve(output, "report.json"), "utf8")),
       );
     expect(new Set(report.harnesses.map((item) => item.harness)).size).toBe(4);
     expect(new Set(report.harnesses.map((item) => item.session_id)).size).toBe(
+      4,
+    );
+    expect(new Set(report.native_tools.map((item) => item.harness)).size).toBe(
       4,
     );
   },

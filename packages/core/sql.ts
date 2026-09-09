@@ -34,6 +34,25 @@ export const traceViews = [
   "metrics_outcomes",
   "metrics_own_zero_results",
 ] as const;
+/** Vector views that exist for every caller but are visible only with embeddings enabled. */
+export const traceEmbeddingViews = [
+  "message_chunks",
+  "session_embeddings",
+] as const;
+/** Vector distance functions the guard admits only with embeddings enabled. */
+export const traceVectorFunctions = ["cosineDistance", "L2Distance"] as const;
+const vectorFunctions = new Set<string>(
+  traceVectorFunctions.map((name) => name.toLowerCase()),
+);
+/** The guard's rejection when a query needs embeddings the caller does not have; adapters add who can change that. */
+export const embeddingsRequiredMessage = (capability: string) =>
+  `${capability} needs embeddings, which are not enabled for this organization. Use search_messages(q='words') for keyword search.`;
+export {
+  traceViewCatalog,
+  traceColumnDescriptions,
+  type TraceViewName,
+  type TraceViewDescription,
+} from "./schema-catalog.js";
 
 /** Reviewed scalar/aggregate functions; never table, network or file functions. */
 export const traceSqlFunctions = [
@@ -244,11 +263,20 @@ const nodes = new Set([
   "Current",
   "Offset",
   "DataType",
+  "QueryParameter",
 ]);
+/** ClickHouse spells parameter types with optional whitespace; compare a canonical form. */
+const canonicalType = (value: string) =>
+  value.replaceAll(/\s+/g, "").toLowerCase();
 export class TraceSqlError extends Error {
+  /**
+   * @param capability the vector view, table function or function the query used while
+   * embeddings were off, so the server can say why they are off; null for every other rejection.
+   */
   constructor(
     message: string,
     readonly position: number | null = null,
+    readonly capability: string | null = null,
   ) {
     super(message);
   }
@@ -276,16 +304,36 @@ function visit(
     )
       visit(entry, callback);
 }
-function fail(node: Record<string, unknown>, message: string): never {
+function fail(
+  node: Record<string, unknown>,
+  message: string,
+  capability: string | null = null,
+): never {
   const offset = object(object(node.location)?.start)?.offset;
   throw new TraceSqlError(
     message,
     typeof offset === "number" ? offset + 1 : null,
+    capability,
   );
 }
+/** A vector capability was used without embeddings: name it instead of a generic rejection. */
+function failEmbeddings(
+  node: Record<string, unknown>,
+  capability: string,
+): never {
+  fail(node, embeddingsRequiredMessage(capability), capability);
+}
 
-/** Serialize the vetted AST so syntax discarded by the parser never reaches the server. */
-export function guardTraceSql(sql: string, embeddings = false): string {
+/**
+ * Serialize the vetted AST so syntax discarded by the parser never reaches the server.
+ * `parameters` maps declared ClickHouse query parameters (dashboard variables) to their
+ * required types; every other `{name:Type}` reference is rejected.
+ */
+export function guardTraceSql(
+  sql: string,
+  embeddings = false,
+  parameters: Readonly<Record<string, string>> = {},
+): string {
   if (new TextEncoder().encode(sql).length > 20 * 1024)
     throw new TraceSqlError("Keep the query within 20 KB.");
   let ast: Statement[];
@@ -334,6 +382,8 @@ export function guardTraceSql(sql: string, embeddings = false): string {
     if (node.type === "TableExpression" && node.table_function !== undefined) {
       const fn = object(node.table_function);
       const name = fn?.name;
+      if (!embeddings && name === "similar_sessions")
+        failEmbeddings(node, "similar_sessions");
       const expected =
         name === "search_messages"
           ? ["q"]
@@ -375,22 +425,46 @@ export function guardTraceSql(sql: string, embeddings = false): string {
     if (node.type === "TableIdentifier") {
       const name = typeof node.name === "string" ? node.name : "";
       if (
+        !embeddings &&
+        (node.database === undefined || node.database === "api_ro") &&
+        (traceEmbeddingViews as readonly string[]).includes(name) &&
+        !bindings.has(name)
+      )
+        failEmbeddings(node, name);
+      if (
         (node.database !== undefined && node.database !== "api_ro") ||
         (!allowedViews.has(name) &&
           !(
             embeddings &&
-            ["message_chunks", "session_embeddings"].includes(name)
+            (traceEmbeddingViews as readonly string[]).includes(name)
           ) &&
           !(node.database === undefined && bindings.has(name)))
       )
         fail(node, "Select from the views listed in the schema browser.");
     }
+    if (node.type === "QueryParameter") {
+      const name = typeof node.name === "string" ? node.name : "";
+      const declared = parameters[name];
+      if (declared === undefined)
+        fail(
+          node,
+          `Parameter {${name}} is not declared. Declare a dashboard variable with that name or remove it.`,
+        );
+      else if (
+        canonicalType(
+          typeof node.param_type === "string" ? node.param_type : "",
+        ) !== canonicalType(declared)
+      )
+        fail(node, `Parameter {${name}} must use the type ${declared}.`);
+    }
     if (node.type === "Function") {
       const name = typeof node.name === "string" ? node.name.toLowerCase() : "";
+      if (!embeddings && vectorFunctions.has(name))
+        failEmbeddings(node, typeof node.name === "string" ? node.name : name);
       if (
         !parameterizedViews.has(node) &&
         !allowedFunctions.has(name) &&
-        !(embeddings && ["cosinedistance", "l2distance"].includes(name))
+        !(embeddings && vectorFunctions.has(name))
       )
         fail(
           node,

@@ -53,6 +53,49 @@ interface MessageBranch {
   message: Message;
   results: Message[];
 }
+/** The child-session fields a transcript needs to place a run under its spawning call. */
+export interface SpawnedRun {
+  session_id: string;
+  parent_session_id: string | null;
+  parent_tool_use_id: string | null;
+}
+interface SpawnPlacements<Run extends SpawnedRun> {
+  /** Runs keyed by the `message_id` of the one loaded `TOOL_USE` that spawned them. */
+  placed: Map<string, Run[]>;
+  /** Runs whose spawning call is unknown, ambiguous, or not on a loaded page. */
+  unplaced: Run[];
+}
+/** A run nests under its recorded spawning call only when exactly one loaded call has that id. */
+export function spawnPlacements<Run extends SpawnedRun>(
+  messages: readonly Message[],
+  runs: readonly Run[],
+  parentId: string,
+): SpawnPlacements<Run> {
+  const calls = new Map<string, Message[]>();
+  for (const message of messages) {
+    if (message.kind !== "TOOL_USE" || !message.tool_use_id) continue;
+    const group = calls.get(message.tool_use_id) ?? [];
+    group.push(message);
+    calls.set(message.tool_use_id, group);
+  }
+  const placed = new Map<string, Run[]>();
+  const unplaced: Run[] = [];
+  for (const run of runs) {
+    if (run.parent_session_id !== parentId) continue;
+    const matching = run.parent_tool_use_id
+      ? calls.get(run.parent_tool_use_id)
+      : undefined;
+    const call = matching?.length === 1 ? matching[0] : undefined;
+    if (!call) {
+      unplaced.push(run);
+      continue;
+    }
+    const group = placed.get(call.message_id) ?? [];
+    group.push(run);
+    placed.set(call.message_id, group);
+  }
+  return { placed, unplaced };
+}
 
 /** A recorded tool ID supports nesting only when its call is unambiguous. */
 export function messageBranches(messages: readonly Message[]): MessageBranch[] {

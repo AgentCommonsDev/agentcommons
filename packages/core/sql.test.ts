@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
-import { guardTraceSql, parseTraceSql, TraceSqlError } from "./sql.js";
+import {
+  embeddingsRequiredMessage,
+  guardTraceSql,
+  parseTraceSql,
+  TraceSqlError,
+} from "./sql.js";
 
 // @req R-SQL-01
 it("validates native ClickHouse SELECT, CTE, JSON, aggregate and window syntax and serializes its vetted AST", () => {
@@ -52,5 +57,41 @@ it("reports original syntax locations and gates vector functions without changin
   const sql = "SELECT cosineDistance([1,2],[2,3])";
   expect(() => guardTraceSql(sql)).toThrow(TraceSqlError);
   expect(guardTraceSql(sql, true)).toContain("cosineDistance");
+  // Without embeddings every vector reference names itself and the missing capability,
+  // so an assistant learns why instead of hunting for a syntax error.
+  for (const [vector, capability] of [
+    [
+      "SELECT * FROM similar_sessions(source='00000000-0000-0000-0000-000000000000',max_rows=5)",
+      "similar_sessions",
+    ],
+    ["SELECT count() FROM message_chunks", "message_chunks"],
+    ["SELECT count() FROM api_ro.session_embeddings", "session_embeddings"],
+    [sql, "cosineDistance"],
+    ["SELECT L2Distance([1],[2])", "L2Distance"],
+  ] as const) {
+    const error: unknown = (() => {
+      try {
+        guardTraceSql(vector);
+        return null;
+      } catch (caught) {
+        return caught;
+      }
+    })();
+    expect(error).toBeInstanceOf(TraceSqlError);
+    if (error instanceof TraceSqlError) {
+      expect(error.capability).toBe(capability);
+      expect(error.message).toBe(embeddingsRequiredMessage(capability));
+      expect(error.position).toBeGreaterThan(0);
+    }
+  }
+  // A CTE may reuse a vector view's name; that is the caller's own binding, not the view.
+  expect(
+    guardTraceSql(
+      "WITH message_chunks AS (SELECT 1 AS x) SELECT x FROM message_chunks",
+    ),
+  ).toContain("message_chunks");
+  expect(() =>
+    guardTraceSql("SELECT * FROM similar_sessions(q='x')", true),
+  ).toThrow("Use search_messages");
   expect(() => guardTraceSql(`SELECT '${"x".repeat(21000)}'`)).toThrow("20 KB");
 });
