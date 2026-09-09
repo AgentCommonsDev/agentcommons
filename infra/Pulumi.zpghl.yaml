@@ -25,9 +25,9 @@ config:
   agentcommons:clickhouseAdminPassword:
     secure: v1:KteTkW0Ag+ZyTD3s:WhQu//J1pXc38a8PAD3KSuiprueyPekt3l/5oskSEgLMSsUTobeHal2AE4+xhpSi
   agentcommons:clickhouseWriterPassword:
-    secure: v1:FizHNuYL0h13AKQ8:7G4VxlgMdgNTjKYJG/uxTPKfXo+vR+GTpePlydwfrFTO3QluZmRlUWh8WV/3jWzb
+    secure: v1:vdMkPKoIYcdHgMzl:YvvudBG74dk3qQH7WMaivYc0HwKsjXUtRWsF8c1zs5lnVjNciiah24ajYxAQEe0g5fJ0/2LNOO3NFjfnDmoy7Owqtg==
   agentcommons:clickhouseAccessPassword:
-    secure: v1:3lDSztI/bowRnR/R:UKRzFl9V2CB81f7QXm5VUVXSXwh1agy81kT9YAhZDZjEinx0HxRHGkh2TjT8YefO
+    secure: v1:qSHJEYFyb9f/bgQ2:FpnfJpBA+7SEVl9TCVKUIKrFJTQ67MfZVlDYMoaC5g2t1QdrLXrfhxjXbUyoDS8M+krJ0+xnhnwn/B1wZjgjOgh1pQ==
   agentcommons:betterAuthSecret:
     secure: v1:XKkNsxNqScnwTKCP:76kNuMapHQ6vt1aSsJgund91wgemm2AserrjiuqAea0N8cl5FiDiwxaNesa5v0RoVCXptIyITetE4BWc1m2AUddXfuidSCNzyjddDvw6zFk=
   agentcommons:clickhouseReaderSecret:
@@ -38,7 +38,7 @@ config:
     AUTH_GOOGLE_CLIENT_SECRET:
       secure: v1:lVKal8J1P0eMMfsW:bCTqhx36gktXclV+akSXfiGVI4ojzEItkL9cmkYBuAPcUvdDIVzAzU5/ItFnuphgSt1/
   agentcommons:alarmEmail: raphael@zeropath.com
-  agentcommons:traceStore: clickhouse-cloud
+  agentcommons:traceStore: local
   agentcommons:clickhouseCloudUrl: https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443
   agentcommons:clickhouseCloudPassword:
     secure: v1:20tiBf/T856G67vN:oIYLYthzOkzwjuA+ldImQqIVPBg6N6siFS3Z4vk=

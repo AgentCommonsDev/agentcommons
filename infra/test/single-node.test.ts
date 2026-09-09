@@ -28,6 +28,8 @@ const scripts = [
   "single-node/lib.sh",
   "single-node/apply.sh",
   "single-node/bootstrap.sh",
+  "single-node-run.sh",
+  "single-node/isolation-check.sh",
   "clickhouse-cloud-egress.sh",
 ];
 let exported: Record<string, unknown> = {};
@@ -343,5 +345,34 @@ describe("single-node resource contract", () => {
     expect(bootstrap).toContain("/auth/reset-password");
     expect(bootstrap).toContain("/auth/sign-in/email");
     expect(bootstrap).toContain("/root/agentcommons");
+    expect(bootstrap).toContain("--key)");
+    expect(bootstrap).toContain("/api/v1/me/keys");
+    expect(bootstrap).toContain('permissions: {sessions: ["read", "ingest"]}');
+    const operatorBootstrap = readFileSync(
+      new URL("../scripts/single-node-bootstrap.sh", import.meta.url),
+      "utf8",
+    );
+    // The operator's checkout ships on-host scripts through the release bucket (lib.sh).
+    expect(operatorBootstrap).toContain(
+      'ship_run "$repo/infra/scripts/single-node/bootstrap.sh" "$@"',
+    );
+    const lib = readFileSync(
+      new URL("../scripts/single-node/lib.sh", import.meta.url),
+      "utf8",
+    );
+    expect(lib).toContain('"s3://$bucket/scripts/$name"');
+    expect(lib).toContain("/opt/agentcommons/$name $arguments");
+    expect(bootstrap).toContain('state="$state_dir/owner-$organization.json"');
+    const isolation = readFileSync(
+      new URL("../scripts/single-node/isolation-check.sh", import.meta.url),
+      "utf8",
+    );
+    for (const text of [
+      "/api/v1/sessions?limit=50",
+      '{"sql":"SELECT count() AS n FROM sessions"}',
+      "/api/v1/sessions/$first",
+      "LEAK:",
+    ])
+      expect(isolation).toContain(text);
   });
 });

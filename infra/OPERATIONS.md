@@ -120,13 +120,22 @@ command is the update path: run it with a newer commit. After a configuration ch
 run `pulumi up` and then the release script with the current commit to re-render `.env`
 and restart. The first build takes about ten to fifteen minutes on a `t4g.large`.
 
-The bootstrap script seeds the owner and organization with `db:seed` (idempotent),
+The bootstrap wrapper copies this checkout's `infra/scripts/single-node/bootstrap.sh`
+to the release bucket and runs it on the host, so bootstrap tooling follows the operator's
+checkout while the application stays the released code. It seeds the owner and organization with `db:seed` (idempotent),
 completes the owner's one-time setup link with a generated password through the native
 password endpoints, signs in, and uses that owner session for `db:domain`, which
 allowlists each Google sign-in domain for the organization (ADR 0049). The link and
 password exist only in `/root/agentcommons/owner-bootstrap.json` on the host (mode 600);
 SSM command output never contains them. The owner normally signs in with Google; the
 stored password is a fallback, and `pnpm db:recover --email` issues a new setup link.
+`infra/scripts/single-node-run.sh isolation-check.sh --organization zpghl --probe-organization
+isolation-probe --probe-admin someone@example.com` creates a second organization on the
+host and proves its owner sees none of the first organization's sessions through the
+session list, SQL and a direct fetch (exit 2 while the first organization has no sessions).
+`--key NAME` (repeatable) mints an organization API key with `sessions` read and ingest
+through the owner session once and stores it in `/root/agentcommons/NAME-key`; re-runs
+skip keys whose file exists. Revoke such keys on Admin → Keys when done.
 With `AUTH_SIGNUP_MODE=invite`, a Google account may sign in only when its exact email
 domain is enrolled by exactly one organization and, if `AUTH_ALLOWED_EMAIL_DOMAINS` is
 set, also listed there; it then joins that organization as `member`.
@@ -213,6 +222,21 @@ release ends with a `dictGet` probe from Cloud that fails the release if Cloud c
 reach PostgreSQL. The egress list is the reviewed snapshot
 `infra/compose/clickhouse-cloud-egress.json`; when ClickHouse announces new addresses,
 run `infra/scripts/clickhouse-cloud-egress.sh`, review the diff, `pulumi up` and release.
+Cloud mode is not usable yet (2026-09-09): the search implementation stems tokens with
+`stem(token,'english')` in `searchTermsSql` (`packages/traces/src/views/search.ts`), used
+by the `message_terms` text index on `ac_trace.messages` and by `api_ro.search_messages`
+on both the indexed and the query side. ClickHouse Cloud locks
+`allow_experimental_nlp_functions=0` on the service (changing it per query or per user
+returns SETTING_CONSTRAINT_VIOLATION), so the migration fails at that index. The text
+and vector indexes themselves are permitted. Cloud also requires an uppercase letter
+and a special character in every `CREATE USER` password, which the shared
+`CLICKHOUSE_PASSWORD_SUFFIX` now satisfies for the view owner, the per-caller reader
+principals and the validated writer/access secrets. Plan: a search change removes the
+`stem()` dependency (data-driven, verified against `fixtures/search-golden.yaml`), then
+the stack switches to `traceStore: clickhouse-cloud` on a later release; the zpghl stack
+runs `traceStore: local` until then, and the objects the partial migration created on
+the Cloud service (`ac_trace`, `api_ro`, the three `ac_trace_*` users, ten tables) are
+left in place for that switch.
 Cloud is billed by ClickHouse separately from the AWS estimate below; egress from Cloud to
 this host is small (dictionary lookups). The workstation's resolver sometimes fails for
 `*.clickhouse.cloud`; `dig @1.1.1.1` and `curl --resolve` work around it.

@@ -86,6 +86,8 @@ export const auditEventSchema = z.strictObject({
   ts: utcDateTimeSchema,
   request_id: z.string(),
   user_id: identityIdSchema.nullable(),
+  /** The acting user's email at read time, so admins never have to decode ids. */
+  user_email: emailSchema.nullable(),
   api_key_id: identityIdSchema.nullable(),
   installation_id: sessionIdSchema.nullable(),
   auth_method: z.string(),

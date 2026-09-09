@@ -140,6 +140,17 @@ export function singleNodeStack(
   const cloudEgress = cloud
     ? clickhouseCloudEgress(cloud.provider, cloud.region)
     : [];
+  // ClickHouse Cloud accepts only passwords with an uppercase letter and a special
+  // character; the migration creates the writer and access users with these values.
+  const cloudPolicy = z
+    .string()
+    .regex(/[A-Z]/, "ClickHouse Cloud passwords need an uppercase letter.")
+    .regex(
+      /[^A-Za-z0-9]/,
+      "ClickHouse Cloud passwords need a special character.",
+    );
+  const policed = (value: pulumi.Output<string>) =>
+    cloud ? value.apply((password) => cloudPolicy.parse(password)) : value;
   const cloudPassword = cloud ? secrets.clickhouseCloudPassword : undefined;
   if (cloud && cloudPassword === undefined)
     throw new Error(
@@ -184,8 +195,8 @@ export function singleNodeStack(
         z.string().min(32).parse(value),
       ),
       clickhouseAdmin: secrets.clickhouseAdminPassword,
-      clickhouseWriter: secrets.clickhouseWriterPassword,
-      clickhouseAccess: secrets.clickhouseAccessPassword,
+      clickhouseWriter: policed(secrets.clickhouseWriterPassword),
+      clickhouseAccess: policed(secrets.clickhouseAccessPassword),
       clickhouseReader: secrets.clickhouseReaderSecret,
       clickhouseCloud: cloudPassword ?? pulumi.output(""),
       additional: secrets.additional,

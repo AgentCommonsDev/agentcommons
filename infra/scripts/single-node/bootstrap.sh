@@ -1,36 +1,50 @@
 #!/usr/bin/env bash
-# Runs on the host as root (invoked by infra/scripts/single-node-bootstrap.sh). Seeds the
-# first owner and organization with the operator seed command, then enrolls Google
-# sign-in domains with the operator domain command, which requires an owner session:
-# the owner's one-time setup link is completed with a generated password through the
-# native password endpoints and the resulting session cookie is handed to the CLI. The
-# link and password are kept only in /root/agentcommons/owner-bootstrap.json (mode 600)
-# and are never printed. Re-running reuses that credential.
+# Runs on the host as root (shipped and invoked by infra/scripts/single-node-bootstrap.sh).
+# Seeds the first owner and organization with the operator seed command, then enrolls
+# Google sign-in domains with the operator domain command, which requires an owner
+# session: the owner's one-time setup link is completed with a generated password
+# through the native password endpoints and the resulting session cookie is handed to
+# the CLI. With --key NAME the same session mints an organization API key (sessions
+# read and ingest) once and stores it in /root/agentcommons/NAME-key. The link and
+# password live in /root/agentcommons/owner-<organization>.json; those files and the keys
+# are mode 600 and are never printed.
+# Re-running reuses the stored credential and skips keys that already exist.
 set -euo pipefail
 usage() {
-  echo "Usage: $0 --admin EMAIL --organization SLUG --name NAME [--domain DOMAIN]..." >&2
+  echo "Usage: $0 --admin EMAIL --organization SLUG --name NAME [--domain DOMAIN]... [--key NAME]..." >&2
   exit 2
 }
 admin= organization= display=
 domains=()
+keys=()
 while [ $# -gt 0 ]; do
   case $1 in
   --admin) admin=${2:?} && shift 2 ;;
   --organization) organization=${2:?} && shift 2 ;;
   --name) display=${2:?} && shift 2 ;;
   --domain) domains+=("${2:?}") && shift 2 ;;
+  --key) keys+=("${2:?}") && shift 2 ;;
   *) usage ;;
   esac
+done
+for key in ${keys[@]+"${keys[@]}"}; do
+  [[ $key =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || {
+    echo "Key names are lowercase letters, digits and dashes: $key" >&2
+    exit 2
+  }
 done
 [ -n "$admin" ] && [ -n "$organization" ] && [ -n "$display" ] || usage
 
 app=${AGENTCOMMONS_APP_DIR:-/opt/agentcommons/app}
 state_dir=/root/agentcommons
-state="$state_dir/owner-bootstrap.json"
+# One state file per organization, so further organizations never overwrite the first.
+state="$state_dir/owner-$organization.json"
 local_api=http://127.0.0.1:3000
 cd "$app"
+# Only the api service is addressed, so the base file suffices whatever the release's
+# override set is.
 compose() {
-  docker compose -p agentcommons -f docker-compose.yml -f docker-compose.caddy.yml "$@"
+  docker compose -p agentcommons -f docker-compose.yml "$@"
 }
 operator() {
   compose exec -T api pnpm --filter @agentcommons/api exec tsx "$@" </dev/null | tail -n 1
@@ -97,6 +111,17 @@ for domain in ${domains[@]+"${domains[@]}"}; do
     rm -f /tmp/owner.cookie
     exit $status' -- "$organization" "$domain" | tail -n 1)
   echo "Sign-in domain $domain: $result"
+done
+for key in ${keys[@]+"${keys[@]}"}; do
+  target="$state_dir/$key-key"
+  if [ -s "$target" ]; then
+    echo "API key $key already exists in $target; not minting another."
+    continue
+  fi
+  post /api/v1/me/keys "$(jq -cn --arg name "$key" '{name: $name, permissions: {sessions: ["read", "ingest"]}}')" \
+    -H "Cookie: $cookie" | jq -er '.key' >"$target.new"
+  mv "$target.new" "$target"
+  echo "API key $key (sessions read and ingest) is in $target on this host (root only)."
 done
 post /auth/sign-out '{}' -H "Cookie: $cookie" -o /dev/null || true
 echo "Organization $organization ($(jq -r .organization_id <<<"$seed")) has owner $admin."

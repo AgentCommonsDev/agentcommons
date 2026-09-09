@@ -53,10 +53,16 @@ try {
     postgresControlUrl: control.toString(),
   });
   process.stdout.write("ClickHouse schema migration completed.\n");
-} catch {
-  // Native migration errors may quote DDL containing role passwords.
+} catch (error) {
+  // Native migration errors may quote DDL containing role passwords or the control URL;
+  // mask those and print the rest so the failing statement is actionable.
+  const message = error instanceof Error ? error.message : String(error);
+  const masked = message
+    .replace(/\b(BY|PASSWORD)\s+'[^']*'/g, "$1 '***'")
+    .replace(/postgres(?:ql)?:\/\/[^\s'"]+/g, "postgres://***")
+    .slice(0, 1200);
   process.stderr.write(
-    "ClickHouse schema migration failed. Verify its configuration and database connectivity.\n",
+    `ClickHouse schema migration failed. Verify its configuration and database connectivity.\n${masked}\n`,
   );
   process.exitCode = 1;
 }

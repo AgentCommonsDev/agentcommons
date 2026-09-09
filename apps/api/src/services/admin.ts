@@ -344,12 +344,28 @@ export class AdminService {
           ...(position ? { cursor: { id: position.id }, skip: 1 } : {}),
           take: request.limit + 1,
         });
+        const userIds = [
+          ...new Set(
+            rows.flatMap((row) => (row.userId === null ? [] : [row.userId])),
+          ),
+        ];
+        const emails = new Map(
+          (userIds.length
+            ? await this.dependencies.prisma.user.findMany({
+                where: { id: { in: userIds } },
+                select: { id: true, email: true },
+              })
+            : []
+          ).map((user) => [user.id, user.email]),
+        );
         const items = rows.slice(0, request.limit).map((row) => ({
           id: row.id,
           organization_id: row.organizationId,
           ts: row.ts.toISOString(),
           request_id: row.requestId,
           user_id: row.userId,
+          user_email:
+            row.userId === null ? null : (emails.get(row.userId) ?? null),
           api_key_id: row.apiKeyId,
           installation_id: row.installationId,
           auth_method: row.authMethod,

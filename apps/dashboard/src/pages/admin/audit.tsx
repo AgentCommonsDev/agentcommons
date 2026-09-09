@@ -115,11 +115,19 @@ export function AuditPage() {
       {
         accessorKey: "user_id",
         header: text.user,
-        cell: ({ row }) => (
-          <span className="font-mono text-xs">
-            {textValue(row.original.user_id)}
-          </span>
-        ),
+        cell: ({ row }) =>
+          row.original.user_email ? (
+            <span
+              className="truncate text-sm"
+              title={row.original.user_id ?? undefined}
+            >
+              {row.original.user_email}
+            </span>
+          ) : (
+            <span className="font-mono text-xs">
+              {textValue(row.original.user_id)}
+            </span>
+          ),
       },
       {
         accessorKey: "status_code",

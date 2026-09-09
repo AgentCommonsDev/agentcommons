@@ -60,7 +60,6 @@ export function singleNodeFixture(extraConfig: Record<string, string> = {}) {
     false,
   );
   pulumi.runtime.setAllConfig({
-    ...extraConfig,
     "aws:region": "us-west-2",
     "agentcommons:deployment": "single-node",
     "agentcommons:hostname": "hooks.example.com",
@@ -84,6 +83,7 @@ export function singleNodeFixture(extraConfig: Record<string, string> = {}) {
         value,
       ]),
     ),
+    ...extraConfig,
   });
   return { mocksReady };
 }

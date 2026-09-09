@@ -35,6 +35,12 @@ export function sqlIdentifier(value: string): string {
 export function sqlString(value: string): string {
   return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 }
+/**
+ * ClickHouse Cloud accepts a password only with an uppercase letter and a special
+ * character. Every generated ClickHouse password carries this fixed suffix after its
+ * random or derived part, which keeps the entropy and satisfies the policy everywhere.
+ */
+export const CLICKHOUSE_PASSWORD_SUFFIX = "Aa!";
 export function tracePrincipal(
   caller: ReadAuthority,
   embeddings: boolean,
@@ -43,14 +49,18 @@ export function tracePrincipal(
 ) {
   if (!caller.userId)
     throw new Error("Trace readers require an authenticated issuing user.");
+  // The generation names the password scheme too: changing it creates fresh principals
+  // instead of colliding with users that hold an earlier password format.
   const generation = createHmac("sha256", secret)
-    .update("trace-reader-generation")
+    .update("trace-reader-generation:2")
     .digest("hex")
     .slice(0, 12);
   const username = `ac_${Buffer.from(caller.organizationId).toString("hex")}_${Buffer.from(caller.userId).toString("hex")}_${hasAdminAuthority(caller) ? "a" : "m"}_${embeddings ? "e" : "n"}_${saas ? "s" : "c"}_${generation}`;
   return {
     username,
-    password: createHmac("sha256", secret).update(username).digest("hex"),
+    password:
+      createHmac("sha256", secret).update(username).digest("hex") +
+      CLICKHOUSE_PASSWORD_SUFFIX,
   };
 }
 export async function queryTrace<Row extends Record<string, unknown>>(

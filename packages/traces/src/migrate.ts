@@ -1,7 +1,12 @@
 import { postgresTlsSql } from "./postgres.js";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
-import { createTraceClient, sqlIdentifier, sqlString } from "./client.js";
+import {
+  CLICKHOUSE_PASSWORD_SUFFIX,
+  createTraceClient,
+  sqlIdentifier,
+  sqlString,
+} from "./client.js";
 import { traceTables, auditColumns } from "./schema.js";
 import { controlAnalyticsTables } from "./views/control-analytics.js";
 import { securityStatements } from "./security.js";
@@ -63,7 +68,7 @@ export async function migrateTraces(
     await command(`CREATE DATABASE IF NOT EXISTS ${db}`);
     await command("CREATE DATABASE IF NOT EXISTS api_ro");
     await command(
-      `CREATE USER IF NOT EXISTS ${sqlIdentifier(owner)} IDENTIFIED WITH sha256_password BY ${sqlString(randomBytes(32).toString("hex"))} HOST NONE`,
+      `CREATE USER IF NOT EXISTS ${sqlIdentifier(owner)} IDENTIFIED WITH sha256_password BY ${sqlString(randomBytes(32).toString("hex") + CLICKHOUSE_PASSWORD_SUFFIX)} HOST NONE`,
     );
     await command(
       `CREATE USER IF NOT EXISTS ${sqlIdentifier(config.writerUsername)} IDENTIFIED WITH sha256_password BY ${sqlString(config.writerPassword)}`,

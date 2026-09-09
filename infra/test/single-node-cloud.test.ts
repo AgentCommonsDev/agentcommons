@@ -10,6 +10,8 @@ const { mocksReady } = singleNodeFixture({
   "agentcommons:clickhouseCloudUrl":
     "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
   "agentcommons:clickhouseCloudPassword": "cloud-issued-secret",
+  "agentcommons:clickhouseWriterPassword": "clickhouse-writer-fixture-Aa!",
+  "agentcommons:clickhouseAccessPassword": "clickhouse-access-fixture-Aa!",
 });
 const egress = z
   .object({
@@ -70,6 +72,8 @@ describe("single-node with the ClickHouse Cloud trace store", () => {
       CLICKHOUSE_POSTGRES_PORT: "5432",
       CLICKHOUSE_MIGRATION_USER: "default",
       CLICKHOUSE_MIGRATION_PASSWORD: "cloud-issued-secret",
+      CLICKHOUSE_WRITER_PASSWORD: "clickhouse-writer-fixture-Aa!",
+      CLICKHOUSE_ACCESS_PASSWORD: "clickhouse-access-fixture-Aa!",
       CLICKHOUSE_DATABASE: "ac_trace",
     });
     expect(values.DATABASE_TRACE_CONTROL_URL).toBe(

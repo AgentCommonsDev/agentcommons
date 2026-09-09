@@ -47,3 +47,16 @@ ssm_run() {
     return 1
   }
 }
+
+# ship_run <local script> <args...>: copies a script from this checkout to the host through
+# the release bucket and runs it there as root, so operator tooling follows the checkout
+# while the application stays the released code. Arguments are quoted for the remote shell.
+ship_run() {
+  local script=$1 name arguments
+  shift
+  bash -n "$script"
+  name=$(basename "$script")
+  aws s3 cp --region "$region" --only-show-errors "$script" "s3://$bucket/scripts/$name"
+  printf -v arguments '%q ' "$@"
+  ssm_run "AgentCommons $name" "aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/$name /opt/agentcommons/$name && chmod 0700 /opt/agentcommons/$name && /opt/agentcommons/$name $arguments"
+}

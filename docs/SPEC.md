@@ -1691,7 +1691,7 @@ REST: `GET`/`POST /dashboards`, `POST /dashboards/render`, `GET`/`DELETE /dashbo
 and `POST /dashboards/:id/default` (admin). MCP: `dashboard_list`, `dashboard_get`,
 `dashboard_render`, `dashboard_save` and `dashboard_delete` for read keys and
 `dashboard_set_default` for effective admins (§8.2). Both adapters call one service; each
-operation writes one audit event. Dashboards are a Prisma `Dashboard` control model
+operation writes one audit event. The audit page lists each event with the acting user's email (`user_email`, resolved at read time) beside the action, status and resources, so admins never decode ids. Dashboards are a Prisma `Dashboard` control model
 (organization and author foreign keys, immutable authorship, one default per
 organization); the personal `DashboardProfile` rows of ADR 0045 are dropped.
 
