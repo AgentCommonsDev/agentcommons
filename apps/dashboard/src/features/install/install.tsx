@@ -77,10 +77,28 @@ function InstallCommand({ apiKey }: { apiKey: string | null }) {
       {command !== null && (
         <p className="text-xs text-muted">{copy.install.command.secretHint}</p>
       )}
+      <p className="text-xs text-muted">{copy.install.run.shellHint}</p>
     </div>
   );
 }
-
+/** The small link under step 1 that swaps the create form for the picker and back. */
+function ModeSwitch({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="self-start rounded text-sm font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+    >
+      {children}
+    </button>
+  );
+}
 function Step({
   index,
   title,
@@ -127,9 +145,17 @@ export function Install() {
   const { organization, me } = useWorkspace();
   const refresh = useRefreshKeys(organization.id);
   const [machine, setMachine] = useState("");
-  const [secret, setSecret] = useState<string | null>(null);
-  // An existing key picked below (ADR 0051); a key created on this page takes precedence.
+  // The key created on this page: its value fills the command, its id preselects the picker.
+  const [created, setCreated] = useState<{ id: string; key: string } | null>(
+    null,
+  );
+  // The one-time secret panel stays open from creation until "I saved the key".
+  const [panelOpen, setPanelOpen] = useState(false);
+  // The key the step-3 command carries: created here or picked from existing keys (ADR 0051).
   const [picked, setPicked] = useState<string | null>(null);
+  // Step 1 shows one path at a time: the create form or the picker.
+  const [mode, setMode] = useState<"create" | "existing">("create");
+  const choosing = !panelOpen && mode === "existing";
   const create = useMutation({
     mutationFn: () =>
       createPersonalKey({
@@ -137,7 +163,9 @@ export function Install() {
         permissions: { sessions: ["ingest", "read"] },
       }),
     onSuccess: async (result) => {
-      setSecret(result.key);
+      setCreated({ id: result.metadata.id, key: result.key });
+      setPicked(result.key);
+      setPanelOpen(true);
       await refresh();
     },
   });
@@ -164,21 +192,44 @@ export function Install() {
       <ol className="flex flex-col gap-4">
         <Step
           index={1}
-          title={copy.install.key.title}
-          description={copy.install.key.description}
+          title={
+            choosing ? copy.install.key.chooseTitle : copy.install.key.title
+          }
+          description={
+            choosing
+              ? copy.install.key.chooseDescription
+              : copy.install.key.description
+          }
         >
-          {secret !== null ? (
+          {panelOpen && created !== null ? (
             <>
               <Alert variant="success">{copy.install.key.created}</Alert>
               <KeySecretPanel
-                secret={secret}
+                secret={created.key}
                 showCommand={false}
                 onDismiss={() => {
-                  setSecret(null);
+                  // Only the one-time reveal closes; the key stays selected for step 3.
+                  setPanelOpen(false);
+                  setMode("existing");
                   setMachine("");
                   create.reset();
                 }}
               />
+            </>
+          ) : choosing ? (
+            <>
+              <InstallKeyPicker onKey={setPicked} initialKeyId={created?.id} />
+              {/* A key made on this page is the key for this machine; no second one until reload. */}
+              {created === null && (
+                <ModeSwitch
+                  onClick={() => {
+                    setPicked(null);
+                    setMode("create");
+                  }}
+                >
+                  {copy.install.key.createNew}
+                </ModeSwitch>
+              )}
             </>
           ) : (
             <form
@@ -217,7 +268,16 @@ export function Install() {
             </form>
           )}
           {create.error !== null && <RequestError error={create.error} />}
-          {secret === null && <InstallKeyPicker onKey={setPicked} />}
+          {!panelOpen && !choosing && (
+            <ModeSwitch
+              onClick={() => {
+                create.reset();
+                setMode("existing");
+              }}
+            >
+              {copy.install.key.useExisting}
+            </ModeSwitch>
+          )}
         </Step>
         <Step
           index={2}
@@ -245,7 +305,7 @@ export function Install() {
           title={copy.install.run.title}
           description={copy.install.run.description}
         >
-          <InstallCommand apiKey={secret ?? picked} />
+          <InstallCommand apiKey={picked} />
         </Step>
         <Step
           index={4}

@@ -1,3 +1,4 @@
+import { agentInstructions } from "@agentcommons/core/format/install";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -53,7 +54,8 @@ it("reads the host package version from the CLI entry or an SDK host's dependenc
   expect(hostVersion(undefined)).toBeNull();
 });
 // @req R-HRN-05
-it("observes six native events, transports leaf changes, resume reasons and host metadata, and returns no host mutation", async () => {
+// @req R-INST-06
+it("adds the global guidance to the system prompt, observes six native events, transports leaf changes, resume reasons and host metadata, and returns no host mutation", async () => {
   const directory = mkdtempSync(join(tmpdir(), "agentcommons-pi-extension-"));
   writeFileSync(
     join(directory, "config.json"),
@@ -81,6 +83,7 @@ it("observes six native events, transports leaf changes, resume reasons and host
   } as unknown as ExtensionAPI;
   await extension(api);
   expect([...callbacks.keys()]).toEqual([
+    "before_agent_start",
     "session_start",
     "input",
     "tool_result",
@@ -88,6 +91,15 @@ it("observes six native events, transports leaf changes, resume reasons and host
     "session_tree",
     "session_shutdown",
   ]);
+  // The guidance block joins pi's system prompt; nothing else about the prompt changes.
+  const prompt = callbacks.get("before_agent_start");
+  expect(
+    prompt?.(
+      { systemPrompt: "host prompt" } as unknown as { reason?: string },
+      {} as ExtensionContext,
+    ),
+  ).toEqual({ systemPrompt: `host prompt\n\n${agentInstructions}` });
+  callbacks.delete("before_agent_start");
   let leaf = "previous-leaf";
   const context = {
     cwd: directory,
@@ -345,7 +357,7 @@ it("registers nothing and keeps capture when the server is unreachable or reject
   const unreachable = bridgeApi();
   await extension(unreachable.api);
   expect(unreachable.tools.size).toBe(0);
-  expect(unreachable.on).toHaveBeenCalledTimes(6);
+  expect(unreachable.on).toHaveBeenCalledTimes(7);
   const rejected = await mcpServer(() => ({
     status: 401,
     body: { code: "INVALID_API_KEY", message: "The API key is invalid." },
@@ -404,5 +416,5 @@ it("registers nothing and keeps capture when the server is unreachable or reject
   const capture = bridgeApi();
   await extension(capture.api);
   expect(capture.tools.size).toBe(0);
-  expect(capture.on).toHaveBeenCalledTimes(6);
+  expect(capture.on).toHaveBeenCalledTimes(7);
 });

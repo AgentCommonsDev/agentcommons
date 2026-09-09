@@ -15,6 +15,7 @@
     "@mariozechner/pi-coding-agent": "^0.73.1"
   },
   "devDependencies": {
+    "@agentcommons/core": "workspace:*",
     "@mariozechner/pi-coding-agent": "0.73.1"
   }
 }

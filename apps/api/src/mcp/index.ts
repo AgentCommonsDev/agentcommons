@@ -9,7 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { errorSchema } from "@agentcommons/core/schemas";
-import type { McpService } from "../services/mcp.js";
+import { serverInstructions, type McpService } from "../services/mcp.js";
 import { ServiceError } from "../services/context.js";
 import { requestContext } from "../routes/context.js";
 import type { createRateLimiter } from "../routes/rate-limit.js";
@@ -58,7 +58,7 @@ export function registerMcpRoutes(
     };
     const server = new McpServer(
       { name: "agentcommons", version: "0.1.0" },
-      { capabilities: { tools: {} } },
+      { capabilities: { tools: {} }, instructions: serverInstructions },
     );
     server.server.setRequestHandler(ListToolsRequestSchema, () =>
       invoke(async () => (await service.list(context)).result),

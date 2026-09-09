@@ -386,15 +386,19 @@ export function DashboardTileCard({
           editing && "tile-drag-handle select-none",
         )}
         onPointerDown={(event) => {
+          // The tile menu renders in a portal: its events reach this handler through
+          // React's tree, not the DOM. Only presses on the header itself count.
+          if (!event.currentTarget.contains(event.target as Node)) return;
           pressed.current = { x: event.clientX, y: event.clientY };
         }}
         onClick={(event) => {
           if (!editing || !actions) return;
+          if (!event.currentTarget.contains(event.target as Node)) return;
           const start = pressed.current;
-          if (
-            start &&
-            Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4
-          )
+          pressed.current = null;
+          // A click without its own press here, or one that dragged, does not select.
+          if (!start) return;
+          if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4)
             return;
           actions.edit();
         }}

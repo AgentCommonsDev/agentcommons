@@ -12,9 +12,11 @@ import { paths } from "../src/lib/routes";
 import { workspaceOrigin } from "../playwright.shared";
 import {
   accessible,
+  closeNavigation,
   collectErrors,
   confirm,
   fixture,
+  openNavigation,
   settled,
   signInAsOwner,
   tableRow,
@@ -62,6 +64,24 @@ test.beforeEach(async ({ context }) => {
 });
 
 // @req R-DASH-01 @req R-DASH-23 @req R-DASH-21 @req R-WEB-02 @req R-AUTH-05
+/** The assistant briefing sits in the Schema panel: inline from 1024px, in the Schema sheet below. */
+function schemaBriefing(page: Page) {
+  // The panel and the sheet both carry it; only the one for this viewport is visible.
+  return page.getByTestId("sql-copy-context").locator("visible=true");
+}
+async function openSchemaSheet(page: Page) {
+  if ((page.viewportSize()?.width ?? 1440) >= 1024) return;
+  await page
+    .getByRole("button", { name: copy.sql.explorer.open, exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+}
+async function closeSchemaSheet(page: Page) {
+  if ((page.viewportSize()?.width ?? 1440) >= 1024) return;
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+}
+
 test("a key is created, shown once with its install command, copied again later, and revoked with a reason", async ({
   page,
   request,
@@ -196,6 +216,11 @@ test("the Install page unlocks the installer command once a machine key exists a
   await expect(command).toHaveText(install.command.pending);
   await expect(copyCommand).toBeDisabled();
   await expect(page.locator("body")).not.toContainText("install.sh");
+  // Step 1 offers one path at a time: the create form first, the picker behind a link.
+  await expect(page.getByTestId("install-key-picker")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: install.key.useExisting, exact: true }),
+  ).toBeVisible();
   await page.getByLabel(install.key.machine, { exact: true }).fill(machine);
   await page
     .getByRole("button", { name: install.key.submit, exact: true })
@@ -280,18 +305,46 @@ test("the Install page unlocks the installer command once a machine key exists a
   await expect(arrival).toContainText(copy.app.harnesses.CLAUDE_CODE);
   await expect(arrivals.getByRole("link").first()).toContainText(title);
 
-  // Dismissing the one-time secret removes it from the page and disables the command again.
+  // "I saved the key" closes only the one-time panel: the new key stays selected for step 3.
   await panel
     .getByRole("button", { name: keys.secret.done, exact: true })
     .click();
   await expect(panel).toHaveCount(0);
+  await expect(command).toHaveText(expected);
+  await expect(command).not.toHaveAttribute("aria-disabled", "true");
+  await expect(copyCommand).toBeEnabled();
+  await expect(steps.first()).toContainText(install.key.chooseTitle);
+  await expect(
+    page.getByLabel(install.key.machine, { exact: true }),
+  ).toHaveCount(0);
+  const picker = page.getByTestId("install-key-picker");
+  const select = picker.getByLabel(copy.keys.reveal.pick, { exact: true });
+  const option = select.locator("option").filter({ hasText: machine });
+  await expect(option).toHaveCount(1);
+  const createdId = (await option.getAttribute("value")) ?? "";
+  expect(createdId).not.toBe("");
+  await expect(select).toHaveValue(createdId);
+
+  // The key made here is the key for this machine: no second one until the page reloads.
+  await expect(
+    page.getByRole("button", { name: install.key.createNew, exact: true }),
+  ).toHaveCount(0);
+  // A fresh visit starts at the create form again, without the secret; an existing key
+  // fills the command.
+  await page.reload();
+  await expect(steps.first()).toContainText(install.key.title);
   await expect(command).toHaveAttribute("aria-disabled", "true");
   await expect(command).toHaveText(install.command.pending);
   await expect(copyCommand).toBeDisabled();
   await expect(page.locator("body")).not.toContainText(secret);
-  await expect(
-    page.getByLabel(install.key.machine, { exact: true }),
-  ).toHaveValue("");
+  await page
+    .getByRole("button", { name: install.key.useExisting, exact: true })
+    .click();
+  await expect(select).toHaveValue("");
+  await select.selectOption(createdId);
+  await expect(command).toHaveText(expected);
+  await expect(command).not.toHaveAttribute("aria-disabled", "true");
+  await expect(copyCommand).toBeEnabled();
   await arrival.click();
   await expect(page).toHaveURL(new RegExp(`${paths.session(sessionId)}$`));
   await expect(page.getByTestId("session-header")).toContainText(title);
@@ -300,6 +353,7 @@ test("the Install page unlocks the installer command once a machine key exists a
 // @req R-DASH-28 @req R-DASH-01
 test("the API reference page frames the live Scalar reference inside the app shell", async ({
   page,
+  isMobile,
 }) => {
   const reference = page.waitForResponse((response) =>
     new URL(response.url()).pathname.startsWith("/api/docs"),
@@ -308,14 +362,11 @@ test("the API reference page frames the live Scalar reference inside the app she
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(
     apiReference.title,
   );
+  const nav = await openNavigation(page, isMobile);
   await expect(
-    page.getByRole("navigation", { name: copy.app.navigation.label }),
-  ).toBeVisible();
-  await expect(
-    page
-      .getByRole("navigation", { name: copy.app.navigation.label })
-      .getByRole("link", { name: copy.app.navigation.api, exact: true }),
+    nav.getByRole("link", { name: copy.app.navigation.api, exact: true }),
   ).toHaveAttribute("aria-current", "page");
+  if (isMobile) await closeNavigation(page);
   await expect(page.getByText(apiReference.auth)).toBeVisible();
   await expect(
     page.getByRole("link", { name: apiReference.openNew, exact: true }),
@@ -332,10 +383,12 @@ test("the API reference page frames the live Scalar reference inside the app she
   await expect(frame.locator("body")).toContainText("AgentCommons API", {
     timeout: 45_000,
   });
-  // Scalar renders operations lazily; a request example proves a route was drawn.
-  await expect(frame.locator("body")).toContainText("Request Example", {
-    timeout: 45_000,
-  });
+  // Scalar renders operations lazily; a route summary from the document proves one was
+  // drawn on every viewport (the phone layout shows no request examples).
+  await expect(frame.locator("body")).toContainText(
+    "Search previous session messages",
+    { timeout: 45_000 },
+  );
   await expect(page.getByTestId("api-reference-frame")).toHaveAttribute(
     "title",
     apiReference.frameTitle,
@@ -356,7 +409,9 @@ test("the SQL editor completes view names while typing and reports guard problem
   await expect(content).toBeVisible();
   const status = page.getByTestId("sql-status");
   await expect(status).toContainText(sql.status.ready);
-  await expect(page.getByTestId("sql-copy-context")).toBeVisible();
+  await openSchemaSheet(page);
+  await expect(schemaBriefing(page)).toBeVisible();
+  await closeSchemaSheet(page);
   await content.click();
   await page.keyboard.press("ControlOrMeta+A");
   await content.pressSequentially("SELECT ses", { delay: 40 });
@@ -475,7 +530,8 @@ test("SQL runs with the keyboard, highlights server errors, remembers history, e
   await page.reload();
   await expect(editorContent(page)).toContainText("FROM session_tools");
 
-  await page.getByTestId("sql-copy-context").getByRole("button").click();
+  await openSchemaSheet(page);
+  await schemaBriefing(page).getByRole("button").click();
   const briefing = await page.evaluate(() => navigator.clipboard.readText());
   expect(briefing).toContain("### sessions");
   expect(briefing).toContain("### messages");

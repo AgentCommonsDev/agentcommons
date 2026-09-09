@@ -26,7 +26,7 @@ import {
 import { formatSearch } from "@agentcommons/core/format";
 import { createAuth } from "../src/auth/config.js";
 import { createApp } from "../src/app.js";
-import { toolJsonSchema } from "../src/services/mcp.js";
+import { serverInstructions, toolJsonSchema } from "../src/services/mcp.js";
 import { environment } from "../src/env.js";
 import { MembershipService } from "../src/services/membership.js";
 import { SearchService } from "../src/services/search.js";
@@ -621,9 +621,13 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
     tools.tools
       .filter((tool) => ["search", "get", "sql"].includes(tool.name))
       .every((tool) =>
-        tool.description?.startsWith("Only use this when the user asks"),
+        tool.description?.startsWith(
+          "Use this to check prior work before changing code",
+        ),
       ),
   ).toBe(true);
+  // The same guidance reaches clients that show server instructions (Claude Code).
+  expect(client.getInstructions()).toBe(serverInstructions);
   expect(transport.sessionId).toBeUndefined();
   expect(tools.tools.map((tool) => tool.inputSchema)).toEqual(
     [

@@ -7,6 +7,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { agentInstructions } from "@agentcommons/core/format/install";
 
 interface ObservationState {
   events: WeakMap<object, { id: string; timestamp: string }>;
@@ -309,6 +310,11 @@ async function registerTools(pi: ExtensionAPI, bridge: Bridge): Promise<void> {
   }
 }
 export default async function agentcommons(pi: ExtensionAPI): Promise<void> {
+  // pi has no global instructions file the installer could write; the same §8.3 guidance
+  // joins the system prompt for every turn instead.
+  pi.on("before_agent_start", (event) => ({
+    systemPrompt: `${event.systemPrompt}\n\n${agentInstructions}`,
+  }));
   pi.on("session_start", (event, context) => {
     observe("session_start", event, context);
   });

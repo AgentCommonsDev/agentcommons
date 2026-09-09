@@ -49,12 +49,21 @@ compose() {
 operator() {
   compose exec -T api pnpm --filter @agentcommons/api exec tsx "$@" </dev/null | tail -n 1
 }
-# The API accepts credential requests only from its own origin.
+# The API accepts credential requests only from its own origin. On failure the error
+# body (which carries no credential) is shown; successful bodies are never printed.
 post() {
-  local path=$1 body=$2
+  local path=$1 body=$2 response status
   shift 2
-  curl -fsS -X POST "$local_api$path" -H "Origin: $public_url" \
-    -H 'Content-Type: application/json' --data "$body" "$@"
+  response=$(mktemp)
+  status=$(curl -sS -o "$response" -w '%{http_code}' -X POST "$local_api$path" -H "Origin: $public_url" \
+    -H 'Content-Type: application/json' --data "$body" "$@") || status=000
+  if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+    echo "POST $path failed with HTTP $status: $(head -c 600 "$response")" >&2
+    rm -f "$response"
+    return 1
+  fi
+  cat "$response"
+  rm -f "$response"
 }
 public_url=$(sed -n "s/^PUBLIC_URL='\(.*\)'$/\1/p" .env)
 [ -n "$public_url" ] || {
@@ -86,7 +95,7 @@ if [ -z "$password" ]; then
     exit 1
   }
   password=$(openssl rand -base64 60 | tr -dc 'A-Za-z0-9' | head -c 40)
-  post /auth/reset-password "$(jq -cn --arg token "$token" --arg newPassword "$password" '$ARGS.named')" -o /dev/null
+  post /auth/reset-password "$(jq -cn --arg token "$token" --arg newPassword "$password" '$ARGS.named')" >/dev/null
 fi
 jq -n --arg email "$admin" --arg organization "$organization" --argjson seed "$seed" \
   --arg password "$password" --arg setup_url "$setup_url" --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -97,7 +106,7 @@ mv "$state.new" "$state"
 
 headers=$(mktemp)
 trap 'rm -f "$headers"' EXIT
-post /auth/sign-in/email "$(jq -cn --arg email "$admin" --arg password "$password" '$ARGS.named')" -D "$headers" -o /dev/null
+post /auth/sign-in/email "$(jq -cn --arg email "$admin" --arg password "$password" '$ARGS.named')" -D "$headers" >/dev/null
 cookie=$(awk 'tolower($1) == "set-cookie:" { sub(/;.*/, "", $2); printf "%s%s", (n++ ? "; " : ""), $2 }' "$headers")
 [ -n "$cookie" ] || {
   echo "Owner sign-in returned no session." >&2
@@ -123,6 +132,6 @@ for key in ${keys[@]+"${keys[@]}"}; do
   mv "$target.new" "$target"
   echo "API key $key (sessions read and ingest) is in $target on this host (root only)."
 done
-post /auth/sign-out '{}' -H "Cookie: $cookie" -o /dev/null || true
+post /auth/sign-out '{}' -H "Cookie: $cookie" >/dev/null || true
 echo "Organization $organization ($(jq -r .organization_id <<<"$seed")) has owner $admin."
 echo "The owner setup link and password are in $state on this host (root only)."

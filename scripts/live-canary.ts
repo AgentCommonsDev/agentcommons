@@ -40,10 +40,15 @@ import { searchOutputSchema } from "../packages/core/schemas/search.js";
 import {
   liveHarnesses,
   nativeToolPrompt,
+  recallDecision,
+  recallDecisionPrompt,
+  recallTaskPrompt,
   requiredNativeTools,
   runNative,
   type CanaryEnvironment,
+  type RecallStageEnvironment,
 } from "./live-harnesses.js";
+import { agentInstructions } from "../packages/hook/src/install.js";
 import { nativeAgentEvidence } from "./browser-review-contract.js";
 import { cleanup } from "./cleanup.js";
 import { completedNativeSessions } from "./canary-completion.js";
@@ -160,6 +165,7 @@ let mail: Awaited<ReturnType<typeof startMailpit>> | undefined;
 const clients: Client[] = [];
 const evidence: Array<Record<string, unknown>> = [];
 const nativeTools: Array<Record<string, unknown>> = [];
+const organicRecall: Array<Record<string, unknown>> = [];
 let catalogMeasured: Record<string, number> | null = null;
 try {
   const administrator = await provisionOrganization(database, "live-canary");
@@ -1141,6 +1147,233 @@ try {
       `${definition.cli}: natively completed ${String(mcpUses.length)} AgentCommons MCP calls in a hooked session.`,
     );
   }
+  // Organic recall (R-MCP-10): with nothing but the installed registration and the
+  // repository snippet the installer prints, an ordinary task that never mentions
+  // AgentCommons must make each MCP-capable harness search before it writes, find the
+  // hooked session that made the decision, and restore what it decided.
+  const valueIn = async (cwd: string) =>
+    z
+      .object({ [recallDecision.key]: z.number() })
+      .parse(
+        JSON.parse(await readFile(join(cwd, recallDecision.file), "utf8")),
+      )[recallDecision.key];
+  const wrongConfig = `${JSON.stringify({ [recallDecision.key]: recallDecision.wrong }, null, 2)}\n`;
+  // The canary's harnesses run against the operator's real home, so the guidance the
+  // installer would place in the global instructions files is supplied through the
+  // repository file here; the text is the same §8.3 block.
+  const instructions = `# Canary repository\n\n${agentInstructions}\n`;
+  for (const { definition, environment } of captured) {
+    if (!("recall" in definition)) continue;
+    console.log(`Running ${definition.cli} organic recall stage.`);
+    const recallRepository = join(environment.directory, "recall-repo");
+    const git = (cwd: string, args: string[], log: string) =>
+      runNative("git", args, {
+        cwd,
+        env: environment.env,
+        log: join(environment.directory, log),
+      });
+    // The evidence and the decision live only in the first repository's session.
+    await writeFile(
+      join(environment.repository, "latency.txt"),
+      recallDecision.evidence,
+    );
+    await writeFile(
+      join(environment.repository, recallDecision.file),
+      wrongConfig,
+    );
+    for (const name of ["CLAUDE.md", "AGENTS.md", "GEMINI.md"])
+      await writeFile(join(environment.repository, name), instructions);
+    await git(environment.repository, ["add", "-A"], "git-add-recall.txt");
+    await git(
+      environment.repository,
+      ["commit", "-m", "test: add upstream config and latency sample"],
+      "git-commit-recall.txt",
+    );
+    // The task repository starts from the wrong value with no history of the right one.
+    await mkdir(recallRepository, { mode: 0o700 });
+    await git(
+      recallRepository,
+      ["init", "--initial-branch=canary"],
+      "git-init-recall-task.txt",
+    );
+    await git(
+      recallRepository,
+      ["config", "user.name", "AgentCommons canary"],
+      "git-name-recall-task.txt",
+    );
+    await git(
+      recallRepository,
+      ["config", "user.email", "canary@example.com"],
+      "git-email-recall-task.txt",
+    );
+    await git(
+      recallRepository,
+      ["remote", "add", "origin", "https://github.com/rek7/agentcommons.git"],
+      "git-remote-recall-task.txt",
+    );
+    await writeFile(join(recallRepository, recallDecision.file), wrongConfig);
+    for (const name of ["CLAUDE.md", "AGENTS.md", "GEMINI.md"])
+      await writeFile(join(recallRepository, name), instructions);
+    await git(recallRepository, ["add", "-A"], "git-add-recall-task.txt");
+    await git(
+      recallRepository,
+      ["commit", "-m", "test: import upstream client config"],
+      "git-commit-recall-task.txt",
+    );
+    const stage: RecallStageEnvironment = {
+      ...environment,
+      marker: `acdec${runId}${definition.cli}`,
+      ticket: `acorg${runId}${definition.cli}`,
+      recallRepository,
+    };
+    const prompts = {
+      decision_prompt: recallDecisionPrompt(stage),
+      task_prompt: recallTaskPrompt(stage),
+    };
+    const partial = (extra: Record<string, unknown>) => ({
+      harness: definition.harness,
+      supported: true,
+      passed: false,
+      ...prompts,
+      ...extra,
+    });
+    try {
+      await definition.recall(stage);
+    } catch (error) {
+      organicRecall.push(
+        partial({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      throw error;
+    }
+    const rootsWith = async (text: string) =>
+      (await nativeSessions(organizationId, definition.harness)).filter(
+        (candidate) =>
+          candidate.parentSessionId === null &&
+          candidate.messages.some(
+            (message) =>
+              message.role === "USER" && message.content.includes(text),
+          ),
+      );
+    const deadline = Date.now() + 120_000;
+    let decision;
+    let task;
+    for (;;) {
+      const decisions = await rootsWith(stage.marker);
+      const tasks = await rootsWith(stage.ticket);
+      assert.ok(
+        decisions.length <= 1 && tasks.length <= 1,
+        `${definition.cli} created duplicate organic recall sessions.`,
+      );
+      if (
+        decisions[0]?.status === "ENDED" &&
+        tasks[0]?.status === "ENDED" &&
+        tasks[0].messages.some(
+          (message) => message.role === "ASSISTANT" && message.kind === "TEXT",
+        )
+      ) {
+        decision = decisions[0];
+        task = tasks[0];
+        break;
+      }
+      if (Date.now() >= deadline) {
+        organicRecall.push(
+          partial({
+            decision_session_id: decisions[0]?.id ?? null,
+            task_session_id: tasks[0]?.id ?? null,
+          }),
+        );
+        throw new Error(
+          `${definition.cli} did not ingest both organic recall sessions; private state: ${environment.installation}`,
+        );
+      }
+      await delay(1000);
+    }
+    const decided = await valueIn(environment.repository);
+    const restored = await valueIn(recallRepository);
+    const uses = [...task.messages]
+      .sort((a, b) => a.seq - b.seq)
+      .filter((message) => message.kind === "TOOL_USE");
+    const searchTool = definition.mcpTool("search");
+    const searches = uses.filter((use) => use.tool_name === searchTool);
+    const firstSearch = uses.findIndex((use) => use.tool_name === searchTool);
+    // The value appears in neither the prompt nor the repository, so the first call
+    // outside AgentCommons that carries it is the write that used what search returned.
+    const carriesValue = new RegExp(`\\b${String(recallDecision.right)}\\b`);
+    const firstWrite = uses.findIndex(
+      (use) =>
+        !use.tool_name?.startsWith(definition.mcpTool("")) &&
+        carriesValue.test(
+          `${use.content} ${JSON.stringify(use.tool_input ?? null)}`,
+        ),
+    );
+    const searchFoundDecision = searches.some((use) =>
+      plain(
+        task.messages.find(
+          (message) =>
+            message.kind === "TOOL_RESULT" &&
+            message.tool_use_id === use.tool_use_id,
+        )?.content ?? "",
+      ).includes(decision.id),
+    );
+    const reply =
+      [...task.messages]
+        .reverse()
+        .find(
+          (message) => message.role === "ASSISTANT" && message.kind === "TEXT",
+        )?.content ?? "";
+    const searchedBeforeWrite =
+      firstSearch !== -1 && (firstWrite === -1 || firstSearch < firstWrite);
+    const replyHasValue = carriesValue.test(reply);
+    organicRecall.push({
+      harness: definition.harness,
+      supported: true,
+      passed:
+        decided === recallDecision.right &&
+        searchedBeforeWrite &&
+        searchFoundDecision &&
+        restored === recallDecision.right &&
+        replyHasValue,
+      ...prompts,
+      decision_session_id: decision.id,
+      task_session_id: task.id,
+      task_native_session_id: task.harnessSessionId,
+      invoked: uses.map((use) => use.tool_name),
+      search_queries: searches.map((use) => use.tool_input),
+      searched_before_write: searchedBeforeWrite,
+      search_found_decision: searchFoundDecision,
+      decided_value: decided,
+      restored_value: restored,
+      reply_has_value: replyHasValue,
+    });
+    assert.equal(
+      decided,
+      recallDecision.right,
+      `${definition.cli} decision session did not record the value.`,
+    );
+    assert.ok(
+      firstSearch !== -1,
+      `${definition.cli} never searched AgentCommons during an ordinary task; see organic_recall in the report.`,
+    );
+    assert.ok(
+      searchedBeforeWrite,
+      `${definition.cli} wrote the value before searching AgentCommons.`,
+    );
+    assert.ok(
+      searchFoundDecision,
+      `${definition.cli} search did not return the decision session.`,
+    );
+    assert.equal(
+      restored,
+      recallDecision.right,
+      `${definition.cli} did not restore the decided value.`,
+    );
+    assert.ok(replyHasValue, `${definition.cli} reply omits the value.`);
+    console.log(
+      `${definition.cli}: searched AgentCommons unprompted, found the decision session and restored ${String(recallDecision.right)}.`,
+    );
+  }
   assert.ok(
     catalog.read_bytes < catalog.read_budget_bytes &&
       catalog.admin_bytes < catalog.admin_budget_bytes,
@@ -1173,6 +1406,7 @@ try {
       sessions: found,
     },
     native_tools: nativeTools,
+    organic_recall: organicRecall,
     catalog,
   };
   await writeFile(
@@ -1274,6 +1508,7 @@ try {
     passed: false,
     harnesses: evidence,
     native_tools: nativeTools,
+    organic_recall: organicRecall,
     catalog: catalogMeasured,
     error:
       error instanceof Error

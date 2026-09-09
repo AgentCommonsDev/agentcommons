@@ -197,6 +197,8 @@ export const dashboardsCopy = {
     defaultText: "Default text",
     removeVariable: "Remove variable",
     json: "Dashboard JSON",
+    jsonShow: "Advanced: edit the definition as JSON instead",
+    jsonHide: "Hide the JSON",
     jsonHint: "Paste a definition to replace every tile and variable.",
     applyJson: "Apply JSON",
     jsonApplied: "Applied.",

@@ -190,7 +190,8 @@ apiKeyId, permissions }` and return `{ result, audit }`. Mutation audit rows are
 - **Adding a harness, checklist**: capture hook payloads live into `fixtures/hooks/`;
   sanitize a transcript into `fixtures/transcripts/<harness>/`; add the enum value; write
   `packages/core/normalizers/<harness>.ts` with snapshot tests; add one `HARNESSES`
-  entry (and a reader only for a new storage format); add the harness to the live canary
+  entry with its config, MCP and global instructions paths (and a reader only for a new
+  storage format); add the harness to the live canary
   (§16). Support is announced only when the canary is green.
 - **Generated, not written**: OpenAPI from routes, dashboard client from OpenAPI, MCP
   input schemas from zod, Better Auth models from its generator, Appendix C examples from
@@ -497,7 +498,7 @@ redaction and custom policies.
 Rules = shipped secretlint preset + pattern rule (Anthropic, OpenAI, JWTs, connection
 strings with passwords, generic `token=…`, `ac_` keys) + `RedactionPolicy` rows,
 composed into one secretlint configuration, validated on save (regex compiles, bounded
-length, catastrophic-backtracking check). JSON object values retain assignment-name
+length, catastrophic-backtracking check). The backtracking analysis runs once when an admin saves a pattern (and over the shipped patterns in the unit suite); stored rows load structurally, so sign-in, session creation and rescans never re-run it. JSON object values retain assignment-name
 context for secret scanners. Regex policies additionally scan the unprefixed value,
 so anchors have the same meaning on standalone strings, object values and array items.
 Matches from both native scans merge before replacement/counting; overlaps count once
@@ -683,8 +684,16 @@ key: installed hooks update themselves (§6.2, **Self-update**).
 4. `node hook.js install`: for each harness present, merge hooks into its config keyed by
    an exact marker (`agentcommons-hook` in the command); register the MCP server (`claude
 mcp add -s user -t http …`, `codex mcp add … --bearer-token-env-var
-AGENTCOMMONS_API_KEY`, Gemini `mcpServers` entry); append the env export to
-   the shell rc unless `--no-shell-rc`. Prints the repository snippet (§8.4). Fields the
+AGENTCOMMONS_API_KEY`, Gemini `mcpServers` entry); write the marker-delimited
+   `AGENTCOMMONS_SERVER`/`AGENTCOMMONS_API_KEY` exports into `~/.bashrc`, `~/.zshrc` and,
+   when fish is installed or configured, `~/.config/fish/config.fish` unless
+   `--no-shell-rc` (Codex reads the key from the environment, so every login shell needs
+   it; the installer tells the user to open a new terminal before starting Codex); write the
+   §8.3 guidance block into each configured harness's global instructions file
+   (`instructionsPath` in `HARNESSES`: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
+   `~/.gemini/GEMINI.md`; pi's extension adds the same text to its system prompt), replacing
+   the marker-delimited block in place so a self-update carries new text, and name the
+   files in the output. Nothing is added to repositories. Fields the
    native CLI cannot express are merged into the entry it wrote: Claude Code's entry gets
    `alwaysLoad: true`, because Claude Code 2.1.x otherwise defers every MCP tool behind
    `ToolSearch` (Appendix A) and the budgeted catalog (ADR 0053, R-MCP-09) is cheap to
@@ -889,12 +898,17 @@ and returns match-centered excerpts carrying `session_id` and `seq`.
 | `TOOL_RESULT`                          | yes        | first 2 KB **and last 2 KB** (test and compiler failures appear at the end) |
 | `THINKING`, `META`, images             | no         | stored, returned by `get`, never ranked                                     |
 
-The native text-index expression lowercases and tokenizes `searchText`, then applies
-ClickHouse's English Snowball stemmer to each token. Query tokens use the identical
-expression. All nonempty query tokens must match; ranking weights are defined in
-§7.2. Literal substrings outside the ranked portion remain available through SQL
-`LIKE` on `content`. PostgreSQL tsvectors and a query-language translation layer are
-not retained.
+The native text-index expression lowercases and tokenizes `searchText`, then normalizes
+each token's English inflection with a fixed, ordered rule table built from standard
+string functions (`englishInflectionRules` in `packages/traces/src/views/search.ts`):
+plural `-s`/`-es`/`-ies`, `-ed`/`-ing` including a doubled consonant, consonant + `-y`,
+and a final `-e`. Query tokens use the identical expression. Tokens containing digits or
+non-ASCII text stay literal. ClickHouse's `stem()` is not used: it is an experimental
+function that ClickHouse Cloud locks off, and ADR 0056 records that removing it kept the
+golden top-three hit rate at 30/30. All nonempty query tokens must match; ranking weights
+are defined in §7.2. Literal substrings outside the ranked portion remain available
+through SQL `LIKE` on `content`. PostgreSQL tsvectors and a query-language translation
+layer are not retained.
 
 ### 7.2 `search`
 
@@ -902,7 +916,7 @@ Input (`packages/core/schemas/search.ts`):
 
 ```jsonc
 {
-  "query": "rate limiter", // token search with English stemming; may be "" if filters given
+  "query": "rate limiter", // token search, English inflections normalized; may be "" if filters given
   "filters": {
     "repo_name": "cunningham",
     "branch": ["feat/x", "main"],
@@ -979,8 +993,9 @@ Input (`packages/core/schemas/search.ts`):
   normalized non-thinking messages either side.
 - Pipeline: shared structured filters → native ClickHouse text-index candidates → latest
   published message identity. Query and indexed text use native lowercase tokenization
-  and English Snowball stemming. Every query token must match; punctuation separates
-  tokens. The search box is a text query, with structured filters for conditions; SQL
+  and the shared English inflection rule table of §7.1; no experimental ClickHouse
+  function is involved, so the same DDL runs self-hosted and on ClickHouse Cloud. Every
+  query token must match; punctuation separates tokens. The search box is a text query, with structured filters for conditions; SQL
   uses native ClickHouse syntax. PostgreSQL websearch operators are superseded by ADR0047.
   Rank is weighted matching-token frequency divided by `1 + log(1 + token_count)`;
   weights are user text 1.0, assistant text 0.4, tool input 0.2 and tool result 0.1.
@@ -1248,8 +1263,16 @@ batch does not replace the latest receipt. Every list and call refreshes this de
 so cached tool catalogs cannot bypass a disabled installation.
 
 Search, get, SQL and administrative history descriptions open with this governing sentence:
-_"Only use this when the user asks about previous sessions or prior work; where possible
-run multi-step investigation in a subagent that returns only findings with session ids."_
+_"Use this to check prior work before changing code, and whenever the user asks about
+earlier sessions; run long investigations in a subagent that returns only findings with
+session ids."_ The `search` description then names the trigger concretely (start with the
+test name, file path or error you were given; an earlier session often holds the root
+cause, the library the team chose or the exact value). `initialize` returns the same
+guidance as the server `instructions` field, which Claude Code places in its system
+prompt; the transport contract test asserts both. Recall has to be organic: an agent given
+an ordinary task ("the auth test is flaky again") must decide to look on its own, so no
+description says "only when the user asks" (the previous wording, which stopped every
+harness from searching; §16.2 organic recall stage).
 
 Dashboard tools instead open with "Use this when the user asks to view, build or change
 dashboards." They retain the same current-organization authorization; `dashboard_save`
@@ -1270,16 +1293,25 @@ instead of inlining the style allowlist once per series. Every call is still par
 strict shared schema, so validation is unchanged. No advertised schema contains `$ref` or
 recursion, which the Gemini API rejects. The contract test measures both catalogs.
 
-### 8.3 Repository snippet (the one guidance mechanism)
+### 8.3 Global agent instructions
 
-Printed by the installer for `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`:
+Written by the installer into each configured harness's global instructions file
+(`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, one `instructionsPath`
+per `HARNESSES` entry) between `<!-- agentcommons-hook begin -->` and
+`<!-- agentcommons-hook end -->` markers, replaced in place on every install and self-update
+reconfiguration and removed on uninstall; the pi extension adds the same text to pi's
+system prompt on `before_agent_start`. Teams add nothing to their repositories. It, the
+governing sentence and the server instructions carry the same guidance in three places the
+agent reads at different moments (global instructions, `initialize`, `tools/list`):
 
 ```
 ## AgentCommons
 Past agent sessions for this organization are indexed in AgentCommons (MCP server
-`agentcommons`: search, get, sql). This session is recorded automatically. Only use it
-when the user asks about prior sessions or prior work; for anything beyond a quick
-lookup, run the investigation in a subagent and bring back only findings and session ids.
+`agentcommons`: search, get, sql). This session is recorded automatically. Before you
+change code, search it for the test, file or error you were given: an earlier session
+often holds the root cause, the library the team chose or the exact value. Use it too
+when the user asks about prior work; anything beyond a quick lookup runs in a subagent
+that brings back only findings and session ids.
 ```
 
 ### 8.4 Client configuration
@@ -1604,19 +1636,19 @@ compatibility routes anywhere in the application, and server-generated return UR
 
 **Information architecture.**
 
-| route                                                                                                                                                  | purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/app`                                                                                                                                                 | Home: the organization's default dashboard (the shipped Team overview until an admin picks another) with the dashboard switcher, variable controls and New/Duplicate/Edit actions                                                                                                                                                                                                                                                                                                                                                     |
-| `/app/dashboards/new`, `/app/dashboards/:id`, `/app/dashboards/:id/edit`                                                                               | create, view and edit a dashboard (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `/app/sessions`                                                                                                                                        | search box and filter chips mirroring §7.2, result blocks exactly as `search` returns them, and the list view of root sessions only (`roots_only`); a root's subagent runs are shown inline inside it, never as separate top-level rows. A hit inside a child run links to its root, `/app/sessions/<root_session_id>?child=<child_session_id>#<seq>`, using the hit's `root_session_id`; the root page opens that run and scrolls to the message                                                                                     |
-| `/app/sessions/:id` (`#<seq>` deep link)                                                                                                               | session detail (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `/app/sql`                                                                                                                                             | IDE-style SQL editor (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `/app/install`                                                                                                                                         | Install, the first page a developer is sent to, as four steps: create an ingest/read key for the machine (secret shown once) or pick an existing recoverable key; read what the installer needs and does (Node 20+, curl, capture hook, MCP registration, per-tool notes); run the served installer command, which appears with its Copy button only once a key is created or picked and is disabled with a hint before that (no placeholder is ever offered to copy); start a coding agent and watch actual captured sessions arrive |
-| `/app/keys`                                                                                                                                            | Keys: the caller's keys only (create shows the plaintext once with the install command inlined; sort, CSV export, revoke with a reason; keys show their bound organization)                                                                                                                                                                                                                                                                                                                                                           |
-| `/app/api`                                                                                                                                             | API reference: the live Scalar reference from `/api/docs` embedded inside the application shell with an "Open in a new tab" action; its CSP allows same-origin framing only. Linked from the bottom of the navigation, not from Keys                                                                                                                                                                                                                                                                                                  |
-| `/app/billing`                                                                                                                                         | SaaS only: plan, usage, checkout and portal (§9.6). Customer and public instances have no billing route in the router, the API or navigation                                                                                                                                                                                                                                                                                                                                                                                          |
-| `/app/organizations/new`                                                                                                                               | SaaS only: create another organization from a name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `/app/admin/users`, `/app/admin/keys`, `/app/admin/audit`, `/app/admin/moderation`, `/app/admin/redaction`, `/app/admin/status`, `/app/admin/settings` | organization administration (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| route                                                                                                                                                  | purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/app`                                                                                                                                                 | Home: the organization's default dashboard (the shipped Team overview until an admin picks another) with the dashboard switcher, variable controls and New/Duplicate/Edit actions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `/app/dashboards/new`, `/app/dashboards/:id`, `/app/dashboards/:id/edit`                                                                               | create, view and edit a dashboard (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `/app/sessions`                                                                                                                                        | search box and filter chips mirroring §7.2, result blocks exactly as `search` returns them, and the list view of root sessions only (`roots_only`); a root's subagent runs are shown inline inside it, never as separate top-level rows. A hit inside a child run links to its root, `/app/sessions/<root_session_id>?child=<child_session_id>#<seq>`, using the hit's `root_session_id`; the root page opens that run and scrolls to the message                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `/app/sessions/:id` (`#<seq>` deep link)                                                                                                               | session detail (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `/app/sql`                                                                                                                                             | IDE-style SQL editor (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `/app/install`                                                                                                                                         | Install, the first page a developer is sent to, as four steps: create an ingest/read key for the machine (secret shown once; dismissing the reveal keeps that key selected and the page offers no second key until it reloads) or pick an existing recoverable key, one path at a time; read what the installer needs and does (Node 20+, curl, capture hook, MCP registration, per-tool notes); run the served installer command, which appears with its Copy button only once a key is created or picked and is disabled with a hint before that (no placeholder is ever offered to copy), with the note that the key is exported from the shell startup files and Codex needs a new terminal; start a coding agent and watch actual captured sessions arrive. The prepare step says the installer writes the §8.3 guidance into each tool's global instructions file, so nothing is added to repositories |
+| `/app/keys`                                                                                                                                            | Keys: the caller's keys only (create shows the plaintext once with the install command inlined; sort, CSV export, revoke with a reason; keys show their bound organization)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `/app/api`                                                                                                                                             | API reference: the live Scalar reference from `/api/docs` embedded inside the application shell with an "Open in a new tab" action; its CSP allows same-origin framing only. Linked from the bottom of the navigation, not from Keys                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `/app/billing`                                                                                                                                         | SaaS only: plan, usage, checkout and portal (§9.6). Customer and public instances have no billing route in the router, the API or navigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `/app/organizations/new`                                                                                                                               | SaaS only: create another organization from a name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `/app/admin/users`, `/app/admin/keys`, `/app/admin/audit`, `/app/admin/moderation`, `/app/admin/redaction`, `/app/admin/status`, `/app/admin/settings` | organization administration (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 **Organizations.** After login the application lists only the user's memberships. When no
 organization is active the first membership is selected automatically, so nobody lands on
@@ -1926,7 +1958,9 @@ and its relationship to versioned CLAUDE.md, AGENTS.md, and skills. Its calls to
 link to working login and documentation routes. An authenticated landing visit remains on the public page. It resolves
 the native session and offers Dashboard or Continue setup as its primary action; public navigation
 shows Open dashboard or Continue setup instead of Create account. Anonymous calls to
-action offer signup only in SaaS mode. Product claims match verified behavior;
+action offer signup only in SaaS mode. A self-hosted instance (`INSTANCE_MODE=customer`)
+serves no landing page: `/` answers 302 to `/app`, which shows sign-in when anonymous and
+Home when signed in; `/docs` stays available. Product claims match verified behavior;
 illustrative examples are labeled. All visible copy lives in copy.ts.
 
 Landing and dashboard are responsive at mobile and desktop sizes, including forms,
@@ -2240,6 +2274,17 @@ hidden-node gaps for users vs. admins),
 test/rescan completeness (raw → derived equality). E2E: full stack via compose; shim
 against fixtures with server down/up; installer in Debian/Node 20 containers with bash,
 zsh, fish (macOS on a macOS runner); MCP client for user and admin keys; Playwright.
+Live canary (`scripts/live-canary.ts`, opt-in, real providers): capture, native tool and
+organic recall stages per harness. The organic recall stage (R-MCP-10) runs two hooked
+sessions on each MCP-capable harness: a scripted decision session that sets
+`upstream_timeout_ms` in `config.json` to 8000 with its reason and commits, then an ordinary
+task in a fresh repository holding only the wrong value and the §8.3 guidance block (supplied
+through the repository file because the canary's harnesses run against the operator's real
+home) ("the upstream
+client is timing out again after the merge; set the correct value"). The prompt never names
+AgentCommons or prior sessions. It passes when the harness calls `search` before the first
+tool call that carries the value, the search result includes the decision session, the file
+and the reply end with 8000, and `report.json` records the queries under `organic_recall`.
 
 ---
 
@@ -2257,7 +2302,7 @@ verification; the whole spec is done when §16.1 item 8 holds.
    installer artifacts.
 4. Shim + installer: state machine, readers, harness table for all four, pi extension,
    install/doctor/uninstall.
-5. MCP: static registry, six read-permission tools, admin tools, snippet.
+5. MCP: static registry, six read-permission tools, admin tools, global agent instructions.
 6. Embeddings behind the flag: chunker, `openai` and `fake` adapters, jobs, budget,
    fusion inside `search`, `similar_sessions`, catch-up.
 7. Dashboard: all screens in §10, browser verification.
@@ -2785,7 +2830,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "search",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {\"query\":\"\",\"filters\":{\"file_prefix\":\"src/auth/\",\"file_operation\":\"edit\"}}.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Search previous coding-agent sessions with words and structured filters. Start with the test name, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {\"query\":\"\",\"filters\":{\"file_prefix\":\"src/auth/\",\"file_operation\":\"edit\"}}.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3072,7 +3117,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "get",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Read one session by session_id: a header (who ran it, harness, model, repository, branch, start, end, status, message, tool call, token, file, commit and reuse counts, tools_used, root_session_id, parent and child sessions) and its messages in seq order with role, kind, tool_name, tool_use_id and content. Each child ref carries parent_tool_use_id, the tool_use_id of the TOOL_USE message here that spawned it (null when unrecorded), so a subagent run reads in place under its call. Bound a range with from/to; when next is not null, pass it as cursor. Example: {\"session_id\":\"<uuid>\",\"from\":0,\"to\":40}.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Read one session by session_id: a header (who ran it, harness, model, repository, branch, start, end, status, message, tool call, token, file, commit and reuse counts, tools_used, root_session_id, parent and child sessions) and its messages in seq order with role, kind, tool_name, tool_use_id and content. Each child ref carries parent_tool_use_id, the tool_use_id of the TOOL_USE message here that spawned it (null when unrecorded), so a subagent run reads in place under its call. Bound a range with from/to; when next is not null, pass it as cursor. Example: {\"session_id\":\"<uuid>\",\"from\":0,\"to\":40}.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3133,7 +3178,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "sql",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3152,7 +3197,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "set_visibility",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Change session visibility between PUBLIC and PRIVATE with a reason. Private sessions are visible to organization admins only.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Change session visibility between PUBLIC and PRIVATE with a reason. Private sessions are visible to organization admins only.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3180,7 +3225,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "purge",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Permanently remove session contents and retain its tombstone. Supply a reason.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Permanently remove session contents and retain its tombstone. Supply a reason.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3204,7 +3249,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "audit",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Read this organization's audit events using exact identifiers and UTC time bounds.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Read this organization's audit events using exact identifiers and UTC time bounds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3281,7 +3326,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "status",
-    "description": "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids. Read this organization's ingestion, redaction, and background job status.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Read this organization's ingestion, redaction, and background job status.",
     "inputSchema": {
       "type": "object",
       "properties": {},

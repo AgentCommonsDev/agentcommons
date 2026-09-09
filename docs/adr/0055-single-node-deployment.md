@@ -56,8 +56,9 @@ secrets provider.
   migration creates users, roles, row policies, dictionaries and views on Cloud, and
   PostgreSQL is published on 5432 with TLS to exactly ClickHouse Cloud's egress addresses
   (security group and `hostssl`-only `pg_hba.conf` from a reviewed snapshot) so the
-  PostgreSQL-sourced control dictionaries keep working; Cloud verifies the host's
-  certificate (`sslmode=verify-full`). Cloud is billed separately by ClickHouse.
+  PostgreSQL-sourced control dictionaries keep working; certificate verification of
+  the host (`sslmode=verify-full`) is opt-in because the current Cloud release rejects
+  libpq options. Cloud is billed separately by ClickHouse.
 - Compose memory limits (ClickHouse 3.5 GiB, PostgreSQL 1 GiB, API 1 GiB, Caddy 256 MiB)
   keep one service from starving the others; six CloudWatch alarms (status checks with
   recover/reboot actions, CPU, CPU credits, disk, memory) notify an SNS email subscription.

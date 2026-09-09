@@ -82,89 +82,93 @@ export function StatusPage() {
           }}
         />
       )}
-      <div className="flex flex-col gap-1.5">
-        <FilterBar
-          label={text.range}
-          activeCount={
-            (applied.repo === "" ? 0 : 1) +
-            (applied.from === defaults.from && applied.to === defaults.to
-              ? 0
-              : 1)
-          }
-          summary={text.rangeSummary(applied.from, applied.to)}
-          disabled={invalid}
-          onApply={() => {
-            if (!invalid) setApplied(draft);
-          }}
-          onClear={() => {
-            setDraft(defaults);
-            setApplied(defaults);
-          }}
-          controls={[
-            {
-              id: "from",
-              label: text.from,
-              width: "sm:w-40",
-              showLabel: true,
-              render: (props) => (
-                <Input
-                  {...props}
-                  type="date"
-                  title={text.from}
-                  required
-                  value={draft.from}
-                  max={draft.to}
-                  onChange={(event) => {
-                    set("from")(event.target.value);
-                  }}
-                />
-              ),
-            },
-            {
-              id: "to",
-              label: text.to,
-              width: "sm:w-40",
-              showLabel: true,
-              render: (props) => (
-                <Input
-                  {...props}
-                  type="date"
-                  title={text.to}
-                  required
-                  value={draft.to}
-                  min={draft.from}
-                  onChange={(event) => {
-                    set("to")(event.target.value);
-                  }}
-                />
-              ),
-            },
-            {
-              id: "repo",
-              label: text.repo,
-              width: "sm:w-64",
-              render: (props) => (
-                <Input
-                  {...props}
-                  type="search"
-                  placeholder={text.repo}
-                  title={text.repoHint}
-                  value={draft.repo}
-                  onChange={(event) => {
-                    set("repo")(event.target.value);
-                  }}
-                />
-              ),
-            },
-          ]}
-        />
-        {invalid && (
-          <p role="alert" className="text-xs text-danger">
-            {text.invalidRange}
-          </p>
-        )}
-      </div>
-      <HealthMetricsCard filters={filters} />
+      <HealthMetricsCard
+        filters={filters}
+        toolbar={
+          <div className="flex flex-col gap-1.5">
+            <FilterBar
+              label={text.range}
+              activeCount={
+                (applied.repo === "" ? 0 : 1) +
+                (applied.from === defaults.from && applied.to === defaults.to
+                  ? 0
+                  : 1)
+              }
+              summary={text.rangeSummary(applied.from, applied.to)}
+              disabled={invalid}
+              onApply={() => {
+                if (!invalid) setApplied(draft);
+              }}
+              onClear={() => {
+                setDraft(defaults);
+                setApplied(defaults);
+              }}
+              controls={[
+                {
+                  id: "from",
+                  label: text.from,
+                  width: "sm:w-40",
+                  showLabel: true,
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="date"
+                      title={text.from}
+                      required
+                      value={draft.from}
+                      max={draft.to}
+                      onChange={(event) => {
+                        set("from")(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "to",
+                  label: text.to,
+                  width: "sm:w-40",
+                  showLabel: true,
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="date"
+                      title={text.to}
+                      required
+                      value={draft.to}
+                      min={draft.from}
+                      onChange={(event) => {
+                        set("to")(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+                {
+                  id: "repo",
+                  label: text.repo,
+                  width: "sm:w-64",
+                  render: (props) => (
+                    <Input
+                      {...props}
+                      type="search"
+                      placeholder={text.repo}
+                      title={text.repoHint}
+                      value={draft.repo}
+                      onChange={(event) => {
+                        set("repo")(event.target.value);
+                      }}
+                    />
+                  ),
+                },
+              ]}
+            />
+            {invalid && (
+              <p role="alert" className="text-xs text-danger">
+                {text.invalidRange}
+              </p>
+            )}
+          </div>
+        }
+      />
       <SnapshotCards embeddings={embeddings} />
       <InstallationsCard />
     </>

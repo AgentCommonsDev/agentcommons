@@ -23,6 +23,32 @@ export interface ToolStageEnvironment extends CanaryEnvironment {
   /** The earlier capture marker the agent must find with `search`. */
   query: string;
 }
+export interface RecallStageEnvironment extends CanaryEnvironment {
+  /** Fresh repository for the organic task; the scripted decision session ran in `repository`. */
+  recallRepository: string;
+  /** Ticket reference in the organic prompt, used only to find the captured session. */
+  ticket: string;
+}
+/** The decision one hooked session records and a later, ordinary task must recover (R-MCP-10). */
+export const recallDecision = {
+  file: "config.json",
+  key: "upstream_timeout_ms",
+  wrong: 2000,
+  right: 8000,
+  evidence:
+    "upstream latency, 24 h sample: p50 900 ms, p95 4200 ms, p99 7800 ms; 2000 ms client timeouts during the nightly rebuild\n",
+} as const;
+/** Scripted decision session: deterministic steps, a stated reason, a commit the hook observes. */
+export function recallDecisionPrompt(options: CanaryEnvironment): string {
+  return `${options.marker}. Do these steps in order. 1) Read latency.txt and ${recallDecision.file}. 2) Edit ${recallDecision.file} so that "${recallDecision.key}" is ${String(recallDecision.right)}: the measured upstream p99 is 7.8 s, so 2000 ms was too low. 3) Run: git add ${recallDecision.file} && git commit -m "fix: allow 8 s for the upstream". Reply with the value you set and the reason in one sentence.`;
+}
+/**
+ * The organic task. It never mentions AgentCommons, prior sessions or the value; the
+ * repository holds only the wrong value, so the agent has to decide to look on its own.
+ */
+export function recallTaskPrompt(options: RecallStageEnvironment): string {
+  return `The upstream client is timing out again after the merge; ${recallDecision.file} has the wrong ${recallDecision.key}. Set the correct value, run git add ${recallDecision.file} && git commit -m "fix: restore the upstream timeout", and reply with the value you set. Ticket ${options.ticket}.`;
+}
 /** The four AgentCommons tools every MCP-capable harness must complete natively. */
 export const requiredNativeTools = [
   "search",
@@ -191,6 +217,35 @@ export const liveHarnesses = [
         },
       );
     },
+    async recall(options: RecallStageEnvironment) {
+      const claude = (prompt: string, cwd: string, log: string) =>
+        runNative(
+          "claude",
+          [
+            "--print",
+            "--settings",
+            join(options.configHome, ".claude/settings.json"),
+            "--mcp-config",
+            join(options.configHome, ".claude.json"),
+            "--strict-mcp-config",
+            "--allowedTools",
+            "Read,Edit,Write,Grep,Glob,Bash,mcp__agentcommons__*",
+            "--",
+            prompt,
+          ],
+          { cwd, env: options.env, log: join(options.directory, log) },
+        );
+      await claude(
+        recallDecisionPrompt(options),
+        options.repository,
+        "native-recall-decision.jsonl",
+      );
+      await claude(
+        recallTaskPrompt(options),
+        options.recallRepository,
+        "native-recall-task.jsonl",
+      );
+    },
     async run(options: CanaryEnvironment) {
       // A tracked file gives Edit, dirty-file, diff-stat and commit observations a target.
       await writeFile(join(options.repository, "notes.txt"), "Canary notes.\n");
@@ -254,6 +309,43 @@ export const liveHarnesses = [
             env: options.env,
             log: join(options.directory, "native-tools.jsonl"),
           },
+        );
+      } finally {
+        await unlink(path);
+      }
+    },
+    async recall(options: RecallStageEnvironment) {
+      const { profile, path } = await codexProfile(options, "recall", true);
+      const codex = (prompt: string, cwd: string, log: string) =>
+        runNative(
+          "codex",
+          [
+            "exec",
+            "--profile",
+            profile,
+            "--dangerously-bypass-hook-trust",
+            "--sandbox",
+            "workspace-write",
+            "-C",
+            cwd,
+            "--model",
+            "gpt-6-astra",
+            "-c",
+            'model_reasoning_effort="high"',
+            prompt,
+          ],
+          { cwd, env: options.env, log: join(options.directory, log) },
+        );
+      try {
+        await codex(
+          recallDecisionPrompt(options),
+          options.repository,
+          "native-recall-decision.jsonl",
+        );
+        await codex(
+          recallTaskPrompt(options),
+          options.recallRepository,
+          "native-recall-task.jsonl",
         );
       } finally {
         await unlink(path);
@@ -325,6 +417,31 @@ export const liveHarnesses = [
           env: options.env,
           log: join(options.directory, "native-tools.jsonl"),
         },
+      );
+    },
+    async recall(options: RecallStageEnvironment) {
+      // The capture step copied the installed settings into `repository`; the fresh task
+      // repository needs the same project registration.
+      await mkdir(join(options.recallRepository, ".gemini"), { mode: 0o700 });
+      await copyFile(
+        join(options.configHome, ".gemini/settings.json"),
+        join(options.recallRepository, ".gemini/settings.json"),
+      );
+      const gemini = (prompt: string, cwd: string, log: string) =>
+        runNative("gemini", ["--prompt", prompt, "--approval-mode", "yolo"], {
+          cwd,
+          env: options.env,
+          log: join(options.directory, log),
+        });
+      await gemini(
+        recallDecisionPrompt(options),
+        options.repository,
+        "native-recall-decision.jsonl",
+      );
+      await gemini(
+        recallTaskPrompt(options),
+        options.recallRepository,
+        "native-recall-task.jsonl",
       );
     },
     async run(options: CanaryEnvironment) {

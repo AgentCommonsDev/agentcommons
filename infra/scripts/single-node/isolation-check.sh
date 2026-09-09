@@ -86,7 +86,7 @@ status=0
   status=1
 }
 if [ "$main_rest" -gt 0 ]; then
-  first=$(api "$main_cookie" GET "/api/v1/sessions?limit=1" | sed '$d' | jq -er '.items[0].id')
+  first=$(api "$main_cookie" GET "/api/v1/sessions?limit=1" | sed '$d' | jq -er '.items[0].session_id')
   code=$(api "$probe_cookie" GET "/api/v1/sessions/$first" | tail -n 1)
   echo "Direct fetch of a $organization session as $probe: HTTP $code"
   case $code in 403 | 404) ;; *)

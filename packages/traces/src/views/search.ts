@@ -9,7 +9,7 @@ import { sqlIdentifier, sqlString } from "../client.js";
  * Every pattern is anchored on ASCII letters, so identifiers with digits or non-ASCII text
  * stay literal. ADR 0056 records the measurement behind this table.
  */
-export const englishInflectionRules: ReadonlyArray<
+const englishInflectionRules: ReadonlyArray<
   readonly [pattern: string, replacement: string]
 > = [
   ["^([a-z]{2,})sses$", "\\1ss"],
@@ -26,7 +26,7 @@ export const englishInflectionRules: ReadonlyArray<
 ];
 
 /** The per-token normalization as one nested standard-function expression. */
-export function normalizeTokenSql(token: string): string {
+function normalizeTokenSql(token: string): string {
   return englishInflectionRules.reduce<string>(
     (expression, [pattern, replacement]) =>
       `replaceRegexpOne(${expression},${sqlString(pattern)},${sqlString(replacement)})`,

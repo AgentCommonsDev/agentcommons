@@ -4,6 +4,7 @@ import {
   accessSync,
   constants,
   mkdirSync,
+  rmSync,
   existsSync,
   readFileSync,
   renameSync,
@@ -19,13 +20,49 @@ import { hash, writeAtomic } from "./files.js";
 import { credentialOrganization } from "./identity.js";
 import { HARNESSES, type CliHarness } from "./harnesses.js";
 
-export const repositorySnippet = [
-  "## AgentCommons",
-  "Past agent sessions for this organization are indexed in AgentCommons (MCP server",
-  "`agentcommons`: search, get, sql). This session is recorded automatically. Only use it",
-  "when the user asks about prior sessions or prior work; for anything beyond a quick",
-  "lookup, run the investigation in a subagent and bring back only findings and session ids.",
-].join("\n");
+import { agentInstructions } from "@agentcommons/core/format/install";
+export { agentInstructions };
+const INSTRUCTIONS_BEGIN = "<!-- agentcommons-hook begin -->";
+const INSTRUCTIONS_END = "<!-- agentcommons-hook end -->";
+/**
+ * The §8.3 guidance block in a harness's global instructions file: written for every
+ * configured harness, replaced in place on every install (a self-update carries new text),
+ * removed on uninstall. The rest of the file belongs to the user and is never touched.
+ */
+function instructionsFile(path: string, uninstall: boolean): void {
+  const original = existsSync(path) ? readFileSync(path, "utf8") : "";
+  if (uninstall && !original) return;
+  // Everything outside the markers is the user's and is kept byte for byte.
+  const kept = original.replace(
+    /\n?<!-- agentcommons-hook begin -->\n[\s\S]*?<!-- agentcommons-hook end -->\n?/g,
+    "",
+  );
+  if (uninstall) {
+    if (kept === original) return;
+    if (kept.trim() === "") rmSync(path, { force: true });
+    else atomicText(path, kept);
+    return;
+  }
+  const block = `${INSTRUCTIONS_BEGIN}\n${agentInstructions}\n${INSTRUCTIONS_END}\n`;
+  const separator =
+    kept === "" || kept.endsWith("\n\n")
+      ? ""
+      : kept.endsWith("\n")
+        ? "\n"
+        : "\n\n";
+  const next = `${kept}${separator}${block}`;
+  if (next !== original) atomicText(path, next);
+}
+/** The global instructions files the installer manages for these harnesses. */
+export function instructionFiles(
+  home: string,
+  harnesses: readonly CliHarness[],
+): string[] {
+  return harnesses.flatMap((name) => {
+    const path = HARNESSES[name].instructionsPath;
+    return path ? [join(home, ...path)] : [];
+  });
+}
 const objectSchema = z.record(z.string(), z.unknown());
 const MARKER = "agentcommons-hook";
 const MCP_NAME = "agentcommons";
@@ -109,27 +146,38 @@ function updateHooks(
     }
   return { ...config, hooks };
 }
+/**
+ * Every login shell a person may start a coding agent from gets the exports: bash and zsh
+ * always, fish when it is installed or configured. Codex reads the key from the
+ * environment (`bearer_token_env_var`), so a shell without the export cannot start the
+ * MCP server. The block is marker-delimited and replaced in place on every install.
+ */
+function shellRcPaths(home: string): string[] {
+  const fishDirectory = join(home, ".config", "fish");
+  const paths = [join(home, ".bashrc"), join(home, ".zshrc")];
+  if (existsSync(fishDirectory) || present("fish"))
+    paths.push(join(fishDirectory, "config.fish"));
+  return paths;
+}
 function shellRc(home: string, config: HookConfig, uninstall: boolean): void {
-  const shell = process.env.SHELL ?? "/bin/sh";
-  const fish = shell.endsWith("/fish");
-  const path = fish
-    ? join(home, ".config", "fish", "config.fish")
-    : join(home, shell.endsWith("/zsh") ? ".zshrc" : ".bashrc");
-  const original = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const cleaned = original.replace(
-    /^# agentcommons-hook begin\n[\s\S]*?^# agentcommons-hook end\n?/gm,
-    "",
-  );
-  const exports = fish
-    ? `set -gx AGENTCOMMONS_SERVER ${shellQuote(config.server)}\nset -gx AGENTCOMMONS_API_KEY ${shellQuote(config.key)}\n`
-    : `export AGENTCOMMONS_SERVER=${shellQuote(config.server)}\nexport AGENTCOMMONS_API_KEY=${shellQuote(config.key)}\n`;
-  atomicText(
-    path,
-    cleaned +
-      (uninstall
-        ? ""
-        : `${cleaned.endsWith("\n") || !cleaned ? "" : "\n"}# agentcommons-hook begin\n${exports}# agentcommons-hook end\n`),
-  );
+  for (const path of shellRcPaths(home)) {
+    const original = existsSync(path) ? readFileSync(path, "utf8") : "";
+    if (uninstall && !original) continue;
+    const cleaned = original.replace(
+      /^# agentcommons-hook begin\n[\s\S]*?^# agentcommons-hook end\n?/gm,
+      "",
+    );
+    const exports = path.endsWith("config.fish")
+      ? `set -gx AGENTCOMMONS_SERVER ${shellQuote(config.server)}\nset -gx AGENTCOMMONS_API_KEY ${shellQuote(config.key)}\n`
+      : `export AGENTCOMMONS_SERVER=${shellQuote(config.server)}\nexport AGENTCOMMONS_API_KEY=${shellQuote(config.key)}\n`;
+    atomicText(
+      path,
+      cleaned +
+        (uninstall
+          ? ""
+          : `${cleaned.endsWith("\n") || !cleaned ? "" : "\n"}# agentcommons-hook begin\n${exports}# agentcommons-hook end\n`),
+    );
+  }
 }
 /** Supported harnesses whose CLI is on PATH right now; the installer wires exactly these. */
 export function detectHarnesses(): CliHarness[] {
@@ -196,6 +244,8 @@ export function install(
       output.extensions = uninstall ? extensions : [...extensions, extension];
     } else output = updateHooks(input, harness, command, uninstall);
     save(path, output);
+    if (definition.instructionsPath)
+      instructionsFile(join(home, ...definition.instructionsPath), uninstall);
     if (!definition.mcpConfigPath) continue;
     const mcpPath = join(home, ...definition.mcpConfigPath);
     const mcpKey = toml ? "mcp_servers" : "mcpServers";

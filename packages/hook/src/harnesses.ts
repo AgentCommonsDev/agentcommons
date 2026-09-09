@@ -44,6 +44,8 @@ export interface HarnessDefinition {
   binary: string;
   processMarkers: readonly string[];
   configPath: readonly string[];
+  /** Global instructions file that receives the §8.3 guidance block; null when the harness's extension carries it. */
+  instructionsPath: readonly string[] | null;
   mcpConfigPath: readonly string[] | null;
   configFormat: "json" | "toml" | "extension";
   mcp(url: string): Record<string, unknown> | null;
@@ -97,6 +99,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
       alwaysLoad: true,
     }),
     configPath: [".claude", "settings.json"],
+    instructionsPath: [".claude", "CLAUDE.md"],
     configFormat: "json",
     timeout: 3,
     events: shellEvents,
@@ -139,6 +142,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     processMarkers: ["codex", "@openai/codex"],
     mcp: (url) => ({ url, bearer_token_env_var: "AGENTCOMMONS_API_KEY" }),
     configPath: [".codex", "config.toml"],
+    instructionsPath: [".codex", "AGENTS.md"],
     configFormat: "toml",
     timeout: 3,
     events: {
@@ -178,6 +182,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
       headers: { Authorization: "Bearer ${AGENTCOMMONS_API_KEY}" },
     }),
     configPath: [".gemini", "settings.json"],
+    instructionsPath: [".gemini", "GEMINI.md"],
     configFormat: "json",
     timeout: 3000,
     events: {
@@ -199,6 +204,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     processMarkers: ["pi", "@mariozechner/pi-coding-agent"],
     mcp: () => null,
     configPath: [".pi", "agent", "settings.json"],
+    instructionsPath: null,
     configFormat: "extension",
     timeout: 3,
     events: {

@@ -255,24 +255,16 @@ test("the list shows root sessions only, toggles subagent runs, sorts on the ser
   await expect(rows(page)).toHaveCount(1);
   const root = rows(page).first();
   await expect(root).toContainText(rootTitle);
+  // Earlier suites may have read this session with a key; the API holds the current count.
+  const read = await sessionRead(page, data.sessionId);
   await expect(
     root.locator(`td[data-label="${fields.reuse_count}"]`),
-  ).toHaveText("1");
-  await page
-    .getByRole("button", { name: copy.app.common.columns, exact: true })
-    .click();
-  await page
-    .getByRole("menu")
-    .getByRole("menuitemcheckbox", {
-      name: labels.list.subagentCount,
-      exact: true,
-    })
-    .click();
-  await page.keyboard.press("Escape");
+  ).toHaveText(String(read.header.reuse_count));
+  // Column choices persist across navigation, so Subagents is still shown here.
   await expect(
     root.locator(`td[data-label="${labels.list.subagentCount}"]`),
   ).toHaveText("1");
-  const rootStatus = (await sessionRead(page, data.sessionId)).header.status;
+  const rootStatus = read.header.status;
   await expect(root.locator(`td[data-label="${fields.status}"]`)).toHaveText(
     rootStatus === "ACTIVE"
       ? labels.detail.live.badge
@@ -910,12 +902,18 @@ test("long transcripts and raw records page in bounded steps and deep links star
       { exact: true },
     ),
   ).toBeVisible();
+  // Bringing the control into view loads the next page; no click is needed, and each
+  // step stays one bounded page.
   for (let pages = 1; (await more.count()) > 0; pages++) {
     expect(pages).toBeLessThan(20);
-    await expect(more).toBeEnabled();
-    await more.click();
+    const before = await loaded.count();
+    await more.scrollIntoViewIfNeeded();
     await expect
-      .poll(async () => (await more.count()) === 0 || more.isEnabled())
+      .poll(
+        async () =>
+          (await more.count()) === 0 || (await loaded.count()) > before,
+        { timeout: 15_000 },
+      )
       .toBe(true);
   }
   await expect(message(page, total - 1)).toBeVisible();

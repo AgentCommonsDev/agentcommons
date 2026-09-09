@@ -191,4 +191,13 @@ it("requires a ClickHouse Cloud endpoint for the cloud trace store and parses it
       clickhouseCloudUrl: "https://abc.us-west-2.aws.clickhouse.cloud:8443",
     }).clickhouseCloudUrl,
   ).toMatchObject({ provider: "aws", region: "us-west-2" });
+  expect(
+    singleNodeSettingsSchema.parse({ ...base }).clickhouseCloudPostgresTls,
+  ).toBe("default");
+  expect(
+    singleNodeSettingsSchema.safeParse({
+      ...base,
+      clickhouseCloudPostgresTls: "verify-ca",
+    }).success,
+  ).toBe(false);
 });

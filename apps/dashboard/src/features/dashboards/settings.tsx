@@ -18,6 +18,7 @@ import {
 import { Field } from "../../components/ui/field";
 import { Alert } from "../../components/ui/feedback";
 import { Input, NativeSelect, Textarea } from "../../components/ui/input";
+import { Disclosure } from "../admin/display";
 import { formatIssues } from "./inspector";
 import { definitionJson } from "./model";
 
@@ -339,7 +340,13 @@ export function DashboardSettingsDialog({
               {copy.dashboards.settings.variableNameHint}
             </p>
           </section>
-          <JsonSection definition={definition} onApply={onDefinition} />
+          {/* The form is the one way to edit; the JSON import sits behind one explicit switch. */}
+          <Disclosure
+            showLabel={copy.dashboards.settings.jsonShow}
+            hideLabel={copy.dashboards.settings.jsonHide}
+          >
+            <JsonSection definition={definition} onApply={onDefinition} />
+          </Disclosure>
         </div>
       </DialogContent>
     </Dialog>

@@ -53,7 +53,7 @@ describe("single-node with the ClickHouse Cloud trace store", () => {
       80, 443, 5432,
     ]);
   });
-  it("points the API and migration at Cloud and lets Cloud verify this host's PostgreSQL certificate", () => {
+  it("points the API and migration at Cloud and publishes PostgreSQL to it without libpq options", () => {
     const values = Object.fromEntries(
       all("aws:ssm/parameter:Parameter").map(
         (parameter) =>
@@ -76,8 +76,10 @@ describe("single-node with the ClickHouse Cloud trace store", () => {
       CLICKHOUSE_ACCESS_PASSWORD: "clickhouse-access-fixture-Aa!",
       CLICKHOUSE_DATABASE: "ac_trace",
     });
+    // No libpq TLS options by default: ClickHouse Cloud 26.2 rejects them; the host's
+    // pg_hba.conf still admits Cloud over TLS only.
     expect(values.DATABASE_TRACE_CONTROL_URL).toBe(
-      "postgres://ac_trace_control:trace-control-password-fixture@db:5432/agentcommons?sslmode=verify-full&sslrootcert=/etc/agentcommons/postgres-tls/server.crt",
+      "postgres://ac_trace_control:trace-control-password-fixture@db:5432/agentcommons",
     );
     expect(values.DATABASE_URL).toBe(
       "postgres://ac_app:application-password-fixture@db:5432/agentcommons",

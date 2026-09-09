@@ -135,7 +135,12 @@ host and proves its owner sees none of the first organization's sessions through
 session list, SQL and a direct fetch (exit 2 while the first organization has no sessions).
 `--key NAME` (repeatable) mints an organization API key with `sessions` read and ingest
 through the owner session once and stores it in `/root/agentcommons/NAME-key`; re-runs
-skip keys whose file exists. Revoke such keys on Admin → Keys when done.
+skip keys whose file exists. `infra/scripts/single-node-run.sh revoke-key.sh --organization
+zpghl --key NAME --reason "why"` revokes such a key through the owner session and deletes
+its file; Admin → Keys works too. `infra/scripts/single-node-run.sh add-members.sh
+--organization zpghl --role admin someone@example.com` seats people with one role through the
+owner session before they sign in (the People page makes the same call); an enrolled
+Google domain still lets colleagues join as members on their own.
 With `AUTH_SIGNUP_MODE=invite`, a Google account may sign in only when its exact email
 domain is enrolled by exactly one organization and, if `AUTH_ALLOWED_EMAIL_DOMAINS` is
 set, also listed there; it then joins that organization as `member`.
@@ -216,27 +221,29 @@ PostgreSQL is published on 5432 with TLS: the release issues a certificate for t
 address (`/opt/agentcommons/postgres-tls`, SAN = Elastic IP and `db`), renders a
 `pg_hba.conf` that admits only `ac_trace_control` over `hostssl` from ClickHouse Cloud's
 egress addresses for that provider/region plus the Compose network, and the security
-group opens 5432 to exactly those addresses. The migration hands Cloud the certificate
-inline (`sslmode=verify-full`, `sslrootcert` on `DATABASE_TRACE_CONTROL_URL`), and the
-release ends with a `dictGet` probe from Cloud that fails the release if Cloud cannot
-reach PostgreSQL. The egress list is the reviewed snapshot
+group opens 5432 to exactly those addresses. With `clickhouseCloudPostgresTls:
+verify-full` the migration hands Cloud the certificate inline (`sslmode=verify-full`,
+`sslrootcert` on `DATABASE_TRACE_CONTROL_URL`); the release ends with a `dictGet` probe
+from Cloud that fails the release if Cloud cannot reach PostgreSQL. The egress list is the reviewed snapshot
 `infra/compose/clickhouse-cloud-egress.json`; when ClickHouse announces new addresses,
 run `infra/scripts/clickhouse-cloud-egress.sh`, review the diff, `pulumi up` and release.
-Cloud mode is not usable yet (2026-09-09): the search implementation stems tokens with
-`stem(token,'english')` in `searchTermsSql` (`packages/traces/src/views/search.ts`), used
-by the `message_terms` text index on `ac_trace.messages` and by `api_ro.search_messages`
-on both the indexed and the query side. ClickHouse Cloud locks
-`allow_experimental_nlp_functions=0` on the service (changing it per query or per user
-returns SETTING_CONSTRAINT_VIOLATION), so the migration fails at that index. The text
-and vector indexes themselves are permitted. Cloud also requires an uppercase letter
-and a special character in every `CREATE USER` password, which the shared
-`CLICKHOUSE_PASSWORD_SUFFIX` now satisfies for the view owner, the per-caller reader
-principals and the validated writer/access secrets. Plan: a search change removes the
-`stem()` dependency (data-driven, verified against `fixtures/search-golden.yaml`), then
-the stack switches to `traceStore: clickhouse-cloud` on a later release; the zpghl stack
-runs `traceStore: local` until then, and the objects the partial migration created on
-the Cloud service (`ac_trace`, `api_ro`, the three `ac_trace_*` users, ten tables) are
-left in place for that switch.
+Cloud mode is not usable on the current ClickHouse Cloud release (2026-09-09, service
+version 26.2). The former stemming blocker is gone: the search index no longer uses
+`stem()`. Two rejections remain on that service: `WITH … AS MATERIALIZED` (used by the
+analytics views, `apps/api/src/services/metrics.ts` and the reader-principal settings in
+`packages/traces/src/client.ts`), and every PostgreSQL TLS key-value argument
+(`sslmode`, `sslrootcert`) on the PostgreSQL engine, so certificate verification of this
+host is not possible there yet. `clickhouseCloudPostgresTls` therefore defaults to
+`default`, which emits no libpq option: libpq still prefers TLS and the host's
+`pg_hba.conf` admits Cloud only over `hostssl`, so the link is encrypted but the host
+certificate is unverified; set `verify-full` (or `require`) once the service accepts the
+arguments. Two paths forward: run the Cloud service on a release that supports
+materialized CTEs, or drop `AS MATERIALIZED` from the views and settings after re-running
+the metrics review suites. The password policy is already satisfied by the shared
+`CLICKHOUSE_PASSWORD_SUFFIX` (view owner, reader principals, validated writer/access
+secrets). The zpghl stack runs `traceStore: local` until then; the objects the partial
+migration created on the Cloud service (`ac_trace`, `api_ro`, three `ac_trace_*` users,
+ten tables) are left in place for that switch.
 Cloud is billed by ClickHouse separately from the AWS estimate below; egress from Cloud to
 this host is small (dictionary lookups). The workstation's resolver sometimes fails for
 `*.clickhouse.cloud`; `dig @1.1.1.1` and `curl --resolve` work around it.

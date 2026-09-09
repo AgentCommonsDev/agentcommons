@@ -7,12 +7,12 @@ import { testAccountPassword } from "../../api/test/support";
 import {
   accessible,
   activate,
+  openPasswordSignIn,
   fixture,
   signInAsOwner,
   test,
   themeToggle,
 } from "./browser-test";
-import { switcher } from "./organization-controls";
 
 const auth = copy.auth;
 
@@ -31,6 +31,7 @@ test("sign-in rejects a wrong password with the server's message and a correct o
   await expect(page.getByRole("link", { name: auth.signupLink })).toHaveCount(
     0,
   );
+  await openPasswordSignIn(page, isMobile);
   await expect(page.getByTestId("login-email")).toHaveAttribute(
     "autocomplete",
     "username",
@@ -134,6 +135,7 @@ test("a setup link renders the password form, refuses mismatched passwords and a
     isMobile,
   );
   await expect(page).toHaveURL(/\/login$/);
+  await openPasswordSignIn(page, isMobile);
   await page.getByTestId("login-email").fill(email);
   await page.getByTestId("login-password").fill(password);
   await activate(page.getByTestId("login-submit"), isMobile);
@@ -155,7 +157,8 @@ test("a setup link renders the password form, refuses mismatched passwords and a
   expect(me.user.email).toBe(email);
   expect(me.organization?.id).toBe(state.organizationId);
   expect(me.caller?.role).toBe("member");
-  await expect(switcher(page)).toHaveText(
+  // One membership on a customer instance: the header names the organization as a label.
+  await expect(page.getByTestId("organization-name")).toHaveText(
     z.string().parse(me.organization?.name),
   );
   await expect(

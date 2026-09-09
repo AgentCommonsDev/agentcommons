@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   keepPreviousData,
   useQuery,
@@ -168,7 +168,14 @@ function buildMetricChart(
   return { option, unit, collapsed: collapse ? groups.size : 0 };
 }
 
-export function HealthMetricsCard({ filters }: { filters: MetricFilters }) {
+/** The date range and repository filter sits inside this card: it scopes only these metrics. */
+export function HealthMetricsCard({
+  filters,
+  toolbar,
+}: {
+  filters: MetricFilters;
+  toolbar?: ReactNode;
+}) {
   const { organization } = useWorkspace();
   const [metric, setMetric] = useState<HealthMetric>(healthMetrics[0]);
   const queryFilters = { ...filters, metric };
@@ -302,6 +309,7 @@ export function HealthMetricsCard({ filters }: { filters: MetricFilters }) {
         </NativeSelect>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {toolbar}
         {query.error ? (
           <RequestError
             error={query.error}

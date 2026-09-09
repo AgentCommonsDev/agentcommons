@@ -106,6 +106,14 @@ export const singleNodeSettingsSchema = z
     alarmEmail: z.email().optional(),
     traceStore: z.enum(["local", "clickhouse-cloud"]).default("local"),
     clickhouseCloudUrl: clickhouseCloudUrlSchema.optional(),
+    /**
+     * libpq options ClickHouse passes when reading PostgreSQL. `default` sends none:
+     * libpq still prefers TLS and the host's pg_hba.conf accepts only TLS, but the
+     * certificate is not verified. ClickHouse Cloud 26.2 rejects any explicit option.
+     */
+    clickhouseCloudPostgresTls: z
+      .enum(["default", "require", "verify-full"])
+      .default("default"),
     environment: environmentSchema.default({}),
   })
   .refine(
@@ -132,6 +140,7 @@ export function readSettings(): Settings {
       alarmEmail: config.get("alarmEmail"),
       traceStore: config.get("traceStore"),
       clickhouseCloudUrl: config.get("clickhouseCloudUrl"),
+      clickhouseCloudPostgresTls: config.get("clickhouseCloudPostgresTls"),
       environment: config.getObject<unknown>("environment"),
     });
   return settingsSchema.parse({

@@ -25,7 +25,13 @@ import { hasAdminAuthority } from "@agentcommons/db";
 const dashboardInstruction =
   "Use this when the user asks to view, build or change dashboards.";
 const governingSentence =
-  "Only use this when the user asks about previous sessions or prior work; where possible run multi-step investigation in a subagent that returns only findings with session ids.";
+  "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids.";
+/**
+ * Server `instructions` returned by `initialize` (§8.2). Claude Code places them in its
+ * system prompt, so this is where an agent learns to look before it edits.
+ */
+export const serverInstructions =
+  "AgentCommons indexes this organization's past coding-agent sessions (search, get, sql). Before changing code, search for the test, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value; read a hit with get and cite its session_id. Also use it whenever the user asks about prior work. Keep long investigations in a subagent that returns only findings and session ids.";
 interface Definition {
   name: string;
   description: string;
@@ -133,7 +139,7 @@ export class McpService {
       {
         name: "search",
         description:
-          'Search previous coding-agent messages with words and structured filters. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {"query":"","filters":{"file_prefix":"src/auth/","file_operation":"edit"}}.',
+          'Search previous coding-agent sessions with words and structured filters. Start with the test name, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {"query":"","filters":{"file_prefix":"src/auth/","file_operation":"edit"}}.',
         permission: "read",
         input: schema.searchInputSchema,
         toolInput: schema.searchToolInputSchema,

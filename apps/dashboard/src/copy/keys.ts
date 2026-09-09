@@ -58,12 +58,10 @@ export const keysCopy = {
     copy: "Copy key",
     copied: "Key copied",
     failed: "Copy failed. Reload the page and try again.",
-    pick: "Use a key you already have",
-    pickHint:
-      "Keys you created earlier can be copied again. The command in step 3 takes the key you choose.",
+    pick: "Key",
+    pickHint: "Keys you created earlier can be used again.",
     pickNone: "Choose a key",
-    noKeys:
-      "You have no active key with ingest and read permissions yet. Create one with the form above.",
+    noKeys: "You have no active key with ingest and read permissions yet.",
   },
   revoke: {
     title: "Revoke this key?",

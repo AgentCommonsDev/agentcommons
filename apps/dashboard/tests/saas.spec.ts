@@ -2,6 +2,7 @@ import { selectOrganization } from "./organization-controls";
 import {
   accessible,
   activate,
+  openPasswordSignIn,
   cookieSchema,
   test,
   themeToggle,
@@ -91,6 +92,7 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
 }) => {
   const email = `browser-${randomUUID()}@example.test`;
   await page.goto(paths.signup);
+  await openPasswordSignIn(page, isMobile);
   await expect(page.getByTestId("auth-card")).toBeVisible();
   await page
     .getByLabel(copy.signup.name, { exact: true })
@@ -362,6 +364,7 @@ test("native signup, SMTP verification, name-only onboarding, quota and signed S
     page.getByRole("status").filter({ hasText: copy.auth.setupDone }),
   ).toBeVisible();
   await page.goto(paths.login);
+  await openPasswordSignIn(page, isMobile);
   await page.getByTestId("login-email").fill(email);
   await page.getByTestId("login-password").fill(`${testAccountPassword}-reset`);
   await activate(page.getByTestId("login-submit"), isMobile);

@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { z } from "zod";
 import { copy } from "../../copy";
 import { csvBlob, downloadBlob } from "../../lib/csv";
 import { errorMessage } from "../../lib/display";
@@ -87,6 +88,23 @@ function columnId<T>(column: ColumnDef<T>, index: number): string {
 function headerText<T>(column: ColumnDef<T>, fallback: string): string {
   return typeof column.header === "string" ? column.header : fallback;
 }
+/** Column choices survive navigation: one browser-local entry per table, keyed by its label. */
+const storedVisibility = z.record(z.string(), z.boolean());
+function readVisibility(key: string): VisibilityState {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? storedVisibility.parse(JSON.parse(raw)) : {};
+  } catch {
+    return {};
+  }
+}
+function writeVisibility(key: string, value: VisibilityState) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage may be unavailable; the choice then lasts for the page only.
+  }
+}
 export function DataTable<T>({
   data,
   columns,
@@ -117,8 +135,18 @@ export function DataTable<T>({
       ),
     [columns, hiddenColumns],
   );
-  const [columnVisibility, setColumnVisibility] =
-    useState<VisibilityState>(initialVisibility);
+  const storageKey = `agentcommons-columns:${label}`;
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
+    () => {
+      const stored = readVisibility(storageKey);
+      return Object.fromEntries(
+        Object.entries(initialVisibility).map(([id, shown]) => [
+          id,
+          stored[id] ?? shown,
+        ]),
+      );
+    },
+  );
   useEffect(() => {
     setColumnVisibility((prior) => {
       const missing = Object.entries(initialVisibility).filter(
@@ -144,7 +172,13 @@ export function DataTable<T>({
     columns,
     state: { sorting: sorting ?? [], columnVisibility },
     ...(onSortingChange ? { onSortingChange } : {}),
-    onColumnVisibilityChange: setColumnVisibility,
+    onColumnVisibilityChange: (updater) => {
+      setColumnVisibility((prior) => {
+        const next = typeof updater === "function" ? updater(prior) : updater;
+        writeVisibility(storageKey, next);
+        return next;
+      });
+    },
     manualSorting: true,
     enableSorting: sorting !== undefined,
     enableSortingRemoval: false,

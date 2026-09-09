@@ -14,6 +14,11 @@ export const installCopy = {
     title: "Create a key for this machine",
     description:
       "The key lets the machine upload sessions and read them back. Name it after the machine so you can tell keys apart later.",
+    chooseTitle: "Choose the key for this machine",
+    chooseDescription:
+      "Pick one of your active keys with ingest and read permissions. The command in step 3 takes it.",
+    useExisting: "Use a key you already have instead",
+    createNew: "Create a new key instead",
     machine: "Machine name",
     machinePlaceholder: "Work laptop",
     submit: "Create key",
@@ -22,7 +27,7 @@ export const installCopy = {
   prepare: {
     title: "Before you run it",
     description:
-      "The machine needs Node.js 20 or newer and curl. The installer downloads the capture hook for Claude Code, Codex, Gemini CLI and pi, registers the AgentCommons MCP server with Claude Code, Codex and Gemini CLI so your coding agents can search AgentCommons before they start, and runs a check.",
+      "The machine needs Node.js 20 or newer and curl. The installer downloads the capture hook for Claude Code, Codex, Gemini CLI and pi, registers the AgentCommons MCP server with Claude Code, Codex and Gemini CLI, writes the guidance that makes agents search AgentCommons before they change code into each tool's global instructions file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.gemini/GEMINI.md; pi gets it from its extension), and runs a check. Nothing is added to your repositories.",
     notesTitle: "Per tool",
     notes: {
       CLAUDE_CODE: "Sessions upload automatically once the hook is installed.",
@@ -36,6 +41,8 @@ export const installCopy = {
     title: "Run this command on that machine",
     description:
       "Paste it into a terminal on the machine you are connecting. Run it again only on a new machine or to change the key; installed hooks update themselves.",
+    shellHint:
+      "The installer writes the key into your bash, zsh and fish startup files. Open a new terminal before starting Codex; it reads the key from the environment.",
   },
   arrivals: {
     title: "Start a coding agent",

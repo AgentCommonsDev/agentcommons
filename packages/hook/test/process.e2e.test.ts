@@ -230,7 +230,35 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
   const installed = await run("sh", args, env);
   expect(installed, installed.output).toMatchObject({ code: 0 });
   expect(installed.output).toContain("trust hooks");
-  expect(installed.output).toContain("repository instructions");
+  // Every configured harness's global instructions file carries the guidance block; the
+  // installer names the files instead of asking the user to paste anything.
+  const instructionFiles = [
+    join(home, ".claude", "CLAUDE.md"),
+    join(home, ".codex", "AGENTS.md"),
+    join(home, ".gemini", "GEMINI.md"),
+  ];
+  for (const file of instructionFiles) {
+    expect(installed.output).toContain(file);
+    expect(readFileSync(file, "utf8")).toContain(
+      "<!-- agentcommons-hook begin -->",
+    );
+    expect(readFileSync(file, "utf8")).toContain("## AgentCommons");
+  }
+  expect(installed.output).toContain("pi gets it from its extension");
+  expect(installed.output).toContain(
+    "open a new terminal before starting Codex",
+  );
+  // Every login shell gets the exports, not only $SHELL: Codex reads the key from the
+  // environment of whichever shell starts it.
+  for (const rc of [".bashrc", ".zshrc"])
+    expect(readFileSync(join(home, rc), "utf8")).toContain(
+      "export AGENTCOMMONS_API_KEY='test-credential'",
+    );
+  const fishConfig = join(home, ".config", "fish", "config.fish");
+  if (existsSync(fishConfig))
+    expect(readFileSync(fishConfig, "utf8")).toContain(
+      "set -gx AGENTCOMMONS_API_KEY 'test-credential'",
+    );
   const configFile = join(env.AGENTCOMMONS_DIR, "config.json");
   const first = readFileSync(configFile, "utf8");
   expect(statSync(configFile).mode & 0o777).toBe(0o600);
@@ -257,9 +285,11 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
   ).toBe(0);
   expect(requests).toBe(before);
   expect(readFileSync(configFile, "utf8")).toBe(first);
-  expect(readFileSync(join(home, ".bashrc"), "utf8")).not.toContain(
-    "AGENTCOMMONS_API_KEY",
-  );
+  for (const rc of [join(home, ".bashrc"), join(home, ".zshrc"), fishConfig])
+    if (existsSync(rc))
+      expect(readFileSync(rc, "utf8")).not.toContain("AGENTCOMMONS_API_KEY");
+  // Uninstall removes the guidance block; a file that held only the block is removed.
+  for (const file of instructionFiles) expect(existsSync(file)).toBe(false);
   const invalid = await run(
     process.execPath,
     [join(env.AGENTCOMMONS_DIR, "hook.js"), "doctor", "--config-home", home],

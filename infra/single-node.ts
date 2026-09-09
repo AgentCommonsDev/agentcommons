@@ -156,11 +156,15 @@ export function singleNodeStack(
     throw new Error(
       "traceStore clickhouse-cloud requires the clickhouseCloudPassword secret.",
     );
-  // In Cloud mode ClickHouse verifies this host's PostgreSQL certificate (issued at
-  // release time for the public address) and connects to that address.
-  const controlSuffix = cloud
-    ? "?sslmode=verify-full&sslrootcert=/etc/agentcommons/postgres-tls/server.crt"
-    : "";
+  // Cloud reads PostgreSQL at the public address. Explicit libpq TLS options are opt-in
+  // (ClickHouse Cloud 26.2 rejects them); without them libpq prefers TLS and the host's
+  // pg_hba.conf admits Cloud only over TLS, so the link is encrypted but unverified.
+  const controlSuffix =
+    cloud && settings.clickhouseCloudPostgresTls === "verify-full"
+      ? "?sslmode=verify-full&sslrootcert=/etc/agentcommons/postgres-tls/server.crt"
+      : cloud && settings.clickhouseCloudPostgresTls === "require"
+        ? "?sslmode=require"
+        : "";
   const databaseUrl = (user: string, password: string) =>
     `postgres://${user}:${encodeURIComponent(password)}@db:5432/agentcommons`;
   const fixed = {

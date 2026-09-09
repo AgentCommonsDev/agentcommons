@@ -236,8 +236,7 @@ export const adminCopy = {
     chartLabel: "Metric chart",
     csvName: "health-metrics.csv",
     snapshot: "Right now",
-    snapshotHint:
-      "Live totals for the whole organization. The filters above apply only to the health metrics.",
+    snapshotHint: "Live totals for the whole organization right now.",
     queue: "Queue depth",
     failed: "Failed sessions",
     backlog: "Embedding backlog",

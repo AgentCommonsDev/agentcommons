@@ -90,11 +90,14 @@ export function CopyKeyButton({
  */
 export function InstallKeyPicker({
   onKey,
+  initialKeyId,
 }: {
   onKey: (key: string | null) => void;
+  /** A key the page already holds (just created here) starts selected; no reveal needed. */
+  initialKeyId?: string | undefined;
 }) {
   const { organization } = useWorkspace();
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(initialKeyId ?? "");
   const reveal = useRevealKey();
   const keys = useKeysPage(organization.id, {
     cursor: null,

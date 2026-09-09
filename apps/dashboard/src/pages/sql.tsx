@@ -186,6 +186,26 @@ export function SqlPage() {
               : copy.sql.status.ready,
             icon: <CircleCheck size={14} aria-hidden />,
           };
+  /* The assistant briefing is the schema in prose, so it sits with the schema, not the query. */
+  const schemaCopy = (className: string) =>
+    schema.data ? (
+      <div
+        data-testid="sql-copy-context"
+        className={`flex flex-col gap-1.5 ${className}`}
+      >
+        <CopyButton
+          value={formatSchemaContext(schema.data)}
+          label={copy.sql.explorer.copyContext}
+          showLabel
+          size="sm"
+          variant="secondary"
+          className="self-start"
+        />
+        <p className="text-xs leading-relaxed text-muted">
+          {copy.sql.explorer.copyContextHint}
+        </p>
+      </div>
+    ) : null;
   const explorer = (className: string, onInsert: (text: string) => void) => (
     <SchemaExplorer
       className={className}
@@ -212,6 +232,7 @@ export function SqlPage() {
             <Database size={14} aria-hidden className="text-subtle" />
             {copy.sql.explorer.title}
           </div>
+          {schemaCopy("border-b border-line-soft px-3 py-2")}
           {explorer("min-h-0 flex-1", insert)}
         </aside>
         <section className="flex min-w-0 flex-1 flex-col gap-3">
@@ -322,20 +343,12 @@ export function SqlPage() {
                 <Database aria-hidden />
                 {copy.sql.explorer.open}
               </Button>
-              <CopyButton value={sql} label={copy.sql.editor.copyQuery} />
-              {schema.data && (
-                <span
-                  data-testid="sql-copy-context"
-                  title={copy.sql.explorer.copyContextHint}
-                >
-                  <CopyButton
-                    value={formatSchemaContext(schema.data)}
-                    label={copy.sql.explorer.copyContext}
-                    showLabel
-                    variant="secondary"
-                  />
-                </span>
-              )}
+              <CopyButton
+                value={sql}
+                label={copy.sql.editor.copyQuery}
+                showLabel
+                variant="secondary"
+              />
             </div>
           </div>
           <SqlEditor
@@ -415,6 +428,7 @@ export function SqlPage() {
               {copy.sql.explorer.insert}
             </DialogDescription>
           </div>
+          {schemaCopy("border-b border-line-soft px-4 py-2")}
           {explorer("min-h-0 flex-1", (text) => {
             insert(text);
             setExplorerOpen(false);

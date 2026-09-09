@@ -13,7 +13,6 @@ import { errorMessage } from "../../lib/display";
 import { paths } from "../../lib/routes";
 import { useAuthConfig } from "../../lib/use-auth-config";
 import {
-  AccountDivider,
   AccountForm,
   AccountHeading,
   AccountLink,
@@ -30,6 +29,8 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // With a provider configured, that is the one path shown; the password form is a switch away.
+  const [usePassword, setUsePassword] = useState(false);
   const signIn = async () => {
     setPending(true);
     setError(null);
@@ -51,6 +52,9 @@ export function LoginPage() {
   const provider = config.data
     ? config.data.oidc_enabled || config.data.social_provider
     : false;
+  const passwordEnabled = config.data?.email_password_enabled ?? false;
+  const showPassword = passwordEnabled && (!provider || usePassword);
+  const showProvider = Boolean(provider) && !usePassword;
   return (
     <>
       <AccountHeading
@@ -74,7 +78,7 @@ export function LoginPage() {
         />
       ) : (
         <>
-          {config.data.email_password_enabled && (
+          {showPassword && (
             <AccountForm
               onSubmit={(event) => {
                 event.preventDefault();
@@ -126,14 +130,32 @@ export function LoginPage() {
               </Button>
             </AccountForm>
           )}
-          {config.data.email_password_enabled && provider && <AccountDivider />}
-          <ProviderSignIn
-            config={config.data}
-            callbackPath={callbackPath}
-            disabled={pending}
-            onError={setError}
-          />
-          {!config.data.email_password_enabled && !provider && (
+          {showProvider && (
+            <ProviderSignIn
+              config={config.data}
+              callbackPath={callbackPath}
+              disabled={pending}
+              onError={setError}
+            />
+          )}
+          {passwordEnabled && provider && (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              data-testid="login-use-password"
+              className="self-center"
+              disabled={pending}
+              onClick={() => {
+                setUsePassword((prior) => !prior);
+              }}
+            >
+              {usePassword
+                ? copy.auth.providerInstead
+                : copy.auth.passwordInstead}
+            </Button>
+          )}
+          {!passwordEnabled && !provider && (
             <Alert variant="danger">{copy.auth.noMethods}</Alert>
           )}
           {error && <Alert variant="danger">{error}</Alert>}

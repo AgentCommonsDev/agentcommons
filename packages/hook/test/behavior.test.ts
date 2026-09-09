@@ -585,14 +585,14 @@ it("quarantines an actually oversized complete JSONL record and still uploads th
 });
 
 // @req R-INST-06
-it("prints the governing repository guidance exactly as specified", async () => {
-  const { repositorySnippet } = await import("../src/install.js");
+it("carries the global agent guidance exactly as specified", async () => {
+  const { agentInstructions } = await import("../src/install.js");
   const spec = readFileSync("docs/SPEC.md", "utf8");
   const section = spec.slice(
-    spec.indexOf("### 8.3 Repository snippet"),
+    spec.indexOf("### 8.3 Global agent instructions"),
     spec.indexOf("### 8.4 Client configuration"),
   );
-  expect(section.match(/```\n([\s\S]*?)\n```/)?.[1]).toBe(repositorySnippet);
+  expect(section.match(/```\n([\s\S]*?)\n```/)?.[1]).toBe(agentInstructions);
 });
 
 it("reads indexed backlog heads without losing the latest source or lifecycle phase", async () => {

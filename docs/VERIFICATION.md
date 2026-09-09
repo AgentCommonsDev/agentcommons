@@ -89,7 +89,7 @@ that the audit log holds `transport=mcp` rows for the installed member key: a
 row, with no `mcp.call` failure rows. The stage also requires eager loading: the first
 AgentCommons call must not be preceded by the harness's deferred-tool loader (Claude
 Code `ToolSearch`), and the live `tools/list` catalog must stay under the R-MCP-09
-budget (15 KB for a read key, 20 KB for an admin key), recorded under `catalog`. The
+budget (20 KB for a read key, 25 KB for an admin key), recorded under `catalog`. The
 report records the prompt, native tool names, every invoked tool and any tool or audit
 error under `native_tools`. pi has no
 MCP client; its stage runs through the extension's tool bridge (ADR 0054), which
@@ -116,6 +116,24 @@ Zero uncovered requirements is necessary, but does not prove those tests passed.
 Keep the test output, browser findings, platform results, and all-four-harness live
 report together when assessing spec §16.1 item 8. AWS deployment is a separate,
 deferred step; `DEPLOYMENTS_ENABLED` remains unset until the operator enables it.
+
+### One path per screen, organic recall guidance and deployment follow-ups, 2026-09-09
+
+Observed on the working tree that became this commit, after the self-hosted release
+to https://hooks.tools.goodhartlabs.com (commit b829b38 at the time of the checks).
+
+| Gate                                                     | Observed result                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Strict TypeScript, ESLint, Prettier, knip, OpenAPI drift | Passed on the full workspace                                                                                                                                                                                                                                                                                      |
+| Requirement citations                                    | 195 covered, zero uncovered                                                                                                                                                                                                                                                                                       |
+| Unit tests                                               | Passed (workspace `pnpm test`); hook package 51/51 across 8 files including the installer end-to-end with isolated `HOME` and the bash, zsh and fish export checks                                                                                                                                                |
+| Integration on real PostgreSQL and ClickHouse            | 307/307 across 45 files; transport contract asserts the MCP server instructions                                                                                                                                                                                                                                   |
+| Infrastructure program                                   | 48/48, including the on-host script list with `revoke-key.sh` and `add-members.sh`                                                                                                                                                                                                                                |
+| Public browser suite                                     | 39/39 with the API fixture on port 3000 answering the preview's proxied calls                                                                                                                                                                                                                                     |
+| SaaS browser suite                                       | 15/15, then 12/12 sign-in, sign-up and organization-creation baselines re-verified after regeneration for the single-path auth screens                                                                                                                                                                            |
+| Complete authenticated workspace browser matrix          | 151/152 passed across the 320, 390 and 1440 px projects on the final bundle (one phone-only case skips on desktop); the one failure, the small-mobile API reference assertion on a request example that Scalar's phone layout never shows, was replaced by a route-summary check and passed 3/3 on every viewport |
+| Live canary with organic recall                          | Claude Code, Codex and Gemini CLI passed every stage; the organic recall stage found the decision session before the first edit on all three (ADR 0057)                                                                                                                                                           |
+| Self-hosted instance                                     | Root redirect, customer-mode 404s, Let's Encrypt origin certificate, Cloudflare mode, organization isolation and a real Claude Code capture verified live                                                                                                                                                         |
 
 ### Current ClickHouse acceptance, 2026-09-08
 

@@ -9,6 +9,7 @@ import { testAccountPassword } from "../../api/test/support";
 import {
   accessible,
   activate,
+  openNavigation,
   collectErrors,
   fixture,
   setTheme,
@@ -26,17 +27,6 @@ import {
 } from "./organization-controls";
 
 const navigation = copy.app.navigation;
-/** The sidebar on desktop; the sheet menu on phones. Both hold the same navigation. */
-async function openNavigation(page: Page, isMobile: boolean) {
-  if (isMobile)
-    await activate(
-      page.getByRole("button", { name: navigation.menu, exact: true }),
-      true,
-    );
-  const nav = page.getByRole("navigation", { name: navigation.label });
-  await expect(nav).toBeVisible();
-  return nav;
-}
 async function organizations(page: Page) {
   return organizationsOutputSchema.parse(
     await (await page.request.get("/api/v1/me/organizations")).json(),
@@ -324,25 +314,20 @@ test("a fresh sign-in lands in the first membership, the theme toggle persists, 
 });
 
 // @req R-DASH-24 @req R-WEB-02
-test("an authenticated landing visit stays on the public page and offers the dashboard", async ({
+test("a self-hosted instance sends the site root to the application: sign-in when anonymous, Home when signed in", async ({
   page,
   context,
 }) => {
   await page.goto(paths.site);
-  await expect(
-    page.getByRole("link", { name: copy.hero.primary, exact: true }).first(),
-  ).toHaveAttribute("href", paths.login);
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByTestId("auth-card")).toBeVisible();
   await expect(
     page.getByRole("link", { name: copy.saas.signup, exact: true }),
   ).toHaveCount(0);
   await signInAsOwner(context);
   await page.goto(paths.site);
-  await expect(page).toHaveURL(/\/$/);
-  await expect(
-    page
-      .getByRole("link", { name: copy.signup.openDashboard, exact: true })
-      .first(),
-  ).toHaveAttribute("href", paths.home);
+  await expect(page).toHaveURL(new RegExp(`${paths.home}$`));
+  await expect(page.getByTestId("dashboard-picker")).toBeVisible();
   await expect(
     page.getByRole("link", { name: copy.hero.primary, exact: true }),
   ).toHaveCount(0);

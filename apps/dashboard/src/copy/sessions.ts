@@ -172,6 +172,7 @@ export const sessionsCopy = {
       expandThinking: "Show thinking",
       expandTools: "Expand tool calls",
       followLatest: "Follow latest",
+      catchingUp: "Catching up to the latest messages",
       newMessages: "New messages arrived",
       showLatest: "Show latest",
       loadMore: "Load more messages",

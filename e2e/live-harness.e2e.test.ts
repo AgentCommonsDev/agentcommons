@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import { z } from "zod";
 
 // Paid native providers are opt-in; the nightly/adapter workflow runs this exact test.
-// @req R-HRN-08 @req R-MCP-07
+// @req R-HRN-08 @req R-MCP-07 @req R-MCP-10
 it.runIf(process.env.LIVE_HARNESS_CANARY === "1")(
   "ingests all four live native sessions, displays them in the dashboard, lets an agent find them through MCP, and sees each MCP-capable harness use the tools natively",
   async () => {
@@ -56,6 +56,20 @@ it.runIf(process.env.LIVE_HARNESS_CANARY === "1")(
             }),
           )
           .length(4),
+        // Organic recall (R-MCP-10): an ordinary task made each MCP-capable harness search
+        // before writing, find the decision session, and restore its value.
+        organic_recall: z
+          .array(
+            z.object({
+              harness: z.enum(["CLAUDE_CODE", "CODEX", "GEMINI_CLI"]),
+              supported: z.literal(true),
+              passed: z.literal(true),
+              task_session_id: z.uuid(),
+              searched_before_write: z.literal(true),
+              search_found_decision: z.literal(true),
+            }),
+          )
+          .length(3),
       })
       .parse(
         JSON.parse(await readFile(resolve(output, "report.json"), "utf8")),

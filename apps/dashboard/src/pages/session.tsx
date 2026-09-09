@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { Search } from "lucide-react";
@@ -15,7 +15,7 @@ import {
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Label, Switch } from "../components/ui/field";
-import { Alert } from "../components/ui/feedback";
+import { Alert, Spinner } from "../components/ui/feedback";
 import { Input } from "../components/ui/input";
 import {
   Tabs,
@@ -32,6 +32,7 @@ import {
 } from "../features/sessions/session-header";
 import { SubagentRuns } from "../features/sessions/subagents";
 import {
+  LoadMore,
   MessageList,
   transcriptMessages,
   useTranscript,
@@ -106,16 +107,24 @@ export function SessionPage({ id, child }: { id: string; child?: string }) {
   // Following the tail keeps loading pages until the newest message is on screen,
   // then scrolls only when a newer message lands so a reader can still look back.
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = transcript;
+  // Scrolls this page starts itself must not count as the reader looking back.
+  const ownScroll = useRef(false);
   useEffect(() => {
     if (!following || !active) return;
     if (hasNextPage && !isFetchingNextPage) {
       void fetchNextPage();
       return;
     }
-    if (lastSeq >= 0)
+    if (lastSeq >= 0) {
+      ownScroll.current = true;
+      // Instant, so the page's own scroll is one event the listener below can skip.
       document
         .getElementById(String(lastSeq))
-        ?.scrollIntoView({ block: "end" });
+        ?.scrollIntoView({ block: "end", behavior: "instant" });
+      requestAnimationFrame(() => {
+        ownScroll.current = false;
+      });
+    }
   }, [
     following,
     active,
@@ -124,6 +133,21 @@ export function SessionPage({ id, child }: { id: string; child?: string }) {
     fetchNextPage,
     lastSeq,
   ]);
+  // A reader who scrolls up while a live session streams stops following; the
+  // "Show latest" banner and the switch turn it back on.
+  useEffect(() => {
+    if (!following || !active) return;
+    const onScroll = () => {
+      if (ownScroll.current) return;
+      const root = document.documentElement;
+      const fromBottom = root.scrollHeight - root.scrollTop - root.clientHeight;
+      if (fromBottom > 160) setFollow(false);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [following, active]);
   if (transcript.isPending) return <LoadingState />;
   if (transcript.error || !header)
     return (
@@ -137,6 +161,8 @@ export function SessionPage({ id, child }: { id: string; child?: string }) {
   const nodes = tree.data?.nodes ?? [];
   const root = nodes.find((node) => node.session_id === header.root_session_id);
   const behind = !following && !transcript.hasNextPage && latest > lastSeq;
+  // Following a live session with pages still to load: catch up first, render once.
+  const catchingUp = following && active && transcript.hasNextPage;
   return (
     <div className="flex flex-col gap-5">
       {header.parent_session_id && (
@@ -281,30 +307,39 @@ export function SessionPage({ id, child }: { id: string; child?: string }) {
             data-testid="session-transcript"
             aria-label={labels.transcript.label}
           >
-            <MessageList
-              messages={messages}
-              sessionId={id}
-              selected={selected}
-              find={find}
-              expandThinking={expandThinking}
-              expandTools={expandTools}
-              nodes={nodes}
-              focus={focus}
-            />
+            {catchingUp ? (
+              // Pages load back to back; the transcript renders once, at the tail.
+              <p
+                role="status"
+                className="flex items-center justify-center gap-2 py-10 text-sm text-muted"
+              >
+                <Spinner size={14} />
+                {labels.transcript.catchingUp}
+              </p>
+            ) : (
+              <MessageList
+                messages={messages}
+                sessionId={id}
+                selected={selected}
+                find={find}
+                expandThinking={expandThinking}
+                expandTools={expandTools}
+                nodes={nodes}
+                focus={focus}
+              />
+            )}
           </div>
-          {transcript.hasNextPage && (
-            <Button
-              variant="secondary"
-              className="self-center"
-              disabled={transcript.isFetchingNextPage}
-              onClick={() => {
+          {transcript.hasNextPage && !catchingUp && (
+            <LoadMore
+              fetching={transcript.isFetchingNextPage}
+              onLoad={() => {
                 void transcript.fetchNextPage();
               }}
             >
               {transcript.isFetchingNextPage
                 ? labels.transcript.loading
                 : labels.transcript.loadMore}
-            </Button>
+            </LoadMore>
           )}
           {tree.error && (
             <RequestError

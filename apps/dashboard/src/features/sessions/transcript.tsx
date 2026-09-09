@@ -570,17 +570,15 @@ function RunMessages({
         focus={focus}
       />
       {transcript.hasNextPage && (
-        <Button
-          variant="secondary"
+        <LoadMore
           size="sm"
-          className="self-center"
-          disabled={transcript.isFetchingNextPage}
-          onClick={() => {
+          fetching={transcript.isFetchingNextPage}
+          onLoad={() => {
             void transcript.fetchNextPage();
           }}
         >
           {labels.loadMore}
-        </Button>
+        </LoadMore>
       )}
       {unplaced.length > 0 && (
         <RunList
@@ -591,6 +589,49 @@ function RunMessages({
           expandTools={expandTools}
         />
       )}
+    </div>
+  );
+}
+/**
+ * The next transcript page loads when this control scrolls into view, so a reader reaches
+ * the end of a long session by scrolling; the button stays for keyboards and screen readers.
+ */
+export function LoadMore({
+  fetching,
+  onLoad,
+  size = "md",
+  children,
+}: {
+  fetching: boolean;
+  onLoad: () => void;
+  size?: "sm" | "md" | undefined;
+  children: ReactNode;
+}) {
+  const sentinel = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!node || fetching) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) onLoad();
+      },
+      { rootMargin: "240px 0px" },
+    );
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, [fetching, onLoad]);
+  return (
+    <div ref={sentinel} className="flex justify-center">
+      <Button
+        variant="secondary"
+        size={size}
+        disabled={fetching}
+        onClick={onLoad}
+      >
+        {children}
+      </Button>
     </div>
   );
 }

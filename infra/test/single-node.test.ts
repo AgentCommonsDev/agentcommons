@@ -30,6 +30,8 @@ const scripts = [
   "single-node/bootstrap.sh",
   "single-node-run.sh",
   "single-node/isolation-check.sh",
+  "single-node/revoke-key.sh",
+  "single-node/add-members.sh",
   "clickhouse-cloud-egress.sh",
 ];
 let exported: Record<string, unknown> = {};

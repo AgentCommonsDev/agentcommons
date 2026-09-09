@@ -568,6 +568,15 @@ test("the dashboard JSON dialog validates imports, exports the definition and th
   await activate(page.getByTestId("dashboard-settings-open"), isMobile);
   const settings = page.getByTestId("dashboard-settings");
   await expect(settings).toBeVisible();
+  // The form is the default; the JSON import opens through one explicit switch.
+  await expect(settings.getByTestId("dashboard-json")).toHaveCount(0);
+  await activate(
+    settings.getByRole("button", {
+      name: text.settings.jsonShow,
+      exact: true,
+    }),
+    isMobile,
+  );
   const json = settings.getByTestId("dashboard-json");
   await expect(json).toHaveValue(/"version": 2/);
   await expect(json).toHaveValue(/"time_range"/);
@@ -669,6 +678,7 @@ test("on a phone the editor stacks tiles, opens the inspector as a bottom sheet 
     ).toBeVisible();
     const viewport = page.viewportSize();
     if (!viewport) throw new Error("Expected a viewport.");
+    // Positions animate after a move, so callers poll until the stacked order settles.
     const order = async () => {
       const boxes = await Promise.all(
         ["first", "second", "third"].map(async (id) => ({
@@ -682,7 +692,7 @@ test("on a phone the editor stacks tiles, opens the inspector as a bottom sheet 
       }
       return boxes.sort((a, b) => a.box.y - b.box.y).map((entry) => entry.id);
     };
-    expect(await order()).toEqual(["first", "second", "third"]);
+    await expect.poll(order).toEqual(["first", "second", "third"]);
     await tile(page, "first")
       .getByRole("button", { name: text.tiles.actions, exact: true })
       .tap();
@@ -692,14 +702,14 @@ test("on a phone the editor stacks tiles, opens the inspector as a bottom sheet 
     await page
       .getByRole("menuitem", { name: text.tiles.moveDown, exact: true })
       .tap();
-    expect(await order()).toEqual(["second", "first", "third"]);
+    await expect.poll(order).toEqual(["second", "first", "third"]);
     await tile(page, "third")
       .getByRole("button", { name: text.tiles.actions, exact: true })
       .tap();
     await page
       .getByRole("menuitem", { name: text.tiles.moveUp, exact: true })
       .tap();
-    expect(await order()).toEqual(["second", "third", "first"]);
+    await expect.poll(order).toEqual(["second", "third", "first"]);
     await tile(page, "second")
       .getByRole("button", { name: text.tiles.edit, exact: true })
       .tap();

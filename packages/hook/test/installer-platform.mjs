@@ -87,7 +87,8 @@ try {
     const first = await run("sh", args, env);
     assert.equal(first.code, 0, first.output);
     assert.match(first.output, /trust hooks/);
-    assert.match(first.output, /repository instructions/);
+    // The guidance lands in each harness's global instructions file, named in the output.
+    assert.match(first.output, /AgentCommons guidance from .*CLAUDE\.md/);
     const configPath = join(data, "config.json");
     const original = await readFile(configPath, "utf8");
     assert.equal((await stat(configPath)).mode & 0o777, 0o600);

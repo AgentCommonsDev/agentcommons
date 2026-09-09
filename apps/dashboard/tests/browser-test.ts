@@ -263,6 +263,14 @@ export async function applyFilters(
     .click();
   await expect(sheet).toHaveCount(0);
 }
+/** When a provider is configured, the password form sits behind one explicit switch. */
+export async function openPasswordSignIn(page: Page, isMobile: boolean) {
+  const toggle = page.getByTestId(/^(login|signup)-use-password$/);
+  const password = page.getByLabel(copy.auth.password, { exact: true });
+  // The card renders after the auth configuration loads; decide once it has.
+  await expect(toggle.or(password).first()).toBeVisible();
+  if ((await toggle.count()) > 0) await activate(toggle, isMobile);
+}
 /** Dialogs carry an icon close button and sometimes a footer Close; the icon is last. */
 export async function closeDialog(page: Page) {
   const dialog = page.getByRole("dialog");
@@ -271,4 +279,26 @@ export async function closeDialog(page: Page) {
     .last()
     .click();
   await expect(dialog).toHaveCount(0);
+}
+/** The sidebar on desktop; the sheet menu on phones. Both hold the same navigation. */
+export async function openNavigation(page: Page, isMobile: boolean) {
+  if (isMobile)
+    await activate(
+      page.getByRole("button", { name: copy.app.navigation.menu, exact: true }),
+      true,
+    );
+  const nav = page.getByRole("navigation", { name: copy.app.navigation.label });
+  await expect(nav).toBeVisible();
+  return nav;
+}
+/** Closes the phone menu without navigating. */
+export async function closeNavigation(page: Page) {
+  await activate(
+    page.getByRole("button", {
+      name: copy.app.navigation.closeMenu,
+      exact: true,
+    }),
+    true,
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 }
