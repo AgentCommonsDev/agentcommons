@@ -82,6 +82,7 @@ if [ "$mode" = rollback ]; then
   compose stop api >>"$log" 2>&1
   mv .env .env.external
   mv .env.bundled .env
+  record_database_mode .env
   start_stack bundled
   check_reads
   echo "Rolled back to the bundled db container (its volume was kept). Set database.kind to bundled and run pulumi up, or the next release re-renders the external .env (kept as $app/.env.external)."
@@ -116,8 +117,10 @@ if ! start_stack external; then
   echo "The stack did not come up on the external database; restoring the bundled .env." >&2
   mv .env .env.external.failed
   mv .env.bundled .env
+  record_database_mode .env
   start_stack bundled || true
   exit 1
 fi
 check_reads
+record_database_mode .env
 echo "The control database now runs at $(setting CLICKHOUSE_POSTGRES_HOST); dump kept in $work, previous .env in $app/.env.bundled (rollback: $0 --rollback)."
