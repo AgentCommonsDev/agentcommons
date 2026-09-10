@@ -40,7 +40,10 @@ case "$*" in
   [ "$AGENTCOMMONS_IMAGE" = agentcommons:previous ] || { echo "rollback without the previous tag" >&2; exit 1; }
   echo 1 >"$FAKE_READY_FILE" ;;
 "compose port api 3000") echo 127.0.0.1:3000 ;;
-"compose config --services") printf 'api\\ncaddy\\ndb\\nmigrate\\n' ;;
+"compose config --services")
+  # Written line by line with a pause, like the real client: a reader that stops at
+  # "caddy" must not turn the rest into SIGPIPE for the writer.
+  printf 'api\\ncaddy\\n'; sleep 0.1; printf 'db\\nmigrate\\n' ;;
 "compose restart caddy" | "compose ps" | "compose logs --tail 50 api" | "image prune -f") ;;
 *) echo "unexpected docker $*" >&2; exit 99 ;;
 esac
@@ -211,8 +214,11 @@ describe("self-host updater", () => {
     expect(order("compose up -d --no-build --remove-orphans")).toBeGreaterThan(
       order("tag sha256:aaa agentcommons:previous"),
     );
-    expect(order("compose restart caddy")).toBeGreaterThan(
+    expect(order("compose config --services")).toBeGreaterThan(
       order("compose up -d --no-build --remove-orphans"),
+    );
+    expect(order("compose restart caddy")).toBeGreaterThan(
+      order("compose config --services"),
     );
     expect(updated.docker).toContain("image prune -f");
     expect(updated.docker).not.toContain(

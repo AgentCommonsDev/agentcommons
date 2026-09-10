@@ -189,7 +189,10 @@ it("schedules the live browser review and keeps provider credentials out of fork
     review?.steps.filter((step) => step.env?.ANTHROPIC_API_KEY) ?? [];
   expect(credentialSteps).toHaveLength(1);
   expect(credentialSteps[0]?.run).toContain("pnpm test:browser-agent");
-  expect(credentialSteps[0]?.run).toContain("exit 1");
+  // Without the optional key the scheduled review skips with a notice instead of failing.
+  expect(credentialSteps[0]?.run).toContain("::notice::Skipped");
+  expect(credentialSteps[0]?.run).toContain("exit 0");
+  expect(credentialSteps[0]?.run).not.toContain("exit 1");
   expect(
     review?.steps.find((step) => step.uses === "actions/upload-artifact@v4")
       ?.with?.path,

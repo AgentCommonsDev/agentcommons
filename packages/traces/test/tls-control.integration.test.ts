@@ -130,10 +130,18 @@ it("bootstraps the control plane on a TLS-only PostgreSQL owned by a non-superus
       },
     });
     release.unshift(() => plain.$disconnect());
-    // Prisma reports the server's "no pg_hba.conf entry ... no encryption" rejection as
-    // an unreachable server.
-    await expect(plain.$queryRawUnsafe("SELECT 1")).rejects.toThrow(
-      /Can't reach database server|no encryption|pg_hba/,
+    // The server's "no pg_hba.conf entry ..., no encryption" rejection surfaces as a
+    // connection-level Prisma error (no query ran); its wording depends on the address
+    // Prisma dialled ("Can't reach database server" for localhost, "User was denied
+    // access" for a bridge address on CI), so the class is the stable signal.
+    const refusal: unknown = await plain.$queryRawUnsafe("SELECT 1").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal).toMatchObject({ name: "PrismaClientInitializationError" });
+    expect(refusal instanceof Error ? refusal.message : "").toMatch(
+      /Can't reach database server|denied access|no encryption|pg_hba/,
     );
   } finally {
     expect(await cleanup(release)).toEqual([]);

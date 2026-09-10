@@ -152,7 +152,13 @@ stack_up() {
   esac
   logged compose up -d --no-build --remove-orphans || return 1
   wait_ready || return 1
-  if compose config --services | grep -qx caddy; then
+  # Caddy is restarted whenever it is one of the stack's services. The list is read whole
+  # before matching: `grep -q` stops at its first hit, and under pipefail a writer still
+  # emitting lines would die of SIGPIPE and silently skip the restart (seen on a 2-vCPU CI
+  # runner with GNU grep; ugrep drains its input and never showed it).
+  local services
+  services=$(compose config --services) || return 1
+  if grep -qx caddy <<<"$services"; then
     logged compose restart caddy || return 1
   fi
 }
