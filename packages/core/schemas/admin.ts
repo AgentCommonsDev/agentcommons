@@ -213,7 +213,13 @@ export const keyCreateOutputSchema = z.strictObject({
 export const apiKeyRevealOutputSchema = z.strictObject({
   key: apiKeySecretSchema,
 });
+/** The release this server runs and whether its host installs new releases on its own (ADR 0059). */
+export const serverStatusSchema = z.strictObject({
+  version: z.string().min(1).max(100),
+  auto_update: z.boolean(),
+});
 export const statusOutputSchema = z.strictObject({
+  server: serverStatusSchema,
   projection: z.strictObject({
     queued_sessions: nonnegativeIntegerSchema,
     outbox_batches: nonnegativeIntegerSchema,

@@ -5,12 +5,14 @@ import {
   getInputSchema,
   getOutputSchema,
   jsonByteLength,
+  messageRowSchema,
   messageSchema,
   paginationSchema,
   rawOutputSchema,
   responseBytes,
   sessionsInputSchema,
   sessionsOutputSchema,
+  sessionsTotalSchema,
   sha256Hex,
   treeOutputSchema,
   schemaOutputSchema,
@@ -25,6 +27,7 @@ import {
   type ContentCursor,
   type GetOutput,
   type Message,
+  type MessageRow,
   type SessionHeader,
 } from "@agentcommons/core";
 import {
@@ -72,6 +75,11 @@ const treePosition = z.strictObject({ time: z.iso.datetime(), id: z.uuid() });
 const reusePosition = reusePagePositionSchema.extend({
   asOf: z.iso.datetime(),
 });
+type GetInput = z.infer<typeof getInputSchema>;
+/** The columns of the CSV export, in the order the message schema declares them. */
+const MESSAGE_ROW_COLUMNS: readonly string[] = Object.keys(
+  messageRowSchema.shape,
+);
 /** Message columns read before payloads; content and its cursor come from the payload pass. */
 const MESSAGE_METADATA_COLUMNS = Object.keys(messageSchema.shape)
   .filter(
@@ -359,6 +367,50 @@ export class SessionService {
     );
   }
 
+  /**
+   * The CSV form of `get`: every message of the range as one row each, in seq order. The
+   * pages a JSON reader would walk are read to the end under the same audit, budgets and
+   * redaction, and the content slices of a message that spans pages are rejoined into its
+   * row. The first page is read before the rows stream, so a caller who cannot read the
+   * session gets that error and no file.
+   */
+  async export(
+    context: ServiceContext,
+    input: unknown,
+  ): Promise<{ columns: readonly string[]; rows: AsyncIterable<MessageRow> }> {
+    const first = (await this.get(context, input)).result;
+    return {
+      columns: MESSAGE_ROW_COLUMNS,
+      rows: this.exportRows(context, getInputSchema.parse(input), first),
+    };
+  }
+  private async *exportRows(
+    context: ServiceContext,
+    request: GetInput,
+    first: GetOutput,
+  ): AsyncGenerator<MessageRow> {
+    let page = first;
+    let row: MessageRow | null = null;
+    let slices: string[] = [];
+    for (;;) {
+      for (const message of page.messages) {
+        if (row && row.seq === message.seq) {
+          slices.push(message.content);
+          continue;
+        }
+        if (row) yield { ...row, content: slices.join("") };
+        row = messageRowSchema.parse(
+          pickSchema(wireRow(message), messageRowSchema),
+        );
+        slices = [message.content];
+      }
+      if (page.next === null) break;
+      page = (await this.get(context, { ...request, cursor: page.next }))
+        .result;
+    }
+    if (row) yield { ...row, content: slices.join("") };
+  }
+
   list(context: ServiceContext, input: unknown) {
     return readOperation(
       this.dependencies.audit,
@@ -377,6 +429,7 @@ export class SessionService {
           ...request,
           cursor: null,
         });
+        let total: z.infer<typeof sessionsTotalSchema> | undefined;
         const page = await offsetPage(
           this.dependencies.cursors,
           binding,
@@ -394,10 +447,23 @@ export class SessionService {
               const predicate = request.roots_only
                 ? `(${scoped}) AND s.parent_session_id IS NULL`
                 : scoped;
-              const rows = await client.query(
-                `SELECT s.* FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
-                params.values,
-              );
+              // The totals share the page's predicate and read callback (fence and row
+              // policies), without its window, so the two never drift apart.
+              const totalParameters = { ...params.values };
+              const [rows, counts] = await Promise.all([
+                client.query(
+                  `SELECT s.* FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
+                  params.values,
+                ),
+                client.query(
+                  `SELECT count() AS sessions,sum(s.message_count) AS messages FROM api_ro.sessions s WHERE ${predicate}`,
+                  totalParameters,
+                ),
+              ]);
+              total = sessionsTotalSchema.parse({
+                sessions: Number(counts.rows[0]?.sessions ?? 0),
+                messages: Number(counts.rows[0]?.messages ?? 0),
+              });
               const headers = await sessionHeaders(client, rows.rows);
               return rows.rows.map((row, index) => ({
                 ...headers[index],
@@ -409,10 +475,14 @@ export class SessionService {
               }));
             }),
         );
-        return sessionsOutputSchema.parse(page);
+        if (!total) throw new Error("The session totals are unavailable.");
+        return sessionsOutputSchema.parse({ ...page, total });
       },
       {
-        describeResult: (result) => ({ row_count: result.items.length }),
+        describeResult: (result) => ({
+          row_count: result.items.length,
+          total: result.total,
+        }),
       },
     );
   }

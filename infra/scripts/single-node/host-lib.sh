@@ -1,17 +1,15 @@
 # Shared by the on-host single-node scripts. Source it from the script's own directory:
 # single-node-run.sh ships it next to the script it runs, and apply.sh finds it in the
-# released tree. Runs as root on the host; do not execute it.
+# released tree. Runs as root on the host; do not execute it. The stack directory, the
+# `setting` reader and the Compose steps come from the released tree's self-host library,
+# which the generic updater shares (ADR 0059).
 set -euo pipefail
 
-app=${AGENTCOMMONS_APP_DIR:-/opt/agentcommons/app}
+. "${AGENTCOMMONS_APP_DIR:-/opt/agentcommons/app}/scripts/self-host/lib.sh"
 state_dir=/root/agentcommons
 local_api=http://127.0.0.1:3000
 public_url=
 
-# setting KEY: one value from the rendered .env (apply.sh single-quotes every value).
-setting() {
-  sed -n "s/^$1='\(.*\)'\$/\1/p" "$app/.env"
-}
 # require_public_url: the API accepts credential requests only from its own origin.
 require_public_url() {
   public_url=$(setting PUBLIC_URL)

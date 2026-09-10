@@ -92,6 +92,7 @@ beforeAll(async () => {
     readers: database.traceReaders,
     cursors,
     jobs,
+    server: { version: "test-release", autoUpdate: false },
   });
   policies = new PolicyService({
     ...database,

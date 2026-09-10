@@ -167,3 +167,22 @@ it("computes metadata before aggregating a thousand large message payloads", asy
   expect(result.next?.seq).toBe(0);
   expect(result.next?.offset).toBeGreaterThan(0);
 });
+// @req R-DASH-38
+it("exports a message that spans many bounded pages as one row with its exact stored text", async () => {
+  // Every page re-reads this 525 KB payload, so the export starts 35 KB (about nine
+  // pages) before the end of the message rather than walking all of it.
+  const tail = 5_000;
+  const exported = await service.export(org.context, {
+    session_id: id,
+    from: 0,
+    to: 0,
+    cursor: { seq: 0, offset: Buffer.byteLength("界🙂".repeat(75_000 - tail)) },
+  });
+  const rows = [];
+  for await (const row of exported.rows) rows.push(row);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.seq).toBe(0);
+  expect(rows[0]?.role).toBe("TOOL_RESULT");
+  expect(rows[0]?.content).toBe("界🙂".repeat(tail));
+  expect(Buffer.byteLength(rows[0]?.content ?? "")).toBeGreaterThan(8 * 4096);
+});

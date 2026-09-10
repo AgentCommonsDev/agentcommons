@@ -88,6 +88,8 @@ export class AdminService {
       audit: AuditService;
       cursors: CursorCodec;
       jobs: AdminJobs;
+      /** The release this process runs and whether its host installs new ones (env.server). */
+      server: { version: string; autoUpdate: boolean };
     },
   ) {
     this.metricsService = new MetricsService(dependencies);
@@ -431,6 +433,10 @@ export class AdminService {
         const state = projection[0];
         if (!state) throw new Error("The projection status is unavailable.");
         return statusOutputSchema.parse({
+          server: {
+            version: this.dependencies.server.version,
+            auto_update: this.dependencies.server.autoUpdate,
+          },
           ingest_per_day: ingest,
           failures,
           redaction_hits: redactions.map((row) => ({

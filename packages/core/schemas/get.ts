@@ -11,6 +11,7 @@ import {
   nonnegativeIntegerSchema,
   nullableTextSchema,
   parentRelationSchema,
+  responseFormatSchema,
   sessionIdSchema,
   sessionStatusSchema,
   truncatedFieldsSchema,
@@ -31,7 +32,8 @@ export const contentCursorSchema = z
     ),
   })
   .describe("Position inside a session's messages for continuing a read");
-export const getQuerySchema = z
+/** The message range of one read; the refinement keeps the bounds and cursor consistent. */
+const rangeSchema = z
   .strictObject({
     from: nonnegativeIntegerSchema
       .optional()
@@ -67,10 +69,19 @@ export const getQuerySchema = z
         message: "The cursor must be within the requested sequence range.",
       });
   });
-export const getInputSchema = getQuerySchema.safeExtend({
+/** The REST query of `GET /sessions/:id`: the range, and `csv` for the whole range as one file. */
+export const getQuerySchema = rangeSchema.safeExtend({
+  format: responseFormatSchema,
+});
+/** The `get` tool input agents see: the range and the session (§8.2). */
+export const getToolInputSchema = rangeSchema.safeExtend({
   session_id: sessionIdSchema.describe(
     "Session to read, from a search result or the sessions view",
   ),
+});
+/** Every `get` call, with the REST response format so the audit records an export. */
+export const getInputSchema = getToolInputSchema.safeExtend({
+  format: responseFormatSchema,
 });
 export const sessionRefSchema = z.strictObject({
   session_id: sessionIdSchema.describe("Related session; pass to get"),
@@ -183,6 +194,13 @@ export const messageSchema = z.strictObject({
   agent_id: nullableTextSchema.describe(message("agent_id")),
   truncated_fields: truncatedFieldsSchema,
 });
+/**
+ * One message as a row of the CSV export: every `get` message field but the paging
+ * cursor, in the same order, with the whole content once its page slices are rejoined.
+ */
+export const messageRowSchema = messageSchema
+  .omit({ content_cursor: true })
+  .extend({ content: z.string().describe(message("content")) });
 export const getOutputSchema = z.strictObject({
   header: sessionHeaderSchema.describe(
     "Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions",
@@ -198,6 +216,7 @@ export type ContentCursor = z.infer<typeof contentCursorSchema>;
 export type GetOutput = z.infer<typeof getOutputSchema>;
 export type SessionHeader = z.infer<typeof sessionHeaderSchema>;
 export type Message = z.infer<typeof messageSchema>;
+export type MessageRow = z.infer<typeof messageRowSchema>;
 
 export const sessionEventSchema = z.strictObject({
   session_id: sessionIdSchema,

@@ -6,6 +6,7 @@ import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import { sessionSortKeys } from "../../lib/api/options";
 import {
+  counted,
   dateTime,
   duration,
   harnessLabel,
@@ -15,10 +16,11 @@ import {
 } from "../../lib/display";
 import { usePagination } from "../../lib/pagination";
 import { paths } from "../../lib/routes";
-import type { SessionItem } from "../../lib/types";
+import type { SessionItem, SessionsTotal } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
 import { Button } from "../../components/ui/button";
+import { Skeleton } from "../../components/ui/feedback";
 import type { ApiFilters } from "./search-state";
 import { SessionStatusBadge } from "./session-header";
 
@@ -172,6 +174,30 @@ const hiddenColumns = [
   "child_count",
 ] as const;
 
+/**
+ * "128 sessions · 4,210 messages" over every root session the filters match, from the
+ * page response itself so the counts always belong to the query the rows came from; a
+ * pending query shows a placeholder, never the previous query's numbers.
+ */
+function ListTotal({
+  total,
+  pending,
+}: {
+  total: SessionsTotal | undefined;
+  pending: boolean;
+}) {
+  const labels = copy.sessions.list.total;
+  if (pending) return <Skeleton className="h-4 w-44" />;
+  if (!total) return null;
+  return (
+    <p data-testid="sessions-total" className="text-sm text-muted tabular-nums">
+      {counted(total.sessions, labels.sessionOne, labels.sessions)}
+      {copy.app.common.separator}
+      {counted(total.messages, labels.messageOne, labels.messages)}
+    </p>
+  );
+}
+
 /** Root sessions only: subagent, fork and spawned runs appear inside their parent's page. */
 export function SessionsTable({
   filters,
@@ -231,6 +257,9 @@ export function SessionsTable({
         }}
         page={pagination.page(list.data?.cursor)}
         label={copy.sessions.list.label}
+        toolbar={
+          <ListTotal total={list.data?.total} pending={list.isPending} />
+        }
         csv={{
           name: copy.sessions.list.csvName,
           fetchAll: (cursor, signal) => fetchPage(cursor, 100, signal),

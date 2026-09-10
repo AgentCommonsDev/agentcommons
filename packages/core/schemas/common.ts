@@ -165,13 +165,18 @@ export const paginationSchema = /* @__PURE__ */ z.strictObject({
   limit: z.number().int().min(1).max(100).default(50),
   cursor: opaqueCursorSchema,
 });
+/** The REST response form: `csv` answers with `text/csv` from the shared formatter (§7.6). */
+export const responseFormatSchema = /* @__PURE__ */ z
+  .enum(["json", "csv"])
+  .default("json")
+  .describe("Response format: json, or csv for a text/csv export");
 export function createListInputSchema<
   const T extends readonly [string, ...string[]],
 >(sortKeys: T) {
   return paginationSchema.extend({
     sort: z.enum(sortKeys).optional(),
     order: z.enum(["asc", "desc"]).default("desc"),
-    format: z.enum(["json", "csv"]).default("json"),
+    format: responseFormatSchema,
   });
 }
 export const errorSchema = /* @__PURE__ */ z.strictObject({

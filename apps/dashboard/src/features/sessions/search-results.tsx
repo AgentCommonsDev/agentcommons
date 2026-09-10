@@ -12,9 +12,9 @@ import { formatSearch } from "@agentcommons/core/format";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import {
+  counted,
   dateTime,
   harnessLabel,
-  number,
   relativeTime,
 } from "../../lib/display";
 import { cn } from "../../lib/utils";
@@ -115,16 +115,21 @@ function Results({
   setCursors: Dispatch<SetStateAction<(string | null)[]>>;
 }) {
   const labels = copy.sessions.results;
-  const { blocks, cursor: next, truncated_response } = data;
-  const sessionCount = new Set(blocks.map((block) => block.session_id)).size;
+  const { blocks, cursor: next, truncated_response, total } = data;
   if (blocks.length === 0)
     return <EmptyState title={labels.empty} description={labels.emptyHint} />;
   return (
     <div className="flex flex-col gap-3" aria-label={labels.label}>
       <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted">
-        <span>
-          {number(sessionCount)}{" "}
-          {sessionCount === 1 ? labels.sessionCountOne : labels.sessionCount}
+        {/* Every match the words and filters have, not the sessions on this page. */}
+        <span data-testid="search-total" className="tabular-nums">
+          {counted(total.hits, labels.total.hitOne, labels.total.hits)}{" "}
+          {labels.total.in}{" "}
+          {counted(
+            total.sessions,
+            labels.total.sessionOne,
+            labels.total.sessions,
+          )}
         </span>
         {text !== null && (
           <CopyButton value={text} label={labels.copy} showLabel size="sm" />

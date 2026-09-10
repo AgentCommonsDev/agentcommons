@@ -545,6 +545,7 @@ it("fences purged corpus immediately and completes native cleanup with a durable
     readers: db.traceReaders,
     cursors: new CursorCodec("trace-purge-cursor-secret"),
     jobs,
+    server: { version: "test-release", autoUpdate: false },
   });
   const accepted = await admin.purge(org.owner, {
     session_id: first.result.sessionId,

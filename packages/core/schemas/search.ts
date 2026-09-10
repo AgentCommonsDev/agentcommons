@@ -330,6 +330,15 @@ export const searchBlockSchema = z.strictObject({
     .describe("Matched messages and their context, in seq order"),
   truncated_fields: truncatedFieldsSchema,
 });
+/** Counts over every hit the query and filters match; paging and the per-session cap never change them. */
+export const searchTotalSchema = z.strictObject({
+  sessions: nonnegativeIntegerSchema.describe(
+    "Distinct sessions with at least one matching message, across every page",
+  ),
+  hits: nonnegativeIntegerSchema.describe(
+    "Matching messages before the per-session cap and paging",
+  ),
+});
 export const searchOutputSchema = z.strictObject({
   blocks: z
     .array(searchBlockSchema)
@@ -342,7 +351,11 @@ export const searchOutputSchema = z.strictObject({
     .describe(
       "True when the page was cut to fit the response size limit; continue with cursor",
     ),
+  total: searchTotalSchema.describe(
+    "Totals over every hit the query and filters match under the caller's visibility, not only this page",
+  ),
 });
+export type SearchTotal = z.infer<typeof searchTotalSchema>;
 export type SearchFilters = z.infer<typeof searchFiltersSchema>;
 export type SearchOutput = z.infer<typeof searchOutputSchema>;
 export type SearchBlock = z.infer<typeof searchBlockSchema>;

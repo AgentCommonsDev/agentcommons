@@ -190,6 +190,7 @@ export class McpService {
         readOnly: true,
         destructive: false,
         input: schema.getInputSchema,
+        toolInput: schema.getToolInputSchema,
         output: schema.getOutputSchema,
         execute: (ctx, input) => services.sessions.get(ctx, input),
         format: formatGet,

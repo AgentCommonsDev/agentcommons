@@ -170,6 +170,8 @@ export function singleNodeStack(
     COMPOSE_PROJECT_NAME: "agentcommons",
     PUBLIC_URL: publicUrl,
     TRACE_STORE: settings.traceStore,
+    // The hourly updater (ADR 0059) reads this from the rendered .env.
+    AUTO_UPDATE: settings.autoUpdate ? "true" : "false",
     CLICKHOUSE_URL: cloud?.origin ?? "http://clickhouse:8123",
     CLICKHOUSE_POSTGRES_PORT: "5432",
     ...traceNames.runtime,

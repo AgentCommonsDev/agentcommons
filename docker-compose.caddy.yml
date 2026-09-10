@@ -1,5 +1,7 @@
 # Self-hosting on one host. Adds Caddy for automatic HTTPS in front of docker-compose.yml:
-#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+# (or set COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml in .env once).
 # Caddy serves PUBLIC_URL with a Let's Encrypt certificate (HTTP-01, which also works
 # behind Cloudflare's proxy) and plain HTTP on the host address. At every start its
 # entrypoint refreshes Cloudflare's published ranges as trusted proxies, so the API

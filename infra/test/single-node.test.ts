@@ -256,6 +256,7 @@ describe("single-node resource contract", () => {
     expect(values).toMatchObject({
       COMPOSE_PROJECT_NAME: "agentcommons",
       TRACE_STORE: "local",
+      AUTO_UPDATE: "true",
       CLICKHOUSE_POSTGRES_PORT: "5432",
       PUBLIC_URL: "https://hooks.example.com",
       INSTANCE_MODE: "customer",
@@ -320,20 +321,31 @@ describe("single-node resource contract", () => {
     );
     expect(release).toContain('git -C "$repo" archive --format=tar.gz');
     expect(release).toContain("/usr/local/bin/agentcommons-release $commit");
+    // --build is the escape hatch for a host without registry access (ADR 0059).
+    expect(release).toContain('--build) build="AGENTCOMMONS_BUILD=true " ;;');
     const apply = readFileSync(
       new URL("../scripts/single-node/apply.sh", import.meta.url),
       "utf8",
     );
     expect(apply).toContain("get-parameters-by-path");
     expect(apply).toContain("--with-decryption");
+    // The Compose file list is data in .env, shared with the updater, and the image is
+    // pulled unless --build asks for an on-host build.
     expect(apply).toContain(
-      "-p agentcommons -f docker-compose.yml -f docker-compose.caddy.yml",
+      "files=docker-compose.yml:docker-compose.caddy.yml",
     );
-    expect(apply).toContain("compose restart caddy");
+    expect(apply).toContain(`printf "COMPOSE_FILE='%s'\\n" "$files" >>.env`);
+    expect(apply).toContain("build=${AGENTCOMMONS_BUILD:-false}");
+    expect(apply).toContain("--build) build=true ;;");
+    expect(apply).toContain('stack_up "$mode" "$log"');
+    expect(apply).not.toContain("--build --remove-orphans");
+    expect(apply).toContain("/opt/agentcommons/agentcommons-update.sh");
+    expect(apply).toContain('agentcommons-update.timer" /etc/systemd/system/');
+    expect(apply).toContain("systemctl enable --now agentcommons-update.timer");
     expect(apply).toContain("amazon-cloudwatch-agent-ctl -a fetch-config");
     // ClickHouse Cloud mode: third Compose file, a certificate for the public address,
     // pg_hba.conf limited to Cloud egress addresses, and a dictionary probe after start.
-    expect(apply).toContain("-f docker-compose.clickhouse-cloud.yml");
+    expect(apply).toContain("files=$files:docker-compose.clickhouse-cloud.yml");
     expect(apply).toContain("openssl req -x509");
     expect(apply).toContain("subjectAltName=IP:$host,DNS:db");
     expect(apply).toContain(
@@ -373,7 +385,6 @@ describe("single-node resource contract", () => {
       "utf8",
     );
     for (const helper of [
-      "setting()",
       "require_public_url()",
       "require_owner_state()",
       "owner_sign_in()",
@@ -384,6 +395,26 @@ describe("single-node resource contract", () => {
       "/root/agentcommons",
     ])
       expect(hostLib).toContain(helper);
+    // The stack reader and Compose steps live once, in the library the updater shares.
+    expect(hostLib).toContain(
+      '. "${AGENTCOMMONS_APP_DIR:-/opt/agentcommons/app}/scripts/self-host/lib.sh"',
+    );
+    expect(hostLib).not.toContain("setting()");
+    const shared = readFileSync(
+      new URL("../../scripts/self-host/lib.sh", import.meta.url),
+      "utf8",
+    );
+    for (const helper of [
+      "setting()",
+      "lock_stack()",
+      "configured_image()",
+      "wait_ready()",
+      "stack_up()",
+      "compose pull --quiet api",
+      "compose up -d --no-build --remove-orphans",
+      "compose restart caddy",
+    ])
+      expect(shared).toContain(helper);
     expect(bootstrap).toContain('state="$state_dir/owner-$organization.json"');
     const isolation = readFileSync(
       new URL("../scripts/single-node/isolation-check.sh", import.meta.url),

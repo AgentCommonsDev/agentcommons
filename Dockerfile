@@ -16,7 +16,9 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
 FROM base AS runtime
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
+# The release workflow passes the 12-character commit; local builds report "development".
+ARG AGENTCOMMONS_VERSION=development
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 AGENTCOMMONS_VERSION=$AGENTCOMMONS_VERSION
 COPY --from=build --chown=node:node /app /app
 USER node
 EXPOSE 3000

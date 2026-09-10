@@ -68,6 +68,10 @@ export function number(value: string | number | null | undefined): string {
     return Number.isFinite(value) ? numberFormat.format(value) : unavailable();
   return /^-?\d+$/.test(value) ? numberFormat.format(BigInt(value)) : value;
 }
+/** A count with its noun, "1 session" or "4,210 sessions", from the two copy forms. */
+export function counted(value: number, one: string, many: string): string {
+  return `${number(value)} ${value === 1 ? one : many}`;
+}
 export function duration(seconds: number | string | null | undefined): string {
   const total = typeof seconds === "string" ? Number(seconds) : seconds;
   if (total === null || total === undefined || !Number.isFinite(total))

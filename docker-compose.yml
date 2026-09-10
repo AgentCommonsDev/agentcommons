@@ -1,5 +1,7 @@
+# The API and its migration run the published release (ADR 0059). AGENTCOMMONS_IMAGE in
+# .env pins another tag or a local build; `docker compose build` still builds from here.
 x-application: &application
-  image: agentcommons:${IMAGE_TAG:-local}
+  image: ${AGENTCOMMONS_IMAGE:-ghcr.io/agentcommonsdev/agentcommons:stable}
   build: .
   env_file: .env
   init: true

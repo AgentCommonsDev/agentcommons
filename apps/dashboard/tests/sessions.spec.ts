@@ -479,6 +479,92 @@ test("search words open the Messages view with highlighted hits, paging and deep
   await expect(page.getByTestId("session-header")).toContainText(rootTitle);
 });
 
+// @req R-DASH-37
+test("the header counts every matching session and message, and every hit when searching", async ({
+  page,
+}) => {
+  const data = await fixture();
+  const errors = collectErrors(page);
+  const listTotalSchema = z.looseObject({
+    total: z.object({ sessions: z.number(), messages: z.number() }),
+  });
+  const searchTotalSchema = z.looseObject({
+    total: z.object({ sessions: z.number(), hits: z.number() }),
+  });
+  // The browser runs with the en-US locale, so the page groups thousands with commas.
+  const numbers = new Intl.NumberFormat("en-US");
+  const counted = (value: number, one: string, many: string) =>
+    `${numbers.format(value)} ${value === 1 ? one : many}`;
+  const listText = (total: { sessions: number; messages: number }) =>
+    `${counted(total.sessions, labels.list.total.sessionOne, labels.list.total.sessions)}${copy.app.common.separator}${counted(total.messages, labels.list.total.messageOne, labels.list.total.messages)}`;
+  const searchText = (total: { sessions: number; hits: number }) =>
+    `${counted(total.hits, labels.results.total.hitOne, labels.results.total.hits)} ${labels.results.total.in} ${counted(total.sessions, labels.results.total.sessionOne, labels.results.total.sessions)}`;
+
+  // The list header states the whole visible set, whatever the page size.
+  await page.goto(paths.sessions);
+  await settled(page);
+  const response = await page.request.get(
+    "/api/v1/sessions?roots_only=true&limit=1",
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  const all = listTotalSchema.parse(await response.json()).total;
+  expect(all.sessions).toBeGreaterThan(1);
+  expect(all.messages).toBeGreaterThan(all.sessions);
+  await expect(page.getByTestId("sessions-total")).toHaveText(listText(all));
+
+  // A filter changes both numbers together with the rows.
+  await page.goto(`${paths.sessions}?session_id=${data.sessionId}`);
+  await settled(page);
+  await expect(rows(page)).toHaveCount(1);
+  const read = await sessionRead(page, data.sessionId);
+  await expect(page.getByTestId("sessions-total")).toHaveText(
+    listText({ sessions: 1, messages: read.header.message_count }),
+  );
+
+  // Searching heads the results with every hit, not the ten on this page, and paging keeps it.
+  await page.goto(paths.sessions);
+  await settled(page);
+  await page.getByTestId("sessions-search").fill("pagination");
+  await page
+    .getByRole("button", { name: labels.search.submit, exact: true })
+    .click();
+  const results = page.getByLabel(labels.results.label, { exact: true });
+  await expect(results).toBeVisible();
+  const searched = await page.request.post("/api/v1/search", {
+    headers: { origin: workspaceOrigin },
+    data: { query: "pagination", filters: {}, context: 0, limit: 1 },
+  });
+  expect(searched.ok(), await searched.text()).toBe(true);
+  const found = searchTotalSchema.parse(await searched.json()).total;
+  expect(found.hits).toBeGreaterThan(10);
+  await expect(page.getByTestId("search-total")).toHaveText(searchText(found));
+  await results
+    .getByRole("button", { name: labels.results.next, exact: true })
+    .click();
+  await expect(page.getByTestId("search-total")).toHaveText(searchText(found));
+
+  // Narrowing the search to one session shrinks the count with the results.
+  await page.goto(
+    `${paths.sessions}?q=pagination&session_id=${data.sessionId}`,
+  );
+  await expect(results).toBeVisible();
+  const narrowed = await page.request.post("/api/v1/search", {
+    headers: { origin: workspaceOrigin },
+    data: {
+      query: "pagination",
+      filters: { session_id: data.sessionId },
+      context: 0,
+      limit: 1,
+    },
+  });
+  expect(narrowed.ok(), await narrowed.text()).toBe(true);
+  const one = searchTotalSchema.parse(await narrowed.json()).total;
+  expect(one.sessions).toBe(1);
+  expect(one.hits).toBeLessThan(found.hits);
+  await expect(page.getByTestId("search-total")).toHaveText(searchText(one));
+  expect(errors).toEqual([]);
+});
+
 // @req R-DASH-10 @req R-DASH-20 @req R-DASH-12 @req R-DASH-01
 test("the session page shows every header field, transcript controls, files and raw records", async ({
   page,
@@ -959,6 +1045,69 @@ test("long transcripts and raw records page in bounded steps and deep links star
   await expect(
     page.getByText(labels.detail.transcript.startedFrom),
   ).toHaveCount(0);
+});
+
+// @req R-DASH-38
+test("Download CSV saves every message of a multi-page session as one file", async ({
+  page,
+  request,
+}) => {
+  const data = await fixture();
+  const total = 120;
+  const id = await ingest(request, data, {
+    ...freshEnvelope(
+      data,
+      Array.from({ length: total }, (_, pos) =>
+        userRecord(
+          pos,
+          `Exported message ${String(pos)}, "quoted" ${"context ".repeat(12)}`,
+        ),
+      ),
+    ),
+    behavior: "end",
+    nativeEvent: "SessionEnd",
+  });
+  await waitForPublished(page, id);
+  await page.goto(paths.session(id));
+  const downloadPromise = page.waitForEvent("download");
+  await page
+    .getByTestId("session-header")
+    .getByRole("link", { name: labels.detail.downloadCsv, exact: true })
+    .click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe(
+    `${labels.detail.csvPrefix}${id}.csv`,
+  );
+  const exported = parseCsv(await readFile(await download.path(), "utf8"));
+  // The columns are the `get` message fields under their api_ro names, minus paging.
+  expect(exported.fields).toEqual(
+    expect.arrayContaining([
+      "message_id",
+      "session_id",
+      "seq",
+      "role",
+      "kind",
+      "content",
+      "tool_name",
+      "tool_use_id",
+      "model",
+      "timestamp",
+    ]),
+  );
+  expect(exported.fields).not.toContain("content_cursor");
+  // Every message of every `get` page, once, in seq order.
+  expect(exported.rows).toHaveLength(total);
+  expect(exported.rows.map((row) => row.seq)).toEqual(
+    Array.from({ length: total }, (_, pos) => String(pos)),
+  );
+  expect(exported.rows.every((row) => row.session_id === id)).toBe(true);
+  expect(exported.rows[7]?.content).toContain('Exported message 7, "quoted"');
+  expect(exported.rows[7]?.role).toBe("USER");
+  const response = await page.request.get(`/api/v1/sessions/${id}?format=csv`);
+  expect(response.headers()["content-type"]).toContain("text/csv");
+  expect(response.headers()["content-disposition"]).toBe(
+    `attachment; filename="${labels.detail.csvPrefix}${id}.csv"`,
+  );
 });
 
 // @req R-DASH-04

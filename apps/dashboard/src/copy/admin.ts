@@ -238,6 +238,9 @@ export const adminCopy = {
     backlog: "Embedding backlog",
     tokens: "Embedding tokens today",
     cost: "Embedding cost today",
+    server: "Server",
+    autoUpdateOn: "Automatic updates on",
+    autoUpdateOff: "Automatic updates off",
     /** Metric column headings that differ from the shared field labels. */
     dimensions: {
       policy_id: "Policy ID",

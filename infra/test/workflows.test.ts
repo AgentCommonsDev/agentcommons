@@ -234,3 +234,87 @@ it("runs the live canary nightly and on every native adapter change, with read-o
     "test-results/live-canary/report.json\ntest-results/live-canary/*-mobile.png\n",
   );
 });
+// @req R-INF-08
+it("publishes a signed multi-architecture image per green main commit with only the workflow token", () => {
+  const config = workflow("release");
+  expect(config.on.workflow_run).toMatchObject({
+    workflows: ["CI"],
+    branches: ["main"],
+    types: ["completed"],
+  });
+  expect(config.on).toHaveProperty("workflow_dispatch");
+  expect(config.permissions).toEqual({
+    contents: "read",
+    packages: "write",
+    "id-token": "write",
+  });
+  expect(Object.keys(config.jobs)).toEqual(["image"]);
+  const job = config.jobs.image;
+  for (const condition of [
+    "github.event.workflow_run.event == 'push'",
+    "github.event.workflow_run.conclusion == 'success'",
+    "github.event.workflow_run.head_branch == 'main'",
+    "github.event.workflow_run.head_repository.full_name == github.repository",
+    "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
+  ])
+    expect(job?.if).toContain(condition);
+  expect(
+    job?.steps.find((step) => step.uses === "actions/checkout@v4")?.with?.ref,
+  ).toBe("${{ github.event.workflow_run.head_sha || github.sha }}");
+  const uses = job?.steps.map((step) => step.uses) ?? [];
+  for (const action of [
+    "docker/setup-qemu-action@v3",
+    "docker/setup-buildx-action@v3",
+    "docker/login-action@v3",
+    "docker/build-push-action@v6",
+    "sigstore/cosign-installer@v3",
+  ])
+    expect(uses).toContain(action);
+  expect(
+    job?.steps.find((step) => step.uses === "docker/login-action@v3")?.with,
+  ).toMatchObject({
+    registry: "ghcr.io",
+    password: "${{ secrets.GITHUB_TOKEN }}",
+  });
+  const build = job?.steps.find(
+    (step) => step.uses === "docker/build-push-action@v6",
+  )?.with;
+  expect(build).toMatchObject({
+    context: ".",
+    platforms: "linux/amd64,linux/arm64",
+    push: true,
+  });
+  const tags = z.string().parse(build?.tags).trim().split("\n");
+  expect(tags).toEqual([
+    "${{ steps.release.outputs.image }}:sha-${{ steps.release.outputs.version }}",
+    "${{ steps.release.outputs.image }}:stable",
+  ]);
+  const labels = z.string().parse(build?.labels);
+  for (const label of [
+    "org.opencontainers.image.source=",
+    "org.opencontainers.image.revision=",
+    "org.opencontainers.image.created=",
+  ])
+    expect(labels).toContain(label);
+  expect(z.string().parse(build?.["build-args"])).toContain(
+    "AGENTCOMMONS_VERSION=${{ steps.release.outputs.version }}",
+  );
+  const release = job?.steps.find((step) =>
+    step.run?.includes("GITHUB_OUTPUT"),
+  );
+  expect(release?.run).toContain(
+    "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/agentcommons",
+  );
+  expect(release?.run).toContain("git rev-parse --short=12 HEAD");
+  expect(
+    job?.steps.some((step) => step.run?.startsWith("cosign sign --yes ")),
+  ).toBe(true);
+  // No cloud account: no AWS action, no configured secret beyond the workflow's own token.
+  expect(uses.some((action) => action?.startsWith("aws-actions/"))).toBe(false);
+  const text = readFileSync(
+    new URL("../../.github/workflows/release.yml", import.meta.url),
+    "utf8",
+  );
+  expect(text).not.toMatch(/aws|pulumi/i);
+  expect(text.match(/secrets\.[A-Z_]+/g)).toEqual(["secrets.GITHUB_TOKEN"]);
+});

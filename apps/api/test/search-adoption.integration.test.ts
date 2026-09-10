@@ -278,7 +278,11 @@ beforeAll(async () => {
     query: new QueryService(dependencies),
   });
   metrics = new MetricsService(dependencies);
-  admin = new AdminService({ ...dependencies, jobs: services.jobs });
+  admin = new AdminService({
+    ...dependencies,
+    jobs: services.jobs,
+    server: { version: "test-release", autoUpdate: false },
+  });
 }, 120_000);
 afterAll(release);
 

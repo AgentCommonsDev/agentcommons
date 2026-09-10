@@ -110,6 +110,14 @@ const singleNodeHost = z.object({
   clickhouseCloudPostgresTls: z
     .enum(["default", "require", "verify-full"])
     .default("default"),
+  /**
+   * Rendered as AUTO_UPDATE: the host's hourly updater installs each published release
+   * (ADR 0059). `false` keeps the timer but makes every run a no-op until changed back.
+   */
+  autoUpdate: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
   environment: environmentSchema.default({}),
 });
 /**
@@ -144,6 +152,7 @@ export function readSettings(): Settings {
       traceStore: config.get("traceStore"),
       clickhouseCloudUrl: config.get("clickhouseCloudUrl"),
       clickhouseCloudPostgresTls: config.get("clickhouseCloudPostgresTls"),
+      autoUpdate: config.get("autoUpdate"),
       environment: config.getObject<unknown>("environment"),
     });
   return settingsSchema.parse({

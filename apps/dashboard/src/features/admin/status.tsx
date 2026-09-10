@@ -406,11 +406,20 @@ export function SnapshotCards({ embeddings }: { embeddings: boolean }) {
           <StatGrid
             data-testid="admin-status-snapshot"
             className={
-              embeddings
-                ? "sm:grid-cols-3 lg:grid-cols-5"
-                : "sm:grid-cols-2 lg:grid-cols-4"
+              embeddings ? "sm:grid-cols-3 lg:grid-cols-6" : "sm:grid-cols-3"
             }
           >
+            <Stat
+              label={text.server}
+              value={
+                <span className="font-mono text-lg" title={data.server.version}>
+                  {data.server.version}
+                </span>
+              }
+              hint={
+                data.server.auto_update ? text.autoUpdateOn : text.autoUpdateOff
+              }
+            />
             <Stat label={text.queue} value={number(data.queue_depth)} />
             <Stat
               label={text.failed}

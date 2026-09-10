@@ -1,0 +1,15 @@
+# Installed to /etc/systemd/system by the single-node apply step or by hand (docs/self-hosting).
+# Runs one release check; agentcommons-update.timer schedules it hourly. The stack directory
+# is the checkout holding docker-compose.yml and .env; change AGENTCOMMONS_APP_DIR with
+# `systemctl edit agentcommons-update.service` when it is not /opt/agentcommons/app.
+[Unit]
+Description=AgentCommons release check and update
+Documentation=https://github.com/AgentCommonsDev/agentcommons
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+Environment=AGENTCOMMONS_APP_DIR=/opt/agentcommons/app
+ExecStart=/opt/agentcommons/agentcommons-update.sh

@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  Download,
   GitBranch,
   Radio,
 } from "lucide-react";
@@ -459,6 +460,16 @@ export function SessionHeaderView({
             size="sm"
             variant="secondary"
           />
+          <Button asChild variant="secondary" size="sm">
+            <a
+              href={`/api/v1/sessions/${header.session_id}?format=csv`}
+              download={`${labels.csvPrefix}${header.session_id}.csv`}
+              data-testid="session-export"
+            >
+              <Download aria-hidden />
+              {labels.downloadCsv}
+            </a>
+          </Button>
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">

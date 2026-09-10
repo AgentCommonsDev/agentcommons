@@ -100,6 +100,10 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
       LOG_LEVEL: z
         .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
         .default("info"),
+      // Baked into the published image by the release workflow (ADR 0059); the host's
+      // updater reads AUTO_UPDATE from the same .env, and Admin → Status reports both.
+      AGENTCOMMONS_VERSION: z.string().min(1).max(100).default("development"),
+      AUTO_UPDATE: boolean.default(true),
     },
     runtimeEnv,
     emptyStringAsUndefined: true,
@@ -112,6 +116,7 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
   return {
     ...env,
     saas: env.INSTANCE_MODE === "saas",
+    server: { version: env.AGENTCOMMONS_VERSION, autoUpdate: env.AUTO_UPDATE },
     embeddingProvider,
     auth: authEnvironment(runtimeEnv).auth,
     clickhouse: clickHouseEnvironment(runtimeEnv),

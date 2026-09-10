@@ -113,6 +113,7 @@ const search: SearchOutput = {
   ],
   cursor: "next-search-page",
   truncated_response: true,
+  total: { sessions: 4, hits: 12 },
 };
 describe("shared text and structured formatters", () => {
   it("formats search blocks with exact session/sequence identities, hit markers, and continuation", () => {
@@ -150,17 +151,26 @@ describe("shared text and structured formatters", () => {
       false,
     );
   });
-  it("counts unique sessions after window merging and prints an empty result honestly", () => {
+  // @req R-DASH-37
+  it("opens with the query's whole hit and session totals and prints an empty result honestly", () => {
+    // The first line reports every match, not the sessions on this page.
     expect(
       formatSearch({
         ...search,
         blocks: [...search.blocks, ...search.blocks],
-      }).text.startsWith("1 session\n"),
+      }).text.startsWith("12 hits in 4 sessions\n"),
     ).toBe(true);
     expect(
-      formatSearch({ blocks: [], cursor: null, truncated_response: false })
-        .text,
-    ).toBe("0 sessions");
+      formatSearch({ ...search, total: { sessions: 1, hits: 1 } }).text,
+    ).toMatch(/^1 hit in 1 session\n/);
+    expect(
+      formatSearch({
+        blocks: [],
+        cursor: null,
+        truncated_response: false,
+        total: { sessions: 0, hits: 0 },
+      }).text,
+    ).toBe("0 hits in 0 sessions");
   });
   // @req R-GET-03
   it("includes every header fact, nullable usage, thinking, and message continuation", () => {

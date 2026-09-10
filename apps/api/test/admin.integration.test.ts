@@ -106,6 +106,7 @@ beforeAll(async () => {
     audit: database.audit,
     cursors,
     jobs,
+    server: { version: "test-release", autoUpdate: false },
   });
   ingest = { execute: (context, input) => native.publish(context, input) };
   sessions = new SessionService({
@@ -168,11 +169,13 @@ it("supports admin-only keys and applies visibility only to the authenticated or
       })
     ).result.items,
   ).toHaveLength(1);
-  expect(
-    (await admin.status(adminOnly)).result.ingest_per_day.some(
-      (day) => day.count > 0,
-    ),
-  ).toBe(true);
+  const status = (await admin.status(adminOnly)).result;
+  expect(status.ingest_per_day.some((day) => day.count > 0)).toBe(true);
+  // @req R-INF-10: the release this server runs and its host's update setting.
+  expect(status.server).toEqual({
+    version: "test-release",
+    auto_update: false,
+  });
 });
 
 // @req R-MOD-02

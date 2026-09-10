@@ -1,5 +1,5 @@
 # Trace store in ClickHouse Cloud instead of the local container. Use with the other two:
-#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml -f docker-compose.clickhouse-cloud.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml -f docker-compose.clickhouse-cloud.yml up -d
 # The local clickhouse service is parked behind a profile, the API and the migration talk
 # to CLICKHOUSE_URL (https), and PostgreSQL is published on 5432 with TLS and a pg_hba.conf
 # that admits only ac_trace_control from ClickHouse Cloud's egress addresses, so Cloud can

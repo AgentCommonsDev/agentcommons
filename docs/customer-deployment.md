@@ -9,26 +9,32 @@ below remains the reference for a larger footprint and was not selected.
 
 `infra/OPERATIONS.md` (section "Single-node deployment") is the runbook. Summary:
 
-| Setting                  | Value                                                                                |
-| ------------------------ | ------------------------------------------------------------------------------------ |
-| Application origin       | `https://hooks.tools.goodhartlabs.com`                                               |
-| Pulumi stack             | `zpghl`, S3 state backend in the account, passphrase secrets provider                |
-| Region                   | `us-west-2`, default VPC public subnet                                               |
-| Host                     | arm64 Ubuntu 24.04 `t4g.large`, 60 GiB encrypted gp3, Elastic IP, IMDSv2             |
-| Access                   | HTTPS and HTTP only; SSM Session Manager, no SSH                                     |
-| DNS                      | Cloudflare-proxied record to the Elastic IP; Caddy trusts Cloudflare's ranges        |
-| Instance mode            | `customer`, Google sign-in plus the owner's password fallback, no email              |
-| Signup                   | `invite`; operator allowlist `zeropath.com,goodhartlabs.com`                         |
-| Organization             | slug and name `zpghl`; owner `raphael@zeropath.com`                                  |
-| Enrolled sign-in domains | `zeropath.com`, `goodhartlabs.com` (members join automatically, ADR 0049)            |
-| Embeddings               | off; enable later per the runbook (`EMBEDDINGS_ENABLED`, `OPENAI_API_KEY`)           |
-| Trace store              | ClickHouse Cloud (`cjudcc6tio.us-west-2.aws.clickhouse.cloud`), billed by ClickHouse |
-| Backups                  | daily EBS snapshots, seven retained                                                  |
-| Estimated cost           | about $59 to $61 per month                                                           |
+| Setting                  | Value                                                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| Application origin       | `https://hooks.tools.goodhartlabs.com`                                                                              |
+| Pulumi stack             | `zpghl`, S3 state backend in the account, passphrase secrets provider                                               |
+| Region                   | `us-west-2`, default VPC public subnet                                                                              |
+| Host                     | arm64 Ubuntu 24.04 `t4g.large`, 60 GiB encrypted gp3, Elastic IP, IMDSv2                                            |
+| Access                   | HTTPS and HTTP only; SSM Session Manager, no SSH                                                                    |
+| DNS                      | Cloudflare-proxied record to the Elastic IP; Caddy trusts Cloudflare's ranges                                       |
+| Instance mode            | `customer`, Google sign-in plus the owner's password fallback, no email                                             |
+| Signup                   | `invite`; operator allowlist `zeropath.com,goodhartlabs.com`                                                        |
+| Organization             | slug and name `zpghl`; owner `raphael@zeropath.com`                                                                 |
+| Enrolled sign-in domains | `zeropath.com`, `goodhartlabs.com` (members join automatically, ADR 0049)                                           |
+| Embeddings               | off; enable later per the runbook (`EMBEDDINGS_ENABLED`, `OPENAI_API_KEY`)                                          |
+| Trace store              | ClickHouse Cloud (`cjudcc6tio.us-west-2.aws.clickhouse.cloud`), billed by ClickHouse                                |
+| Backups                  | daily EBS snapshots, seven retained                                                                                 |
+| Updates                  | hourly pull of `ghcr.io/agentcommonsdev/agentcommons:stable` with rollback (ADR 0059); `autoUpdate: false` opts out |
+| Estimated cost           | about $59 to $61 per month                                                                                          |
 
 Operator sequence after the final commit is pushed: `pulumi up`, then
 `infra/scripts/single-node-release.sh <commit>`, then
 `infra/scripts/single-node-run.sh bootstrap.sh --admin raphael@zeropath.com --organization zpghl --name zpghl --domain zeropath.com --domain goodhartlabs.com`.
+The release pulls the published image and installs the updater; from then on the host
+installs each new release on its own within about an hour, and the release script is
+needed only for configuration changes and changes to the checkout (Compose files, Caddy
+and database settings). `agentcommons-update.sh --status` on the host and Admin → Status
+in the dashboard show the running release.
 
 Founder actions: keep the Cloudflare-proxied `A` record for `hooks.tools` pointing at the
 `publicIp` stack output (DNS-only also works), set the zone's SSL/TLS mode to Full

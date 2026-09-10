@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
 # Runs on the host as root (invoked by /usr/local/bin/agentcommons-release). Converges the
 # unpacked source in /opt/agentcommons/app: renders .env from the stack's SSM SecureString
-# parameters, builds the image, runs the migration task and restarts the API behind
-# Caddy. Idempotent; the full build log stays on the host under /var/log/agentcommons.
+# parameters, pulls the published image (or builds it with --build / AGENTCOMMONS_BUILD=true
+# for a host without registry access), runs the migration task, restarts the API behind
+# Caddy and installs the hourly updater (ADR 0059). Idempotent; the full Compose log stays
+# on the host under /var/log/agentcommons.
 set -euo pipefail
 . "$(dirname "$0")/host-lib.sh"
 : "${AWS_REGION:?Set AWS_REGION}" "${AGENTCOMMONS_PARAMETER_PATH:?Set AGENTCOMMONS_PARAMETER_PATH}"
+build=${AGENTCOMMONS_BUILD:-false}
+for argument in "$@"; do
+  case $argument in
+  --build) build=true ;;
+  *)
+    echo "Unknown option: $argument (only --build is accepted)" >&2
+    exit 2
+    ;;
+  esac
+done
 logs=/var/log/agentcommons
 install -d -m 0750 "$logs"
 log="$logs/apply-$(date -u +%Y%m%dT%H%M%SZ).log"
 cd "$app"
-compose() {
-  docker compose -p agentcommons -f docker-compose.yml -f docker-compose.caddy.yml "${compose_files[@]}" "$@"
-}
 
 umask 077
 # Values are single-quoted so Compose reads them literally; the stack refuses quotes.
@@ -28,13 +37,15 @@ aws ssm get-parameters-by-path --region "$AWS_REGION" --path "$AGENTCOMMONS_PARA
 mv .env.new .env
 echo "Rendered $(wc -l <.env) settings into $app/.env"
 
-compose_files=()
+# The Compose files go into .env as COMPOSE_FILE, which docker compose reads itself, so the
+# updater and this script run the same stack without repeating the list.
+files=docker-compose.yml:docker-compose.caddy.yml
 if [ "$(setting TRACE_STORE)" = clickhouse-cloud ]; then
   # ClickHouse Cloud reads the control tables and dictionaries from this PostgreSQL over
   # TLS. The certificate names the public address (SAN) so Cloud verifies it with
   # sslmode=verify-full; pg_hba.conf admits only ac_trace_control from Cloud's egress
   # addresses (the same list the security group uses) plus the Compose network.
-  compose_files=(-f docker-compose.clickhouse-cloud.yml)
+  files=$files:docker-compose.clickhouse-cloud.yml
   tls=/opt/agentcommons/postgres-tls
   host=$(setting CLICKHOUSE_POSTGRES_HOST)
   install -d -m 0755 "$tls"
@@ -71,22 +82,20 @@ if [ "$(setting TRACE_STORE)" = clickhouse-cloud ]; then
   echo "PostgreSQL admits ac_trace_control over TLS from $(grep -c '^hostssl' "$tls/pg_hba.conf") ClickHouse Cloud addresses"
 fi
 
-echo "Building the image and starting services (log: $log)"
-if ! compose up -d --build --remove-orphans >"$log" 2>&1; then
+printf "COMPOSE_FILE='%s'\n" "$files" >>.env
+lock_stack
+if [ "$build" = true ]; then
+  echo "Building the image from this checkout and starting services (log: $log)"
+  mode=build
+else
+  echo "Pulling $(configured_image) and starting services (log: $log)"
+  mode=pull
+fi
+if ! stack_up "$mode" "$log"; then
   tail -n 80 "$log" >&2
-  echo "Compose failed; see $log" >&2
+  echo "The release did not come up; see $log" >&2
   exit 1
 fi
-for _ in $(seq 1 60); do
-  curl -fsS http://127.0.0.1:3000/ready >/dev/null 2>&1 && break
-  sleep 5
-done
-curl -fsS http://127.0.0.1:3000/ready >/dev/null || {
-  compose ps >&2
-  compose logs --tail 50 api >&2
-  echo "The API did not become ready." >&2
-  exit 1
-}
 if [ "$(setting TRACE_STORE)" = clickhouse-cloud ]; then
   # The control dictionary is direct: one lookup proves Cloud reaches PostgreSQL over TLS.
   lookup=$(curl -fsS --max-time 30 -H "X-ClickHouse-User: $(setting CLICKHOUSE_MIGRATION_USER)" \
@@ -97,8 +106,13 @@ if [ "$(setting TRACE_STORE)" = clickhouse-cloud ]; then
   }
   echo "ClickHouse Cloud reads the PostgreSQL control dictionary (probe returned $lookup)"
 fi
-# Caddy refreshes its trusted Cloudflare ranges at start, so every release restarts it.
-compose restart caddy >>"$log" 2>&1
+# The hourly updater installs published releases between operator runs of this script;
+# AUTO_UPDATE in .env (stack setting autoUpdate) gates it. Idempotent.
+install -m 0755 "$app/scripts/self-host/agentcommons-update.sh" /opt/agentcommons/agentcommons-update.sh
+install -m 0644 "$app/scripts/self-host/systemd/agentcommons-update.service" \
+  "$app/scripts/self-host/systemd/agentcommons-update.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now agentcommons-update.timer >>"$log" 2>&1
 # Host metrics (memory, root disk) for the stack's CloudWatch alarms; idempotent.
 if ! dpkg -s amazon-cloudwatch-agent >/dev/null 2>&1; then
   curl -fsSL https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb -o /tmp/amazon-cloudwatch-agent.deb
@@ -109,4 +123,4 @@ fi
   -c "file:$app/infra/compose/cloudwatch-agent.json" >>"$log" 2>&1
 docker image prune -f >/dev/null
 compose ps
-echo "AgentCommons is ready at $(setting PUBLIC_URL)"
+echo "AgentCommons $(running_version) is ready at $(setting PUBLIC_URL); automatic updates: $(setting AUTO_UPDATE)"

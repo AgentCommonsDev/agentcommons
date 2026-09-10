@@ -128,7 +128,25 @@ it("selects the Fargate shape by default and validates single-node settings sepa
     instanceType: "t4g.large",
     volumeSize: 60,
     snapshotRetention: 7,
+    autoUpdate: true,
   });
+  // Pulumi config values arrive as strings; only the two spellings are accepted.
+  expect(
+    singleNodeSettingsSchema.parse({
+      deployment: "single-node",
+      stack: "zpghl",
+      hostname: "hooks.example.com",
+      autoUpdate: "false",
+    }).autoUpdate,
+  ).toBe(false);
+  expect(
+    singleNodeSettingsSchema.safeParse({
+      deployment: "single-node",
+      stack: "zpghl",
+      hostname: "hooks.example.com",
+      autoUpdate: "yes",
+    }).success,
+  ).toBe(false);
   expect(
     singleNodeSettingsSchema.safeParse({
       deployment: "single-node",

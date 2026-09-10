@@ -3,6 +3,7 @@ import type * as schemas from "@agentcommons/core/schemas";
 export type SessionHeader = z.infer<typeof schemas.sessionHeaderSchema>;
 export type Message = z.infer<typeof schemas.messageSchema>;
 export type SessionItem = z.infer<typeof schemas.sessionListItemSchema>;
+export type SessionsTotal = z.infer<typeof schemas.sessionsTotalSchema>;
 export type RawRecord = z.infer<typeof schemas.rawRecordSchema>;
 export type TreeNode = z.infer<typeof schemas.treeNodeSchema>;
 export type Member = z.infer<typeof schemas.memberSchema>;

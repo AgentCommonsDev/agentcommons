@@ -3688,6 +3688,13 @@ export interface operations {
             cursor: string | null;
             /** @description True when the page was cut to fit the response size limit; continue with cursor */
             truncated_response: boolean;
+            /** @description Totals over every hit the query and filters match under the caller's visibility, not only this page */
+            total: {
+              /** @description Distinct sessions with at least one matching message, across every page */
+              sessions: number;
+              /** @description Matching messages before the per-session cap and paging */
+              hits: number;
+            };
           };
         };
       };
@@ -3870,6 +3877,7 @@ export interface operations {
           | "status"
           | "last_activity_at";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         /** @description Narrow by session or message fields. Each key takes one value or a list (any of); every key given must hold */
         filters?: {
@@ -4159,6 +4167,13 @@ export interface operations {
             }[];
             /** @default null */
             cursor: string | null;
+            /** @description Totals over every matching session, computed with the same filters and roots_only as the page */
+            total: {
+              /** @description Sessions the filters match under the caller's visibility, across every page */
+              sessions: number;
+              /** @description Sum of message_count over those sessions */
+              messages: number;
+            };
           };
           "text/csv": string;
         };
@@ -4399,6 +4414,8 @@ export interface operations {
           /** @description Byte offset inside that message's content */
           offset: number;
         } | null;
+        /** @description Response format: json, or csv for a text/csv export */
+        format?: "json" | "csv";
       };
       header?: never;
       path: {
@@ -4625,6 +4642,7 @@ export interface operations {
               offset: number;
             } | null;
           };
+          "text/csv": string;
         };
       };
       /** @description Default Response */
@@ -4846,6 +4864,7 @@ export interface operations {
           | "first_seen_at"
           | "last_activity_at";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters?: {
           repo_name?: string;
@@ -4940,6 +4959,7 @@ export interface operations {
           | "session_count"
           | "tools_enabled";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters?: {
           hostname?: string;
@@ -5040,6 +5060,7 @@ export interface operations {
         cursor?: string | null;
         sort?: "read_at" | "reader_email" | "source_title" | "target_title";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         reader_user_id?: string;
         direction?: "by" | "from";
@@ -5594,6 +5615,7 @@ export interface operations {
           | "last_used_at"
           | "enabled";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters?: {
           user_id?: string;
@@ -5868,6 +5890,7 @@ export interface operations {
         cursor?: string | null;
         sort?: "email" | "name" | "role" | "suspended" | "created_at";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters?: {
           /** Format: email */
@@ -6257,6 +6280,7 @@ export interface operations {
           | "last_used_at"
           | "enabled";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters?: {
           user_id?: string;
@@ -6599,6 +6623,7 @@ export interface operations {
           | "transport"
           | "request_id";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters?: {
           user_id?: string;
@@ -6702,6 +6727,7 @@ export interface operations {
           | "tool"
           | "tools_enabled";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters: {
           /** Format: date-time */
@@ -6861,6 +6887,10 @@ export interface operations {
         };
         content: {
           "application/json": {
+            server: {
+              version: string;
+              auto_update: boolean;
+            };
             projection: {
               queued_sessions: number;
               outbox_batches: number;
@@ -6928,6 +6958,7 @@ export interface operations {
         sort?:
           "name" | "kind" | "enabled" | "builtin" | "created_at" | "updated_at";
         order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
         filters?: {
           name?: string;

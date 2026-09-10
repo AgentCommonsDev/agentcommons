@@ -13594,12 +13594,36 @@
                     "truncated_response": {
                       "type": "boolean",
                       "description": "True when the page was cut to fit the response size limit; continue with cursor"
+                    },
+                    "total": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991,
+                          "description": "Distinct sessions with at least one matching message, across every page"
+                        },
+                        "hits": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991,
+                          "description": "Matching messages before the per-session cap and paging"
+                        }
+                      },
+                      "required": [
+                        "sessions",
+                        "hits"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Totals over every hit the query and filters match under the caller's visibility, not only this page"
                     }
                   },
                   "required": [
                     "blocks",
                     "cursor",
-                    "truncated_response"
+                    "truncated_response",
+                    "total"
                   ],
                   "additionalProperties": false
                 }
@@ -14137,7 +14161,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -15096,11 +15121,35 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "total": {
+                      "type": "object",
+                      "properties": {
+                        "sessions": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991,
+                          "description": "Sessions the filters match under the caller's visibility, across every page"
+                        },
+                        "messages": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991,
+                          "description": "Sum of message_count over those sessions"
+                        }
+                      },
+                      "required": [
+                        "sessions",
+                        "messages"
+                      ],
+                      "additionalProperties": false,
+                      "description": "Totals over every matching session, computed with the same filters and roots_only as the page"
                     }
                   },
                   "required": [
                     "items",
-                    "cursor"
+                    "cursor",
+                    "total"
                   ],
                   "additionalProperties": false
                 }
@@ -15861,6 +15910,20 @@
           },
           {
             "schema": {
+              "default": "json",
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ]
+            },
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
+          },
+          {
+            "schema": {
               "type": "string",
               "format": "uuid",
               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
@@ -16605,6 +16668,11 @@
                     "next"
                   ],
                   "additionalProperties": false
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -17424,7 +17492,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -17702,7 +17771,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -18010,7 +18080,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -19588,7 +19659,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -20497,7 +20569,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -21568,7 +21641,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -22630,7 +22704,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -23025,7 +23100,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {
@@ -23382,6 +23458,24 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "server": {
+                      "type": "object",
+                      "properties": {
+                        "version": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "auto_update": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "version",
+                        "auto_update"
+                      ],
+                      "additionalProperties": false
+                    },
                     "projection": {
                       "type": "object",
                       "properties": {
@@ -23520,6 +23614,7 @@
                     }
                   },
                   "required": [
+                    "server",
                     "projection",
                     "ingest_per_day",
                     "redaction_hits",
@@ -23686,7 +23781,8 @@
             },
             "in": "query",
             "name": "format",
-            "required": false
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
           },
           {
             "schema": {

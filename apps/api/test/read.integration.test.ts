@@ -4,6 +4,11 @@ import { Client } from "pg";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import { TraceReaders } from "@agentcommons/traces";
+import {
+  messageRowSchema,
+  type ContentCursor,
+  type GetOutput,
+} from "@agentcommons/core";
 import { formatGet, formatSearch } from "@agentcommons/core/format";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
@@ -667,6 +672,80 @@ describe("read services on ClickHouse", () => {
       sessions.get(context(), { session_id: ids.long, from: 2, to: 1 }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
+  // @req R-DASH-38
+  it("exports every message of a range as one row each, rejoining pages under the same get audit and visibility", async () => {
+    const collect = async (ctx: ServiceContext, input: unknown) => {
+      const output = await sessions.export(ctx, input);
+      const rows = [];
+      for await (const row of output.rows) rows.push(row);
+      return { columns: output.columns, rows };
+    };
+    const columns = Object.keys(messageRowSchema.shape);
+    const whole = await collect(context(), {
+      session_id: ids.public,
+      format: "csv",
+    });
+    expect(whole.columns).toEqual(columns);
+    expect(columns).not.toContain("content_cursor");
+    // One page holds the whole session: the rows are its messages, field for field.
+    const page = (await sessions.get(context(), { session_id: ids.public }))
+      .result;
+    expect(page.next).toBeNull();
+    expect(whole.rows).toEqual(
+      page.messages.map((message) =>
+        Object.fromEntries(
+          columns.map((column) => [
+            column,
+            message[column as keyof typeof message],
+          ]),
+        ),
+      ),
+    );
+    expect(whole.rows.map((row) => row.seq)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // A message that spans pages is one row whose content is its slices in order, and
+    // every page the export walked is a `get` read of the same request marked as CSV.
+    const ctx = context();
+    const range = { session_id: ids.long, from: 1, to: 1 };
+    const spanning = await collect(ctx, { ...range, format: "csv" });
+    const slices: string[] = [];
+    let pages = 0;
+    let next: ContentCursor | null = null;
+    do {
+      const step: GetOutput = (
+        await sessions.get(context(), { ...range, cursor: next })
+      ).result;
+      slices.push(...step.messages.map((message) => message.content));
+      next = step.next;
+      pages++;
+    } while (next !== null);
+    expect(pages).toBeGreaterThan(1);
+    expect(spanning.rows).toHaveLength(1);
+    expect(spanning.rows[0]?.seq).toBe(1);
+    expect(spanning.rows[0]?.content).toBe(slices.join(""));
+    const audits = await writer.query<{
+      action: string;
+      format: string | null;
+    }>(
+      "SELECT action, detail->'input'->>'format' AS format FROM audit_event WHERE request_id=$1",
+      [ctx.requestId],
+    );
+    expect(audits.rows).toHaveLength(pages);
+    expect(
+      new Set(audits.rows.map((row) => `${row.action}:${row.format ?? ""}`)),
+    ).toEqual(new Set(["get:csv"]));
+    // The refusal a JSON read gets is the refusal the export gets, before any row.
+    await expect(
+      sessions.export(context(), { session_id: ids.private }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      sessions.export(context("org-a", { read: false }), {
+        session_id: ids.public,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    const empty = await collect(context(), { session_id: ids.empty });
+    expect(empty.rows).toEqual([]);
+    expect(empty.columns).toEqual(columns);
+  });
   // @req R-DASH-11
   it("lists root sessions only on request and carries caller-visible child counts", async () => {
     const listed = (page: { result: { items: { session_id: string }[] } }) =>
@@ -709,6 +788,97 @@ describe("read services on ClickHouse", () => {
     ).text;
     expect(formatted).toContain("subagent_runs: 1");
     expect(formatted).toContain(ids.leaf);
+  });
+  // @req R-DASH-37
+  it("reports session, message and hit totals over the whole visible set beside every page", async () => {
+    const filters = { repo_name: "host/team/repo" };
+    type Listed = {
+      result: { items: { session_id: string; message_count: number }[] };
+    };
+    const listed = (page: Listed) =>
+      page.result.items.map((item) => item.session_id);
+    const messages = (page: Listed) =>
+      page.result.items.reduce((sum, item) => sum + item.message_count, 0);
+    const totalOf = (page: Listed) => ({
+      sessions: page.result.items.length,
+      messages: messages(page),
+    });
+    const list = (input: Record<string, unknown>, ctx = context()) =>
+      sessions.list(ctx, { filters, limit: 100, ...input });
+    // The totals come from every matching session, never from the page window.
+    const everything = await list({});
+    const page = await list({ limit: 1 });
+    expect(page.result.items).toHaveLength(1);
+    expect(page.result.cursor).not.toBeNull();
+    expect(page.result.total.sessions).toBeGreaterThan(1);
+    expect(page.result.total).toEqual(totalOf(everything));
+    // roots_only narrows the totals exactly as it narrows the rows.
+    const roots = await list({ roots_only: true });
+    expect((await list({ limit: 1, roots_only: true })).result.total).toEqual(
+      totalOf(roots),
+    );
+    expect(roots.result.items.length).toBeLessThan(
+      everything.result.items.length,
+    );
+    // A message filter counts the whole matching sessions and all of their messages.
+    const bash = await list({ filters: { ...filters, tool_name: "Bash" } });
+    expect(listed(bash)).toEqual(expect.arrayContaining([ids.leaf, ids.long]));
+    expect(
+      (await list({ filters: { ...filters, tool_name: "Bash" }, limit: 1 }))
+        .result.total,
+    ).toEqual(totalOf(bash));
+    // A member's totals never count the hidden session; an admin's do.
+    expect(listed(everything)).not.toContain(ids.private);
+    const admin = context("org-a", { admin: true });
+    const adminAll = await list({}, admin);
+    expect(listed(adminAll)).toContain(ids.private);
+    expect((await list({ limit: 1 }, admin)).result.total).toEqual(
+      totalOf(adminAll),
+    );
+    expect(adminAll.result.items.length).toBeGreaterThan(
+      everything.result.items.length,
+    );
+    // Another organization's totals never see these sessions.
+    expect((await list({ limit: 1 }, context("org-b"))).result.total).toEqual({
+      sessions: 0,
+      messages: 0,
+    });
+    // Search totals count every hit before the per-session cap, the cursor and the limit:
+    // four public root messages plus the public child; the private session only for admins.
+    const find = (ctx = context(), extra = {}) =>
+      search.execute(ctx, {
+        query: "circuit breaker",
+        filters,
+        context: 0,
+        limit: 1,
+        ...extra,
+      });
+    const found = await find();
+    expect(found.result.blocks).toHaveLength(1);
+    expect(found.result.cursor).not.toBeNull();
+    expect(found.result.total).toEqual({ sessions: 2, hits: 5 });
+    expect(
+      formatSearch(found.result).text.startsWith("5 hits in 2 sessions\n"),
+    ).toBe(true);
+    expect(
+      (await find(context(), { cursor: found.result.cursor })).result.total,
+    ).toEqual(found.result.total);
+    expect((await find(admin)).result.total).toEqual({ sessions: 3, hits: 6 });
+    expect((await find(context("org-b"))).result.total).toEqual({
+      sessions: 0,
+      hits: 0,
+    });
+    // An empty query counts the non-thinking messages of the matching sessions.
+    expect(
+      (
+        await search.execute(context(), {
+          query: "",
+          filters: { session_id: ids.public },
+          context: 0,
+          limit: 1,
+        })
+      ).result.total,
+    ).toEqual({ sessions: 1, hits: 4 });
   });
   // @req R-SQL-01 @req R-SQL-02 @req R-SQL-03 @req R-SQL-04
   it("executes guarded composable SQL with precise types, row/cell/body limits and SQL error positions", async () => {

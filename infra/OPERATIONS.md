@@ -114,11 +114,44 @@ infra/scripts/single-node-run.sh bootstrap.sh --admin owner@example.com \
 `up` creates the host, which installs Docker and waits for a release. The release script
 uploads `git archive` of the commit to the release bucket, then runs the host's release
 wrapper through SSM Run Command: it unpacks the source into `/opt/agentcommons/app`,
-renders `.env` from the parameters, runs `docker compose up -d --build` (image build,
-PostgreSQL and ClickHouse migrations, API, Caddy) and waits for `/ready`. The same
-command is the update path: run it with a newer commit. After a configuration change,
-run `pulumi up` and then the release script with the current commit to re-render `.env`
-and restart. The first build takes about ten to fifteen minutes on a `t4g.large`.
+renders `.env` from the parameters (plus `COMPOSE_FILE` naming the Compose files), pulls
+the published image `AGENTCOMMONS_IMAGE` (default
+`ghcr.io/agentcommonsdev/agentcommons:stable`, ADR 0059), runs `docker compose up -d`
+(PostgreSQL and ClickHouse migrations, API, Caddy), waits for `/ready`, and installs the
+hourly updater described below. A release takes a minute or two. `single-node-release.sh
+<commit> --build` builds the image on the host instead (ten to fifteen minutes on a
+`t4g.large`, using the swapfile) for a host that cannot reach the registry. After a
+configuration change, run `pulumi up` and then the release script with the current commit
+to re-render `.env` and restart. Run the release script for changes to the checkout itself
+(Compose files, Caddy and database configuration, host scripts); application releases
+arrive on their own.
+
+Automatic updates. `.github/workflows/release.yml` publishes an image for every commit on
+`main` whose CI run succeeded, tagged `sha-<12-hex commit>` and `stable`, signed with
+Sigstore. On the host, `agentcommons-update.timer` runs
+`/opt/agentcommons/agentcommons-update.sh` every hour with a random delay of up to 15
+minutes: it pulls the configured image, does nothing when its digest matches the running
+API, and otherwise keeps the running image as `agentcommons:previous`, starts the stack
+(the migration runs first), waits for `/ready`, and if the new release does not come up
+restores the previous image and exits non-zero. A failed release is held until a newer one
+is published. Database migrations are not rolled back, so migrations must stay compatible
+with the previous image. Useful commands on the host (`aws ssm start-session`):
+
+```sh
+/opt/agentcommons/agentcommons-update.sh --status   # running version, images, last result
+/opt/agentcommons/agentcommons-update.sh --now      # check and update now, even when opted out
+journalctl -u agentcommons-update.service -n 50     # the timer's log
+```
+
+The stack setting `autoUpdate` (default `true`) renders `AUTO_UPDATE` into `.env`; with
+`false` the timer keeps running but every run is a no-op. Set it at install
+(`pulumi config set autoUpdate false` before the first release) or later (the same command,
+then `pulumi up` and the release script with the current commit); editing `.env` on the host
+lasts only until the next release re-renders it. To pin a release, set
+`environment.AGENTCOMMONS_IMAGE` to `ghcr.io/agentcommonsdev/agentcommons:sha-<12 hex>`
+(the version Admin → Status shows) and release; clear it to follow `stable` again. Admin →
+Status shows the running version and whether automatic updates are on. A host created
+before ADR 0059 gets the updater from its next release.
 
 `single-node-run.sh` copies this checkout's `infra/scripts/single-node/bootstrap.sh`
 to the release bucket and runs it on the host, so bootstrap tooling follows the operator's
@@ -201,8 +234,9 @@ Setting `EMBEDDINGS_ENABLED=false` again and re-running the last two steps disab
 Operations: `aws ssm start-session --region <region> --target <instanceId>` opens a shell.
 The application is `/opt/agentcommons/app` (`docker compose -p agentcommons -f
 docker-compose.yml -f docker-compose.caddy.yml logs`), release logs are in
-`/var/log/agentcommons/`, first-boot output is in `/var/log/cloud-init-output.log`, and
-`/opt/agentcommons/current-commit` names the deployed commit. The instance is protected
+`/var/log/agentcommons/`, first-boot output is in `/var/log/cloud-init-output.log`,
+`/opt/agentcommons/current-commit` names the deployed checkout, and
+`/opt/agentcommons/agentcommons-update.sh --status` names the running release. The instance is protected
 in Pulumi and ignores image and first-boot changes because its root volume holds the
 data; replacing it means `pulumi state unprotect`, then restoring the latest DLM snapshot
 into a new volume. Outputs: `url`, `publicIp`, `instanceId`, `releaseBucket`,

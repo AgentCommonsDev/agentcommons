@@ -68,7 +68,7 @@ describe("Compose configuration", () => {
       "migrate",
     ]);
     expect(services.api).toMatchObject({
-      image: "agentcommons:local",
+      image: "ghcr.io/agentcommonsdev/agentcommons:stable",
       depends_on: { migrate: { condition: "service_completed_successfully" } },
       environment: { DATABASE_MIGRATION_URL: "", POSTGRES_PASSWORD: "" },
       ports: [{ host_ip: "127.0.0.1", target: 3000, published: "3000" }],
@@ -104,6 +104,30 @@ describe("Compose configuration", () => {
           type: "volume",
         }),
       ]),
+    );
+  });
+  // @req R-INF-09
+  it("runs the published release by default, pins another image through AGENTCOMMONS_IMAGE and documents the update settings", () => {
+    const pinned = compose(
+      ["docker-compose.yml"],
+      "AGENTCOMMONS_IMAGE=ghcr.io/agentcommonsdev/agentcommons:sha-0123456789ab\n",
+    );
+    for (const service of ["api", "migrate"]) {
+      expect(pinned[service]?.image).toBe(
+        "ghcr.io/agentcommonsdev/agentcommons:sha-0123456789ab",
+      );
+      // The build block stays so development and the Compose e2e can build locally.
+      expect(pinned[service]?.build).toMatchObject({
+        dockerfile: "Dockerfile",
+      });
+    }
+    const example = readFileSync(join(repository, ".env.example"), "utf8");
+    expect(example).toMatch(/^AGENTCOMMONS_IMAGE=$/m);
+    expect(example).toMatch(/^AUTO_UPDATE=true$/m);
+    const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
+    expect(dockerfile).toContain("ARG AGENTCOMMONS_VERSION=development");
+    expect(dockerfile).toMatch(
+      /^ENV .*AGENTCOMMONS_VERSION=\$AGENTCOMMONS_VERSION/m,
     );
   });
   // @req R-INF-07

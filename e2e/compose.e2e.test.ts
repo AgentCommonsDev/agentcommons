@@ -119,7 +119,7 @@ it(
     await writeFile(
       join(directory, ".env"),
       await composeEnvironment({
-        IMAGE_TAG: imageTag,
+        AGENTCOMMONS_IMAGE: `agentcommons:${imageTag}`,
         PUBLIC_URL: "http://localhost:3000",
         POSTGRES_PASSWORD: "compose-database-password",
         DATABASE_MIGRATION_URL:

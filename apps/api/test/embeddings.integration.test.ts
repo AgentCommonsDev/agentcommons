@@ -393,6 +393,7 @@ describe("durable organization embedding index", () => {
       readers,
       cursors,
       jobs: instance.jobs,
+      server: { version: "test-release", autoUpdate: false },
     });
     await admin.purge(first.context, {
       session_id: pending.sessionId,
@@ -732,6 +733,7 @@ describe("durable organization embedding index", () => {
         readers,
         cursors,
         jobs: instance.jobs,
+        server: { version: "test-release", autoUpdate: false },
       });
       const run = await admin.rescan(account.owner, {
         reason: "Redact derived embeddings",

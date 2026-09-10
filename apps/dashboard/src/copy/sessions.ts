@@ -98,6 +98,13 @@ export const sessionsCopy = {
     repoBranch: "Repository / branch",
     subagentCount: "Subagents",
     duration: "Duration",
+    /** "128 sessions · 4,210 messages": every root session the filters match, not only this page. */
+    total: {
+      sessions: "sessions",
+      sessionOne: "session",
+      messages: "messages",
+      messageOne: "message",
+    },
   },
   results: {
     label: "Message results",
@@ -115,8 +122,14 @@ export const sessionsCopy = {
     truncatedResponse:
       "The server shortened this page to stay within its size limit. Use Next results to continue.",
     copy: "Copy results as text",
-    sessionCount: "sessions",
-    sessionCountOne: "session",
+    /** "12 hits in 4 sessions": every match the search has, not only this page. */
+    total: {
+      hits: "hits",
+      hitOne: "hit",
+      in: "in",
+      sessions: "sessions",
+      sessionOne: "session",
+    },
     context: "Context",
   },
   detail: {
@@ -124,6 +137,9 @@ export const sessionsCopy = {
     details: "Details",
     hideDetails: "Hide details",
     copyHeader: "Copy header as text",
+    downloadCsv: "Download CSV",
+    /** The server names the file `session-<id>.csv`; the link repeats it. */
+    csvPrefix: "session-",
     subagentRun: "This run belongs to",
     openRoot: "Open the root session",
     openParent: "Open the parent session",

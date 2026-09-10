@@ -4,6 +4,7 @@ import {
   createSearchInputSchema,
   searchOutputSchema,
   searchBlockSchema,
+  searchTotalSchema,
   type SearchOutput,
   type SearchBlock,
 } from "@agentcommons/core";
@@ -64,7 +65,9 @@ export const searchAuditStructure = protocolObject(["input", "result"], {
       where: protocolArray(conditionStructure),
     }),
   }),
-  result: protocolObject(["hits", "truncated_response"]),
+  result: protocolObject(["hits", "truncated_response"], {
+    total: protocolObject(["sessions", "hits"]),
+  }),
 });
 const positionSchema = z.strictObject({
   strategy: z.enum(["lexical", "rrf"]),
@@ -220,11 +223,6 @@ export class SearchService {
           const order = lexical
             ? "rank DESC, session_id, seq"
             : "time DESC, session_id, seq DESC";
-          const continuation = after
-            ? lexical
-              ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
-              : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
-            : "true";
           const eligible = `SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq,coalesce(m.timestamp,m.received_at) AS time
             FROM api_ro.messages m LEFT ANY JOIN api_ro.session_details s USING(session_id)
             WHERE ${conditions} AND ${lexical ? "m.searchable" : "m.kind!='THINKING'"}`;
@@ -247,23 +245,42 @@ export class SearchService {
                 ) GROUP BY message_id
               ) SELECT e.message_id AS message_id,e.session_id AS session_id,e.seq AS seq,e.time AS time,f.rank AS rank FROM fused f JOIN eligible e USING(message_id)`
             : `WITH eligible AS (${eligible}) ${lexical ? lexicalMatches : "SELECT *,toFloat64(0) AS rank FROM eligible"}`;
-          const result = await client.query(
-            `WITH candidates AS (${candidates}), ranked AS (
+          // The totals count the same candidate set before the per-session cap, the
+          // cursor and the limit, in the same read callback as the page.
+          const totalParameters = { ...params.values };
+          const continuation = after
+            ? lexical
+              ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
+              : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
+            : "true";
+          const [result, counts] = await Promise.all([
+            client.query(
+              `WITH candidates AS (${candidates}), ranked AS (
               SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session FROM candidates
             ) SELECT session_id,seq,rank,time FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
               ORDER BY ${order} LIMIT ${params.add(request.limit + 1, "UInt32")}`,
-            params.values,
-          );
+              params.values,
+            ),
+            client.query(
+              `WITH candidates AS (${candidates}) SELECT uniqExact(session_id) AS sessions,count() AS hits FROM candidates`,
+              totalParameters,
+            ),
+          ]);
           const hits = result.rows.map((row) =>
             positionSchema.parse({
               ...wireRow(row),
               strategy: vector ? "rrf" : "lexical",
             }),
           );
+          const total = searchTotalSchema.parse({
+            sessions: Number(counts.rows[0]?.sessions ?? 0),
+            hits: Number(counts.rows[0]?.hits ?? 0),
+          });
           const output: SearchOutput = {
             blocks: [],
             cursor: null,
             truncated_response: false,
+            total,
           };
           const windows: Window[] = [];
           const headers = new Map<string, SearchHeader>();
@@ -373,6 +390,7 @@ export class SearchService {
               blocks,
               cursor: this.dependencies.cursors.encode(binding, hit),
               truncated_response: false,
+              total,
             };
             if (!fitsToolBudget(candidate, formatSearch)) {
               windows.pop();
@@ -402,6 +420,7 @@ export class SearchService {
             .flatMap((block) => block.messages)
             .filter((message) => message.hit).length,
           truncated_response: result.truncated_response,
+          total: result.total,
         }),
         describeResources: (result) => [
           ...new Set(result.blocks.map((block) => block.session_id)),

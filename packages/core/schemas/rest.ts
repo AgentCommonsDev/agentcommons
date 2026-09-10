@@ -54,7 +54,22 @@ export const sessionListItemSchema = sessionHeaderSchema.extend({
   duration_seconds: z.number().nullable(),
   last_activity_at: utcDateTimeSchema,
 });
-export const sessionsOutputSchema = paginatedOutput(sessionListItemSchema);
+/** Counts over the whole filtered, caller-visible set; the page window never changes them. */
+export const sessionsTotalSchema = z.strictObject({
+  sessions: nonnegativeIntegerSchema.describe(
+    "Sessions the filters match under the caller's visibility, across every page",
+  ),
+  messages: nonnegativeIntegerSchema.describe(
+    "Sum of message_count over those sessions",
+  ),
+});
+export const sessionsOutputSchema = paginatedOutput(
+  sessionListItemSchema,
+).extend({
+  total: sessionsTotalSchema.describe(
+    "Totals over every matching session, computed with the same filters and roots_only as the page",
+  ),
+});
 export const rawRecordSchema = z.strictObject({
   id: sessionIdSchema,
   session_id: sessionIdSchema,

@@ -172,6 +172,7 @@ export async function createRuntime(env: Env) {
         audit,
         cursors,
         jobs,
+        server: env.server,
       }),
     };
     return {

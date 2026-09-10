@@ -14,11 +14,13 @@ import {
   dashboardIdInputSchema,
   dashboardRenderToolInputSchema,
   searchToolInputSchema,
-  getInputSchema,
+  getToolInputSchema,
+  getOutputSchema,
+  messageRowSchema,
   sqlInputSchema,
   searchOutputSchema,
 } from "@agentcommons/core/schemas";
-import { formatSearch } from "@agentcommons/core/format";
+import { formatCsv, formatSearch } from "@agentcommons/core/format";
 import { createAuth } from "../src/auth/config.js";
 import { createApp } from "../src/app.js";
 import {
@@ -130,7 +132,11 @@ beforeAll(async () => {
     policies: new PolicyService({ ...deps, cache: database.policies }),
     health: new HealthService(database.prisma, database.traces),
     audit: database.audit,
-    admin: new AdminService({ ...deps, jobs }),
+    admin: new AdminService({
+      ...deps,
+      jobs,
+      server: { version: "test-release", autoUpdate: false },
+    }),
     jobs,
     events: new SessionEventsService({
       ...deps,
@@ -227,6 +233,53 @@ it("serves real persisted sessions through the same REST search/get/SQL schemas 
   });
   expect(filtered.statusCode, filtered.body).toBe(200);
   expect(filtered.body).toContain(publicId);
+});
+
+// @req R-DASH-38
+it("streams a whole session as one CSV attachment from the same read and refuses a foreign session with the JSON error", async () => {
+  const csv = await app.inject({
+    method: "GET",
+    url: `/api/v1/sessions/${publicId}?format=csv`,
+    headers: headers(readKey),
+  });
+  expect(csv.statusCode, csv.body).toBe(200);
+  expect(csv.headers["content-type"]).toContain("text/csv");
+  expect(csv.headers["content-disposition"]).toBe(
+    `attachment; filename="session-${publicId}.csv"`,
+  );
+  const json = getOutputSchema.parse(
+    (
+      await app.inject({
+        method: "GET",
+        url: `/api/v1/sessions/${publicId}`,
+        headers: headers(readKey),
+      })
+    ).json(),
+  );
+  expect(json.next).toBeNull();
+  expect(json.messages.length).toBeGreaterThan(0);
+  // The file is the shared formatter over the JSON messages minus the paging cursor.
+  const columns = Object.keys(messageRowSchema.shape);
+  expect(csv.body).toBe(
+    formatCsv(
+      json.messages.map((message) =>
+        Object.fromEntries(
+          columns.map((column) => [
+            column,
+            message[column as keyof typeof message],
+          ]),
+        ),
+      ),
+    ),
+  );
+  const foreign = await app.inject({
+    method: "GET",
+    url: `/api/v1/sessions/${publicId}?format=csv`,
+    headers: headers(other.key),
+  });
+  expect(foreign.statusCode).toBe(404);
+  expect(foreign.headers["content-type"]).toContain("application/json");
+  expect(foreign.json()).toMatchObject({ code: "SESSION_NOT_FOUND" });
 });
 
 it("rejects foreign resources, caller scope overrides, malformed envelopes and browser writes without a trusted origin", async () => {
@@ -589,7 +642,7 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
       dashboardSaveToolInputSchema,
       dashboardIdInputSchema,
       searchToolInputSchema,
-      getInputSchema,
+      getToolInputSchema,
       sqlInputSchema,
     ].map(toolJsonSchema),
   );

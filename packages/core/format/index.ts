@@ -36,8 +36,13 @@ function inline(value: JsonValue): string {
     .replaceAll("\n", "\\n")
     .replaceAll("\t", "\\t");
 }
+/** "12 hits in 4 sessions": every match the query has, so a reader knows how much lies beyond this page. */
+function formatSearchTotal(total: SearchOutput["total"]): string {
+  const plural = (count: number, noun: string) =>
+    `${String(count)} ${noun}${count === 1 ? "" : "s"}`;
+  return `${plural(total.hits, "hit")} in ${plural(total.sessions, "session")}`;
+}
 export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
-  const count = new Set(result.blocks.map((block) => block.session_id)).size;
   const blocks = result.blocks.map((block) => {
     const messages = block.messages.map((message) => {
       const metadata = [
@@ -75,7 +80,7 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
     ].join("\n");
   });
   const text = [
-    `${String(count)} ${count === 1 ? "session" : "sessions"}`,
+    formatSearchTotal(result.total),
     ...blocks,
     ...(result.cursor === null
       ? []

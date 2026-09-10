@@ -1,8 +1,9 @@
 import { once } from "node:events";
+import { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import * as schema from "@agentcommons/core/schemas";
-import { formatCsv } from "@agentcommons/core/format";
+import { formatCsv, formatCsvLines } from "@agentcommons/core/format/csv";
 import type { ServiceContext, ServiceResult } from "../services/context.js";
 import { hijackRaw, requestContext } from "./context.js";
 import { requireServices, type Services } from "./services.js";
@@ -15,6 +16,11 @@ const pageSchema = z.looseObject({
   items: z.array(z.unknown()),
   cursor: z.string().nullable(),
 });
+/** A whole-record CSV export as a service streams it: the header's columns, then the rows. */
+interface CsvExport {
+  columns: readonly string[];
+  rows: AsyncIterable<Record<string, unknown>>;
+}
 /**
  * Optional route groups. The build-time OpenAPI artifact registers every group so the
  * dashboard client is complete; a running instance registers only the groups its mode and
@@ -49,7 +55,25 @@ export function registerApiRoutes(
       params: P;
       output: z.ZodType;
       status?: number;
-      csv?: boolean;
+      /**
+       * How `format=csv` answers. `true`: the `{ items, cursor }` page the JSON route
+       * returns, as one CSV page with `X-Next-Cursor`. An export: every row the service
+       * streams, as one attachment, for a read whose JSON form is paged but whose file
+       * is the whole record.
+       */
+      csv?:
+        | true
+        | {
+            export: (
+              context: ServiceContext,
+              data: {
+                body: z.output<B>;
+                query: z.output<Q>;
+                params: z.output<P>;
+              },
+            ) => Promise<CsvExport>;
+            filename: (params: z.output<P>) => string;
+          };
       /** Rate-limit category when the route is not an ordinary read. */
       rate?: "ingest" | "sql";
     },
@@ -84,13 +108,31 @@ export function registerApiRoutes(
       },
       handler: async (request, reply) => {
         const query = contract.query.parse(request.query);
-        const value = await execute(requestContext(request), {
+        const data = {
           body: contract.body.parse(request.body),
           query,
           params: contract.params.parse(request.params),
-        });
+        };
+        const context = requestContext(request);
+        const csv = csvFormatSchema.safeParse(query).success
+          ? contract.csv
+          : undefined;
+        if (csv !== undefined && csv !== true) {
+          // The service reads the first page before this resolves, so a refused read
+          // answers with its JSON error rather than an empty file.
+          const { columns, rows } = await csv.export(context, data);
+          return reply
+            .code(200)
+            .type("text/csv; charset=utf-8")
+            .header(
+              "Content-Disposition",
+              `attachment; filename="${csv.filename(data.params)}"`,
+            )
+            .send(Readable.from(formatCsvLines(columns, rows)));
+        }
+        const value = await execute(context, data);
         reply.code(contract.status ?? 200);
-        if (contract.csv && csvFormatSchema.safeParse(query).success) {
+        if (csv === true) {
           const page = pageSchema.parse(value.result);
           if (page.cursor) reply.header("X-Next-Cursor", page.cursor);
           return reply
@@ -290,6 +332,10 @@ export function registerApiRoutes(
         return service.execute(context, params.id, query);
       },
     );
+  const sessionRead = (input: {
+    query: z.output<typeof schema.getQuerySchema>;
+    params: z.output<typeof schema.uuidParamsSchema>;
+  }) => ({ ...input.query, session_id: input.params.id });
   route(
     "GET",
     "/sessions/:id",
@@ -299,12 +345,13 @@ export function registerApiRoutes(
       params: schema.uuidParamsSchema,
       query: schema.getQuerySchema,
       output: schema.getOutputSchema,
+      csv: {
+        export: (ctx, input) =>
+          runtime().sessions.export(ctx, sessionRead(input)),
+        filename: ({ id }) => `session-${id}.csv`,
+      },
     },
-    (ctx, input) =>
-      runtime().sessions.get(ctx, {
-        ...input.query,
-        session_id: input.params.id,
-      }),
+    (ctx, input) => runtime().sessions.get(ctx, sessionRead(input)),
   );
   route(
     "GET",

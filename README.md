@@ -38,14 +38,14 @@ admins enforce controls once for everyone.
     <td width="50%" valign="top">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/sessions-dark.png">
-        <img src="docs/assets/screenshots/sessions-light.png" alt="The Sessions list seen by an admin: full-text search over messages, filters, one row per captured session with its title, coding tool, repository and branch, user, start time, duration and status, and the Organization admin section in the sidebar." width="100%">
+        <img src="docs/assets/screenshots/sessions-light.png" alt="The Sessions list seen by an admin: full-text search over messages, filters, a count of matching sessions and messages, one row per captured session with its title, coding tool, repository and branch, user, start time, duration and status, and the Organization admin section in the sidebar." width="100%">
       </picture>
       <p align="center"><sub><b>Sessions, as an admin.</b> Search prompts, decisions and tool output across every coding tool, or browse each captured session. Admins also see the Organization section: people, keys, audit log, moderation, redaction, status and settings.</sub></p>
     </td>
     <td width="50%" valign="top">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/session-dark.png">
-        <img src="docs/assets/screenshots/session-light.png" alt="One session page: header with coding tool, model, user and repository, the sessions that reused it, and the transcript with a subagent run expanded inline under the Agent call that spawned it." width="100%">
+        <img src="docs/assets/screenshots/session-light.png" alt="One session page: header with coding tool, model, user and repository, a Download CSV action, the sessions that reused it, and the transcript with a subagent run expanded inline under the Agent call that spawned it." width="100%">
       </picture>
       <p align="center"><sub><b>Session, as a member.</b> The transcript with thinking, tool calls and a subagent run nested under the call that spawned it. The header lists later sessions that read this one.</sub></p>
     </td>
@@ -114,18 +114,39 @@ public hosted launch is implied.
 
 ## Run it for your team
 
-Copy `.env.example` to `.env`. Set `PUBLIC_URL`, the PostgreSQL and ClickHouse
-passwords, and `BETTER_AUTH_SECRET`, and point the database URLs at host `db` as the
-comments describe. Then start the application and create an owner:
+Clone the repository, copy `.env.example` to `.env`, set `PUBLIC_URL`, the PostgreSQL and
+ClickHouse passwords, and `BETTER_AUTH_SECRET`, and point the database URLs at host `db`
+as the comments describe. Then start the published image and create an owner:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose exec api pnpm db:seed --admin you@example.com --organization your-team --name "Your team"
 ```
 
 The seed prints a setup link. Open it, set your password, and continue with **Install**.
-For HTTPS on one host, add `docker-compose.caddy.yml`: Caddy obtains the certificate for
-`PUBLIC_URL` and proxies to the API.
+For HTTPS on one host, add `docker-compose.caddy.yml` (set
+`COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml` in `.env`): Caddy obtains the
+certificate for `PUBLIC_URL` and proxies to the API.
+
+Every commit on `main` that passes CI is published as
+`ghcr.io/agentcommonsdev/agentcommons:stable` for amd64 and arm64, signed with Sigstore.
+Install the updater once so the host picks releases up on its own; it checks hourly,
+migrates the databases, restarts the API, and puts the previous image back if the new one
+does not become ready:
+
+```bash
+sudo install -m 0755 scripts/self-host/agentcommons-update.sh /opt/agentcommons/agentcommons-update.sh
+sudo install -m 0644 scripts/self-host/systemd/agentcommons-update.* /etc/systemd/system/
+sudo systemctl enable --now agentcommons-update.timer
+```
+
+The unit expects the checkout at `/opt/agentcommons/app`; change `AGENTCOMMONS_APP_DIR`
+with `systemctl edit agentcommons-update.service` if yours lives elsewhere. Set
+`AUTO_UPDATE=false` in `.env` to stop automatic updates at any time, and run
+`agentcommons-update.sh --now` to update by hand or `--status` to see the running version.
+To stay on one release, set `AGENTCOMMONS_IMAGE` to its `sha-` tag, shown on Admin →
+Status, and run `docker compose up -d`.
 Customer instances keep public discovery disabled. Operators can enable hosted signup
 and billing with `INSTANCE_MODE=saas`; see [environment settings](.env.example) for
 email, Stripe, and plans. AWS deployment uses Pulumi from `infra/`.
