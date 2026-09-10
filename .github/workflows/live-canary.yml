@@ -54,8 +54,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           if [ -z "$ANTHROPIC_API_KEY" ] || [ -z "$OPENAI_API_KEY" ] || [ -z "$GEMINI_API_KEY" ]; then
-            echo 'Set ANTHROPIC_API_KEY, OPENAI_API_KEY, and GEMINI_API_KEY repository secrets to run native canaries.' >&2
-            exit 1
+            echo '::notice::Skipped: Set ANTHROPIC_API_KEY, OPENAI_API_KEY, and GEMINI_API_KEY repository secrets to run native canaries.'
+            exit 0
           fi
           printf '%s' "$OPENAI_API_KEY" | codex login --with-api-key
           pnpm test:canary

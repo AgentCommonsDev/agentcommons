@@ -77,6 +77,26 @@ render_env() {
     return 1
   }
 }
+# running_database_mode: the database the host runs on today, from the durable marker the
+# last apply wrote, else the previous .env, else the bundled db volume of an install that
+# predates the marker; empty on a fresh host. A release unpacks into a fresh tree, so the
+# marker and the volume are what survive it (ADR 0063).
+database_mode_file=${AGENTCOMMONS_DATABASE_MODE_FILE:-$state_dir/database.mode}
+running_database_mode() {
+  local mode=""
+  [ ! -s "$database_mode_file" ] || mode=$(tr -d '[:space:]' <"$database_mode_file")
+  [ -n "$mode" ] || [ ! -f "$app/.env" ] || mode=$(setting AGENTCOMMONS_DATABASE "$app/.env")
+  if [ -z "$mode" ] && [ -f "$app/.env" ]; then mode=bundled; fi
+  if [ -z "$mode" ] && docker volume inspect "${COMPOSE_PROJECT_NAME:-agentcommons}_agentcommons-db" >/dev/null 2>&1; then mode=bundled; fi
+  printf '%s' "$mode"
+}
+# record_database_mode ENV_FILE: remembers the mode ENV_FILE runs on for the next release.
+record_database_mode() {
+  local mode
+  mode=$(setting AGENTCOMMONS_DATABASE "$1")
+  install -d -m 0700 "$(dirname "$database_mode_file")"
+  printf '%s\n' "${mode:-bundled}" >"$database_mode_file"
+}
 # keep_bundled_database NEW OLD EXTERNAL: a database move is an operator step (ADR 0063).
 # When the freshly rendered NEW names an external database while the running OLD still uses
 # the bundled container, NEW keeps OLD's database settings so this release stays on the
@@ -86,9 +106,19 @@ keep_bundled_database() {
   cp "$new" "$external"
   for key in AGENTCOMMONS_DATABASE DATABASE_URL DATABASE_MIGRATION_URL DATABASE_TRACE_CONTROL_URL \
     CLICKHOUSE_POSTGRES_HOST CLICKHOUSE_POSTGRES_PORT POSTGRES_PASSWORD; do
-    value=$(sed -n "s/^$key=//p" "$old" | tail -n 1)
+    value=""
+    [ ! -f "$old" ] || value=$(sed -n "s/^$key=//p" "$old" | tail -n 1)
     if [ -z "$value" ]; then
-      [ "$key" = AGENTCOMMONS_DATABASE ] && value="'bundled'" || continue
+      # No previous .env survives a release unpack: rebuild the bundled values from the
+      # rendered ones, which differ from the container's only in the host and the mode.
+      case $key in
+      AGENTCOMMONS_DATABASE) value="'bundled'" ;;
+      DATABASE_URL | DATABASE_MIGRATION_URL | DATABASE_TRACE_CONTROL_URL)
+        value=$(sed -n "s/^$key=//p" "$new" | tail -n 1 | sed -E "s#@[^/@]+/#@db:5432/#; s#[?&]sslmode=[^&']*##; s#[?&]uselibpqcompat=[^&']*##; s#'\?'#'#") ;;
+      CLICKHOUSE_POSTGRES_HOST) value="'db'" ;;
+      CLICKHOUSE_POSTGRES_PORT) value="'5432'" ;;
+      *) continue ;;
+      esac
     fi
     grep -v "^$key=" "$new" >"$new.tmp" || true
     printf '%s=%s\n' "$key" "$value" >>"$new.tmp"

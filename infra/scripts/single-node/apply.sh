@@ -29,11 +29,12 @@ cd "$app"
 umask 077
 render_env .env.new
 # Never switch databases inside a release: the cutover is migrate-database.sh (ADR 0063).
-if [ -f .env ] && [ "$(setting AGENTCOMMONS_DATABASE .env.new)" = external ] &&
-  [ "$(setting AGENTCOMMONS_DATABASE .env)" != external ]; then
+running=$(running_database_mode)
+if [ -n "$running" ] && [ "$running" != external ] && [ "$(setting AGENTCOMMONS_DATABASE .env.new)" = external ]; then
   keep_bundled_database .env.new .env .env.external
 fi
 mv .env.new .env
+record_database_mode .env
 echo "Rendered $(wc -l <.env) settings into $app/.env"
 
 # The Compose files go into .env as COMPOSE_FILE, which docker compose reads itself, so the
