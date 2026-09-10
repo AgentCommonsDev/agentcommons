@@ -25,8 +25,11 @@ case ${2:-} in
 esac
 commit=$(git -C "$repo" rev-parse --verify "$ref^{commit}")
 archive=$(mktemp "${TMPDIR:-/tmp}/agentcommons-release.XXXXXX")
-trap 'rm -f "$archive"' EXIT
-git -C "$repo" archive --format=tar.gz -o "$archive" "$commit"
+trap 'rm -f "$archive" "$archive.commit"' EXIT
+# The archive carries the commit so an on-host build stamps the image with it.
+printf '%s\n' "$commit" >"$archive.commit"
+git -C "$repo" archive --format=tar.gz --add-file="$archive.commit" -o "$archive" "$commit"
+rm -f "$archive.commit"
 aws s3 cp --region "$region" --only-show-errors "$archive" "s3://$bucket/releases/$commit.tar.gz"
 printf '%s\n' "$commit" | aws s3 cp --region "$region" --only-show-errors - "s3://$bucket/current"
 echo "Published $commit to s3://$bucket/releases/$commit.tar.gz"

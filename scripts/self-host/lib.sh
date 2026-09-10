@@ -110,7 +110,7 @@ stack_up() {
   # returns explicitly so a failed pull, build or start is reported as a failure.
   case $mode in
   pull) logged compose pull --quiet api || return 1 ;;
-  build) logged compose build api || return 1 ;;
+  build) logged compose build --build-arg "AGENTCOMMONS_VERSION=${AGENTCOMMONS_VERSION:-development}" api || return 1 ;;
   start) ;;
   *)
     echo "stack_up: unknown mode $mode" >&2

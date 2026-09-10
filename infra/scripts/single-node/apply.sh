@@ -9,6 +9,9 @@ set -euo pipefail
 . "$(dirname "$0")/host-lib.sh"
 : "${AWS_REGION:?Set AWS_REGION}" "${AGENTCOMMONS_PARAMETER_PATH:?Set AGENTCOMMONS_PARAMETER_PATH}"
 build=${AGENTCOMMONS_BUILD:-false}
+# A release archive names its commit; an on-host build stamps the image with it.
+commit_file=$(basename "$(ls -1 "$app"/*.commit 2>/dev/null | head -n 1)" .commit 2>/dev/null || true)
+export AGENTCOMMONS_VERSION=${AGENTCOMMONS_VERSION:-$( [ -n "$commit_file" ] && cut -c1-12 "$app/$commit_file.commit" || echo development)}
 for argument in "$@"; do
   case $argument in
   --build) build=true ;;
