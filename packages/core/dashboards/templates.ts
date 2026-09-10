@@ -24,6 +24,8 @@ const scope = `${time} AND ${repo}`;
 export const dashboardScopeSql = { time, repo, scope };
 /** Display name of the member who ran a session, falling back to the email address. */
 const person = "coalesce(nullIf(user_name,''),user_email)";
+// Per-person tiles rank people with window functions over one aggregate so `sessions`
+// (the most expensive view) is scanned once, not once for the leaders and once for the rows.
 const layout = (w: number, h: number) => ({ x: 0, y: 0, w, h });
 const standard = standardDashboardVariables;
 
@@ -294,7 +296,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Sessions per day by person",
       layout: layout(8, 5),
-      sql: `WITH leaders AS (SELECT ${person} AS leader FROM sessions WHERE ${scope} GROUP BY leader ORDER BY count() DESC, leader LIMIT 8) SELECT toDate(started_at) AS day, if(${person} IN (SELECT leader FROM leaders), ${person}, 'Other') AS person, count() AS sessions FROM sessions WHERE ${scope} GROUP BY day, person ORDER BY day, person`,
+      sql: `SELECT day, if(rank <= 8, who, 'Other') AS person, sum(n) AS sessions FROM (SELECT day, who, n, dense_rank() OVER (ORDER BY total DESC, who) AS rank FROM (SELECT day, who, n, sum(n) OVER (PARTITION BY who) AS total FROM (SELECT toDate(started_at) AS day, ${person} AS who, count() AS n FROM sessions WHERE ${scope} GROUP BY day, who))) GROUP BY day, person ORDER BY day, person`,
       series_by: "person",
       chart: {
         series: [
@@ -349,7 +351,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Coding tools per person",
       layout: layout(4, 5),
-      sql: `WITH leaders AS (SELECT ${person} AS person, count() AS total FROM sessions WHERE ${scope} GROUP BY person ORDER BY total DESC, person LIMIT 10) SELECT s.person AS person, s.harness AS harness, s.sessions AS sessions FROM (SELECT ${person} AS person, harness, count() AS sessions FROM sessions WHERE ${scope} GROUP BY person, harness) s JOIN leaders l ON l.person = s.person ORDER BY l.total DESC, person, harness`,
+      sql: `SELECT who AS person, harness, n AS sessions FROM (SELECT who, harness, n, total, dense_rank() OVER (ORDER BY total DESC, who) AS rank FROM (SELECT who, harness, n, sum(n) OVER (PARTITION BY who) AS total FROM (SELECT ${person} AS who, harness, count() AS n FROM sessions WHERE ${scope} GROUP BY who, harness))) WHERE rank <= 10 ORDER BY total DESC, person, harness`,
       series_by: "harness",
       chart: {
         series: [
