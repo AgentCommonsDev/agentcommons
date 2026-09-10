@@ -24,18 +24,31 @@ visible in both GitHub themes without relying on CSS supported only by the dashb
 
 `screenshots/*.png` are captures of the built dashboard served by the browser fixture
 (`apps/dashboard/scripts/browser-server.mjs`, a disposable PostgreSQL and ClickHouse
-pair with the real API). The fixture organization was seeded through the public API with
-27 sessions from Claude Code, Codex, Gemini CLI and pi for three example members
-(`*@example.com`, one promoted to admin) across four example repositories, including one
-Claude Code session with an `Explore` subagent run and ten sessions that read earlier
-sessions through the API while live. Captured on 2026-09-09 with Playwright Chromium at
+pair with the real API). `apps/dashboard/scripts/readme-screenshots.mjs` is the source of
+truth for every step below; `pnpm --filter @agentcommons/dashboard screenshots` reruns it
+(options: `--out <dir>`, `--keep` to leave the fixture and raw captures for inspection,
+`--only <screens>`, `--themes`, `--port`, `--skip-build`). Rerun it, never hand-edit a
+capture, whenever a change touches one of these screens (AGENTS.md, "Screenshots follow
+the UI").
+
+The script builds the dashboard into a private directory under
+`apps/dashboard/node_modules`, boots the fixture on a private port, and seeds its
+organization through the public API with 27 sessions from Claude Code, Codex, Gemini CLI
+and pi for three example members (`*@example.com`, one promoted to admin) across four
+example repositories, including one Claude Code session with an `Explore` subagent run and
+ten sessions that read earlier sessions through the API while live, so the reuse metrics are
+non-zero. The API renames neither people nor organizations and stamps upload receipts on
+arrival, so the script sets display names, the organization name and each session's
+`ended_at`/`last_activity_at` with psql on the fixture's PostgreSQL container, and removes
+the fixture's own control session. Captured on 2026-09-10 with Playwright Chromium at
 1440 × 900 and a device scale factor of 2, once with `agentcommons-theme=dark` and once
 with `light`. Home and Sessions are captured as the admin; the session page, SQL and
 Install as a member. Every image is a viewport capture cut at the last element boundary
 that fits (a tile row, a table row, an install step) except the session transcript, which
 is a full-page capture cut after the expanded subagent run. Images are scaled to 2000 px
-(Home) or 1600 px wide and quantized to 256 colours with Pillow. The Install capture
-proxies the fixture behind the example hostname `agentcommons.acme.dev` so the command
-shows a deployment-style origin instead of a local port, and the chosen key's secret is
-masked in the page before capture. The README selects the dark or light file with a
-`<picture>` element.
+(Home) or 1600 px wide and quantized to 256 colours with Pillow (Lanczos, median cut,
+Floyd-Steinberg dithering); without Pillow the script resizes with Chromium and skips the
+quantization, and says so. The Install capture proxies the fixture behind the example
+hostname `agentcommons.acme.dev` so the command shows a deployment-style origin instead of
+a local port, and every key in the page is masked before capture. The README selects the
+dark or light file with a `<picture>` element.

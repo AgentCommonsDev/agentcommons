@@ -14,7 +14,8 @@
     "test:browser:built": "playwright test -c playwright.config.ts",
     "test:workspace:built": "playwright test -c playwright.workspace.config.ts",
     "test:saas:built": "playwright test -c playwright.saas.config.ts",
-    "test:saas": "pnpm build && pnpm test:saas:built"
+    "test:saas": "pnpm build && pnpm test:saas:built",
+    "screenshots": "node scripts/readme-screenshots.mjs"
   },
   "dependencies": {
     "@agentcommons/core": "workspace:*",
