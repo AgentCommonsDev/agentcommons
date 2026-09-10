@@ -31,11 +31,23 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
-    command: "pnpm preview --port 4173 --strictPort",
-    url: "http://127.0.0.1:4173",
-    reuseExistingServer:
-      process.env.REUSE_BROWSER_SERVER === "1" && !process.env.CI,
-    timeout: 120_000,
-  },
+  // The preview proxies /auth, /api and /mcp to AGENTCOMMONS_API_ORIGIN; the stub answers the
+  // read-only calls the public pages make on load, so the suite needs no running instance.
+  webServer: [
+    {
+      command: "node tests/public-api-stub.mjs 4174",
+      url: "http://127.0.0.1:4174/auth/get-session",
+      reuseExistingServer:
+        process.env.REUSE_BROWSER_SERVER === "1" && !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      command: "pnpm preview --port 4173 --strictPort",
+      url: "http://127.0.0.1:4173",
+      env: { AGENTCOMMONS_API_ORIGIN: "http://127.0.0.1:4174" },
+      reuseExistingServer:
+        process.env.REUSE_BROWSER_SERVER === "1" && !process.env.CI,
+      timeout: 120_000,
+    },
+  ],
 });

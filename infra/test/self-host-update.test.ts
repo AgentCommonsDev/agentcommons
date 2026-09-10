@@ -30,7 +30,7 @@ case "$*" in
 "inspect --format {{.Image}} container-1") echo "$FAKE_RUNNING" ;;
 "inspect --format {{range .Config.Env}}{{println .}}{{end}} container-1")
   printf 'PATH=/usr/bin\\nAGENTCOMMONS_VERSION=%s\\n' "$FAKE_VERSION" ;;
-"compose config --images api") echo "\${AGENTCOMMONS_IMAGE:-${stable}}" ;;
+"compose config") printf 'services:\\n  api:\\n    image: %s\\n  db:\\n    image: postgres:16\\n' "\${AGENTCOMMONS_IMAGE:-${stable}}" ;;
 "compose pull --quiet api") [ "$FAKE_PULL_FAIL" != 1 ] || exit 1 ;;
 "image inspect --format {{.Id}} ${stable}") echo "$FAKE_PULLED" ;;
 "image inspect --format {{.Id}} agentcommons:previous") echo "$FAKE_RUNNING" ;;

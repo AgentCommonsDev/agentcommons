@@ -74,7 +74,13 @@ running_version() {
 # configured_image: the reference the api service resolves to (AGENTCOMMONS_IMAGE or the
 # stable release named in docker-compose.yml).
 configured_image() {
-  compose config --images api | head -n 1
+  # `compose config --images api` also lists the images of api's dependencies, so read the
+  # api service's own image line from the resolved configuration instead.
+  compose config 2>/dev/null | awk '
+    /^  api:$/ { in_api = 1; next }
+    in_api && /^  [^ ]/ { in_api = 0 }
+    in_api && $1 == "image:" { print $2; exit }
+  '
 }
 # local_image REF: the local image id for a reference, or nothing when it was never pulled.
 local_image() {
