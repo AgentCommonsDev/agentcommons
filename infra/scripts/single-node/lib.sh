@@ -52,6 +52,8 @@ ssm_run() {
 # library it sources, to the host through the release bucket and runs it there as root, so
 # operator tooling follows the checkout while the application stays the released code.
 # Arguments are quoted for the remote shell.
+# Shipped scripts run with the same AWS_REGION and AGENTCOMMONS_PARAMETER_PATH the release
+# wrapper exports on the host, so render_env works for them too.
 ship_run() {
   local script=$1 name lib arguments
   shift
@@ -62,5 +64,5 @@ ship_run() {
   aws s3 cp --region "$region" --only-show-errors "$lib" "s3://$bucket/scripts/host-lib.sh"
   aws s3 cp --region "$region" --only-show-errors "$script" "s3://$bucket/scripts/$name"
   printf -v arguments '%q ' "$@"
-  ssm_run "AgentCommons $name" "aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/host-lib.sh /opt/agentcommons/host-lib.sh && aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/$name /opt/agentcommons/$name && chmod 0700 /opt/agentcommons/host-lib.sh /opt/agentcommons/$name && /opt/agentcommons/$name $arguments"
+  ssm_run "AgentCommons $name" "aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/host-lib.sh /opt/agentcommons/host-lib.sh && aws s3 cp --region $region --only-show-errors s3://$bucket/scripts/$name /opt/agentcommons/$name && chmod 0700 /opt/agentcommons/host-lib.sh /opt/agentcommons/$name && eval \"\$(grep -E '^export (AWS_REGION|AGENTCOMMONS_PARAMETER_PATH)=' /usr/local/bin/agentcommons-release)\" && /opt/agentcommons/$name $arguments"
 }

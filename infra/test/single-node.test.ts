@@ -333,6 +333,14 @@ describe("single-node resource contract", () => {
     // the database cutover script; the list is data in .env, shared with the updater, and
     // the image is pulled unless --build asks for an on-host build.
     expect(apply).toContain("render_env .env.new");
+    const shipping = readFileSync(
+      new URL("../scripts/single-node/lib.sh", import.meta.url),
+      "utf8",
+    );
+    // Shipped scripts inherit the release wrapper's parameter environment on the host.
+    expect(shipping).toContain(
+      "grep -E '^export (AWS_REGION|AGENTCOMMONS_PARAMETER_PATH)=' /usr/local/bin/agentcommons-release",
+    );
     expect(apply).toContain("files=$(compose_files .env)");
     expect(apply).toContain(`printf "COMPOSE_FILE='%s'\\n" "$files" >>.env`);
     expect(apply).toContain("build=${AGENTCOMMONS_BUILD:-false}");
