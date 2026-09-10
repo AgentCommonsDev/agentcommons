@@ -76,10 +76,13 @@ running_version() {
 configured_image() {
   # `compose config --images api` also lists the images of api's dependencies, so read the
   # api service's own image line from the resolved configuration instead.
+  # awk reads to the end on purpose: exiting early would close the pipe under compose and
+  # turn a successful lookup into SIGPIPE (exit 141) with pipefail.
   compose config 2>/dev/null | awk '
     /^  api:$/ { in_api = 1; next }
     in_api && /^  [^ ]/ { in_api = 0 }
-    in_api && $1 == "image:" { print $2; exit }
+    in_api && $1 == "image:" && image == "" { image = $2 }
+    END { if (image != "") print image }
   '
 }
 # local_image REF: the local image id for a reference, or nothing when it was never pulled.

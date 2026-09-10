@@ -5,7 +5,13 @@
       "entry": ["scripts/*.{ts,mjs}", "*.config.{ts,js}", "e2e/**/*.test.ts"]
     },
     "apps/api": { "entry": ["test/**/*.test.ts"] },
-    "apps/dashboard": { "entry": ["src/entry-server.tsx", "scripts/*.mjs"] },
+    "apps/dashboard": {
+      "entry": [
+        "src/entry-server.tsx",
+        "scripts/*.mjs",
+        "tests/public-api-stub.mjs"
+      ]
+    },
     "packages/db": { "entry": ["auth-schema.ts", "test/**/*.test.ts"] },
     "packages/traces": { "entry": ["test/**/*.test.ts"] },
     "packages/hook": {
