@@ -18,6 +18,11 @@ export function singleNodeFixture(extraConfig: Record<string, string> = {}) {
             arn: `arn:aws:mock:us-west-2:123456789012:${args.name}`,
             bucket: `${args.name}-bucket`,
             publicIp: "203.0.113.10",
+            // Aurora cluster and writer attributes the `.env` rendering and alarms read.
+            endpoint: `${args.name}.cluster-fixture.us-west-2.rds.amazonaws.com`,
+            port: 5432,
+            clusterIdentifier: args.name,
+            identifier: args.name,
           },
         };
       },
@@ -28,6 +33,8 @@ export function singleNodeFixture(extraConfig: Record<string, string> = {}) {
             return { ...inputs, id: "vpc-default", cidrBlock: "172.31.0.0/16" };
           case "aws:ec2/getSubnets:getSubnets":
             return { ...inputs, ids: ["subnet-public-b", "subnet-public-a"] };
+          case "aws:ec2/getSubnet:getSubnet":
+            return { ...inputs, availabilityZone: "us-west-2d" };
           case "aws:ssm/getParameter:getParameter":
             return { ...inputs, value: "ami-ubuntu-arm64-fixture" };
           case "aws:index/getRegion:getRegion":

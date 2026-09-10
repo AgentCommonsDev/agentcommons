@@ -315,6 +315,7 @@ export async function captureHarness(
   );
   assert.equal(getResponse.status, 200);
   const get = getOutputSchema.parse(await getResponse.json());
+  assert.ok(get.header);
   assert.equal(get.header.harness, definition.harness);
   assert.equal(get.header.end_commit, session.endCommit);
   const mcpSearch = await context.userClient.callTool({

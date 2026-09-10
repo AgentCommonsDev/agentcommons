@@ -60,8 +60,13 @@ it("reads a bounded UTF-8 page from eighty large tool outputs without fetching t
   );
   expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(32768);
   expect(Buffer.byteLength(formatGet(page).text)).toBeLessThanOrEqual(32768);
-  expect(page.next?.seq).toBe(0);
-  expect(page.next?.offset).toBeGreaterThan(0);
+  // Each output is bounded to one slice and the page moves on: several messages per
+  // page, each with its rest behind content_cursor, and next names the following message.
+  expect(page.messages.length).toBeGreaterThan(1);
+  expect(
+    page.messages.every((item) => item.content_cursor?.seq === item.seq),
+  ).toBe(true);
+  expect(page.next).toEqual({ seq: page.messages.length, offset: 0 });
 });
 // @req R-GET-01 @req R-GET-02
 it("preserves exact UTF-8 continuations at large-message boundaries and rejects interior-byte offsets", async () => {
@@ -91,7 +96,15 @@ it("preserves exact UTF-8 continuations at large-message boundaries and rejects 
     })
   ).result;
   expect(crossing.messages[0]?.content).toBe("界🙂界🙂");
-  expect(crossing.next).toEqual({ seq: 1, offset: 0 });
+  expect(crossing.messages[0]?.content_cursor).toBeNull();
+  // The page continues into the following outputs, each bounded, and next names the one
+  // after the last it carried.
+  expect(crossing.messages[1]?.seq).toBe(1);
+  expect(crossing.messages[1]?.content_cursor).toEqual({
+    seq: 1,
+    offset: Buffer.byteLength(crossing.messages[1]?.content ?? ""),
+  });
+  expect(crossing.next).toEqual({ seq: crossing.messages.length, offset: 0 });
   await expect(
     service.get(org.context, { session_id: id, cursor: { seq: 0, offset: 1 } }),
   ).rejects.toMatchObject({ statusCode: 400, code: "INVALID_CURSOR" });
@@ -160,12 +173,15 @@ it("computes metadata before aggregating a thousand large message payloads", asy
     ),
   ).rejects.toThrow(/memory|limit/i);
   const result = (await service.get(org.context, { session_id: large })).result;
-  expect(result.messages).toHaveLength(1);
+  expect(result.messages.length).toBeGreaterThan(1);
   expect(result.messages[0]?.content).toBe(
     content.slice(0, result.messages[0]?.content.length),
   );
-  expect(result.next?.seq).toBe(0);
-  expect(result.next?.offset).toBeGreaterThan(0);
+  expect(result.messages[0]?.content_cursor).toEqual({
+    seq: 0,
+    offset: Buffer.byteLength(result.messages[0]?.content ?? ""),
+  });
+  expect(result.next).toEqual({ seq: result.messages.length, offset: 0 });
 });
 // @req R-DASH-38
 it("exports a message that spans many bounded pages as one row with its exact stored text", async () => {

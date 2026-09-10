@@ -15,6 +15,44 @@ import {
   type ClickHouseConfig,
 } from "../src/index.js";
 
+export const CLICKHOUSE_TEST_ADMIN_PASSWORD =
+  "native-clickhouse-integration-password";
+/** The ClickHouse container of the integration fixtures, with the shared privacy settings. */
+export async function startClickHouse() {
+  const container = await new GenericContainer(CLICKHOUSE_IMAGE)
+    .withCopyFilesToContainer([
+      {
+        source: fileURLToPath(
+          new URL("../config/privacy.xml", import.meta.url),
+        ),
+        target: "/etc/clickhouse-server/config.d/privacy.xml",
+      },
+    ])
+    .withEnvironment({
+      CLICKHOUSE_PASSWORD: CLICKHOUSE_TEST_ADMIN_PASSWORD,
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1",
+      // As in docker-compose.yml: libpq looks for a client certificate under HOME when
+      // PostgreSQL offers TLS, and the image inherits root's unreadable /root.
+      HOME: "/var/lib/clickhouse",
+    })
+    .withExposedPorts(8123)
+    .withExtraHosts([
+      { host: "host.docker.internal", ipAddress: "host-gateway" },
+    ])
+    // Bounded by the machine so the same fixture starts on a 2-vCPU CI runner.
+    .withResourcesQuota({
+      memory: Math.min(4 * 1024 * 1024 * 1024, Math.floor(totalmem() / 2)),
+      cpu: Math.min(4, availableParallelism()),
+    })
+    .withWaitStrategy(Wait.forHttp("/ping", 8123))
+    .start();
+  return {
+    container,
+    url: `http://${container.getHost()}:${String(container.getMappedPort(8123))}`,
+    stop: () => container.stop(),
+  };
+}
+
 export async function startTraceDatabase(
   authConfiguration?: Parameters<typeof startDatabase>[0],
 ) {
@@ -22,32 +60,9 @@ export async function startTraceDatabase(
   try {
     const db = await startDatabase(authConfiguration);
     release.unshift(() => db.close());
-    const container = await new GenericContainer(CLICKHOUSE_IMAGE)
-      .withCopyFilesToContainer([
-        {
-          source: fileURLToPath(
-            new URL("../config/privacy.xml", import.meta.url),
-          ),
-          target: "/etc/clickhouse-server/config.d/privacy.xml",
-        },
-      ])
-      .withEnvironment({
-        CLICKHOUSE_PASSWORD: "native-clickhouse-integration-password",
-        CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1",
-      })
-      .withExposedPorts(8123)
-      .withExtraHosts([
-        { host: "host.docker.internal", ipAddress: "host-gateway" },
-      ])
-      // Bounded by the machine so the same fixture starts on a 2-vCPU CI runner.
-      .withResourcesQuota({
-        memory: Math.min(4 * 1024 * 1024 * 1024, Math.floor(totalmem() / 2)),
-        cpu: Math.min(4, availableParallelism()),
-      })
-      .withWaitStrategy(Wait.forHttp("/ping", 8123))
-      .start();
-    release.unshift(() => container.stop());
-    const url = `http://${container.getHost()}:${String(container.getMappedPort(8123))}`;
+    const clickhouse = await startClickHouse();
+    release.unshift(() => clickhouse.stop());
+    const { container, url } = clickhouse;
     const postgresControlUrl = new URL(db.urls.traceControl);
     postgresControlUrl.hostname = "host.docker.internal";
     const config: ClickHouseConfig = {
@@ -62,7 +77,7 @@ export async function startTraceDatabase(
     const migration = {
       url,
       username: "default",
-      password: "native-clickhouse-integration-password",
+      password: CLICKHOUSE_TEST_ADMIN_PASSWORD,
       database: config.database,
       writerUsername: config.username,
       writerPassword: config.password,

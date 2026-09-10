@@ -551,7 +551,7 @@ it("exposes distinct visible reuse counts and pages both directions from real at
   await get(target);
   const count = async (context = owner.owner) =>
     (await runtime.services.sessions.get(context, { session_id: target }))
-      .result.header.reuse_count;
+      .result.header?.reuse_count;
   expect(await count()).toBe(2);
   const from = await runtime.services.sessions.reuse(
     member.context,

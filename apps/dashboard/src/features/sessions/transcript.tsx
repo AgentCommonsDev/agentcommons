@@ -1,13 +1,29 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ChevronRight, ExternalLink } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronRight, CornerDownRight, ExternalLink } from "lucide-react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   formatMessage,
   messageBranches,
   spawnPlacements,
 } from "@agentcommons/core/format";
-import type { ContentCursor, GetOutput } from "@agentcommons/core/schemas/get";
+import {
+  messageKindSchema,
+  responseBytes,
+} from "@agentcommons/core/schemas/common";
+import type {
+  ContentCursor,
+  GetOutput,
+  SessionHeader,
+} from "@agentcommons/core/schemas/get";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import {
@@ -40,36 +56,294 @@ export interface RunFocus {
   seq: number | null;
 }
 
-/** Bounded pages of one session; the key prefix matches the live stream's invalidation. */
+/** The dashboard reads `get` at the REST page cap, eight times the agent budget (§7.3, §10). */
+const PAGE_BYTES = responseBytes.page;
+const EVERY_KIND = [...messageKindSchema.options];
+/** Seq ranges are sized so one usually fits a single page, from the head page's density. */
+const RANGE_TARGET_BYTES = (PAGE_BYTES * 3) / 4;
+const RANGE_MESSAGES = { min: 25, max: 400 };
+/** Range requests in flight at once. */
+const IN_FLIGHT = 3;
+/** Ranges that load without a reader's action; beyond them Load more takes over. */
+const EAGER_RANGES = 16;
+/** One seq range of a transcript; `cursor` continues the head page's split last message. */
+interface SeqRange {
+  from: number;
+  to: number;
+  cursor: ContentCursor | null;
+}
+async function readPage(
+  sessionId: string,
+  query: {
+    from?: number;
+    to?: number;
+    cursor?: ContentCursor | null;
+    /** False reads messages only: the header is the expensive part and the head page has it. */
+    header?: boolean;
+  },
+  signal: AbortSignal,
+  pageBytes = PAGE_BYTES,
+) {
+  return unwrap(
+    await api.GET("/api/v1/sessions/{id}", {
+      params: {
+        path: { id: sessionId },
+        // Every kind: the transcript shows META housekeeping as collapsed rows a reader
+        // can expand, unlike an agent's default read (§7.3).
+        query: { ...query, page_bytes: pageBytes, kinds: EVERY_KIND },
+      },
+      signal,
+    }),
+  );
+}
+/** Every page of one range, following cursors until the range is complete. */
+async function readRange(
+  sessionId: string,
+  range: SeqRange,
+  signal: AbortSignal,
+): Promise<GetOutput[]> {
+  const pages: GetOutput[] = [];
+  let cursor = range.cursor;
+  do {
+    const page = await readPage(
+      sessionId,
+      { from: range.from, to: range.to, cursor, header: false },
+      signal,
+    );
+    pages.push(page);
+    cursor = page.next;
+  } while (cursor !== null);
+  return pages;
+}
+/**
+ * The ranges after the head page that cover messages up to `total`, in strides sized by
+ * the head's bytes per message. Only the last range's end moves as a live session grows,
+ * so earlier ranges stay cached and just the tail is read again.
+ */
+function planRanges(head: GetOutput, from: number, total: number): SeqRange[] {
+  const start = head.next ?? {
+    seq: (head.messages.at(-1)?.seq ?? from - 1) + 1,
+    offset: 0,
+  };
+  if (start.seq >= total) return [];
+  const bytesPerMessage =
+    head.messages.reduce((sum, message) => sum + message.content.length, 0) /
+      Math.max(1, head.messages.length) +
+    400;
+  const stride = Math.min(
+    RANGE_MESSAGES.max,
+    Math.max(
+      RANGE_MESSAGES.min,
+      Math.round(RANGE_TARGET_BYTES / bytesPerMessage),
+    ),
+  );
+  const ranges: SeqRange[] = [];
+  for (let first = start.seq; first < total; first += stride)
+    ranges.push({
+      from: first,
+      to: Math.min(first + stride - 1, total - 1),
+      cursor: first === start.seq && start.offset > 0 ? start : null,
+    });
+  return ranges;
+}
+/** What a live session reports about itself: the stream's event, or a header read while the stream is down. */
+interface LiveSnapshot {
+  status: SessionHeader["status"];
+  message_count: number;
+}
+/**
+ * One session's transcript from `from`: the head page (the only one that computes the
+ * session header), then seq ranges up to the session's message count with at most three
+ * requests in flight, rendered as each lands. An active session's status and count come
+ * from the live stream's own events (`snapshot`); a header-only read under the stream's
+ * invalidation key is polled every 5 s only while the stream is down. Growth extends the
+ * ranges; loaded ranges are never read again.
+ */
 export function useTranscript(
   sessionId: string,
   from: number,
-  options: { polling: boolean; enabled?: boolean } = { polling: false },
+  options: { polling: boolean; snapshot?: LiveSnapshot | null } = {
+    polling: false,
+  },
 ) {
   const { organization } = useWorkspace();
-  return useInfiniteQuery({
-    queryKey: [organization.id, "session", sessionId, "transcript", from],
-    initialPageParam: null as ContentCursor | null,
-    queryFn: async ({ pageParam, signal }) =>
-      unwrap(
-        await api.GET("/api/v1/sessions/{id}", {
-          params: {
-            path: { id: sessionId },
-            query: { from, cursor: pageParam },
-          },
-          signal,
-        }),
-      ),
-    getNextPageParam: (last) => last.next,
-    refetchInterval: (query) =>
-      options.polling && query.state.data?.pages[0]?.header.status === "ACTIVE"
-        ? 5000
-        : false,
-    enabled: options.enabled ?? true,
+  const head = useQuery({
+    queryKey: [organization.id, "transcript", sessionId, "head", from],
+    queryFn: ({ signal }) => readPage(sessionId, { from }, signal),
+    staleTime: Infinity,
   });
+  const headHeader = head.data?.header ?? undefined;
+  const snapshot = options.snapshot ?? null;
+  const active = (snapshot?.status ?? headHeader?.status) === "ACTIVE";
+  const status = useQuery({
+    queryKey: [organization.id, "session", sessionId, "status"],
+    queryFn: ({ signal }) =>
+      readPage(sessionId, { from: 0, to: 0 }, signal, responseBytes.read),
+    enabled: active && options.polling,
+    refetchInterval: 5000,
+  });
+  const polled = status.data?.header ?? null;
+  const live = options.polling ? (polled ?? snapshot) : (snapshot ?? polled);
+  const header: SessionHeader | undefined =
+    headHeader && live
+      ? {
+          ...headHeader,
+          status: live.status,
+          message_count: live.message_count,
+        }
+      : headHeader;
+  const total = header?.message_count ?? 0;
+  const ranges = useMemo(
+    () => (head.data ? planRanges(head.data, from, total) : []),
+    [head.data, from, total],
+  );
+  const [cap, setCap] = useState(EAGER_RANGES);
+  const fetchNextPage = useCallback(() => {
+    setCap((prior) => prior + IN_FLIGHT);
+  }, []);
+  // Ranges become eligible in order as earlier ones complete, so at most IN_FLIGHT run.
+  const [done, setDone] = useState(0);
+  const results = useQueries({
+    queries: ranges.map((range, index) => ({
+      queryKey: [
+        organization.id,
+        "transcript",
+        sessionId,
+        "range",
+        range.from,
+        range.to,
+        range.cursor?.offset ?? 0,
+      ],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        readRange(sessionId, range, signal),
+      enabled: index < Math.min(cap, done + IN_FLIGHT),
+      staleTime: Infinity,
+      placeholderData: keepPreviousData,
+    })),
+  });
+  const settled = results.filter(
+    (result) => result.isSuccess && !result.isPlaceholderData,
+  ).length;
+  useEffect(() => {
+    setDone(settled);
+  }, [settled]);
+  const messages = useMemo(() => {
+    if (!head.data) return [];
+    const pages = [head.data];
+    for (const result of results) {
+      if (!result.data) break;
+      pages.push(...result.data);
+    }
+    return transcriptMessages(pages);
+  }, [head.data, results]);
+  const failed = results.filter((result) => result.error !== null);
+  return {
+    header,
+    messages,
+    isPending: head.isPending,
+    /** The head page failed: no header, nothing to show. */
+    error: head.error,
+    refetch: () => {
+      void head.refetch();
+    },
+    /** A later range failed: the header and the messages before it stay on the page. */
+    rangeError: failed[0]?.error ?? null,
+    retryRanges: () => {
+      for (const result of failed) void result.refetch();
+    },
+    hasNextPage: ranges.length > cap,
+    isFetchingNextPage: results.some((result) => result.isFetching),
+    fetchNextPage,
+  };
+}
+/**
+ * A message longer than its slice arrives bounded with a `content_cursor`; the rest is
+ * read on demand, slice by slice, with `from` and `to` at its seq (§7.3). Until then the
+ * message renders as received.
+ */
+function useWholeMessage(sessionId: string, message: Message) {
+  const [rest, setRest] = useState<{ id: string; content: string } | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const whole =
+    rest?.id === message.message_id
+      ? {
+          ...message,
+          content: message.content + rest.content,
+          content_cursor: null,
+        }
+      : message;
+  const loadRest = useCallback(() => {
+    if (!message.content_cursor) return;
+    setLoading(true);
+    setError(null);
+    void (async () => {
+      const controller = new AbortController();
+      let cursor: ContentCursor | null = message.content_cursor;
+      const parts: string[] = [];
+      try {
+        while (cursor !== null) {
+          const page: GetOutput = await readPage(
+            sessionId,
+            {
+              from: message.seq,
+              to: message.seq,
+              cursor,
+              header: false,
+            },
+            controller.signal,
+          );
+          for (const slice of page.messages) parts.push(slice.content);
+          cursor = page.next;
+        }
+        setRest({ id: message.message_id, content: parts.join("") });
+      } catch (failure) {
+        setError(failure);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [sessionId, message.content_cursor, message.message_id, message.seq]);
+  return { message: whole, loading, error, loadRest };
+}
+/** The notice under a bounded message: what it is, and the button that reads the rest. */
+function RestNotice({
+  message,
+  loading,
+  error,
+  loadRest,
+}: {
+  message: Message;
+  loading: boolean;
+  error: unknown;
+  loadRest: () => void;
+}) {
+  if (!message.content_cursor) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+      <span>{labels.longMessage}</span>
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={loading}
+        onClick={loadRest}
+      >
+        {loading ? labels.loadingRest : labels.showRest}
+      </Button>
+      {error !== null && (
+        <RequestError
+          title={copy.sessions.detail.errors.messages}
+          error={error}
+          className="basis-full"
+        />
+      )}
+    </div>
+  );
 }
 /** A message split across pages by a byte cursor reads as one message again. */
-export function transcriptMessages(pages: readonly GetOutput[]): Message[] {
+function transcriptMessages(pages: readonly GetOutput[]): Message[] {
   const merged: Message[] = [];
   for (const page of pages)
     for (const message of page.messages) {
@@ -157,6 +431,53 @@ function Collapsible({
     </div>
   );
 }
+/** The first line of a tool result, so a collapsed call still says what came back. */
+function gist(content: string): string {
+  return truncate(content.trim().split("\n", 1)[0]?.trim() ?? "", 120);
+}
+/**
+ * A tool call's input as labelled fields: most inputs are a flat object (a path, a command,
+ * a pattern), which reads better as name and value than as JSON. Multi-line or long values
+ * get their own block; nested inputs fall back to formatted JSON.
+ */
+function ToolInputView({ input }: { input: unknown }) {
+  if (typeof input === "string")
+    return <CodeBlock content={input} language="text" className="my-0" />;
+  const entries =
+    input !== null && typeof input === "object" && !Array.isArray(input)
+      ? Object.entries(input)
+      : null;
+  if (
+    !entries ||
+    entries.some(([, value]) => value !== null && typeof value === "object")
+  )
+    return (
+      <CodeBlock
+        content={JSON.stringify(input, null, 2)}
+        language="json"
+        className="my-0"
+      />
+    );
+  return (
+    <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[12.5px]">
+      {entries.map(([key, value]) => {
+        const text = typeof value === "string" ? value : JSON.stringify(value);
+        return (
+          <Fragment key={key}>
+            <dt className="pt-0.5 font-mono text-xs text-subtle">{key}</dt>
+            <dd className="m-0 min-w-0">
+              {text.includes("\n") || text.length > 160 ? (
+                <Output content={text} />
+              ) : (
+                <code className="font-mono break-words">{text}</code>
+              )}
+            </dd>
+          </Fragment>
+        );
+      })}
+    </dl>
+  );
+}
 function Output({ content }: { content: string }) {
   return (
     <pre className="m-0 max-h-80 overflow-auto rounded-md bg-bg px-3 py-2 font-mono text-[12.5px] leading-relaxed break-words whitespace-pre-wrap">
@@ -187,6 +508,40 @@ function ToolResult({ message, open }: { message: Message; open: boolean }) {
     </Collapsible>
   );
 }
+/** One tool result inside its call: the output, its seq, and the rest of it on demand. */
+function ResultBlock({
+  sessionId,
+  result,
+  nested,
+  selected,
+}: {
+  sessionId: string;
+  result: Message;
+  nested: boolean;
+  selected: boolean;
+}) {
+  const whole = useWholeMessage(sessionId, result);
+  return (
+    <div
+      id={nested ? undefined : String(result.seq)}
+      data-testid={nested ? undefined : `session-message-${String(result.seq)}`}
+      className={cn(
+        "flex flex-col gap-1",
+        selected &&
+          "rounded-md ring-2 ring-accent ring-offset-2 ring-offset-surface",
+      )}
+    >
+      <p className="text-[11px] font-medium tracking-wide text-subtle uppercase">
+        {labels.output}
+        <span className="ml-2 font-mono normal-case tracking-normal">
+          {seqLabel(result.seq)}
+        </span>
+      </p>
+      <Output content={whole.message.content} />
+      <RestNotice {...whole} />
+    </div>
+  );
+}
 function Body({
   message,
   results,
@@ -194,6 +549,7 @@ function Body({
   expandTools,
   nested,
   selectedSeq,
+  sessionId,
 }: {
   message: Message;
   results: Message[];
@@ -201,6 +557,7 @@ function Body({
   expandTools: boolean;
   nested: boolean;
   selectedSeq: number | null;
+  sessionId: string;
 }) {
   switch (message.kind) {
     case "THINKING":
@@ -227,19 +584,28 @@ function Body({
           open={expandTools}
           summary={
             <>
-              <span className="font-medium">{labels.toolCall}</span>
-              <span className="font-mono text-xs text-accent">
+              <span className="text-muted">{labels.toolCall}</span>
+              <span className="font-mono text-xs font-medium text-accent">
                 {message.tool_name}
               </span>
               <span className="truncate font-mono text-xs text-muted">
                 {inputPreview(input)}
               </span>
-              {results.length > 0 && (
+              {results.length === 1 && results[0] && (
+                <span className="flex basis-full items-center gap-1.5 text-xs text-muted">
+                  <CornerDownRight
+                    size={12}
+                    aria-hidden
+                    className="shrink-0 text-subtle"
+                  />
+                  <span className="truncate font-mono">
+                    {gist(results[0].content) || labels.empty_content}
+                  </span>
+                </span>
+              )}
+              {results.length > 1 && (
                 <span className="text-xs text-subtle">
-                  {number(results.length)}{" "}
-                  {results.length === 1
-                    ? labels.toolResultOne
-                    : labels.toolResults}
+                  {number(results.length)} {labels.toolResults}
                 </span>
               )}
             </>
@@ -252,37 +618,17 @@ function Body({
                 <p className="mb-1 text-[11px] font-medium tracking-wide text-subtle uppercase">
                   {labels.input}
                 </p>
-                <CodeBlock
-                  content={
-                    typeof input === "string"
-                      ? input
-                      : JSON.stringify(input, null, 2)
-                  }
-                  language={typeof input === "string" ? "text" : "json"}
-                  className="my-0"
-                />
+                <ToolInputView input={input} />
               </div>
             )}
             {results.map((result) => (
-              <div
+              <ResultBlock
                 key={result.message_id}
-                id={nested ? undefined : String(result.seq)}
-                data-testid={
-                  nested ? undefined : `session-message-${String(result.seq)}`
-                }
-                className={cn(
-                  selectedSeq === result.seq &&
-                    "rounded-md ring-2 ring-accent ring-offset-2 ring-offset-surface",
-                )}
-              >
-                <p className="mb-1 text-[11px] font-medium tracking-wide text-subtle uppercase">
-                  {labels.output}
-                  <span className="ml-2 font-mono normal-case tracking-normal">
-                    {seqLabel(result.seq)}
-                  </span>
-                </p>
-                <Output content={result.content} />
-              </div>
+                sessionId={sessionId}
+                result={result}
+                nested={nested}
+                selected={selectedSeq === result.seq}
+              />
             ))}
           </div>
         </Collapsible>
@@ -312,7 +658,7 @@ function Body({
   }
 }
 function MessageItem({
-  message,
+  message: received,
   results,
   runs,
   nodes,
@@ -336,15 +682,25 @@ function MessageItem({
   nested: boolean;
 }) {
   const element = useRef<HTMLElement>(null);
+  const whole = useWholeMessage(sessionId, received);
+  const { message } = whole;
   const resultSelected = results.some((result) => result.seq === selected);
   const isSelected = selected === message.seq || resultSelected;
   useEffect(() => {
     if (isSelected) element.current?.scrollIntoView({ block: "center" });
   }, [isSelected]);
-  const tokens =
-    message.input_tokens !== null || message.output_tokens !== null
-      ? `${labels.tokens}: ${number(message.input_tokens)} ${copy.sessions.detail.tokensIn}${copy.app.common.separator}${number(message.output_tokens)} ${copy.sessions.detail.tokensOut}`
-      : null;
+  // Token counts and the record identity show on hover (§10), keeping the row to who,
+  // when and where; the body block names the kind (thinking, tool call, metadata).
+  const details = [
+    ...(message.input_tokens !== null || message.output_tokens !== null
+      ? [
+          `${labels.tokens}: ${number(message.input_tokens)} ${copy.sessions.detail.tokensIn}${copy.app.common.separator}${number(message.output_tokens)} ${copy.sessions.detail.tokensOut}`,
+        ]
+      : []),
+    ...(message.raw_record_id
+      ? [`${copy.app.fields.raw_record_id}: ${message.raw_record_id}`]
+      : []),
+  ].join("\n");
   return (
     <article
       ref={element}
@@ -357,10 +713,14 @@ function MessageItem({
         isSelected
           ? "border-accent bg-accent-bg/30"
           : "border-line-soft bg-surface",
-        message.role === "USER" && !isSelected && "border-line",
+        // A prompt is where a turn starts: it stands out from the agent's work below it.
+        message.role === "USER" && !isSelected && "border-line bg-raised",
       )}
     >
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+      <div
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted"
+        title={details || undefined}
+      >
         <Link
           to="/app/sessions/$id"
           params={{ id: sessionId }}
@@ -371,15 +731,11 @@ function MessageItem({
           {seqLabel(message.seq)}
         </Link>
         <StatusBadge value={message.role} />
-        {message.kind !== "TEXT" &&
-          message.kind !== "TOOL_USE" &&
-          message.kind !== message.role && <StatusBadge value={message.kind} />}
         {message.timestamp && (
           <time dateTime={message.timestamp}>
             {dateTime(message.timestamp)}
           </time>
         )}
-        {tokens && <span className="hidden sm:inline">{tokens}</span>}
         <span className="ml-auto flex items-center">
           <CopyButton
             value={formatMessage(message)}
@@ -398,7 +754,9 @@ function MessageItem({
         expandTools={expandTools || resultSelected}
         nested={nested}
         selectedSeq={selected}
+        sessionId={sessionId}
       />
+      <RestNotice {...whole} />
       {runs.length > 0 && (
         <RunList
           runs={runs}
@@ -408,9 +766,6 @@ function MessageItem({
           expandTools={expandTools}
           placed
         />
-      )}
-      {message.content_cursor && (
-        <p className="text-xs text-muted">{labels.continues}</p>
       )}
     </article>
   );
@@ -522,24 +877,20 @@ function RunMessages({
   const selected = focus?.sessionId === node.session_id ? focus.seq : null;
   const from = selected === null ? 0 : Math.max(0, selected - 2);
   const transcript = useTranscript(node.session_id, from);
-  const messages = useMemo(
-    () => (transcript.data ? transcriptMessages(transcript.data.pages) : []),
-    [transcript.data],
-  );
+  const { messages } = transcript;
   const lastSeq = messages.at(-1)?.seq ?? -1;
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = transcript;
   useEffect(() => {
     if (selected === null || lastSeq >= selected) return;
-    if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
+    if (hasNextPage && !isFetchingNextPage) fetchNextPage();
   }, [selected, lastSeq, hasNextPage, isFetchingNextPage, fetchNextPage]);
   if (transcript.isPending) return <LoadingState rows={2} />;
   if (transcript.error)
     return (
       <RequestError
+        title={copy.sessions.detail.errors.messages}
         error={transcript.error}
-        retry={() => {
-          void transcript.refetch();
-        }}
+        retry={transcript.refetch}
       />
     );
   const { unplaced } = spawnPlacements(messages, nodes, node.session_id);
@@ -569,13 +920,18 @@ function RunMessages({
         nodes={nodes}
         focus={focus}
       />
+      {transcript.rangeError !== null && (
+        <RequestError
+          title={copy.sessions.detail.errors.messages}
+          error={transcript.rangeError}
+          retry={transcript.retryRanges}
+        />
+      )}
       {transcript.hasNextPage && (
         <LoadMore
           size="sm"
-          fetching={transcript.isFetchingNextPage}
-          onLoad={() => {
-            void transcript.fetchNextPage();
-          }}
+          fetching={isFetchingNextPage}
+          onLoad={fetchNextPage}
         >
           {labels.loadMore}
         </LoadMore>
@@ -666,6 +1022,7 @@ function RunBlock({
       className={cn(
         "overflow-hidden rounded-lg border bg-surface",
         focused ? "border-accent" : "border-line",
+        placed && "border-l-2 border-l-accent",
       )}
     >
       <div className="flex flex-wrap items-center gap-2 px-3 py-2 sm:px-4">

@@ -113,6 +113,7 @@ export function SqlResults({ data }: { data: SqlOutput }) {
       )}
       <div className="overflow-hidden rounded-lg border border-line bg-surface">
         <Table
+          layout="scroll-x"
           containerClassName="app-scroll max-h-[60vh] overflow-auto"
           className="min-w-max"
         >

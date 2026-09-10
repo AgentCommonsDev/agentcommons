@@ -1,10 +1,6 @@
 import { traceViewCatalog } from "@agentcommons/core/sql";
-import {
-  principalFieldSql,
-  principalFlags,
-  sqlIdentifier,
-  sqlString,
-} from "../client.js";
+import { sqlIdentifier, sqlString } from "../client.js";
+import { controlTableSql, traceScopeSql } from "../control.js";
 import { emptyTraceRow } from "../rows.js";
 import {
   sessionColumns,
@@ -12,6 +8,8 @@ import {
   traceTables,
   type TraceTable,
 } from "../schema.js";
+
+export { traceScopeSql } from "../control.js";
 
 /** Who may read a canonical view: every reader, vector readers only, or no one (it backs other views). */
 export type TraceViewGrant = "reader" | "vector" | "internal";
@@ -26,16 +24,6 @@ export const traceView = (
   grant: TraceViewGrant = "reader",
 ): TraceViewDefinition => ({ name, sql, grant });
 
-const flagSql = (field: keyof typeof principalFlags) =>
-  `${principalFieldSql(field)}=${sqlString(principalFlags[field][0])}`;
-/** Caller facts read back from the native principal name inside policies and views. */
-export const traceScopeSql = {
-  organization: `unhex(${principalFieldSql("organization")})`,
-  user: `unhex(${principalFieldSql("user")})`,
-  admin: flagSql("authority"),
-  embeddings: flagSql("embeddings"),
-  saas: flagSql("saas"),
-};
 export function latestRowsSql(
   database: string,
   table: TraceTable,
@@ -61,127 +49,227 @@ export function latestRowsSql(
 export const sessionDetailColumns = Object.keys(
   traceViewCatalog.sessions.columns,
 ).filter((name) => name !== "reuse_count");
-export function baseViews(database: string): TraceViewDefinition[] {
-  const headerNames = Object.keys(sessionColumns);
-  const override = new Set([
-    "parent_session_id",
-    "parent_relation",
-    "parent_native_ref",
-    "status",
-    "ended_at",
-    "last_activity_at",
-  ]);
-  const headerSelect = headerNames
-    .filter((name) => !override.has(name))
-    .map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`)
+
+const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
+const headerNames = Object.keys(sessionColumns);
+/**
+ * Header columns control owns, including the spawning call: the parent's evidence can
+ * arrive after the child's last projection, so they are read live, never from the row.
+ */
+const controlOwned = new Set([
+  "parent_session_id",
+  "parent_relation",
+  "parent_native_ref",
+  "status",
+  "ended_at",
+  "last_activity_at",
+]);
+/** Control columns the session relations expose beyond the projection header. */
+const controlExtra = ["parent_tool_use_id", "visibility", "purged_at"];
+/** Header columns the purge skeleton retains; every other column shows its empty value. */
+const retained = new Set([
+  "session_id",
+  "organization_id",
+  "harness",
+  "harness_session_id",
+  "user_id",
+  "ingest_api_key_id",
+  "installation_id",
+  "started_at",
+  "ended_at",
+  "last_activity_at",
+  "status",
+  "parent_session_id",
+  "parent_relation",
+  "parent_native_ref",
+]);
+/** Member and machine metadata columns, in the order `session_live` exposes them. */
+const memberMetadata = {
+  users: {
+    user_email: "coalesce(u.email,'')",
+    user_name: "coalesce(u.name,'')",
+  },
+  installations: { installation_hostname: "coalesce(i.hostname,'')" },
+} as const;
+type SessionMetadata = keyof typeof memberMetadata;
+/** Columns of `session_live` and `session_base`, in order. */
+const baseNames = [
+  ...headerNames,
+  ...controlExtra,
+  ...Object.values(memberMetadata).flatMap((columns) => Object.keys(columns)),
+];
+const columnList = (names: readonly string[], alias: string) =>
+  names
+    .map((name) => `${alias}.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`)
     .join(",");
-  const metadata = (scope: string, attribute: string, key: string) =>
-    `dictGet(${sqlString(database + "." + scope)},${sqlString(attribute)},${key})`;
-  const sessionMetadata = (attribute: string) =>
-    metadata("session_scope", attribute, "(s.organization_id,s.session_id)");
-  const userMetadata = (alias: string, attribute: string) =>
-    metadata(
-      "user_scope",
-      attribute,
-      `(${alias}.organization_id,${alias}.user_id)`,
-    );
-  const installationMetadata = (alias: string) =>
-    metadata(
-      "installation_scope",
-      "hostname",
-      `(${alias}.organization_id,${alias}.installation_id)`,
-    );
-  // Control owns parent links, including the spawning call: the parent's evidence can
-  // arrive after the child's last projection, so it is read live, never from the row.
-  const base = `SELECT ${headerSelect},${sessionMetadata("parent_session_id")} AS parent_session_id,${sessionMetadata("parent_relation")} AS parent_relation,if(${traceScopeSql.admin},${sessionMetadata("parent_native_ref")},NULL) AS parent_native_ref,${sessionMetadata("parent_tool_use_id")} AS parent_tool_use_id,${sessionMetadata("status")} AS status,${sessionMetadata("ended_at")} AS ended_at,${sessionMetadata("last_activity_at")} AS last_activity_at,${sessionMetadata("visibility")} AS visibility,${sessionMetadata("purged_at")} AS purged_at,${userMetadata("s", "email")} AS user_email,${userMetadata("s", "name")} AS user_name,${installationMetadata("s")} AS installation_hostname FROM (${latestRowsSql(database, "sessions")}) s`;
-  const empty = emptyTraceRow("sessions");
-  const retained = new Set([
-    "session_id",
-    "organization_id",
-    "harness",
-    "harness_session_id",
-    "user_id",
-    "ingest_api_key_id",
-    "installation_id",
-    "started_at",
-    "ended_at",
-    "last_activity_at",
-    "status",
-    "parent_session_id",
-    "parent_relation",
-    "parent_native_ref",
-  ]);
-  const skeleton = headerNames
-    .map((name) => {
-      const value = empty[name];
-      const expression = retained.has(name)
-        ? `c.${sqlIdentifier(name)}`
-        : name === "observed_commits" || name === "observed_diff_stat"
-          ? "'null'"
-          : value === null
-            ? "NULL"
-            : Array.isArray(value)
-              ? "[]"
-              : typeof value === "number"
-                ? String(value)
-                : sqlString(typeof value === "string" ? value : "");
-      return `CAST(${expression},${sqlString(sessionColumns[name as keyof typeof sessionColumns])}) AS ${sqlIdentifier(name)}`;
-    })
-    .join(",");
-  const skeletonControl = `SELECT i.organization_id AS organization_id,i.session_id AS session_id,${[
-    ...retained,
-  ]
-    .filter((name) => !["organization_id", "session_id"].includes(name))
-    .concat([
-      "parent_tool_use_id",
-      "visibility",
-      "purged_at",
-      "published_revision",
-    ])
-    .map(
-      (name) =>
-        `${metadata("session_scope", name, "(i.organization_id,i.session_id)")} AS ${sqlIdentifier(name)}`,
-    )
-    .join(",")} FROM ${sqlIdentifier(database)}.session_identities i FINAL`;
-  const skeletonSql = `SELECT ${skeleton},c.parent_tool_use_id AS parent_tool_use_id,c.visibility AS visibility,c.purged_at AS purged_at,${userMetadata("c", "email")} AS user_email,${userMetadata("c", "name")} AS user_name,${installationMetadata("c")} AS installation_hostname FROM (${skeletonControl}) c WHERE c.organization_id=${traceScopeSql.organization} AND ${traceScopeSql.admin} AND c.purged_at IS NOT NULL AND c.published_revision>0`;
-  // The skeleton retains only native IDs; current compact metadata comes from PostgreSQL.
-  const baseNames = [
+
+/**
+ * The caller-visible sessions as one relation: the latest projection row of every live
+ * session joined to its control row, plus (with `skeleton`) the admin-only purge skeleton
+ * of every published, purged session that still has an identity row. Session control is
+ * read once per branch from the PostgreSQL-engine control table, whose row policy admits
+ * only caller-visible sessions, instead of once per row through the dictionary; that same
+ * read counts each session's caller-visible children (`childCount`). Member email/name
+ * and machine hostname are joined once per query from the scope tables the `metadata`
+ * option names. Every branch lists the same columns in `session_live` order.
+ */
+export function sessionRelationSql(
+  database: string,
+  options: {
+    skeleton?: boolean;
+    childCount?: boolean;
+    metadata?: readonly SessionMetadata[];
+  } = {},
+): string {
+  const org = traceScopeSql.organization;
+  const coreNames = [
     ...headerNames,
-    "parent_tool_use_id",
-    "visibility",
-    "purged_at",
-    "user_email",
-    "user_name",
-    "installation_hostname",
+    ...controlExtra,
+    ...(options.childCount ? ["child_count"] : []),
   ];
-  const baseOrder = baseNames.map(sqlIdentifier).join(",");
-  const publicFields = baseNames
-    .filter(
-      (name) =>
-        ![
-          "parent_session_id",
-          "parent_relation",
-          "parent_native_ref",
-          "parent_tool_use_id",
-        ].includes(name),
-    )
-    .map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`)
-    .join(",");
+  // Every control column either branch reads; the skeleton also retains the identity
+  // columns the projection row would otherwise provide.
+  const controlNames = [
+    ...new Set([
+      ...[...headerNames, ...controlExtra].filter(
+        (name) => controlOwned.has(name) || controlExtra.includes(name),
+      ),
+      ...[...retained].filter((name) => name !== "session_id"),
+      "purged",
+    ]),
+  ];
+  // One control read per branch: each session's own row (`self`) carries its metadata and
+  // every row is also credited to its parent, so the same aggregate yields the child count.
+  // A condition inside the read (the admin flag) lets ClickHouse drop the branch outright.
+  const controlRows = (condition: string) =>
+    `SELECT tupleElement(e,1) AS session_id,${controlNames.map((name) => `anyIf(c.${sqlIdentifier(name)},tupleElement(e,2)=1) AS ${sqlIdentifier(name)}`).join(",")},countIf(tupleElement(e,2)=0) AS child_count FROM (SELECT ${["session_id", ...controlNames].map(sqlIdentifier).join(",")} FROM ${controlTableSql(database, "session_scope")} WHERE organization_id=${org}${condition ? ` AND ${condition}` : ""}) c ARRAY JOIN [tuple(c.session_id,1),tuple(coalesce(c.parent_session_id,toUUID(${sqlString(ZERO_UUID)})),0)] AS e GROUP BY tupleElement(e,1) HAVING countIf(tupleElement(e,2)=1)=1`;
+  const liveHeader = (name: string) =>
+    name === "parent_native_ref"
+      ? `if(${traceScopeSql.admin},c.parent_native_ref,NULL)`
+      : controlOwned.has(name)
+        ? `c.${sqlIdentifier(name)}`
+        : `s.${sqlIdentifier(name)}`;
+  const fromControl = (name: string) =>
+    controlExtra.includes(name) || name === "child_count";
+  const live = `SELECT ${coreNames.map((name) => `${fromControl(name) ? `c.${sqlIdentifier(name)}` : liveHeader(name)} AS ${sqlIdentifier(name)}`).join(",")} FROM (${latestRowsSql(database, "sessions")}) s JOIN (${controlRows("")}) c ON c.session_id=s.session_id`;
+  const empty = emptyTraceRow("sessions");
+  const skeletonHeader = (name: string) => {
+    const value = empty[name];
+    const expression = retained.has(name)
+      ? `c.${sqlIdentifier(name)}`
+      : name === "observed_commits" || name === "observed_diff_stat"
+        ? "'null'"
+        : value === null
+          ? "NULL"
+          : Array.isArray(value)
+            ? "[]"
+            : typeof value === "number"
+              ? String(value)
+              : sqlString(typeof value === "string" ? value : "");
+    return `CAST(${expression},${sqlString(sessionColumns[name as keyof typeof sessionColumns])})`;
+  };
+  // The skeleton retains only native identities; every compact field comes from control.
+  const skeleton = `SELECT ${coreNames.map((name) => `${fromControl(name) ? `c.${sqlIdentifier(name)}` : skeletonHeader(name)} AS ${sqlIdentifier(name)}`).join(",")} FROM (${controlRows(traceScopeSql.admin)}) c JOIN (SELECT session_id FROM ${sqlIdentifier(database)}.session_identities FINAL WHERE organization_id=${org}) i ON i.session_id=c.session_id WHERE c.purged=1`;
+  const core = options.skeleton ? `${live} UNION ALL ${skeleton}` : live;
+  return withMemberMetadata(database, core, coreNames, options.metadata ?? []);
+}
+/**
+ * Member email/name and machine hostname for a session relation `core` whose columns are
+ * `names`, joined once per query from the scope tables the `metadata` list names.
+ */
+function withMemberMetadata(
+  database: string,
+  core: string,
+  names: readonly string[],
+  metadata: readonly SessionMetadata[],
+): string {
+  if (!metadata.length) return core;
+  const org = traceScopeSql.organization;
+  const joins = {
+    users: `LEFT ANY JOIN (SELECT id,email,name FROM ${controlTableSql(database, "user_scope")} WHERE organization_id=${org}) u ON u.id=b.user_id`,
+    installations: `LEFT ANY JOIN (SELECT id,hostname FROM ${controlTableSql(database, "installation_scope")} WHERE organization_id=${org}) i ON i.id=b.installation_id`,
+  };
+  const selected = (Object.keys(memberMetadata) as SessionMetadata[])
+    .filter((name) => metadata.includes(name))
+    .flatMap((name) =>
+      Object.entries(memberMetadata[name]).map(
+        ([column, expression]) => `${expression} AS ${sqlIdentifier(column)}`,
+      ),
+    );
+  return `SELECT ${columnList(names, "b")},${selected.join(",")} FROM (${core}) b ${(
+    Object.keys(joins) as SessionMetadata[]
+  )
+    .filter((name) => metadata.includes(name))
+    .map((name) => joins[name])
+    .join(" ")}`;
+}
+/**
+ * The live sessions as their latest projection rows only, for relations that read nothing
+ * control owns (no lifecycle, parent or visibility columns): the row policy already admits
+ * only published, unpurged, caller-visible sessions, so `purged_at` is null by construction
+ * and no control table is joined. Every read of it in one query context shares the policy
+ * scalar with the other guarded tables of that context.
+ */
+export function liveProjectionSql(
+  database: string,
+  metadata: readonly SessionMetadata[] = [],
+): string {
+  const core = `SELECT ${columnList(headerNames, "s")},CAST(NULL,${sqlString(sessionColumns.ended_at)}) AS purged_at FROM (${latestRowsSql(database, "sessions")}) s`;
+  return withMemberMetadata(
+    database,
+    core,
+    [...headerNames, "purged_at"],
+    metadata,
+  );
+}
+/** Every session relation column, including member metadata. */
+const allMetadata: readonly SessionMetadata[] = ["users", "installations"];
+
+/**
+ * `session_details`: the session relation with its caller-visible parent link, parent
+ * title, child and file counts and duration, as one query context. The sessions table is
+ * scanned once for the rows and once, two columns wide, for the titles of visible parents;
+ * a purged parent is present for admins through its identity row, which the same policy
+ * scalar admits; child counts come with the control read of the rows themselves.
+ */
+export function sessionDetailsSql(database: string): string {
+  const org = traceScopeSql.organization;
+  const hidden = new Set([
+    "parent_session_id",
+    "parent_relation",
+    "parent_native_ref",
+    "parent_tool_use_id",
+  ]);
+  const publicFields = columnList(
+    baseNames.filter((name) => !hidden.has(name)),
+    "s",
+  );
+  const titles = latestRowsSql(database, "sessions", {
+    organization_id: sessionColumns.organization_id,
+    session_id: sessionColumns.session_id,
+    title: sessionColumns.title,
+  });
+  const parents = `SELECT session_id,title FROM (${titles}) UNION ALL SELECT session_id,NULL AS title FROM ${sqlIdentifier(database)}.session_identities FINAL WHERE organization_id=${org}`;
+  return `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,if(p.session_id IS NOT NULL,s.parent_tool_use_id,NULL) AS parent_tool_use_id,p.title AS parent_title,s.child_count AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count FROM (${sessionRelationSql(database, { skeleton: true, childCount: true, metadata: allMetadata })}) s LEFT ANY JOIN (${parents}) p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT session_id,count() AS file_count FROM (${latestRowsSql(database, "session_files")}) GROUP BY session_id) f ON f.session_id=s.session_id`;
+}
+
+export function baseViews(database: string): TraceViewDefinition[] {
   return [
-    traceView("session_live", `SELECT ${baseOrder} FROM (${base})`, "internal"),
+    traceView(
+      "session_live",
+      sessionRelationSql(database, { metadata: allMetadata }),
+      "internal",
+    ),
     traceView(
       "session_base",
-      `SELECT ${baseOrder} FROM api_ro.session_live UNION ALL SELECT ${baseOrder} FROM (${skeletonSql})`,
+      sessionRelationSql(database, { skeleton: true, metadata: allMetadata }),
       "internal",
     ),
     traceView(
       "session_state",
-      "SELECT session_id,status,message_count,last_activity_at FROM api_ro.session_base",
+      `SELECT session_id,status,message_count,last_activity_at FROM (${sessionRelationSql(database, { skeleton: true })})`,
     ),
-    traceView(
-      "session_details",
-      `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,if(p.session_id IS NOT NULL,s.parent_tool_use_id,NULL) AS parent_tool_use_id,p.title AS parent_title,coalesce(c.child_count,0) AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count FROM api_ro.session_base s LEFT ANY JOIN api_ro.session_base p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT parent_session_id,count(*) child_count FROM api_ro.session_base WHERE parent_session_id IS NOT NULL GROUP BY parent_session_id)c ON c.parent_session_id=s.session_id LEFT ANY JOIN (SELECT session_id,count(*) file_count FROM (${latestRowsSql(database, "session_files")}) GROUP BY session_id)f ON f.session_id=s.session_id`,
-    ),
+    traceView("session_details", sessionDetailsSql(database)),
     traceView(
       "message_metadata",
       latestRowsSql(
@@ -201,7 +289,7 @@ export function baseViews(database: string): TraceViewDefinition[] {
     ),
     traceView(
       "messages",
-      `SELECT m.*,s.title AS session_title,s.repo_name,s.branch,s.user_email FROM (${latestRowsSql(database, "messages")})m JOIN api_ro.session_live s USING(organization_id,session_id)`,
+      `SELECT m.*,s.title AS session_title,s.repo_name,s.branch,s.user_email FROM (${latestRowsSql(database, "messages")})m JOIN (${liveProjectionSql(database, ["users"])}) s USING(organization_id,session_id)`,
     ),
     traceView(
       "message_chunks",
@@ -225,7 +313,7 @@ export function baseViews(database: string): TraceViewDefinition[] {
     ),
     traceView(
       "installations",
-      `SELECT i.organization_id,i.id AS installation_id,any(i.hostname) AS hostname,any(i.os_user) AS os_user,any(i.platform) AS platform,any(i.arch) AS arch,any(i.hook_sha256) AS hook_sha256,toBool(any(i.tools_enabled)) AS tools_enabled,min(s.started_at) AS first_seen_at,max(s.last_activity_at) AS last_seen_at,count(*) AS session_count FROM ${sqlIdentifier(database)}.control_installations i JOIN api_ro.session_base s ON i.organization_id=s.organization_id AND i.id=s.installation_id GROUP BY i.organization_id,i.id`,
+      `SELECT i.organization_id,i.id AS installation_id,any(i.hostname) AS hostname,any(i.os_user) AS os_user,any(i.platform) AS platform,any(i.arch) AS arch,any(i.hook_sha256) AS hook_sha256,toBool(any(i.tools_enabled)) AS tools_enabled,min(s.started_at) AS first_seen_at,max(s.last_activity_at) AS last_seen_at,count(*) AS session_count FROM ${controlTableSql(database, "installations")} i JOIN api_ro.session_base s ON i.organization_id=s.organization_id AND i.id=s.installation_id GROUP BY i.organization_id,i.id`,
     ),
     traceView(
       "session_tools",

@@ -8,9 +8,11 @@ import {
   identityIdSchema,
   messageKindSchema,
   messageRoleSchema,
+  type MessageKind,
   nonnegativeIntegerSchema,
   nullableTextSchema,
   parentRelationSchema,
+  responseBytes,
   responseFormatSchema,
   sessionIdSchema,
   sessionStatusSchema,
@@ -69,19 +71,83 @@ const rangeSchema = z
         message: "The cursor must be within the requested sequence range.",
       });
   });
-/** The REST query of `GET /sessions/:id`: the range, and `csv` for the whole range as one file. */
-export const getQuerySchema = rangeSchema.safeExtend({
+/**
+ * The byte budget of one `get` page (§7.3): the 32 KB agent default, or up to the 256 KB
+ * REST page cap for a reader that pages a whole transcript, such as the dashboard. Each
+ * message slice within a page is bounded to one eighth of the budget.
+ */
+export const pageBytesSchema = z
+  .number()
+  .int()
+  .min(responseBytes.read)
+  .max(responseBytes.page)
+  .default(responseBytes.read)
+  .describe(
+    `Response budget of one page in bytes, ${String(responseBytes.read)} to ${String(responseBytes.page)}; each message slice is bounded to one eighth of it`,
+  );
+/**
+ * Share of the page one message's `content` may take: a quarter (8 KB at the 32 KB agent
+ * page, 64 KB at the 256 KB dashboard page), so a tool result reads whole far more often
+ * than at the old eighth while a page still holds several messages. Harness housekeeping
+ * records (META: tool listings, skill listings, reminders) get a preview of one
+ * thirty-second (1 KB) when a caller asks for them at all.
+ */
+const sliceShare: Record<"default" | "META", number> = {
+  default: 1 / 4,
+  META: 1 / 32,
+};
+/** The longest `content` slice one page carries for a message of `kind` under `pageBytes`. */
+export const contentSliceBytes = (pageBytes: number, kind?: MessageKind) =>
+  pageBytes * (kind === "META" ? sliceShare.META : sliceShare.default);
+/**
+ * The message kinds a read returns when the caller names none. Agent and JSON readers get
+ * the conversation (META housekeeping records are left out; they were 94% of the bytes an
+ * agent paged through in production); a CSV export is a file, so it carries every kind.
+ */
+export const defaultMessageKinds: Record<
+  z.infer<typeof responseFormatSchema>,
+  readonly MessageKind[]
+> = {
+  json: messageKindSchema.options.filter((kind) => kind !== "META"),
+  csv: messageKindSchema.options,
+};
+export const messageKindsSchema = z
+  .array(messageKindSchema)
+  .min(1)
+  .optional()
+  .describe(
+    "Message kinds to return, in seq order. Left out: META, the harness's housekeeping records (tool listings, skill listings, reminders); list it to read them. Default TEXT, THINKING, TOOL_USE, TOOL_RESULT",
+  );
+/**
+ * Whether a page computes the session header. The header is the expensive part of a read
+ * (§7.3); a reader that already holds it, such as the dashboard on its later pages, passes
+ * false and gets `header: null` with the messages. Visibility is checked either way.
+ */
+export const includeHeaderSchema = z
+  .boolean()
+  .default(true)
+  .describe(
+    "Compute and return the session header; false answers header: null for a reader that already holds it, so a later page costs only its messages",
+  );
+/** What a read selects: the seq range and the message kinds. */
+const selectionSchema = rangeSchema.safeExtend({ kinds: messageKindsSchema });
+/** The REST query of `GET /sessions/:id`: the selection, the page budget, the header switch, and `csv` for the whole range as one file. */
+export const getQuerySchema = selectionSchema.safeExtend({
   format: responseFormatSchema,
+  page_bytes: pageBytesSchema,
+  header: includeHeaderSchema,
 });
-/** The `get` tool input agents see: the range and the session (§8.2). */
-export const getToolInputSchema = rangeSchema.safeExtend({
+/** The `get` tool input agents see: the selection and the session (§8.2). */
+export const getToolInputSchema = selectionSchema.safeExtend({
   session_id: sessionIdSchema.describe(
     "Session to read, from a search result or the sessions view",
   ),
 });
-/** Every `get` call, with the REST response format so the audit records an export. */
+/** Every `get` call, with the REST page budget and response format; the MCP tool advertises neither and keeps the 32 KB default. */
 export const getInputSchema = getToolInputSchema.safeExtend({
   format: responseFormatSchema,
+  page_bytes: pageBytesSchema,
+  header: includeHeaderSchema,
 });
 export const sessionRefSchema = z.strictObject({
   session_id: sessionIdSchema.describe("Related session; pass to get"),
@@ -171,14 +237,18 @@ export const messageSchema = z.strictObject({
   ingest_batch_id: sessionIdSchema
     .nullable()
     .describe(message("ingest_batch_id")),
-  seq: nonnegativeIntegerSchema.describe(message("seq")),
+  seq: nonnegativeIntegerSchema.describe(
+    `${message("seq")}; counts every kind, so a read that leaves META out shows gaps`,
+  ),
   role: messageRoleSchema.describe(message("role")),
   kind: messageKindSchema.describe(message("kind")),
-  content: byteBoundedString(4096).describe(message("content")),
+  content: byteBoundedString(contentSliceBytes(responseBytes.page)).describe(
+    message("content"),
+  ),
   content_cursor: contentCursorSchema
     .nullable()
     .describe(
-      "Set when content continues beyond this page; pass it as cursor to read on",
+      "Set when this message's content is bounded here; to read the rest, call get with from and to set to this seq and cursor set to this value",
     ),
   tool_name: nullableTextSchema.describe(message("tool_name")),
   tool_use_id: nullableTextSchema.describe(message("tool_use_id")),
@@ -202,15 +272,19 @@ export const messageRowSchema = messageSchema
   .omit({ content_cursor: true })
   .extend({ content: z.string().describe(message("content")) });
 export const getOutputSchema = z.strictObject({
-  header: sessionHeaderSchema.describe(
-    "Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions",
-  ),
+  header: sessionHeaderSchema
+    .nullable()
+    .describe(
+      "Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions; null when the REST caller asked for messages only (header=false)",
+    ),
   messages: z
     .array(messageSchema)
     .describe("Messages in seq order within the requested range"),
   next: contentCursorSchema
     .nullable()
-    .describe("Cursor for the following page; null when the range is complete"),
+    .describe(
+      "Cursor for the following page: the next message, or the rest of the last message when the range ends inside it; null when the range is complete",
+    ),
 });
 export type ContentCursor = z.infer<typeof contentCursorSchema>;
 export type GetOutput = z.infer<typeof getOutputSchema>;

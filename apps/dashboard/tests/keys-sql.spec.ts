@@ -15,6 +15,7 @@ import {
   closeNavigation,
   collectErrors,
   confirm,
+  expectNoHorizontalOverflow,
   fixture,
   openNavigation,
   settled,
@@ -154,6 +155,8 @@ test("a key is created, shown once with its install command, copied again later,
   await expect(row).toContainText(keys.list.active);
   await expect(row).toContainText(keys.permissions.ingest);
   await expect(row).toContainText(keys.permissions.read);
+  // @req R-DASH-21: the key table, its badges and its actions fit without sideways scrolling.
+  await expectNoHorizontalOverflow(page);
 
   // @req R-AUTH-05: the owner copies the same key again later instead of minting another.
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);

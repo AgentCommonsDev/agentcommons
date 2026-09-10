@@ -36,6 +36,7 @@ import {
   type AuthConfiguration,
   type NativeAuth,
 } from "../auth/config.js";
+import { authenticationFailure } from "../auth/failure.js";
 import {
   cookieCaller,
   identityFromHeaders,
@@ -255,14 +256,8 @@ export class AuthService {
         this.config,
       );
     } catch (error) {
-      const failure =
-        error instanceof ServiceError
-          ? error
-          : new ServiceError(
-              401,
-              "INVALID_AUTHENTICATION",
-              "Sign in or provide a valid organization API key.",
-            );
+      // A rejection only when the lookup completed; anything else is 503 AUTH_UNAVAILABLE (§9.2).
+      const failure = authenticationFailure(error);
       await this.audit.write(
         { ...context, caller: null },
         {

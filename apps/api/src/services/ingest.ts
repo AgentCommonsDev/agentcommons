@@ -7,6 +7,7 @@ import { v7 as uuidv7 } from "uuid";
 import {
   type Prisma,
   hasAdminAuthority,
+  lockTraceAccept,
   lockTracePublication,
   type PrismaClient,
   type TraceSessionControl,
@@ -48,6 +49,25 @@ import {
   type TraceQueue,
 } from "./trace-outbox.js";
 
+/**
+ * A batch's publication as the response reports it: everything the session accepted up
+ * to the receipt's revision is readable. Empty receipts observe the accepted revision of
+ * their moment rather than creating one, so the same rule answers their replays.
+ */
+function publicationOf(
+  receipt: { revision: bigint },
+  session: { publishedRevision: bigint },
+): IngestOutput["publication"] {
+  return session.publishedRevision >= receipt.revision ? "published" : "queued";
+}
+/** Normalizer contexts compare by their schema-ordered wire form. */
+function sameNormalizerContext(left: unknown, right: unknown): boolean {
+  return (
+    JSON.stringify(normalizerContextSchema.parse(left)) ===
+    JSON.stringify(normalizerContextSchema.parse(right))
+  );
+}
+
 export class IngestService {
   constructor(
     private readonly dependencies: {
@@ -72,7 +92,10 @@ export class IngestService {
             "INGEST_KEY_REQUIRED",
             "Use an organization API key to upload sessions.",
           );
-        await lockOrganization(tx, caller);
+        const apiKeyId = caller.apiKeyId;
+        // Phase one, no organization-wide lock: redaction, parsing, deduplication and
+        // shape validation are the CPU-bound part of an accept and read only rows this
+        // session owns. The per-session accept lock makes those reads exact.
         const redactor = await createPolicyCache(tx).get(caller.organizationId);
         const counts = new Map<string, RedactionCount>();
         function count(matches: RedactionCount[]) {
@@ -167,14 +190,24 @@ export class IngestService {
           }
         }
         const nativeIdentity = projectionIdentity(nativeId);
-        let session = await tx.traceSessionControl.findUnique({
-          where: {
-            organizationId_harness_nativeIdentity: {
-              organizationId: caller.organizationId,
-              harness: request.harness,
-              nativeIdentity,
-            },
+        // One accept per native session at a time: a retried or taken-over batch waits
+        // here and then replays its receipt, while other sessions of the organization
+        // proceed concurrently.
+        await lockTraceAccept(
+          tx,
+          caller.organizationId,
+          request.harness,
+          nativeIdentity,
+        );
+        const sessionWhere = {
+          organizationId_harness_nativeIdentity: {
+            organizationId: caller.organizationId,
+            harness: request.harness,
+            nativeIdentity,
           },
+        };
+        let session = await tx.traceSessionControl.findUnique({
+          where: sessionWhere,
         });
         if (session?.purgedAt)
           throw new ServiceError(
@@ -213,7 +246,7 @@ export class IngestService {
             );
           return {
             result: ingestOutputSchema.parse({
-              publication: prior.publishedAt ? "published" : "queued",
+              publication: publicationOf(prior, session),
               sessionId: session.id,
               accepted: prior.acceptedCount,
               duplicates: prior.duplicateCount,
@@ -223,43 +256,6 @@ export class IngestService {
             detail: { batch_id: prior.id, replay: true },
           };
         }
-        const installation = safe.context.installation;
-        await tx.installation.upsert({
-          where: {
-            organizationId_id: {
-              organizationId: caller.organizationId,
-              id: request.installationId,
-            },
-          },
-          create: {
-            organizationId: caller.organizationId,
-            id: request.installationId,
-            ...installation,
-            hookSha256: request.hook.sha256,
-            firstSeenAt: receivedAt,
-            lastSeenAt: receivedAt,
-          },
-          update: {
-            ...installation,
-            hookSha256: request.hook.sha256,
-            lastSeenAt: receivedAt,
-          },
-        });
-        if (!session)
-          session = await tx.traceSessionControl.create({
-            data: {
-              id: uuidv7(),
-              organizationId: caller.organizationId,
-              harness: request.harness,
-              nativeIdentity,
-              harnessSessionId: nativeId,
-              userId: caller.userId,
-              ingestApiKeyId: caller.apiKeyId,
-              installationId: request.installationId,
-              startedAt: receivedAt,
-              lastActivityAt: receivedAt,
-            },
-          });
         // Every later form of a record (masked, redacted, sanitized) keeps its id, so
         // the admission identity is computed once per record.
         const identities = new Map<string, string>();
@@ -275,14 +271,16 @@ export class IngestService {
           }
           return value;
         };
-        const priorSources = await tx.traceSourceAdmission.findMany({
-          where: {
-            organizationId: caller.organizationId,
-            sessionId: session.id,
-            sourceIdentity: { in: parsed.map(sourceIdentity) },
-          },
-          select: { sourceIdentity: true },
-        });
+        const priorSources = session
+          ? await tx.traceSourceAdmission.findMany({
+              where: {
+                organizationId: caller.organizationId,
+                sessionId: session.id,
+                sourceIdentity: { in: parsed.map(sourceIdentity) },
+              },
+              select: { sourceIdentity: true },
+            })
+          : [];
         const seen = new Set(priorSources.map((row) => row.sourceIdentity));
         const accepted = parsed.filter((record) => {
           const key = sourceIdentity(record);
@@ -305,13 +303,15 @@ export class IngestService {
           const uses = adapter.toolUses(accepted);
           for (const call of uses)
             if (call.toolUseId) hashes.add(identityDigest(call.toolUseId));
-          const previousCalls = await tx.traceToolCallControl.findMany({
-            where: {
-              organizationId: caller.organizationId,
-              sessionId: session.id,
-              idHash: { in: [...hashes] },
-            },
-          });
+          const previousCalls = session
+            ? await tx.traceToolCallControl.findMany({
+                where: {
+                  organizationId: caller.organizationId,
+                  sessionId: session.id,
+                  idHash: { in: [...hashes] },
+                },
+              })
+            : [];
           masked = maskToolResults(adapter, accepted, previousCalls, uses);
           // Validate known record shapes before committing a durable receipt. A missing
           // tree leaf is a projection dependency and is retained for the next upload.
@@ -343,23 +343,243 @@ export class IngestService {
           count(redacted.counts);
           sanitized.push(sanitizeSourceRecord(redacted.value));
         }
+        // Spawn evidence is read before redaction so the child reference canonicalizes
+        // exactly as the child's own upload does, and the call id digests to the value
+        // the parent's projected `TOOL_USE` message carries (ADR 0052).
+        const spawns: SpawnClaim[] = [];
+        for (const spawn of adapter.spawns(accepted))
+          spawns.push({
+            childNativeIdentity: projectionIdentity(
+              await identity(spawn.childNativeRef),
+            ),
+            toolUseId: projectionIdentity(spawn.toolUseId),
+          });
+        // The outbox rows' wire form is the bulk of the payload; it is built before any
+        // organization-wide lock so the fenced write tail only assembles the envelope.
+        const outboxRecords = sanitized.map(outboxRecord);
         const position = BigInt(request.sourcePos);
         const sentAt = new Date(request.sentAt);
+        const byteCount = incoming.reduce(
+          (sum, record) => sum + Buffer.byteLength(record.line),
+          0,
+        );
+        const redactionCount = [...counts.values()].reduce(
+          (sum, item) => sum + item.count,
+          0,
+        );
+        const sessionId = (): string => {
+          if (!session) throw new Error("The session row is not established.");
+          return session.id;
+        };
+        const receipt = (revision: bigint, lifecycleApplied: boolean) =>
+          tx.traceReceipt.create({
+            data: {
+              id: request.batchId,
+              organizationId: caller.organizationId,
+              sessionId: sessionId(),
+              installationId: request.installationId,
+              apiKeyId,
+              userId: caller.userId,
+              revision,
+              sourcePos: position,
+              sentAt,
+              receivedAt,
+              behavior: request.behavior,
+              nativeEvent: safe.nativeEvent,
+              startResume: request.start?.resume ?? false,
+              lifecycleApplied,
+              acceptedCount: sanitized.length,
+              duplicateCount: incoming.length - sanitized.length,
+              recordCount: incoming.length,
+              byteCount,
+              redactionCount,
+              durationMs: Math.max(0, Date.now() - context.startedAt),
+              cursor: sha256Hex(cursor),
+            },
+          });
+        const installation = safe.context.installation;
+        const upsertInstallation = () =>
+          tx.installation.upsert({
+            where: {
+              organizationId_id: {
+                organizationId: caller.organizationId,
+                id: request.installationId,
+              },
+            },
+            create: {
+              organizationId: caller.organizationId,
+              id: request.installationId,
+              ...installation,
+              hookSha256: request.hook.sha256,
+              firstSeenAt: receivedAt,
+              lastSeenAt: receivedAt,
+            },
+            update: {
+              ...installation,
+              hookSha256: request.hook.sha256,
+              lastSeenAt: receivedAt,
+            },
+          });
+        const detail = (publication: IngestOutput["publication"]) => ({
+          batch_id: request.batchId,
+          accepted: sanitized.length,
+          duplicates: incoming.length - sanitized.length,
+          redactions: redactionCount,
+          publication,
+        });
+        // Phase two, locks in the organization's order (§5.2): the organization row
+        // (membership and key recheck, free-plan admission count, policy counters), then
+        // the publication fence, then session rows. The fence is held only across the
+        // writes a reader must not observe half-done.
+        const reread = () =>
+          tx.traceSessionControl.findUniqueOrThrow({
+            where: {
+              organizationId_id: {
+                organizationId: caller.organizationId,
+                id: sessionId(),
+              },
+            },
+          });
+        const purged = (current: TraceSessionControl) => {
+          if (current.purgedAt)
+            throw new ServiceError(
+              409,
+              "SESSION_PURGED",
+              "This session was purged and cannot accept more records.",
+            );
+          return current;
+        };
+        const newerObservation = (current: TraceSessionControl) =>
+          current.contextPos === null ||
+          position > current.contextPos ||
+          (position === current.contextPos &&
+            (!current.contextAt || sentAt > current.contextAt));
+        const mergedContext = (current: TraceSessionControl) =>
+          normalizerContextSchema.parse({
+            ...normalizerContextSchema.parse(current.normalizerContext),
+            ...(newerObservation(current) ? normalizerContext.value : {}),
+          });
+        const hint = safe.context.parentHint;
+        const parentUnchanged = (current: TraceSessionControl) =>
+          !hint ||
+          (current.parentNativeRef !== null &&
+            projectionIdentity(current.parentNativeRef) ===
+              projectionIdentity(hint.harnessSessionId) &&
+            current.parentRelation === hint.relation);
+        const emptySync =
+          session !== null &&
+          request.behavior === "sync" &&
+          sanitized.length === 0;
+        // Per-policy counters reference policy rows, which only the organization lock keeps
+        // from disappearing underneath them (§5.3); an empty sync without hits writes none
+        // and is accepted on the request's own authentication (§9.1).
+        let organizationLocked = false;
+        const lockOrganizationOnce = async () => {
+          if (organizationLocked) return;
+          await lockOrganization(tx, caller);
+          organizationLocked = true;
+        };
+        if (!emptySync || counts.size) await lockOrganizationOnce();
+        if (session && emptySync) {
+          session = purged(await reread());
+          // A sync batch that accepted nothing and changes neither lifecycle, context nor
+          // parent link creates no revision: it records its receipt and activity without
+          // the fence, and the receipt reaches ClickHouse with the next publish (§5.2).
+          if (
+            sameNormalizerContext(
+              mergedContext(session),
+              session.normalizerContext,
+            ) &&
+            parentUnchanged(session)
+          ) {
+            // The row lock is the purge check: a purge committed since the read leaves
+            // nothing to update.
+            const active = await tx.traceSessionControl.updateMany({
+              where: {
+                organizationId: caller.organizationId,
+                id: session.id,
+                purgedAt: null,
+              },
+              data: {
+                lastActivityAt: receivedAt,
+                ...(newerObservation(session)
+                  ? { contextPos: position, contextAt: sentAt }
+                  : {}),
+              },
+            });
+            if (active.count === 0)
+              throw new ServiceError(
+                409,
+                "SESSION_PURGED",
+                "This session was purged and cannot accept more records.",
+              );
+            await upsertInstallation();
+            const created = await receipt(session.acceptedRevision, false);
+            // The worker appends the receipt to ClickHouse at the current published revision
+            // (a receipt-only publication), so receipt-derived analytics see its lifecycle
+            // decision as promptly as any other batch's.
+            await this.dependencies.traces.enqueue(tx, {
+              organizationId: caller.organizationId,
+              sessionId: session.id,
+              outboxId: created.id,
+            });
+            await persistRedactionCounts(
+              tx,
+              caller.organizationId,
+              request.batchId,
+              session.id,
+              [...counts.values()],
+            );
+            const publication = publicationOf(created, session);
+            return {
+              result: ingestOutputSchema.parse({
+                publication,
+                sessionId: session.id,
+                accepted: 0,
+                duplicates: incoming.length,
+                cursor,
+              }),
+              resourceIds: [session.id],
+              detail: {
+                ...detail(publication),
+                parent_conflicts: [],
+                owner_override: session.userId !== caller.userId,
+              },
+            };
+          }
+        }
+        // The full path always holds the organization row before the fence (§5.2 order).
+        await lockOrganizationOnce();
+        await lockTracePublication(tx, caller.organizationId, "write");
+        // The installation row precedes the control row that references it. The control
+        // row is read again under the fence: a publication committed since the first read
+        // may have rewritten its context, and a purge its tombstone.
+        await upsertInstallation();
+        const created = session === null;
+        if (session) session = purged(await reread());
+        else
+          session = await tx.traceSessionControl.create({
+            data: {
+              id: uuidv7(),
+              organizationId: caller.organizationId,
+              harness: request.harness,
+              nativeIdentity,
+              harnessSessionId: nativeId,
+              userId: caller.userId,
+              ingestApiKeyId: apiKeyId,
+              installationId: request.installationId,
+              startedAt: receivedAt,
+              lastActivityAt: receivedAt,
+            },
+          });
         const newerLifecycle =
           request.behavior !== "sync" &&
           (session.lifecyclePos === null ||
             position > session.lifecyclePos ||
             (position === session.lifecyclePos &&
               (!session.lifecycleAt || sentAt > session.lifecycleAt)));
-        const newerObservation =
-          session.contextPos === null ||
-          position > session.contextPos ||
-          (position === session.contextPos &&
-            (!session.contextAt || sentAt > session.contextAt));
-        const contextData = normalizerContextSchema.parse({
-          ...normalizerContextSchema.parse(session.normalizerContext),
-          ...(newerObservation ? normalizerContext.value : {}),
-        });
+        const contextObserved = newerObservation(session);
+        const contextData = mergedContext(session);
         const revision = session.acceptedRevision + 1n;
         session = await tx.traceSessionControl.update({
           where: {
@@ -373,7 +593,7 @@ export class IngestService {
             projectionState: "queued",
             normalizerContext: contextData,
             lastActivityAt: receivedAt,
-            ...(newerObservation
+            ...(contextObserved
               ? { contextPos: position, contextAt: sentAt }
               : {}),
             ...(newerLifecycle
@@ -397,7 +617,7 @@ export class IngestService {
           await tx.traceSourceAdmission.createMany({
             data: sanitized.map((record) => ({
               organizationId: caller.organizationId,
-              sessionId: session.id,
+              sessionId: sessionId(),
               sourceIdentity: sourceIdentity(record),
               rawRecordId: record.id,
               pos: record.pos,
@@ -419,7 +639,7 @@ export class IngestService {
           await tx.traceToolCallControl.createMany({
             data: [...toolCalls].map(([idHash, sensitive]) => ({
               organizationId: caller.organizationId,
-              sessionId: session.id,
+              sessionId: sessionId(),
               idHash,
               sensitive,
             })),
@@ -438,58 +658,15 @@ export class IngestService {
               data: { sensitive: true },
             });
         }
-        // Spawn evidence is read before redaction so the child reference canonicalizes
-        // exactly as the child's own upload does, and the call id digests to the value
-        // the parent's projected `TOOL_USE` message carries (ADR 0052).
-        const spawns: SpawnClaim[] = [];
-        for (const spawn of adapter.spawns(accepted))
-          spawns.push({
-            childNativeIdentity: projectionIdentity(
-              await identity(spawn.childNativeRef),
-            ),
-            toolUseId: projectionIdentity(spawn.toolUseId),
-          });
-        await lockTracePublication(tx, caller.organizationId, "write");
         const conflicts = await this.link(
           tx,
           session,
+          created,
           sanitized,
-          safe.context.parentHint,
+          hint,
           spawns,
         );
-        const byteCount = incoming.reduce(
-          (sum, record) => sum + Buffer.byteLength(record.line),
-          0,
-        );
-        const redactionCount = [...counts.values()].reduce(
-          (sum, item) => sum + item.count,
-          0,
-        );
-        await tx.traceReceipt.create({
-          data: {
-            id: request.batchId,
-            organizationId: caller.organizationId,
-            sessionId: session.id,
-            installationId: request.installationId,
-            apiKeyId: caller.apiKeyId,
-            userId: caller.userId,
-            revision,
-            sourcePos: position,
-            sentAt,
-            receivedAt,
-            behavior: request.behavior,
-            nativeEvent: safe.nativeEvent,
-            startResume: request.start?.resume ?? false,
-            lifecycleApplied: newerLifecycle,
-            acceptedCount: sanitized.length,
-            duplicateCount: incoming.length - sanitized.length,
-            recordCount: incoming.length,
-            byteCount,
-            redactionCount,
-            durationMs: Math.max(0, Date.now() - context.startedAt),
-            cursor: sha256Hex(cursor),
-          },
-        });
+        await receipt(revision, newerLifecycle);
         const outbox = await tx.traceOutbox.create({
           data: {
             id: uuidv7(),
@@ -499,10 +676,10 @@ export class IngestService {
             kind: "ingest",
             payload: traceOutboxPayloadSchema.parse({
               envelope: safe,
-              records: sanitized.map(outboxRecord),
+              records: outboxRecords,
               normalizerContext: contextData,
               lifecycleApplied: newerLifecycle,
-              contextApplied: newerObservation,
+              contextApplied: contextObserved,
             }),
           },
         });
@@ -528,11 +705,7 @@ export class IngestService {
           }),
           resourceIds: [session.id],
           detail: {
-            batch_id: request.batchId,
-            accepted: sanitized.length,
-            duplicates: incoming.length - sanitized.length,
-            redactions: redactionCount,
-            publication: "queued",
+            ...detail("queued"),
             parent_conflicts: conflicts,
             owner_override: session.userId !== caller.userId,
           },
@@ -543,6 +716,7 @@ export class IngestService {
   private async link(
     tx: Prisma.TransactionClient,
     session: TraceSessionControl,
+    created: boolean,
     records: readonly SourceRecord[],
     hint: Parameters<typeof resolveLink>[1],
     spawns: readonly SpawnClaim[],
@@ -551,6 +725,10 @@ export class IngestService {
       NORMALIZERS[session.harness].links(records),
       hint,
     );
+    // Waiting children are adopted by a session's first batch; later children link
+    // themselves to the existing row. Without a link or a spawn claim, a later batch has
+    // no graph work, and skipping it keeps three statements out of the fenced write tail.
+    if (!created && !link && !spawns.length) return conflicts;
     if (link) {
       if (
         session.parentNativeRef &&

@@ -174,13 +174,25 @@ function TableTileBody({
     )
     .map((column) => {
       const type = result.columns[column.index]?.type ?? "";
-      return { ...column, kind: columnKind(type) };
+      return {
+        ...column,
+        kind: columnKind(type),
+        // The session_id column carries the title as a link, so it is headed "Session".
+        label:
+          column.name === "session_id" && titleIndex >= 0
+            ? fieldLabel("session")
+            : fieldLabel(column.name),
+      };
     });
+  // Numbers and dates take a fixed width; text columns split the rest and truncate with
+  // the full value in a tooltip. Phones and tiles under 320 px stack each row into
+  // labeled records (the container query in app.css keys on this `tile` container).
   return (
     <Table
+      layout="scroll-y"
       containerLabel={tile.title}
-      containerClassName="app-scroll h-full overflow-auto rounded-md focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
-      className="text-[13px] [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-surface"
+      containerClassName="app-scroll @container/tile h-full overflow-auto rounded-md focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+      className="stacked-table text-[13px] [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-surface"
     >
       <TableHeader>
         <TableRow className="hover:bg-transparent">
@@ -188,14 +200,13 @@ function TableTileBody({
             <TableHead
               key={column.name}
               className={cn(
-                "h-8 first:pl-0 last:pr-0",
-                column.kind === "number" && "text-right",
+                "h-8 px-2 first:pl-0 last:pr-0",
+                column.kind === "number" && "w-18 text-right",
+                column.kind === "date" && "w-24",
+                column.kind === "datetime" && "w-40",
               )}
             >
-              {/* The session_id column carries the title as a link, so it is headed "Session". */}
-              {column.name === "session_id" && titleIndex >= 0
-                ? fieldLabel("session")
-                : fieldLabel(column.name)}
+              {column.label}
             </TableHead>
           ))}
         </TableRow>
@@ -214,7 +225,8 @@ function TableTileBody({
                 return (
                   <TableCell
                     key={column.name}
-                    className="max-w-64 py-1.5 first:pl-0 last:pr-0"
+                    data-label={column.label}
+                    className="px-2 py-1.5 first:pl-0 last:pr-0"
                   >
                     <a
                       href={paths.session(value)}
@@ -226,16 +238,19 @@ function TableTileBody({
                   </TableCell>
                 );
               }
+              const text = cellText(column.name, value, column.kind);
               return (
                 <TableCell
                   key={column.name}
+                  data-label={column.label}
                   className={cn(
-                    "max-w-64 truncate py-1.5 first:pl-0 last:pr-0",
+                    "px-2 py-1.5 first:pl-0 last:pr-0",
                     column.kind === "number" && "text-right tabular-nums",
-                    column.kind !== "text" && "whitespace-nowrap",
                   )}
                 >
-                  {cellText(column.name, value, column.kind)}
+                  <span className="block truncate" title={text}>
+                    {text}
+                  </span>
                 </TableCell>
               );
             })}

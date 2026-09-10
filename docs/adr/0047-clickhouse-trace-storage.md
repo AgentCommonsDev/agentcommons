@@ -62,6 +62,13 @@ therefore filter underlying revision rows using a PostgreSQL-backed direct dicti
 of current organization, visibility, purge and publication state. The direct layout
 does not cache authorization. The original authenticated reader principal remains
 available to policies inside a DEFINER view. Missing control state fails closed.
+ADR 0062 replaced the per-row `dictGet` inside those policies with one control read per
+query (set membership / `transform` lookup over the same PostgreSQL control state) after
+it dominated every read; the fences and freshness are unchanged. The same pass moved the
+views' per-row metadata lookups (session control, member email and name, machine
+hostname) to one join per query of the caller-visible control rows, read through the
+control tables' own row policies, and made each public view one query context that scans
+every base table once (ADR 0062, "Applied to the views").
 A shared PostgreSQL organization publication lock covers the entire bounded reader
 callback; publication and visibility mutations take its exclusive counterpart. Any
 compact graph query uses that same PostgreSQL transaction, avoiding another connection
@@ -237,7 +244,9 @@ full scans of a direct dictionary reproduced the same cycle.
 A native materialized view now retains only `(organization_id, session_id)` when a
 canonical session projection is inserted. The identity relation contains no text
 or authority snapshot and survives physical corpus purge. The skeleton resolves
-all compact fields through the existing uncached PostgreSQL session dictionary.
+all compact fields through the uncached PostgreSQL session control (originally the
+direct dictionary per row; since ADR 0062's view pass, one join of the caller-visible
+`control_session_scope` rows per query).
 A native row policy restricts identity rows to the current organization's admin,
 with a currently published and purged control row, before caller predicates run.
 Missing controls or an unavailable source fail closed. No worker write path or

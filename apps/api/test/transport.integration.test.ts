@@ -5,7 +5,7 @@ import {
 import { traceServices } from "./trace-services.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import { OrganizationEmbeddingsService } from "../src/services/organization-embeddings.js";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { gzipSync } from "node:zlib";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -452,6 +452,62 @@ it("audits authentication failures with trusted proxy identity and excludes heal
   expect(await database.prisma.auditEvent.count()).toBe(failuresBefore + 2);
 });
 
+// @req R-AUTH-06 @req R-AUD-02
+it("answers a valid key with 503 AUTH_UNAVAILABLE and Retry-After when verification fails, on REST and MCP alike", async () => {
+  const failuresBefore = await database.prisma.auditEvent.count({
+    where: { action: "auth.failure" },
+  });
+  const verify = vi
+    .spyOn(services.auth.native.api, "verifyApiKey")
+    .mockRejectedValue(new Error("canceling statement due to lock timeout"));
+  try {
+    const rest = await app.inject({ url: "/api/v1/me", headers: headers() });
+    expect(rest.statusCode).toBe(503);
+    expect(rest.headers["retry-after"]).toBe("5");
+    expect(rest.json()).toMatchObject({
+      code: "AUTH_UNAVAILABLE",
+      detail: { retry_after: 5 },
+    });
+    const ingest = await app.inject({
+      method: "POST",
+      url: "/api/v1/ingest",
+      headers: { ...headers(), "content-type": "application/json" },
+      payload: upload("Held back by an overloaded server"),
+    });
+    expect(ingest.statusCode).toBe(503);
+    expect(ingest.json()).toMatchObject({ code: "AUTH_UNAVAILABLE" });
+    const mcp = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        ...headers(),
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+    });
+    expect(mcp.statusCode).toBe(503);
+    expect(mcp.json()).toMatchObject({ code: "AUTH_UNAVAILABLE" });
+  } finally {
+    verify.mockRestore();
+  }
+  const failures = await database.prisma.auditEvent.findMany({
+    where: { action: "auth.failure" },
+    orderBy: { ts: "asc" },
+    skip: failuresBefore,
+  });
+  expect(failures.map((row) => row.statusCode)).toEqual([503, 503, 503]);
+  expect(failures[0]?.detail).toMatchObject({ code: "AUTH_UNAVAILABLE" });
+  // The cause reaches the request log with the request id and no body or key.
+  const logged = logs.filter((line) => line.includes("AUTH_UNAVAILABLE"));
+  expect(logged.length).toBeGreaterThanOrEqual(3);
+  expect(logged[0]).toContain("lock timeout");
+  expect(logged.join("")).not.toContain(organization.key);
+  // The same key is accepted as soon as the lookup completes again.
+  const recovered = await app.inject({ url: "/api/v1/me", headers: headers() });
+  expect(recovered.statusCode).toBe(200);
+});
+
 it("streams initial and changed session snapshots, audits once, and closes after key revocation", async () => {
   const minted = await database.auth.createKey(organization.owner, {
     name: "live events",
@@ -615,6 +671,7 @@ it("enforces private visibility through REST, SQL, MCP and the uploader's read-o
 // @req R-MCP-04
 // @req R-MCP-05
 // @req R-MCP-09
+// @req R-DASH-39
 it("uses the official stateless MCP client with permission-filtered tools, structured results and immediate demotion", async () => {
   const client = await mcpClient(address, readKey, {
     name: "transport-test",
@@ -704,6 +761,32 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
     get: getResult.structuredContent,
     sql: sqlResult.structuredContent,
   });
+  // The REST page budget and header switch are not part of the advertised tool contract
+  // (R-DASH-39): the MCP tool keeps 32 KB pages with the header however a caller asks,
+  // while REST bounds the budget and answers messages only on request.
+  for (const extra of [{ page_bytes: 262144 }, { header: false }]) {
+    const rejected = await client.callTool({
+      name: "get",
+      arguments: { session_id: publicId, ...extra },
+    });
+    expect(rejected.isError).toBe(true);
+  }
+  for (const [query, status, header] of [
+    ["page_bytes=262144", 200, true],
+    ["page_bytes=1", 400, null],
+    ["header=false", 200, false],
+  ] as const) {
+    const response = await app.inject({
+      url: `/api/v1/sessions/${publicId}?${query}`,
+      headers: headers(readKey),
+    });
+    expect(response.statusCode, response.body).toBe(status);
+    if (header !== null)
+      expect(
+        getOutputSchema.parse(response.json()).header !== null,
+        query,
+      ).toBe(header);
+  }
   await database.prisma.member.updateMany({
     where: {
       organizationId: organization.context.caller?.organizationId ?? "",

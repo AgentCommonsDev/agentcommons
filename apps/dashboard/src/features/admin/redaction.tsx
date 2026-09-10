@@ -425,7 +425,8 @@ function PolicyForm({
           variant="ghost"
           size="sm"
           aria-expanded={advanced}
-          className="self-start px-2 text-muted"
+          // The label is a sentence; on a 320 px phone it wraps rather than widening the dialog.
+          className="h-auto max-w-full self-start px-2 py-1.5 text-left whitespace-normal text-muted"
           onClick={() => {
             patch({ kind: advanced ? "REGEX" : "SECRETLINT_RULE" });
           }}

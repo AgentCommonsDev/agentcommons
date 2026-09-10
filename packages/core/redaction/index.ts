@@ -1,7 +1,7 @@
 import { lintSource } from "@secretlint/core";
 import { secretLintProfiler } from "@secretlint/profiler";
 import { z } from "zod";
-import { composePolicies } from "./policy.js";
+import { composePolicies, policyFingerprint } from "./policy.js";
 import type { RedactionPolicy } from "./policy.js";
 import { pattern, preinstalledRules } from "./rules.js";
 import type { JsonValue } from "../schemas/common.js";
@@ -31,12 +31,20 @@ const reportDataSchema = z.looseObject({ PATTERN_NAME: z.string().optional() });
 // disables that overhead for this long-running server without altering scanners.
 secretLintProfiler.setEnabled(false);
 
+// Redacting one string is a pure function of the policy set, and transcripts repeat the
+// same JSON keys and protocol values (`type`, `userType=external`, versions, branches) on
+// every record: 56 % of the scans in a 24-record Claude Code batch repeat an earlier one.
+// Each engine keeps a bounded memo of scan results; long values are scanned every time.
+const TEXT_MEMO_LIMIT = 8192;
+const TEXT_MEMO_MAX_LENGTH = 1024;
+
 export class Redactor {
   private readonly policies: Map<string, RedactionPolicy>;
   private readonly rulePolicies = new Map<string, RedactionPolicy>();
   private readonly config: Config;
   private readonly valuePatterns: Config;
   private readonly replacements: readonly string[];
+  private readonly memo = new Map<string, RedactionResult<string>>();
 
   constructor(rows: readonly RedactionPolicy[] = []) {
     const policies = composePolicies(rows);
@@ -85,6 +93,30 @@ export class Redactor {
   }
 
   async text(value: string, prefix = ""): Promise<RedactionResult<string>> {
+    // No pattern may match empty text (policies reject such patterns), and a scanner hit
+    // inside the prefix alone falls outside the value, so nothing can be replaced.
+    if (value === "") return { value: "", counts: [] };
+    const key =
+      value.length <= TEXT_MEMO_MAX_LENGTH
+        ? `${String(prefix.length)}:${prefix}${value}`
+        : null;
+    const cached = key === null ? undefined : this.memo.get(key);
+    if (cached) return copyResult(cached);
+    const result = await this.scan(value, prefix);
+    if (key !== null) {
+      if (this.memo.size >= TEXT_MEMO_LIMIT) {
+        const oldest = this.memo.keys().next().value;
+        if (oldest !== undefined) this.memo.delete(oldest);
+      }
+      this.memo.set(key, copyResult(result));
+    }
+    return result;
+  }
+
+  private async scan(
+    value: string,
+    prefix: string,
+  ): Promise<RedactionResult<string>> {
     const sources = [
       { prefix, config: this.config },
       ...(prefix && this.valuePatterns.rules.length
@@ -236,6 +268,47 @@ export class Redactor {
   }
 }
 
+/** Counts are returned as fresh objects so a caller aggregating them never edits the memo. */
+function copyResult(result: RedactionResult<string>): RedactionResult<string> {
+  return {
+    value: result.value,
+    counts: result.counts.map((count) => ({ ...count })),
+  };
+}
+
+/**
+ * Compiled engines shared by every policy cache in the process, keyed by organization and
+ * the fingerprint of its composed policies (§5.3). A transaction still loads its own policy
+ * rows and so always redacts with the rules it can see; only the compiled secretlint
+ * configuration and its scan memo are reused, and a changed row fingerprint compiles anew.
+ * Least recently used engines leave first once the bound is reached.
+ */
+export class CompiledRedactors {
+  private readonly entries = new Map<string, Redactor>();
+  constructor(private readonly limit = 128) {}
+  get(organizationId: string, policies: readonly RedactionPolicy[]): Redactor {
+    const key = `${organizationId}:${policyFingerprint(policies)}`;
+    const existing = this.entries.get(key);
+    if (existing) {
+      this.entries.delete(key);
+      this.entries.set(key, existing);
+      return existing;
+    }
+    const redactor = new Redactor(policies);
+    if (this.entries.size >= this.limit) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+    this.entries.set(key, redactor);
+    return redactor;
+  }
+  get size(): number {
+    return this.entries.size;
+  }
+}
+/** The process-wide engine store; caches share it unless a test injects its own. */
+const compiledRedactors = new CompiledRedactors();
+
 export class PolicyCache {
   private readonly entries = new Map<
     string,
@@ -246,12 +319,13 @@ export class PolicyCache {
       organizationId: string,
     ) => Promise<RedactionPolicy[]>,
     private readonly now: () => number = Date.now,
+    private readonly compiled: CompiledRedactors = compiledRedactors,
   ) {}
   get(organizationId: string): Promise<Redactor> {
     const existing = this.entries.get(organizationId);
     if (existing && existing.expiresAt > this.now()) return existing.redactor;
-    const redactor = this.load(organizationId).then(
-      (policies) => new Redactor(policies),
+    const redactor = this.load(organizationId).then((policies) =>
+      this.compiled.get(organizationId, policies),
     );
     this.entries.set(organizationId, {
       expiresAt: this.now() + 30_000,

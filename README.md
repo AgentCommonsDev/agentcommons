@@ -38,7 +38,7 @@ admins enforce controls once for everyone.
     <td width="50%" valign="top">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/sessions-dark.png">
-        <img src="docs/assets/screenshots/sessions-light.png" alt="The Sessions list seen by an admin: full-text search over messages, filters, a count of matching sessions and messages, one row per captured session with its title, coding tool, repository and branch, user, start time, duration and status, and the Organization admin section in the sidebar." width="100%">
+        <img src="docs/assets/screenshots/sessions-light.png" alt="The Sessions list seen by an admin: full-text search over messages, filters, a count of matching sessions and messages, one row per captured session with its title, coding tool, repository and branch, user, start time, message count and status, and the Organization admin section in the sidebar." width="100%">
       </picture>
       <p align="center"><sub><b>Sessions, as an admin.</b> Search prompts, decisions and tool output across every coding tool, or browse each captured session. Admins also see the Organization section: people, keys, audit log, moderation, redaction, status and settings.</sub></p>
     </td>
@@ -106,6 +106,11 @@ codex mcp add agentcommons --url https://your-server/mcp --bearer-token-env-var 
 Gemini CLI takes an `mcpServers` entry in its settings. **API reference** in the app
 documents the same REST routes.
 
+Codex needs no trust prompt for MCP servers. The one-time trust prompt covers hooks only.
+In scripts, run `codex exec` with stdin closed (`codex exec "…" < /dev/null`), or it waits
+on "Reading additional input from stdin…" until the timeout. Verified on 2026-09-10 with
+Codex 0.153.4 and Claude Code 2.1.266 against a hosted instance.
+
 SaaS plans start with **1,000 captured records/month free**. **Pro is $100/month**
 with 10,000 included records and configured usage charges; embeddings add
 **$50/month** plus indexed-message usage. Enterprise teams can schedule a demo
@@ -147,6 +152,13 @@ with `systemctl edit agentcommons-update.service` if yours lives elsewhere. Set
 `agentcommons-update.sh --now` to update by hand or `--status` to see the running version.
 To stay on one release, set `AGENTCOMMONS_IMAGE` to its `sha-` tag, shown on Admin →
 Status, and run `docker compose up -d`.
+To run PostgreSQL elsewhere (a managed service, another host), set
+`AGENTCOMMONS_DATABASE=external`, add `docker-compose.external-database.yml` to
+`COMPOSE_FILE`, and point the three database URLs at that server;
+`scripts/self-host/migrate-database.sh copy` moves an existing bundled database there and
+`verify` compares the row counts. On AWS the `database` stack setting in `infra/` provisions
+Aurora PostgreSQL Serverless v2 for the single-node deployment; see
+[infra/OPERATIONS.md](infra/OPERATIONS.md).
 Customer instances keep public discovery disabled. Operators can enable hosted signup
 and billing with `INSTANCE_MODE=saas`; see [environment settings](.env.example) for
 email, Stripe, and plans. AWS deployment uses Pulumi from `infra/`.

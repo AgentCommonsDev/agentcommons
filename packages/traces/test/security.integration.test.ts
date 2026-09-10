@@ -12,9 +12,16 @@ import { provisionOrganization } from "../../../apps/api/test/support.js";
 import { cleanup } from "../../../scripts/cleanup.js";
 import {
   createTraceClient,
+  NO_TARGET_SESSION_ID,
+  SESSION_READS_TABLE,
   TraceReaders,
+  traceTables,
+  type TraceAudit,
+  type TraceSessionRead,
   type TraceTable,
 } from "../src/index.js";
+import { securityStatements } from "../src/security.js";
+import { traceScopeSql } from "../src/views/base.js";
 import {
   traceColumnDescriptions,
   traceEmbeddingViews,
@@ -1375,5 +1382,553 @@ it("completes five concurrent full session reads and a fifteen-reader burst with
         tools_used: [],
       });
     }
+  }
+});
+
+// @req R-AUD-05 @req R-GET-04 @req R-SEC-01
+it("serves the reuse relations from stored session reads under organization, visibility, purge and retention fences", async () => {
+  const source = await seed(owner);
+  const target = await seed(owner);
+  const hidden = await seed(owner, "PRIVATE");
+  const foreignSource = await seed(other);
+  const foreignTarget = await seed(other);
+  const at = Date.now();
+  const minute = (offset: number) => new Date(at + offset * 60_000);
+  const read = (
+    authority: ReadAuthority,
+    sessionId: string,
+    targetId: string,
+    offset: number,
+    action = "get",
+  ) => ({
+    organization_id: authority.organizationId,
+    session_id: sessionId,
+    audit_id: randomUUID(),
+    read_at: minute(offset),
+    action,
+    target_session_id: targetId,
+    reader_user_id: z.string().parse(authority.userId),
+    reader_email: "reader@example.com",
+    reader_harness: "CODEX",
+  });
+  await db.traces.appendSessionReads([
+    read(owner, source, target, 0),
+    read(owner, source, target, 5),
+    read(owner, source, hidden, 6),
+    // A self read and a search mark the session memory-assisted but are no edge.
+    read(owner, source, source, 2),
+    read(owner, source, NO_TARGET_SESSION_ID, 3, "search"),
+    read(other, foreignSource, foreignTarget, 0),
+  ]);
+  const edges = async (authority: ReadAuthority) =>
+    (
+      await select(
+        authority,
+        "SELECT source_session_id,target_session_id FROM reuse_edges ORDER BY read_at",
+      )
+    ).rows;
+  const edge = (source_session_id: string, target_session_id: string) => ({
+    source_session_id,
+    target_session_id,
+  });
+  const reuseCount = async (authority: ReadAuthority, id: string) =>
+    (
+      await select(
+        authority,
+        "SELECT reuse_count FROM sessions WHERE session_id={id:UUID}",
+        { id },
+      )
+    ).rows;
+  const flags = async (authority: ReadAuthority, id: string) =>
+    (
+      await select(
+        authority,
+        "SELECT reused,memory_assisted FROM metrics_reuse_sessions WHERE session_id={id:UUID}",
+        { id },
+      )
+    ).rows;
+  expect(await edges(owner)).toEqual([
+    edge(source, target),
+    edge(source, target),
+    edge(source, hidden),
+  ]);
+  expect(await edges(member)).toEqual([
+    edge(source, target),
+    edge(source, target),
+  ]);
+  expect(await edges(other)).toEqual([edge(foreignSource, foreignTarget)]);
+  const reuse = await select(
+    owner,
+    "SELECT reuse_count,unique_readers,cross_user_reuse_count,last_reused_at FROM session_reuse WHERE session_id={id:UUID}",
+    { id: target },
+  );
+  const reused = z
+    .tuple([
+      z.object({
+        reuse_count: z.string(),
+        unique_readers: z.string(),
+        cross_user_reuse_count: z.string(),
+        last_reused_at: z.coerce.date(),
+      }),
+    ])
+    .parse(reuse.rows)[0];
+  expect(reused).toMatchObject({
+    reuse_count: "1",
+    unique_readers: "1",
+    cross_user_reuse_count: "0",
+  });
+  expect(reused.last_reused_at.getTime()).toBe(minute(5).getTime());
+  expect(await reuseCount(owner, target)).toEqual([{ reuse_count: "1" }]);
+  expect(await reuseCount(owner, hidden)).toEqual([{ reuse_count: "1" }]);
+  expect(await reuseCount(owner, source)).toEqual([{ reuse_count: "0" }]);
+  expect(await reuseCount(member, hidden)).toEqual([]);
+  expect(await flags(owner, source)).toEqual([
+    { reused: 1, memory_assisted: 1 },
+  ]);
+  expect(await flags(owner, target)).toEqual([
+    { reused: 0, memory_assisted: 0 },
+  ]);
+  expect(await flags(member, source)).toEqual([
+    { reused: 1, memory_assisted: null },
+  ]);
+  // Purging the read session drops its edges for everyone, admins included.
+  await db.prisma.traceSessionControl.update({
+    where: {
+      organizationId_id: { organizationId: owner.organizationId, id: target },
+    },
+    data: { purgedAt: new Date() },
+  });
+  expect(await edges(owner)).toEqual([edge(source, hidden)]);
+  expect(await reuseCount(owner, target)).toEqual([{ reuse_count: "0" }]);
+  expect(
+    (
+      await select(
+        owner,
+        "SELECT session_id FROM session_reuse WHERE session_id={id:UUID}",
+        { id: target },
+      )
+    ).rows,
+  ).toEqual([]);
+  // The audit retention cutoff bounds reuse history the way it bounds audit rows.
+  const retention = await db.prisma.traceAnalyticsRetention.findUniqueOrThrow({
+    where: { id: 1 },
+  });
+  try {
+    await db.prisma.traceAnalyticsRetention.update({
+      where: { id: 1 },
+      data: { retainedAfter: minute(7) },
+    });
+    expect(await edges(owner)).toEqual([]);
+    expect(await flags(owner, source)).toEqual([
+      { reused: 0, memory_assisted: 0 },
+    ]);
+  } finally {
+    await db.prisma.traceAnalyticsRetention.update({
+      where: { id: 1 },
+      data: { retainedAfter: retention.retainedAfter },
+    });
+  }
+});
+
+/**
+ * The ADR 0047 caller policies as shipped before ADR 0062, kept literally as the oracle of
+ * the differential test below: one direct-dictionary `dictGet` per scanned row.
+ */
+function legacyScopePolicies(): string[] {
+  const lookup = `dictGet('ac_trace.session_scope',('published_revision','visible','purged','embedding_revision','embeddings_enabled','paid_embeddings','redaction_generation','embedding_source_revision'),(organization_id,session_id))`;
+  const organization = `organization_id=${traceScopeSql.organization}`;
+  const retention = `dictGet('ac_trace.audit_retention','retained_after',toUInt64(1))`;
+  const policy = (table: string, predicate: string) =>
+    `CREATE ROW POLICY OR REPLACE trace_scope ON ac_trace.${table} USING ${predicate} TO ac_trace_view_owner`;
+  const visibleSession = (column: string) => {
+    const scope = `dictGet('ac_trace.session_scope',('published_revision','visible','purged'),(organization_id,${column}))`;
+    return `tupleElement(${scope},1)>0 AND (${traceScopeSql.admin} OR tupleElement(${scope},2)=1) AND tupleElement(${scope},3)=0`;
+  };
+  const target = `dictGet('ac_trace.session_scope',('published_revision','visible'),(organization_id,toUUIDOrZero(arrayElement(resource_ids,1))))`;
+  return [
+    policy(
+      "session_identities",
+      `${organization} AND ${traceScopeSql.admin} AND tupleElement(${lookup},1)>0 AND tupleElement(${lookup},3)=1`,
+    ),
+    ...Object.entries(traceTables).map(([table, { vector }]) =>
+      policy(
+        table,
+        `${organization} AND generation=tupleElement(${lookup},7) AND revision>0 AND ${vector ? `revision=tupleElement(${lookup},4)` : `revision<=tupleElement(${lookup},1)`} AND (${traceScopeSql.admin} OR tupleElement(${lookup},2)=1) AND tupleElement(${lookup},3)=0${vector ? ` AND ${traceScopeSql.embeddings} AND tupleElement(${lookup},8)=tupleElement(${lookup},1) AND revision<=tupleElement(${lookup},4) AND tupleElement(${lookup},5)=1 AND (NOT ${traceScopeSql.saas} OR tupleElement(${lookup},6)=1)` : ""}`,
+      ),
+    ),
+    policy(
+      "control_metrics_health",
+      `${organization} AND ${traceScopeSql.admin} AND tupleElement(${lookup},1)>0`,
+    ),
+    policy(
+      "audit_events",
+      `${organization} AND ts>=${retention} AND (${traceScopeSql.admin} OR user_id=${traceScopeSql.user} OR (action='get' AND status_code<400 AND tupleElement(${target},1)>0 AND tupleElement(${target},2)=1))`,
+    ),
+    policy(
+      SESSION_READS_TABLE,
+      `${organization} AND read_at>=${retention} AND ${visibleSession("session_id")} AND (target_session_id=toUUID('${NO_TARGET_SESSION_ID}') OR ${visibleSession("target_session_id")})`,
+    ),
+  ];
+}
+// @req R-SEC-02 @req R-SEC-01 @req R-EMB-04 @req R-AUD-02 @req R-AUD-05
+it("shows every principal exactly the rows the per-row dictionary policies showed, table by table", async () => {
+  const ownerUser = z.string().parse(owner.userId);
+  const otherUser = z.string().parse(other.userId);
+  const worker: ReadAuthority = {
+    organizationId: owner.organizationId,
+    userId: "worker",
+    role: "owner",
+    permissions: { sessions: ["read"], admin: ["*"] },
+    authMethod: "key",
+  };
+  const sessions = {
+    public: await seed(owner),
+    target: await seed(owner),
+    private: await seed(owner, "PRIVATE"),
+    purged: await seed(owner),
+    rescanned: await seed(owner),
+    vector: await seed(owner),
+    staleVector: await seed(owner),
+    foreign: await seed(other),
+    foreignPrivate: await seed(other, "PRIVATE"),
+  };
+  const foreignIds: string[] = [sessions.foreign, sessions.foreignPrivate];
+  const organizationOf = (id: string) =>
+    foreignIds.includes(id) ? other.organizationId : owner.organizationId;
+  const control = (
+    id: string,
+    data: Parameters<typeof db.prisma.traceSessionControl.update>[0]["data"],
+  ) =>
+    db.prisma.traceSessionControl.update({
+      where: { organizationId_id: { organizationId: organizationOf(id), id } },
+      data,
+    });
+  await control(sessions.purged, {
+    purgedAt: new Date(),
+    purgedByUserId: ownerUser,
+  });
+  // A rescan published generation 1 as revision 2; its generation 0 rows became stale.
+  await control(sessions.rescanned, {
+    redactionGeneration: 1n,
+    acceptedRevision: 2n,
+    publishedRevision: 2n,
+  });
+  await db.prisma.organizationSettings.upsert({
+    where: { organizationId: owner.organizationId },
+    create: { organizationId: owner.organizationId, embeddingsEnabled: true },
+    update: { embeddingsEnabled: true },
+  });
+  await control(sessions.vector, {
+    embeddingRevision: 1n,
+    embeddingSourceRevision: 1n,
+  });
+  // A completed epoch whose source is not the published revision stays hidden.
+  await control(sessions.staleVector, {
+    embeddingRevision: 1n,
+    embeddingSourceRevision: 0n,
+  });
+  const embedding = Array<number>(1024).fill(0);
+  embedding[0] = 1;
+  const inserted: Array<{
+    table: TraceTable;
+    session: string;
+    identity: string;
+    generation: bigint;
+    revision: bigint;
+  }> = [];
+  const insert = async (
+    table: TraceTable,
+    session: string,
+    revision: bigint,
+    generation: bigint,
+  ) => {
+    const { identity, identityType, vector } = traceTables[table];
+    const value =
+      identity === "session_id"
+        ? session
+        : identityType === "UUID"
+          ? randomUUID()
+          : `${table}-${String(inserted.length)}`;
+    await row(
+      table,
+      foreignIds.includes(session) ? other : owner,
+      session,
+      revision,
+      generation,
+      {
+        ...(identity === "session_id" ? {} : { [identity]: value }),
+        ...(vector ? { embedding } : {}),
+      },
+    );
+    inserted.push({ table, session, identity: value, generation, revision });
+  };
+  for (const table of Object.keys(traceTables) as TraceTable[])
+    for (const session of Object.values(sessions)) {
+      // `seed` already published the session header at revision 1.
+      if (table === "sessions")
+        inserted.push({
+          table,
+          session,
+          identity: session,
+          generation: 0n,
+          revision: 1n,
+        });
+      else await insert(table, session, 1n, 0n);
+      await insert(table, session, 2n, 0n);
+      if (session === sessions.rescanned) await insert(table, session, 2n, 1n);
+    }
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - 86_400_000);
+  const stale = new Date(cutoff.getTime() - 3_600_000);
+  const retention = await db.prisma.traceAnalyticsRetention.findUniqueOrThrow({
+    where: { id: 1 },
+  });
+  await db.prisma.traceAnalyticsRetention.update({
+    where: { id: 1 },
+    data: { retainedAfter: cutoff },
+  });
+  const audit = (fields: Partial<TraceAudit>): TraceAudit => ({
+    id: randomUUID(),
+    organization_id: owner.organizationId,
+    ts: now,
+    user_id: otherUser,
+    user_email: "other@example.com",
+    api_key_id: null,
+    installation_id: null,
+    auth_method: "key",
+    transport: "mcp",
+    action: "get",
+    resource_ids: [sessions.public],
+    status_code: 200,
+    duration_ms: 1,
+    detail: {},
+    ...fields,
+  });
+  const audits = {
+    own: audit({ user_id: ownerUser, action: "search", resource_ids: [] }),
+    publicGet: audit({}),
+    privateGet: audit({ resource_ids: [sessions.private] }),
+    purgedGet: audit({ resource_ids: [sessions.purged] }),
+    failedGet: audit({ status_code: 403 }),
+    search: audit({ action: "search", resource_ids: [] }),
+    stale: audit({ user_id: ownerUser, ts: stale }),
+    foreign: audit({
+      organization_id: other.organizationId,
+      resource_ids: [sessions.foreign],
+    }),
+  };
+  await db.traces.appendAudit(Object.values(audits));
+  const read = (
+    session: string,
+    target: string,
+    fields: Partial<TraceSessionRead> = {},
+  ): TraceSessionRead => ({
+    organization_id: organizationOf(session),
+    session_id: session,
+    audit_id: randomUUID(),
+    read_at: now,
+    action: "get",
+    target_session_id: target,
+    reader_user_id: otherUser,
+    reader_email: "reader@example.com",
+    reader_harness: "CODEX",
+    ...fields,
+  });
+  const reads = {
+    publicToTarget: read(sessions.public, sessions.target),
+    privateSource: read(sessions.private, sessions.target),
+    privateTarget: read(sessions.public, sessions.private),
+    purgedTarget: read(sessions.public, sessions.purged),
+    search: read(sessions.public, NO_TARGET_SESSION_ID, { action: "search" }),
+    stale: read(sessions.public, sessions.target, { read_at: stale }),
+    foreign: read(sessions.foreign, sessions.foreignPrivate),
+  };
+  await db.traces.appendSessionReads(Object.values(reads));
+  const unentitled = new TraceReaders(db.traceConfig, db.prisma, {
+    embeddings: false,
+  });
+  const saas = new TraceReaders(db.traceConfig, db.prisma, {
+    embeddings: true,
+    saas: true,
+  });
+  const admin = createTraceClient({
+    url: db.traceMigration.url,
+    username: db.traceMigration.username,
+    password: db.traceMigration.password,
+  });
+  const principals: Record<string, [TraceReaders, ReadAuthority]> = {
+    owner: [db.traceReaders, owner],
+    member: [db.traceReaders, member],
+    other: [db.traceReaders, other],
+    worker: [db.traceReaders, worker],
+    unentitled: [unentitled, owner],
+    saas: [saas, owner],
+  };
+  const tables = [
+    ...Object.keys(traceTables),
+    "session_identities",
+    "audit_events",
+    SESSION_READS_TABLE,
+    "control_metrics_health",
+  ];
+  const isCorpus = (table: string): table is TraceTable => table in traceTables;
+  // Direct source access stays denied; definer views expose each table's policy alone.
+  const observe = async () => {
+    const seen: Record<string, Record<string, string[]>> = {};
+    for (const [name, [readers, authority]] of Object.entries(principals)) {
+      seen[name] = {};
+      for (const table of tables) {
+        const columns = isCorpus(table)
+          ? `organization_id,session_id,toString(${traceTables[table].identity}) AS identity,generation,revision`
+          : table === "audit_events" || table === SESSION_READS_TABLE
+            ? "audit_id"
+            : "organization_id,session_id";
+        const result = await readers.read(authority, (client) =>
+          client.query(
+            `SELECT DISTINCT ${columns} FROM policy_diff_${table} WHERE ${table === "audit_events" ? "has({audits:Array(UUID)},audit_id)" : "has({sessions:Array(UUID)},session_id)"}`,
+            {
+              sessions: Object.values(sessions),
+              audits: Object.values(audits).map((row) => row.id),
+            },
+          ),
+        );
+        seen[name][table] = result.rows
+          .map((row) => Object.values(row).join("|"))
+          .sort();
+      }
+    }
+    return seen;
+  };
+  /** What spec §7.5 says each principal sees of one corpus table, from the rows inserted above. */
+  const expectedCorpus = (principal: string, table: TraceTable) => {
+    const isAdmin = principal !== "member";
+    const organization =
+      principal === "other" ? other.organizationId : owner.organizationId;
+    // The foreign organization never opted in; SaaS mode also needs the paid entitlement.
+    const entitled =
+      organization === owner.organizationId &&
+      principal !== "unentitled" &&
+      principal !== "saas";
+    return inserted
+      .filter((item) => {
+        if (
+          item.table !== table ||
+          organizationOf(item.session) !== organization
+        )
+          return false;
+        const rescanned = item.session === sessions.rescanned;
+        const isPublic = ![sessions.private, sessions.foreignPrivate].includes(
+          item.session,
+        );
+        if (
+          item.session === sessions.purged ||
+          (!isAdmin && !isPublic) ||
+          item.generation !== (rescanned ? 1n : 0n)
+        )
+          return false;
+        return traceTables[table].vector
+          ? entitled && item.session === sessions.vector && item.revision === 1n
+          : item.revision <= (rescanned ? 2n : 1n);
+      })
+      .map((item) =>
+        [
+          organization,
+          item.session,
+          item.identity,
+          String(item.generation),
+          String(item.revision),
+        ].join("|"),
+      )
+      .sort();
+  };
+  const keys = (organization: string, ids: readonly string[]) =>
+    ids.map((id) => `${organization}|${id}`).sort();
+  const auditIds = (names: ReadonlyArray<keyof typeof audits>) =>
+    names.map((name) => audits[name].id).sort();
+  const readIds = (names: ReadonlyArray<keyof typeof reads>) =>
+    names.map((name) => reads[name].audit_id).sort();
+  const ownSessions = Object.values(sessions).filter(
+    (id) => !foreignIds.includes(id),
+  );
+  const expectedControl = (principal: string) => {
+    const admins = ["owner", "worker", "unentitled", "saas"];
+    if (principal === "member")
+      return {
+        session_identities: [],
+        control_metrics_health: [],
+        audit_events: auditIds(["own", "publicGet"]),
+        [SESSION_READS_TABLE]: readIds(["publicToTarget", "search"]),
+      };
+    if (principal === "other")
+      return {
+        session_identities: [],
+        control_metrics_health: keys(other.organizationId, foreignIds),
+        audit_events: auditIds(["foreign"]),
+        [SESSION_READS_TABLE]: readIds(["foreign"]),
+      };
+    expect(admins).toContain(principal);
+    return {
+      session_identities: keys(owner.organizationId, [sessions.purged]),
+      control_metrics_health: keys(owner.organizationId, ownSessions),
+      audit_events: auditIds([
+        "own",
+        "publicGet",
+        "privateGet",
+        "purgedGet",
+        "failedGet",
+        "search",
+      ]),
+      [SESSION_READS_TABLE]: readIds([
+        "publicToTarget",
+        "privateSource",
+        "privateTarget",
+        "search",
+      ]),
+    };
+  };
+  try {
+    for (const table of tables) {
+      await admin.command({
+        query: `CREATE OR REPLACE VIEW api_ro.policy_diff_${table} DEFINER=ac_trace_view_owner SQL SECURITY DEFINER AS SELECT * FROM ac_trace.${table}`,
+      });
+      await admin.command({
+        query: `GRANT SELECT ON api_ro.policy_diff_${table} TO ac_trace_reader`,
+      });
+    }
+    const current = await observe();
+    for (const [principal, seen] of Object.entries(current)) {
+      for (const table of Object.keys(traceTables) as TraceTable[])
+        expect(seen[table], `${principal} ${table}`).toEqual(
+          expectedCorpus(principal, table),
+        );
+      expect(
+        Object.fromEntries(
+          Object.entries(seen).filter(([table]) => !isCorpus(table)),
+        ),
+        principal,
+      ).toEqual(expectedControl(principal));
+    }
+    // The same rows under the per-row dictionary policies these replaced.
+    for (const statement of legacyScopePolicies())
+      await admin.command({ query: statement });
+    expect(await observe()).toEqual(current);
+  } finally {
+    for (const statement of securityStatements(db.traceMigration))
+      await admin.command({ query: statement });
+    for (const table of tables)
+      await admin.command({
+        query: `DROP VIEW IF EXISTS api_ro.policy_diff_${table}`,
+      });
+    await db.prisma.traceAnalyticsRetention.update({
+      where: { id: 1 },
+      data: { retainedAfter: retention.retainedAfter },
+    });
+    expect(
+      await cleanup([
+        () => unentitled.close(),
+        () => saas.close(),
+        () => admin.close(),
+      ]),
+    ).toEqual([]);
   }
 });

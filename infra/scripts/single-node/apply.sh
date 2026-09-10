@@ -27,28 +27,23 @@ log="$logs/apply-$(date -u +%Y%m%dT%H%M%SZ).log"
 cd "$app"
 
 umask 077
-# Values are single-quoted so Compose reads them literally; the stack refuses quotes.
-aws ssm get-parameters-by-path --region "$AWS_REGION" --path "$AGENTCOMMONS_PARAMETER_PATH" \
-  --recursive --with-decryption --output json |
-  jq -r '.Parameters[] | (.Name | split("/") | last) as $key | .Value as $value
-    | if ($value | test("[\u0027\r\n]")) then error("Parameter \($key) contains a quote or line break")
-      else "\($key)=\u0027\($value)\u0027" end' >.env.new
-[ -s .env.new ] || {
-  echo "No parameters found under $AGENTCOMMONS_PARAMETER_PATH" >&2
-  exit 1
-}
+render_env .env.new
+# Never switch databases inside a release: the cutover is migrate-database.sh (ADR 0063).
+if [ -f .env ] && [ "$(setting AGENTCOMMONS_DATABASE .env.new)" = external ] &&
+  [ "$(setting AGENTCOMMONS_DATABASE .env)" != external ]; then
+  keep_bundled_database .env.new .env .env.external
+fi
 mv .env.new .env
 echo "Rendered $(wc -l <.env) settings into $app/.env"
 
 # The Compose files go into .env as COMPOSE_FILE, which docker compose reads itself, so the
 # updater and this script run the same stack without repeating the list.
-files=docker-compose.yml:docker-compose.caddy.yml
+files=$(compose_files .env)
 if [ "$(setting TRACE_STORE)" = clickhouse-cloud ]; then
   # ClickHouse Cloud reads the control tables and dictionaries from this PostgreSQL over
   # TLS. The certificate names the public address (SAN) so Cloud verifies it with
   # sslmode=verify-full; pg_hba.conf admits only ac_trace_control from Cloud's egress
   # addresses (the same list the security group uses) plus the Compose network.
-  files=$files:docker-compose.clickhouse-cloud.yml
   tls=/opt/agentcommons/postgres-tls
   host=$(setting CLICKHOUSE_POSTGRES_HOST)
   install -d -m 0755 "$tls"
@@ -84,6 +79,9 @@ if [ "$(setting TRACE_STORE)" = clickhouse-cloud ]; then
   chmod 0644 "$tls/pg_hba.conf"
   echo "PostgreSQL admits ac_trace_control over TLS from $(grep -c '^hostssl' "$tls/pg_hba.conf") ClickHouse Cloud addresses"
 fi
+if [ "$(setting AGENTCOMMONS_DATABASE)" = external ]; then
+  echo "PostgreSQL runs outside the stack at $(setting CLICKHOUSE_POSTGRES_HOST); the bundled db service is parked"
+fi
 
 printf "COMPOSE_FILE='%s'\n" "$files" >>.env
 lock_stack
@@ -99,15 +97,14 @@ if ! stack_up "$mode" "$log"; then
   echo "The release did not come up; see $log" >&2
   exit 1
 fi
-if [ "$(setting TRACE_STORE)" = clickhouse-cloud ]; then
-  # The control dictionary is direct: one lookup proves Cloud reaches PostgreSQL over TLS.
-  lookup=$(curl -fsS --max-time 30 -H "X-ClickHouse-User: $(setting CLICKHOUSE_MIGRATION_USER)" \
-    -H "X-ClickHouse-Key: $(setting CLICKHOUSE_MIGRATION_PASSWORD)" "$(setting CLICKHOUSE_URL)/" \
-    --data-binary "SELECT dictGet('$(setting CLICKHOUSE_DATABASE).session_scope','purged',('probe',toUUID('00000000-0000-0000-0000-000000000000'))) FORMAT TSV") || {
-    echo "ClickHouse Cloud could not read the PostgreSQL control dictionary." >&2
+if [ "$(setting TRACE_STORE)" = clickhouse-cloud ] || [ "$(setting AGENTCOMMONS_DATABASE)" = external ]; then
+  # The control dictionary is direct: one lookup proves the trace store reaches PostgreSQL
+  # wherever it runs (ClickHouse Cloud over TLS, or the local ClickHouse reaching Aurora).
+  lookup=$(probe_control_dictionary) || {
+    echo "ClickHouse could not read the PostgreSQL control dictionary." >&2
     exit 1
   }
-  echo "ClickHouse Cloud reads the PostgreSQL control dictionary (probe returned $lookup)"
+  echo "ClickHouse reads the PostgreSQL control dictionary (probe returned $lookup)"
 fi
 # The hourly updater installs published releases between operator runs of this script;
 # AUTO_UPDATE in .env (stack setting autoUpdate) gates it. Idempotent.

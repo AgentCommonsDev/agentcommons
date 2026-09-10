@@ -185,10 +185,10 @@ export function FilesTab({ header }: { header: SessionHeader }) {
             <Table className="stacked-table">
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
-                  <TableHead>{labels.sha}</TableHead>
+                  <TableHead className="w-28">{labels.sha}</TableHead>
                   <TableHead>{labels.subject}</TableHead>
-                  <TableHead>{labels.author}</TableHead>
-                  <TableHead>{labels.when}</TableHead>
+                  <TableHead className="w-36">{labels.author}</TableHead>
+                  <TableHead className="w-40">{labels.when}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -205,10 +205,7 @@ export function FilesTab({ header }: { header: SessionHeader }) {
                         {subject}
                       </TableCell>
                       <TableCell data-label={labels.author}>{author}</TableCell>
-                      <TableCell
-                        data-label={labels.when}
-                        className="whitespace-nowrap"
-                      >
+                      <TableCell data-label={labels.when}>
                         {dateTime(timestamp)}
                       </TableCell>
                     </TableRow>

@@ -56,12 +56,23 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
           ? [`tool_use_id=${inline(message.tool_use_id)}`]
           : []),
         ...(message.hit ? ["[hit]"] : []),
-        ...(message.truncated ? ["[truncated]"] : []),
+        ...(message.truncated
+          ? [
+              message.content_range
+                ? `[truncated ${String(message.content_range.start)}-${String(message.content_range.end)} of ${String(message.content_range.total)}]`
+                : "[truncated]",
+            ]
+          : []),
         ...(message.truncated_fields.length
           ? [`truncated_fields=${JSON.stringify(message.truncated_fields)}`]
           : []),
       ];
-      return `${metadata.join(" ")}\n${message.content}`;
+      // An excerpt marks its cut ends inline so a mid-JSON fragment reads as one.
+      const range = message.content_range;
+      const content = range
+        ? `${range.start > 0 ? "…" : ""}${message.content}${range.end < range.total ? "…" : ""}`
+        : message.content;
+      return `${metadata.join(" ")}\n${content}`;
     });
     return [
       `session_id: ${block.session_id} | ${inline(block.title ?? "Untitled session")}`,
@@ -91,10 +102,12 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
   ].join("\n\n");
   return { text, structuredContent: result };
 }
+/** Header fields that mean nothing to a reader of the text form; the JSON keeps them. */
+const HEADER_TEXT_OMITTED = new Set(["organization_id", "installation_id"]);
 export function formatSessionHeader(header: SessionHeader): string {
-  const facts = Object.entries(header).map(
-    ([key, value]) => `${key}: ${inline(value)}`,
-  );
+  const facts = Object.entries(header)
+    .filter(([key]) => !HEADER_TEXT_OMITTED.has(key))
+    .map(([key, value]) => `${key}: ${inline(value)}`);
   const lines: string[] = [];
   for (let offset = 0; offset < facts.length; offset += 3)
     lines.push(facts.slice(offset, offset + 3).join(" | "));
@@ -111,6 +124,15 @@ export function formatSessionHeader(header: SessionHeader): string {
   }
   return lines.join("\n");
 }
+/** The one-line header a continuation page carries: the reader already has the full one. */
+export function formatSessionLine(header: SessionHeader): string {
+  return `session ${header.session_id} | title: ${inline(header.title)} | ${header.harness} | ${String(header.message_count)} messages | continued`;
+}
+/**
+ * One message as an agent reads it: the identifying line, the content, then the message id
+ * and only the details that carry information (token counts when recorded, a cursor when
+ * the content is bounded, shortened fields when any). Record and batch ids stay in the JSON.
+ */
 export function formatMessage(message: Message): string {
   const metadata = [
     `seq ${String(message.seq)}`,
@@ -124,8 +146,12 @@ export function formatMessage(message: Message): string {
       : []),
   ];
   const details = [
-    `message_id: ${message.message_id} | raw_record_id: ${inline(message.raw_record_id)} | ingest_batch_id: ${inline(message.ingest_batch_id)}`,
-    `input_tokens: ${inline(message.input_tokens)} | output_tokens: ${inline(message.output_tokens)}`,
+    `message_id: ${message.message_id}`,
+    ...(message.input_tokens === null && message.output_tokens === null
+      ? []
+      : [
+          `input_tokens: ${inline(message.input_tokens)} | output_tokens: ${inline(message.output_tokens)}`,
+        ]),
     ...(message.content_cursor === null
       ? []
       : [`content_cursor: ${JSON.stringify(message.content_cursor)}`]),
@@ -135,9 +161,23 @@ export function formatMessage(message: Message): string {
   ];
   return `${metadata.join(" ")}\n${message.content}\n${details.join("\n")}`;
 }
-export function formatGet(result: GetOutput): Formatted<GetOutput> {
+/**
+ * The text of one `get` page. The first page of a read carries the full header; a
+ * continuation page (the caller passed a cursor) carries one line, since the reader holds
+ * the header from the first page.
+ */
+export function formatGet(
+  result: GetOutput,
+  options: { continuation?: boolean } = {},
+): Formatted<GetOutput> {
   const text = [
-    formatSessionHeader(result.header),
+    ...(result.header === null
+      ? []
+      : [
+          options.continuation
+            ? formatSessionLine(result.header)
+            : formatSessionHeader(result.header),
+        ]),
     ...result.messages.map(formatMessage),
     ...(result.next === null ? [] : [`next: ${JSON.stringify(result.next)}`]),
   ].join("\n\n");
@@ -146,7 +186,7 @@ export function formatGet(result: GetOutput): Formatted<GetOutput> {
 export function formatSql(result: SqlOutput): Formatted<SqlOutput> {
   const cell = (item: JsonValue) => inline(item).replaceAll("|", "\\|");
   const text = [
-    `${String(result.row_count)} ${result.row_count === 1 ? "row" : "rows"}${result.capped ? " (capped)" : ""}`,
+    `${String(result.row_count)} ${result.row_count === 1 ? "row" : "rows"}${result.capped ? " (capped). Add LIMIT/OFFSET to page." : ""}`,
     result.columns
       .map((column) => `${cell(column.name)} (${cell(column.type)})`)
       .join(" | "),
@@ -166,3 +206,10 @@ export {
 export function formatJson<T>(value: T): Formatted<T> {
   return { text: JSON.stringify(value, null, 2), structuredContent: value };
 }
+export {
+  ageInWords,
+  formatDashboard,
+  formatDashboardList,
+  formatDashboardRender,
+  type DashboardListOutput,
+} from "./dashboards.js";

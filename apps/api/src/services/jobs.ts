@@ -1,5 +1,8 @@
 import {
+  awaitRescanCheckpoints,
   completeRunSession,
+  RESCAN_CONCURRENCY,
+  RESCAN_JOB_BUDGET_MS,
   traceRescanPayloadSchema,
 } from "./trace-rescan.js";
 import { setImmediate } from "node:timers/promises";
@@ -53,9 +56,12 @@ type RescanJob = z.infer<typeof traceRescanPayloadSchema>;
 const traceProjectionJobSchema = z.strictObject({
   organizationId: z.string().min(1),
   sessionId: z.uuid(),
+  /** The row that motivated the job: an outbox, an empty batch's receipt, or the session on recovery. */
   outboxId: z.uuid(),
 });
 type TraceProjectionJob = z.infer<typeof traceProjectionJobSchema>;
+/** Jobs fetched per poll by the projection worker; each poll publishes every distinct session once. */
+const TRACE_PROJECTION_FETCH = 25;
 const welcomeJobSchema = z.strictObject({ userId: z.string().min(1) });
 const catchupJobSchema = z.strictObject({ organizationId: z.string().min(1) });
 /** Callers who rendered a dashboard within this window get their dashboards pre-rendered (§10). */
@@ -123,7 +129,9 @@ export class JobService implements AdminJobs {
       FROM trace_session_control c LEFT JOIN LATERAL (
         SELECT id,organization_id,session_id FROM trace_outbox
         WHERE organization_id=c.organization_id AND session_id=c.id ORDER BY revision LIMIT 1
-      ) o ON true WHERE (o.id IS NOT NULL OR c.redaction_cleaned_generation<c.redaction_generation) AND (c.purged_at IS NULL OR c.purge_completed_at IS NULL)
+      ) o ON true WHERE (o.id IS NOT NULL OR c.redaction_cleaned_generation<c.redaction_generation OR EXISTS (
+        SELECT 1 FROM trace_receipt r WHERE r.organization_id=c.organization_id AND r.session_id=c.id AND r.published_at IS NULL
+      )) AND (c.purged_at IS NULL OR c.purge_completed_at IS NULL)
       AND (c.projection_lease_until IS NULL OR c.projection_lease_until<=now())
       ORDER BY c.projection_attempt_at NULLS FIRST,c.organization_id,c.id LIMIT 100`;
     for (const row of pending)
@@ -197,15 +205,39 @@ export class JobService implements AdminJobs {
       {},
       { singletonKey: "startup", singletonSeconds: 60 },
     );
-    await this.boss.work<unknown>(JOB_QUEUES.traceProjection, async (jobs) => {
-      for (const job of jobs) {
-        const data = traceProjectionJobSchema.parse(job.data);
-        await this.dependencies.traces.process(
-          data.organizationId,
-          data.sessionId,
-        );
-      }
-    });
+    // One job per accepted batch, one publish per session per fetch: a burst of batches
+    // for one session collapses into one reservation (up to 100 outboxes), so the fetch
+    // size, not the publish cost, bounds how fast the queue drains (1 job per poll before).
+    await this.boss.work<unknown>(
+      JOB_QUEUES.traceProjection,
+      // Half-second polls (pg-boss's minimum) put the publication floor at about 0.25 s
+      // plus one publish; the cost is two SKIP LOCKED statements per second (ADR 0065 §7).
+      { batchSize: TRACE_PROJECTION_FETCH, pollingIntervalSeconds: 0.5 },
+      async (jobs) => {
+        const sessions = new Map<string, TraceProjectionJob>();
+        for (const job of jobs) {
+          const data = traceProjectionJobSchema.parse(job.data);
+          sessions.set(`${data.organizationId}:${data.sessionId}`, data);
+        }
+        const failures: unknown[] = [];
+        for (const data of sessions.values())
+          try {
+            await this.dependencies.traces.process(
+              data.organizationId,
+              data.sessionId,
+            );
+          } catch (error) {
+            failures.push(error);
+          }
+        // A failed session fails the fetched batch, so its jobs retry with backoff; the
+        // other sessions' retries find their outbox already published and return.
+        if (failures.length)
+          throw new AggregateError(
+            failures,
+            "Trace publication failed for a fetched batch; its jobs retry.",
+          );
+      },
+    );
     await this.recoverTraceOutboxes();
     if (this.dependencies.billingMeter) {
       await this.boss.work(JOB_QUEUES.billingMeter, async () =>
@@ -474,11 +506,44 @@ export class JobService implements AdminJobs {
     };
   }
 
-  /** Each target has one durable ordered generation boundary; publication owns its progress checkpoint. */
+  /**
+   * Each target has one durable ordered generation boundary; publication owns its progress
+   * checkpoint. A job claims up to RESCAN_CONCURRENCY unprocessed targets under the
+   * organization row, publishes them concurrently and repeats until the run completes or
+   * its time budget ends, when it hands over to a successor job (ADR 0066).
+   */
   private async processRescan(data: RescanJob): Promise<void> {
     if (data.organizationId !== data.caller.organizationId)
       throw new ServiceError(403, "JOB_SCOPE", "The rescan scope is invalid.");
-    const target = await this.dependencies.prisma.$transaction(async (tx) => {
+    const deadline = Date.now() + RESCAN_JOB_BUDGET_MS;
+    for (;;) {
+      const targets = await this.claimRescanTargets(data);
+      if (!targets.length) return;
+      const outcomes = await Promise.allSettled(
+        targets.map((sessionId) =>
+          this.dependencies.traces.process(data.organizationId, sessionId),
+        ),
+      );
+      const failure = outcomes.find(
+        (outcome): outcome is PromiseRejectedResult =>
+          outcome.status === "rejected",
+      );
+      if (failure)
+        throw failure.reason instanceof Error
+          ? failure.reason
+          : new Error("Rescan publication failed.", { cause: failure.reason });
+      if (await this.advanceRescan(data, targets, Date.now() >= deadline))
+        return;
+    }
+  }
+
+  /**
+   * Claims the next unprocessed targets in one transaction: each gets its rescan outbox row,
+   * revision bump, projection job and audit, or is checkpointed at once when purged. Empty
+   * when the run has nothing left, which completes it.
+   */
+  private claimRescanTargets(data: RescanJob): Promise<string[]> {
+    return this.dependencies.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM redaction_run WHERE organization_id=${data.organizationId} AND id=${data.runId}::uuid FOR UPDATE`;
       const run = await tx.redactionRun.findUnique({
         where: {
@@ -489,22 +554,23 @@ export class JobService implements AdminJobs {
         },
       });
       if (!run || run.state === "completed" || run.state === "failed")
-        return null;
+        return [];
       const context = await reauthorizeJob(
         tx,
         this.jobContext(data),
         this.dependencies.authConfiguration,
       );
       await lockOrganization(tx, requirePermission(context, "admin"));
-      const target = await tx.redactionRunSession.findFirst({
+      const targets = await tx.redactionRunSession.findMany({
         where: {
           organizationId: data.organizationId,
           runId: data.runId,
           processedAt: null,
         },
         orderBy: { sessionId: "asc" },
+        take: RESCAN_CONCURRENCY,
       });
-      if (!target) {
+      if (!targets.length) {
         await tx.redactionRun.update({
           where: {
             organizationId_id: {
@@ -514,110 +580,116 @@ export class JobService implements AdminJobs {
           },
           data: { state: "completed", error: null },
         });
-        return null;
+        return [];
       }
-      if (
-        !(await lockTraceSessionControl(
-          tx,
-          data.organizationId,
-          target.sessionId,
-        ))
-      )
-        throw new ServiceError(404, "NOT_FOUND", "Session not found.");
-      const control = await tx.traceSessionControl.findUniqueOrThrow({
-        where: {
-          organizationId_id: {
-            organizationId: data.organizationId,
-            id: target.sessionId,
-          },
-        },
-      });
-      if (control.purgedAt) {
-        // A purged session has nothing left to rescan: processed, with no hits.
-        await completeRunSession(
-          tx,
-          data.organizationId,
-          data.runId,
-          target.sessionId,
-          0,
-        );
-      } else {
-        const pending = await tx.traceOutbox.findFirst({
+      for (const target of targets) {
+        if (
+          !(await lockTraceSessionControl(
+            tx,
+            data.organizationId,
+            target.sessionId,
+          ))
+        )
+          throw new ServiceError(404, "NOT_FOUND", "Session not found.");
+        const control = await tx.traceSessionControl.findUniqueOrThrow({
           where: {
-            organizationId: data.organizationId,
-            sessionId: target.sessionId,
-            kind: "rescan",
-            payload: { path: ["runId"], equals: data.runId },
+            organizationId_id: {
+              organizationId: data.organizationId,
+              id: target.sessionId,
+            },
           },
         });
-        if (!pending) {
-          const id = uuidv7();
-          const revision = control.acceptedRevision + 1n;
-          await tx.traceOutbox.create({
-            data: {
-              id,
+        if (control.purgedAt) {
+          // A purged session has nothing left to rescan: processed, with no hits.
+          await completeRunSession(
+            tx,
+            data.organizationId,
+            data.runId,
+            target.sessionId,
+            0,
+          );
+        } else {
+          const pending = await tx.traceOutbox.findFirst({
+            where: {
               organizationId: data.organizationId,
               sessionId: target.sessionId,
-              revision,
               kind: "rescan",
-              payload: traceRescanPayloadSchema.parse(data),
+              payload: { path: ["runId"], equals: data.runId },
             },
           });
-          await tx.traceSessionControl.update({
-            where: {
-              organizationId_id: {
+          if (!pending) {
+            const id = uuidv7();
+            const revision = control.acceptedRevision + 1n;
+            await tx.traceOutbox.create({
+              data: {
+                id,
                 organizationId: data.organizationId,
-                id: target.sessionId,
+                sessionId: target.sessionId,
+                revision,
+                kind: "rescan",
+                payload: traceRescanPayloadSchema.parse(data),
               },
-            },
-            data: {
-              acceptedRevision: revision,
-              projectionState: "queued",
-              projectionError: null,
-            },
-          });
-          await this.enqueue(tx, {
-            organizationId: data.organizationId,
-            sessionId: target.sessionId,
-            outboxId: id,
-          });
+            });
+            await tx.traceSessionControl.update({
+              where: {
+                organizationId_id: {
+                  organizationId: data.organizationId,
+                  id: target.sessionId,
+                },
+              },
+              data: {
+                acceptedRevision: revision,
+                projectionState: "queued",
+                projectionError: null,
+              },
+            });
+            await this.enqueue(tx, {
+              organizationId: data.organizationId,
+              sessionId: target.sessionId,
+              outboxId: id,
+            });
+          }
         }
+        await this.dependencies.audit.write(
+          context,
+          {
+            action: control.purgedAt
+              ? "redaction.rescan.session"
+              : "redaction.rescan.queued",
+            resourceType: "session",
+            resourceIds: [target.sessionId],
+            detail: {
+              run_id: data.runId,
+              reason: data.input.reason,
+              queued: !control.purgedAt,
+              purged: control.purgedAt !== null,
+            },
+          },
+          tx,
+        );
       }
-      await this.dependencies.audit.write(
-        context,
-        {
-          action: control.purgedAt
-            ? "redaction.rescan.session"
-            : "redaction.rescan.queued",
-          resourceType: "session",
-          resourceIds: [target.sessionId],
-          detail: {
-            run_id: data.runId,
-            reason: data.input.reason,
-            queued: !control.purgedAt,
-            purged: control.purgedAt !== null,
-          },
-        },
-        tx,
-      );
-      return target;
+      return targets.map((target) => target.sessionId);
     });
-    if (!target) return;
-    await this.dependencies.traces.process(
+  }
+
+  /**
+   * Confirms every claimed target reached its checkpoint, then reports progress and, when
+   * the budget is spent, enqueues the successor job in the same transaction. True when
+   * this job is done with the run.
+   */
+  private async advanceRescan(
+    data: RescanJob,
+    sessionIds: readonly string[],
+    handOver: boolean,
+  ): Promise<boolean> {
+    const pending = await awaitRescanCheckpoints(
+      this.dependencies.prisma,
       data.organizationId,
-      target.sessionId,
+      data.runId,
+      sessionIds,
     );
-    await this.dependencies.prisma.$transaction(async (tx) => {
-      const current = await tx.redactionRunSession.findUniqueOrThrow({
-        where: {
-          organizationId_runId_sessionId: {
-            organizationId: data.organizationId,
-            runId: data.runId,
-            sessionId: target.sessionId,
-          },
-        },
-      });
-      if (!current.processedAt)
+    return this.dependencies.prisma.$transaction(async (tx) => {
+      if (pending.length)
         throw new Error("The ordered rescan projection is still pending.");
       const run = await tx.redactionRun.findUniqueOrThrow({
         where: {
@@ -627,7 +699,8 @@ export class JobService implements AdminJobs {
           },
         },
       });
-      if (run.state !== "completed") await this.enqueueRescan(tx, data);
+      const finished = run.state === "completed";
+      if (!finished && handOver) await this.enqueueRescan(tx, data);
       await this.dependencies.audit.write(
         operatorContext(),
         {
@@ -635,10 +708,15 @@ export class JobService implements AdminJobs {
           resourceType: "redaction_run",
           resourceIds: [run.id],
           actor: workerActor(data.organizationId),
-          detail: { processed_sessions: run.processedSessions },
+          detail: {
+            processed_sessions: run.processedSessions,
+            batch_sessions: sessionIds.length,
+            handed_over: !finished && handOver,
+          },
         },
         tx,
       );
+      return finished || handOver;
     });
   }
 
@@ -876,6 +954,7 @@ export class JobService implements AdminJobs {
   }
   async maintenance(now = new Date()): Promise<void> {
     await this.recoverTraceOutboxes();
+    await this.dependencies.traceAudit.backfill();
     if (this.dependencies.embeddings) await this.catchupEmbeddings();
     const cutoff = new Date(
       now.getTime() - this.dependencies.auditRetentionDays * 86_400_000,

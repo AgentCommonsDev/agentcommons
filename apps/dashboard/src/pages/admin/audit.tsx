@@ -101,13 +101,13 @@ export function AuditPage() {
       {
         accessorKey: "ts",
         header: fields.ts,
-        cell: ({ row }) => (
-          <span className="whitespace-nowrap">{dateTime(row.original.ts)}</span>
-        ),
+        size: 120,
+        cell: ({ row }) => dateTime(row.original.ts),
       },
       {
         accessorKey: "action",
         header: fields.action,
+        size: 130,
         cell: ({ row }) => (
           <span className="font-mono text-xs">{row.original.action}</span>
         ),
@@ -115,12 +115,10 @@ export function AuditPage() {
       {
         accessorKey: "user_id",
         header: text.user,
+        size: 170,
         cell: ({ row }) =>
           row.original.user_email ? (
-            <span
-              className="truncate text-sm"
-              title={row.original.user_id ?? undefined}
-            >
+            <span title={row.original.user_id ?? undefined}>
               {row.original.user_email}
             </span>
           ) : (
@@ -132,42 +130,49 @@ export function AuditPage() {
       {
         accessorKey: "status_code",
         header: fields.status_code,
+        size: 80,
         cell: ({ row }) => <StatusCodeBadge code={row.original.status_code} />,
       },
       {
         accessorKey: "duration_ms",
         header: fields.duration_ms,
+        size: 80,
         cell: ({ row }) =>
           metricValue(row.original.duration_ms, "milliseconds"),
       },
-      { accessorKey: "transport", header: fields.transport },
+      { accessorKey: "transport", header: fields.transport, size: 80 },
       {
         accessorKey: "api_key_id",
         header: fields.api_key_id,
         enableSorting: false,
+        size: 200,
         cell: ({ getValue }) => textValue(getValue()),
       },
       {
         accessorKey: "installation_id",
         header: fields.installation_id,
         enableSorting: false,
+        size: 200,
         cell: ({ getValue }) => textValue(getValue()),
       },
       {
         accessorKey: "auth_method",
         header: fields.auth_method,
         enableSorting: false,
+        size: 90,
       },
-      { accessorKey: "ip", header: fields.ip, enableSorting: false },
+      { accessorKey: "ip", header: fields.ip, enableSorting: false, size: 110 },
       {
         accessorKey: "user_agent",
         header: fields.user_agent,
         enableSorting: false,
+        size: 220,
         cell: ({ getValue }) => truncate(textValue(getValue()), 60),
       },
       {
         accessorKey: "request_id",
         header: fields.request_id,
+        size: 220,
         cell: ({ row }) => (
           <span className="font-mono text-xs">{row.original.request_id}</span>
         ),
@@ -176,6 +181,7 @@ export function AuditPage() {
         accessorKey: "resource_type",
         header: fields.resource_type,
         enableSorting: false,
+        size: 100,
         cell: ({ getValue }) => textValue(getValue()),
       },
       {
@@ -183,6 +189,7 @@ export function AuditPage() {
         accessorFn: (event) => event.resource_ids.join(" "),
         header: fields.resource_ids,
         enableSorting: false,
+        size: 220,
         cell: ({ row }) =>
           row.original.resource_ids.length === 0
             ? copy.app.common.unavailable
@@ -196,6 +203,7 @@ export function AuditPage() {
         accessorFn: (event) => JSON.stringify(event.detail),
         header: text.detail,
         enableSorting: false,
+        size: 260,
         cell: ({ row }) => (
           <span className="font-mono text-xs">
             {truncate(JSON.stringify(row.original.detail), 80)}

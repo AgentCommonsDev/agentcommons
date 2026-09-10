@@ -308,7 +308,7 @@ export const dashboardDefinitionToolSchema = z
       .max(24),
   })
   .describe(
-    "Dashboard definition. dashboard_list returns its complete JSON Schema as definition_schema with starter templates; dashboard_render validates an inline definition and names the failing path.",
+    "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path.",
   );
 
 const saveInputShape = {

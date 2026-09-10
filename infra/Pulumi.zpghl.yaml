@@ -37,6 +37,10 @@ config:
       secure: v1:O6gihMvj6GllFx6+:A85sdiU7s+b/nu0cQi+/0Q190YRKdUfFa/bnCLLK+/BkA4yQVv4RzCDQDk9WV0NM5DrIRppgRnO72MZ0PU9JEJkikPYdtsG7a/pBRMXcbS+w6CFSGCDAXQ==
     AUTH_GOOGLE_CLIENT_SECRET:
       secure: v1:lVKal8J1P0eMMfsW:bCTqhx36gktXclV+akSXfiGVI4ojzEItkL9cmkYBuAPcUvdDIVzAzU5/ItFnuphgSt1/
+  agentcommons:database:
+    kind: aurora-serverless-v2
+    minCapacity: "0.5"
+    maxCapacity: "4"
   agentcommons:alarmEmail: raphael@zeropath.com
   agentcommons:traceStore: local
   agentcommons:clickhouseCloudUrl: https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443

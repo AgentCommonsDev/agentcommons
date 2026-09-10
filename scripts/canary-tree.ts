@@ -103,6 +103,7 @@ export async function verifyNativeTree(input: {
         item.content.includes(input.probe),
       missing: "The child's own file-read result is missing.",
       onPage: (result: GetOutput) => {
+        assert.ok(result.header);
         assert.equal(result.header.session_id, childId);
         assert.equal(result.header.parent_session_id, input.parentId);
         assert.equal(result.header.parent_relation, input.relation);

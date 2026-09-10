@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { RegExpParser } from "@eslint-community/regexpp";
 import { checkSync } from "recheck";
 import { getLengthRange } from "regexp-ast-analysis";
@@ -186,4 +187,17 @@ export function composePolicies(
     });
   }
   return [...policies.values()].filter((policy) => policy.enabled);
+}
+
+/**
+ * The identity of a composed policy set. Rows that compose to the same enabled
+ * definitions (ids, names, kinds, patterns, options, replacements) hash alike in any row
+ * order, so one compiled engine serves every transaction that sees those rows and a
+ * changed, added, disabled or deleted row selects a different engine.
+ */
+export function policyFingerprint(rows: readonly RedactionPolicy[]): string {
+  const composed = composePolicies(rows).sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+  return createHash("sha256").update(JSON.stringify(composed)).digest("hex");
 }

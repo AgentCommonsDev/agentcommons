@@ -92,6 +92,8 @@ describe("Compose configuration", () => {
     expect(services.clickhouse?.ports).toBeUndefined();
     expect(services.clickhouse).toMatchObject({
       image: "clickhouse/clickhouse-server:26.8.2.7",
+      // libpq reads ~/.postgresql when PostgreSQL offers TLS; root's HOME is unreadable.
+      environment: { HOME: "/var/lib/clickhouse" },
     });
     expect(services.clickhouse?.volumes).toEqual(
       expect.arrayContaining([
@@ -405,6 +407,63 @@ describe("Compose configuration", () => {
         ),
       );
     expect(snapshot.egress.aws?.["us-west-2"]?.length).toBeGreaterThan(0);
+  });
+  // @req R-INF-11
+  it("moves the control database outside the stack with docker-compose.external-database.yml", () => {
+    const url =
+      "postgres://agentcommons:pw@cluster.example.internal:5432/agentcommons?sslmode=require&uselibpqcompat=true";
+    const external = [
+      "AGENTCOMMONS_DATABASE=external",
+      `DATABASE_MIGRATION_URL=${url}`,
+      "CLICKHOUSE_POSTGRES_HOST=cluster.example.internal",
+      "",
+    ].join("\n");
+    const services = compose(
+      [
+        "docker-compose.yml",
+        "docker-compose.caddy.yml",
+        "docker-compose.external-database.yml",
+      ],
+      external,
+    );
+    // The bundled db service is parked behind a profile; its volume declaration stays.
+    expect(Object.keys(services).sort()).toEqual([
+      "api",
+      "caddy",
+      "clickhouse",
+      "migrate",
+    ]);
+    expect(services.migrate?.depends_on).not.toHaveProperty("db");
+    expect(services.migrate).toMatchObject({
+      depends_on: { clickhouse: { condition: "service_healthy" } },
+      environment: {
+        DATABASE_MIGRATION_URL: url,
+        CLICKHOUSE_POSTGRES_HOST: "cluster.example.internal",
+        CLICKHOUSE_POSTGRES_PORT: "5432",
+      },
+    });
+    expect(services.api).toMatchObject({
+      depends_on: { migrate: { condition: "service_completed_successfully" } },
+    });
+    // Both "component elsewhere" files compose: nothing left for the migration to wait on.
+    const both = compose(
+      [
+        "docker-compose.yml",
+        "docker-compose.caddy.yml",
+        "docker-compose.clickhouse-cloud.yml",
+        "docker-compose.external-database.yml",
+      ],
+      [
+        external,
+        "TRACE_STORE=clickhouse-cloud",
+        "CLICKHOUSE_URL=https://abc.us-west-2.aws.clickhouse.cloud:8443",
+        "",
+      ].join("\n"),
+    );
+    expect(Object.keys(both).sort()).toEqual(["api", "caddy", "migrate"]);
+    expect(both.migrate?.depends_on ?? {}).toEqual({});
+    const example = readFileSync(join(repository, ".env.example"), "utf8");
+    expect(example).toMatch(/^AGENTCOMMONS_DATABASE=bundled$/m);
   });
   // @req R-INF-01
   it("exposes both databases only on loopback in development", () => {

@@ -17,7 +17,12 @@ import {
   removeFile,
   writeAtomic,
 } from "./files.js";
-import { CredentialRejected, credentialOrganization } from "./identity.js";
+import {
+  CredentialRejected,
+  credentialOrganization,
+  rejectionCode,
+  rejectionConfirmed,
+} from "./identity.js";
 import { gitContext, gitEnd } from "./git.js";
 import { HARNESSES, type HarnessDefinition } from "./harnesses.js";
 import { spawnUpload } from "./hook.js";
@@ -183,11 +188,21 @@ function envelope(
         : null,
   });
 }
+interface Sent {
+  response: Response;
+  /** The server's error code of a confirmed 401/403 (§6.2 step 3); its body is consumed. */
+  rejection: string | null;
+}
+/**
+ * Sends the pending bytes with the 1/5/30 s backoff. A 429, 5xx, network failure and an
+ * unconfirmed 401/403 (no API error code in the body, or a confirmation `GET /api/v1/me`
+ * that did not reach a verdict) are retried alike; three failures leave `pending` in place.
+ */
 async function send(
   config: HookConfig,
   body: string,
   options: UploadOptions,
-): Promise<Response | null> {
+): Promise<Sent | null> {
   const fetcher = options.fetch ?? fetch;
   for (const delay of [1000, 5000, 30000]) {
     try {
@@ -200,8 +215,16 @@ async function send(
         body,
         signal: AbortSignal.timeout(30_000),
       });
-      if (response.status !== 429 && response.status < 500) return response;
-      await response.body?.cancel();
+      if ([401, 403].includes(response.status)) {
+        const code = await rejectionCode(response);
+        if (
+          code !== null &&
+          (await rejectionConfirmed(config, response.status, fetcher))
+        )
+          return { response, rejection: code };
+      } else if (response.status !== 429 && response.status < 500)
+        return { response, rejection: null };
+      else await response.body?.cancel();
     } catch {
       /* The exact pending bytes are retried after transport failures. */
     }
@@ -347,9 +370,17 @@ async function drain(
           options.fetch ?? fetch,
         );
       } catch (error) {
+        // A rejection sticks to this credential only once confirmed by a second verdict
+        // (§6.2 step 3); a server that could not answer leaves the spool for the next hook.
         if (
           error instanceof CredentialRejected &&
-          [401, 403, 409].includes(error.status)
+          (error.status === 409 ||
+            (error.code !== null &&
+              (await rejectionConfirmed(
+                config,
+                error.status,
+                options.fetch ?? fetch,
+              ))))
         ) {
           state.credentialHash = hash(config.key);
           suspend(
@@ -358,11 +389,11 @@ async function drain(
             state,
             lock,
             error.status,
-            "The server rejected this credential.",
+            `The server rejected this credential${error.code ? ` (${error.code})` : ""}.`,
           );
           return IDLE;
         }
-        throw error;
+        return { ...IDLE, retry: true };
       }
       if (state.organizationId && state.organizationId !== organizationId) {
         suspend(
@@ -386,8 +417,11 @@ async function drain(
       const entries = journalEntries(path, state.processed);
       if (!state.pending) {
         const intent = headIntent(entries);
+        // Whether this intent carries context the server does not hold yet (§6.2 step 2).
+        let contextChanged = false;
         if (intent) {
           if (Date.parse(intent.sentAt) >= Date.parse(state.contextSentAt)) {
+            const held = JSON.stringify(state.context);
             state.context = {
               ...state.context,
               ...intent.context,
@@ -399,6 +433,7 @@ async function drain(
             state.contextSentAt = intent.sentAt;
             state.transcriptPath =
               intent.transcriptPath ?? state.transcriptPath;
+            contextChanged = JSON.stringify(state.context) !== held;
           }
           state.intent = intent.behavior === "end" ? "end" : "sync";
           settleRequested ||=
@@ -494,6 +529,17 @@ async function drain(
                 },
                 lock,
               );
+            } else if (intent && !contextChanged) {
+              // Nothing past ackedCursor and a context the server already holds: the
+              // intent completes without a request, so the end batch never queues
+              // behind empty syncs (§6.2 step 2). Cursors stay unchanged.
+              finishIntent(state, intent);
+              state.source = observed;
+              state.cleanup = { files: [], intents: [intent.id] };
+              save(path, state, lock);
+              cleanupAcknowledged(path, state, lock);
+              stoppedSource = observed.signature;
+              continue;
             } else if (intent) {
               // Context-only tree changes still need a server projection; source cursors stay unchanged.
               prepare(
@@ -542,11 +588,12 @@ async function drain(
       await options.checkpoint?.("persisted", state);
       const bodyText = readFileSync(pending.file, "utf8");
       const body = ingestEnvelopeSchema.parse(JSON.parse(bodyText) as unknown);
-      const response = await send(config, bodyText, options);
-      if (!response) {
+      const sent = await send(config, bodyText, options);
+      if (!sent) {
         retry = true;
         break;
       }
+      const { response, rejection } = sent;
       if (response.status === 202) {
         await response.body?.cancel();
         await options.checkpoint?.("accepted", state);
@@ -586,16 +633,19 @@ async function drain(
         cleanupAcknowledged(path, state, lock);
         continue;
       }
-      if ([401, 403, 409].includes(response.status)) {
+      // A 409 is the server's verdict on the session; a 401/403 arrives here only confirmed.
+      if (response.status === 409 || rejection !== null) {
         suspend(
           directory,
           path,
           state,
           lock,
           response.status,
-          "The server rejected this session or credential.",
+          rejection === null
+            ? "The server rejected this session."
+            : `The server rejected this session or credential (${rejection}).`,
         );
-        await response.body?.cancel();
+        if (rejection === null) await response.body?.cancel();
         break;
       }
       if (response.status === 413 && body.records.length > 1) {

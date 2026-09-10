@@ -14,9 +14,11 @@ import { workspaceOrigin } from "../playwright.shared";
 import {
   accessible,
   collectErrors,
+  expectNoHorizontalOverflow,
   fixture,
   setTheme,
   settled,
+  showColumn,
   signInAsOwner,
   test,
 } from "./browser-test";
@@ -144,6 +146,7 @@ test("the list shows root sessions only, toggles subagent runs, sorts on the ser
   const list = page.getByRole("table", { name: labels.list.label });
   await expect(list).toBeVisible();
   await settled(page);
+  await expectNoHorizontalOverflow(page);
   const roots = await rootCount(page);
   const next = page.getByRole("button", {
     name: copy.app.common.next,
@@ -184,6 +187,10 @@ test("the list shows root sessions only, toggles subagent runs, sorts on the ser
       name: labels.list.subagentCount,
       exact: true,
     })
+    .click();
+  // Messages holds the default slot the reuse count once had; the chooser brings it back.
+  await menu
+    .getByRole("menuitemcheckbox", { name: fields.reuse_count, exact: true })
     .click();
   // User is shown by default and Subagents is not; the chooser flips both.
   await menu
@@ -258,6 +265,9 @@ test("the list shows root sessions only, toggles subagent runs, sorts on the ser
   // Earlier suites may have read this session with a key; the API holds the current count.
   const read = await sessionRead(page, data.sessionId);
   await expect(
+    root.locator(`td[data-label="${fields.message_count}"]`),
+  ).toHaveText(String(read.header.message_count));
+  await expect(
     root.locator(`td[data-label="${fields.reuse_count}"]`),
   ).toHaveText(String(read.header.reuse_count));
   // Column choices persist across navigation, so Subagents is still shown here.
@@ -273,6 +283,70 @@ test("the list shows root sessions only, toggles subagent runs, sorts on the ser
   await root.getByRole("link", { name: new RegExp(rootTitle) }).click();
   await expect(page).toHaveURL(new RegExp(`${paths.session(data.sessionId)}$`));
   await expect(page.getByTestId("session-header")).toContainText(rootTitle);
+  expect(errors).toEqual([]);
+});
+
+// @req R-DASH-41
+test("the Messages column is on by default and its header sorts by message count on the server both ways", async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto(paths.sessions);
+  const list = page.getByRole("table", { name: labels.list.label });
+  await expect(list).toBeVisible();
+  await settled(page);
+  const counts = async () =>
+    (
+      await rows(page)
+        .locator(`td[data-label="${fields.message_count}"]`)
+        .allTextContents()
+    ).map((text) => Number(text.replace(/\D/g, "")));
+  // Every row states its count without a visit to the column chooser.
+  const shown = await counts();
+  expect(shown.length).toBe(await rows(page).count());
+  expect(shown.every(Number.isFinite)).toBe(true);
+  // Phones stack the rows and hide the sortable headers.
+  if (!wideLayout(page)) {
+    expect(errors).toEqual([]);
+    return;
+  }
+  const header = page.getByRole("columnheader", {
+    name: fields.message_count,
+    exact: true,
+  });
+  await expect(header).toBeVisible();
+  await expect(header).toHaveCSS("text-align", "right");
+  await expect(header).not.toHaveAttribute("aria-sort", /.+/);
+  const sortedResponse = () =>
+    page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/v1/sessions" &&
+        url.searchParams.get("sort") === "message_count"
+      );
+    });
+  const ordered = (values: number[], order: string | null) =>
+    [...values].sort((left, right) =>
+      order === "asc" ? left - right : right - left,
+    );
+  // The first click picks a direction, the second flips it; rows follow the server each time.
+  const seen: (string | null)[] = [];
+  for (const click of [1, 2]) {
+    const pending = sortedResponse();
+    await header.getByRole("button").click();
+    const response = await pending;
+    expect(response.ok(), String(click)).toBe(true);
+    const order = new URL(response.url()).searchParams.get("order");
+    seen.push(order);
+    await expect(header).toHaveAttribute(
+      "aria-sort",
+      order === "asc" ? "ascending" : "descending",
+    );
+    await settled(page);
+    const values = await counts();
+    expect(values).toEqual(ordered(values, order));
+  }
+  expect(new Set(seen)).toEqual(new Set(["asc", "desc"]));
   expect(errors).toEqual([]);
 });
 
@@ -812,9 +886,13 @@ test("subagent runs load their messages inline and the child page links to its r
   );
   // Inline child messages never take the page-level ids, so deep links stay unambiguous.
   await expect(block.getByTestId(/^session-message-\d+$/)).toHaveCount(0);
-  await expect(block).not.toContainText("return persist(batch)");
-  await switchNamed(page, labels.detail.transcript.expandTools).click();
+  // A collapsed call shows the first line of its result; the full output waits for the
+  // Expand tool calls switch.
   await expect(block).toContainText("return persist(batch)");
+  await expect(block).not.toContainText(labels.detail.transcript.output);
+  await switchNamed(page, labels.detail.transcript.expandTools).click();
+  await expect(block).toContainText(labels.detail.transcript.output);
+  await expect(block.locator("pre")).toContainText("return persist(batch)");
   await expect(block).not.toContainText(labels.detail.subagents.gap);
   expect(
     await page.evaluate(
@@ -938,13 +1016,14 @@ test("the Reuse card lists who read this session and what it read", async ({
   ).toBeVisible();
 });
 
-// @req R-DASH-03 @req R-DASH-06 @req R-DASH-12
-test("long transcripts and raw records page in bounded steps and deep links start near the message", async ({
+// @req R-DASH-03 @req R-DASH-06 @req R-DASH-12 @req R-DASH-39
+test("long transcripts load in few concurrent 256 KB pages, raw records page in bounded steps and deep links start near the message", async ({
   page,
   request,
 }) => {
   const data = await fixture();
   const total = 120;
+  // About 3 KB per message, so the transcript (about 360 KB) spans more than one page.
   // The session has ended, so nothing follows its tail and the first page stays put.
   const id = await ingest(request, data, {
     ...freshEnvelope(
@@ -952,7 +1031,7 @@ test("long transcripts and raw records page in bounded steps and deep links star
       Array.from({ length: total }, (_, pos) =>
         userRecord(
           pos,
-          `Long transcript message ${String(pos)} ${"context ".repeat(12)}`,
+          `Long transcript message ${String(pos)} ${"context ".repeat(384)}`,
         ),
       ),
     ),
@@ -960,6 +1039,20 @@ test("long transcripts and raw records page in bounded steps and deep links star
     nativeEvent: "SessionEnd",
   });
   await waitForPublished(page, id);
+  // Every transcript read the page makes, with how many were in flight at once.
+  const reads: string[] = [];
+  const inFlight = { now: 0, max: 0 };
+  const isRead = (url: string) =>
+    new URL(url).pathname === `/api/v1/sessions/${id}`;
+  page.on("request", (sent) => {
+    if (!isRead(sent.url())) return;
+    reads.push(sent.url());
+    inFlight.now += 1;
+    inFlight.max = Math.max(inFlight.max, inFlight.now);
+  });
+  page.on("requestfinished", (sent) => {
+    if (isRead(sent.url())) inFlight.now -= 1;
+  });
   await page.goto(paths.session(id));
   const transcript = page.getByTestId("session-transcript");
   const loaded = transcript.getByTestId(/^session-message-\d+$/);
@@ -970,40 +1063,43 @@ test("long transcripts and raw records page in bounded steps and deep links star
   await expect(
     switchNamed(page, labels.detail.transcript.followLatest),
   ).toHaveCount(0);
-  // `get` pages are byte-bounded, so the first page stops well before the last message.
-  // The button relabels itself while a page loads, so match both labels.
-  const more = page.getByRole("button", {
-    name: new RegExp(
-      `^(?:${escapeRegExp(labels.detail.transcript.loadMore)}|${escapeRegExp(labels.detail.transcript.loading)})$`,
-    ),
-  });
-  await expect(more).toBeVisible();
-  const firstPage = await loaded.count();
-  expect(firstPage).toBeGreaterThan(1);
-  expect(firstPage).toBeLessThan(total);
-  await expect(message(page, total - 1)).toHaveCount(0);
+  // The whole transcript arrives without a click: the head page, then the remaining seq
+  // ranges with at most three requests in flight, each rendered as it lands.
+  await expect(loaded).toHaveCount(total, { timeout: 30_000 });
   await expect(
     page.getByText(
-      `${String(firstPage)}${copy.app.common.fractionSeparator}${String(total)} ${labels.detail.transcript.loaded}`,
+      `${String(total)}${copy.app.common.fractionSeparator}${String(total)} ${labels.detail.transcript.loaded}`,
       { exact: true },
     ),
   ).toBeVisible();
-  // Bringing the control into view loads the next page; no click is needed, and each
-  // step stays one bounded page.
-  for (let pages = 1; (await more.count()) > 0; pages++) {
-    expect(pages).toBeLessThan(20);
-    const before = await loaded.count();
-    await more.scrollIntoViewIfNeeded();
-    await expect
-      .poll(
-        async () =>
-          (await more.count()) === 0 || (await loaded.count()) > before,
-        { timeout: 15_000 },
-      )
-      .toBe(true);
-  }
+  await expect(
+    page.getByRole("button", {
+      name: new RegExp(
+        `^(?:${escapeRegExp(labels.detail.transcript.loadMore)}|${escapeRegExp(labels.detail.transcript.loading)})$`,
+      ),
+    }),
+  ).toHaveCount(0);
+  expect(reads.length).toBeGreaterThan(1);
+  expect(reads.length).toBeLessThanOrEqual(4);
+  expect(inFlight.max).toBeLessThanOrEqual(3);
+  expect(
+    reads.every((url) => new URL(url).searchParams.get("page_bytes")),
+  ).toEqual(true);
+  expect(
+    new Set(reads.map((url) => new URL(url).searchParams.get("page_bytes"))),
+  ).toEqual(new Set(["262144"]));
+  // Only the head page computes the session header; every range reads messages only.
+  const headers = reads.map((url) => new URL(url).searchParams.get("header"));
+  expect(headers[0]).toBeNull();
+  expect(headers.slice(1)).toEqual(headers.slice(1).map(() => "false"));
+  // The transcript shows every kind, META included; an agent's default read leaves META out.
+  expect(
+    reads.every((url) =>
+      new URL(url).searchParams.getAll("kinds[]").includes("META"),
+    ),
+  ).toBe(true);
+  await message(page, total - 1).scrollIntoViewIfNeeded();
   await expect(message(page, total - 1)).toBeVisible();
-  await expect(loaded).toHaveCount(total);
 
   await page.getByTestId("session-tab-raw").click();
   const raw = page.getByLabel(labels.detail.raw.label, { exact: true });
@@ -1045,6 +1141,40 @@ test("long transcripts and raw records page in bounded steps and deep links star
   await expect(
     page.getByText(labels.detail.transcript.startedFrom),
   ).toHaveCount(0);
+});
+
+// @req R-GET-02 @req R-DASH-39
+test("a message longer than one slice arrives bounded and the rest loads on demand", async ({
+  page,
+  request,
+}) => {
+  const data = await fixture();
+  // 80 KB of prompt: more than the 64 KB slice a 256 KB page carries for one message.
+  const marker = "END-OF-THE-LONG-PROMPT";
+  const id = await ingest(request, data, {
+    ...freshEnvelope(data, [
+      userRecord(0, "Before the long prompt."),
+      userRecord(1, `${"context ".repeat(10240)}${marker}`),
+      userRecord(2, "After the long prompt."),
+    ]),
+    behavior: "end",
+    nativeEvent: "SessionEnd",
+  });
+  await waitForPublished(page, id);
+  await page.goto(paths.session(id));
+  // Every message is on the page; the long one is bounded, not the transcript.
+  await expect(message(page, 2)).toContainText("After the long prompt.");
+  const long = message(page, 1);
+  await expect(long).toContainText(labels.detail.transcript.longMessage);
+  await expect(long).not.toContainText(marker);
+  await long
+    .getByRole("button", {
+      name: labels.detail.transcript.showRest,
+      exact: true,
+    })
+    .click();
+  await expect(long).toContainText(marker, { timeout: 20_000 });
+  await expect(long).not.toContainText(labels.detail.transcript.longMessage);
 });
 
 // @req R-DASH-38
@@ -1181,6 +1311,19 @@ for (const theme of ["dark", "light"] as const)
     ).toBeVisible();
     await settled(page);
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    await accessible(page);
+    // Every summary field the chooser offers still fits once turned on.
+    for (const column of [
+      fields.harness,
+      fields.model,
+      fields.installation_hostname,
+      labels.list.duration,
+      fields.tool_call_count,
+      fields.observed_commit_count,
+      fields.reuse_count,
+      labels.list.subagentCount,
+    ])
+      await showColumn(page, column);
     await accessible(page);
     await page.getByTestId("sessions-add-filter").click();
     await expect(

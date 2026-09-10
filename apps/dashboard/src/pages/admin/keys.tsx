@@ -57,6 +57,7 @@ export function AdminKeysPage() {
         accessorFn: ownerLabel,
         header: text.owner,
         enableSorting: false,
+        size: 170,
         cell: ({ row }) => ownerLabel(row.original),
       },
       ...shared,

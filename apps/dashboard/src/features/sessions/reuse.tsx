@@ -35,6 +35,7 @@ function reuseColumns(direction: "by" | "from"): ColumnDef<ReuseEdge>[] {
       accessorFn: (row) => row[`${peer}_title`],
       header: labels.session,
       enableHiding: false,
+      size: 180,
       cell: ({ row }) => (
         <Link
           to="/app/sessions/$id"
@@ -49,9 +50,10 @@ function reuseColumns(direction: "by" | "from"): ColumnDef<ReuseEdge>[] {
       accessorKey: "reader_email",
       header: labels.reader,
       enableHiding: false,
+      size: 200,
       cell: ({ row }) => (
         <span className="flex min-w-0 flex-col">
-          <span className="truncate">{row.original.reader_email}</span>
+          <span>{row.original.reader_email}</span>
           <span className="text-xs text-muted">
             {harnessLabel(row.original.reader_harness)}
           </span>
@@ -62,11 +64,11 @@ function reuseColumns(direction: "by" | "from"): ColumnDef<ReuseEdge>[] {
       accessorKey: "read_at",
       header: labels.when,
       enableHiding: false,
+      size: 80,
       cell: ({ row }) => (
         <time
           dateTime={row.original.read_at}
           title={dateTime(row.original.read_at)}
-          className="whitespace-nowrap"
         >
           {relativeTime(row.original.read_at)}
         </time>

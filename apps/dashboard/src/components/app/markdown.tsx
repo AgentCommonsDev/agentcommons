@@ -191,7 +191,12 @@ export function Markdown({
             </a>
           ),
           table: ({ children }) => (
-            <div className="my-2 overflow-x-auto" tabIndex={0}>
+            // Author-written columns may be wider than the page; they scroll here.
+            <div
+              className="my-2 overflow-x-auto"
+              tabIndex={0}
+              data-table-layout="scroll-x"
+            >
               <table>{children}</table>
             </div>
           ),

@@ -44,7 +44,7 @@ export class SimilarService {
             `SELECT ${sessionColumns.map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")} FROM api_ro.similar_sessions(source={source:UUID},max_rows={max_rows:UInt32}) nearest JOIN api_ro.sessions s USING(session_id) ORDER BY nearest.distance,nearest.session_id`,
             { source: id, max_rows: request.max_rows },
           );
-          const sessions = await sessionHeaders(client, rows.rows);
+          const sessions = await sessionHeaders(client, caller, rows.rows);
           return similarOutputSchema.parse({ sessions });
         });
       },

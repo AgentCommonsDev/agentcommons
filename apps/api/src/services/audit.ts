@@ -201,6 +201,9 @@ export async function auditFailure(
               "OPERATION_FAILED",
               "The operation could not be completed.",
             );
+  // The client sees the generic message; the adapter logs `cause` so operators can tell a
+  // trace-database time limit from a lock timeout without request bodies ever being logged.
+  if (failure !== error && failure.cause === undefined) failure.cause = error;
   if (!failure.audited) {
     await audit.write(context, {
       ...description,

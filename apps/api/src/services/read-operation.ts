@@ -1,6 +1,7 @@
 import type { CallerContext } from "@agentcommons/core";
 import type { PrismaClient } from "@agentcommons/db";
 import type { TraceReaders } from "@agentcommons/traces";
+import { traceReadFailure } from "../repositories/read-failure.js";
 import {
   auditFailure,
   type AuditDescription,
@@ -53,6 +54,13 @@ export async function readOperation<T>(
       }),
     };
   } catch (error) {
-    return auditFailure(audit, context, description, error);
+    // Known trace-read limits and busy databases get their stable retryable codes (§7.4,
+    // §7.5); anything else stays an unexpected OPERATION_FAILED with its logged cause.
+    return auditFailure(
+      audit,
+      context,
+      description,
+      traceReadFailure(error) ?? error,
+    );
   }
 }

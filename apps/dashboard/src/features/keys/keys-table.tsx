@@ -33,6 +33,7 @@ export function keyColumns(
     {
       accessorKey: "name",
       header: fieldLabel("name"),
+      size: 200,
       cell: ({ row }) => (
         <span className="font-medium">{nameText(row.original)}</span>
       ),
@@ -41,6 +42,7 @@ export function keyColumns(
       id: "permissions",
       header: fieldLabel("permissions"),
       enableSorting: false,
+      size: 160,
       accessorFn: (row) => permissionSummary(row.permissions),
       cell: ({ row }) => (
         <PermissionBadges permissions={row.original.permissions} />
@@ -49,11 +51,13 @@ export function keyColumns(
     {
       accessorKey: "created_at",
       header: fieldLabel("created_at"),
+      size: 120,
       cell: ({ row }) => dateTime(row.original.created_at),
     },
     {
       accessorKey: "expires_at",
       header: fieldLabel("expires_at"),
+      size: 110,
       cell: ({ row }) =>
         row.original.expires_at === null
           ? copy.keys.list.never
@@ -62,6 +66,7 @@ export function keyColumns(
     {
       accessorKey: "last_used_at",
       header: fieldLabel("last_used_at"),
+      size: 100,
       cell: ({ row }) =>
         row.original.last_used_at === null
           ? copy.keys.list.never
@@ -70,6 +75,7 @@ export function keyColumns(
     {
       accessorKey: "enabled",
       header: fieldLabel("status"),
+      size: 80,
       cell: ({ row }) => (
         <Badge variant={row.original.enabled ? "success" : "neutral"}>
           {row.original.enabled
@@ -82,6 +88,7 @@ export function keyColumns(
       accessorKey: "prefix",
       header: fieldLabel("prefix"),
       enableSorting: false,
+      size: 100,
       cell: ({ row }) => (
         <span className="font-mono text-xs">
           {textValue(row.original.prefix)}
@@ -92,6 +99,7 @@ export function keyColumns(
       accessorKey: "id",
       header: fieldLabel("id"),
       enableSorting: false,
+      size: 220,
       cell: ({ row }) => (
         <span className="inline-flex items-center gap-1 font-mono text-xs">
           {row.original.id}
@@ -122,8 +130,10 @@ export function KeysTable({ onCreate }: { onCreate: () => void }) {
         header: copy.app.common.actions,
         enableSorting: false,
         enableHiding: false,
+        // Copy and Revoke share the cell and wrap under each other where it is narrow.
+        size: 120,
         cell: ({ row }) => (
-          <span className="inline-flex items-center gap-1">
+          <span className="flex flex-wrap items-center gap-1">
             {row.original.enabled && <CopyKeyButton keyId={row.original.id} />}
             <Button
               variant="ghost"

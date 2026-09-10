@@ -100,6 +100,22 @@ export const auditColumns = {
   duration_ms: "UInt32",
   detail: "String",
 } as const;
+/**
+ * One API read credited to a session active on the calling installation (ADR 0060). The
+ * audit projection writes these; `api_ro.reuse_edges` and its aggregates read them.
+ * `target_session_id` is the zero UUID when the call named no session.
+ */
+export const sessionReadColumns = {
+  organization_id: "String",
+  session_id: "UUID",
+  audit_id: "UUID",
+  read_at: "DateTime64(6, 'UTC')",
+  action: "LowCardinality(String)",
+  target_session_id: "UUID",
+  reader_user_id: "Nullable(String)",
+  reader_email: "Nullable(String)",
+  reader_harness: "LowCardinality(String)",
+} as const;
 export const chunkColumns = {
   organization_id: "String",
   session_id: "UUID",

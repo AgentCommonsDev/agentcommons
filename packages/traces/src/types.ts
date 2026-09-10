@@ -153,3 +153,16 @@ export const traceAuditSchema = z.object({
   detail: jsonValueSchema,
 });
 export type TraceAudit = z.infer<typeof traceAuditSchema>;
+/** One `session_reads` row: an audit read credited to the session active on its installation. */
+export const traceSessionReadSchema = z.object({
+  organization_id: z.string().min(1),
+  session_id: z.uuid(),
+  audit_id: z.uuid(),
+  read_at: z.date(),
+  action: z.string().min(1),
+  target_session_id: z.uuid(),
+  reader_user_id: z.string().nullable(),
+  reader_email: z.string().nullable(),
+  reader_harness: z.string().min(1),
+});
+export type TraceSessionRead = z.infer<typeof traceSessionReadSchema>;

@@ -11,12 +11,14 @@ import type {
   PrismaClient,
   User,
 } from "@agentcommons/db";
+import { defaultKeyHasher } from "@agentcommons/db/auth-plugins";
 import {
   emailDomainAllowed,
   type IdentityPolicy,
   type NativeAuth,
 } from "./config.js";
 import { ServiceError } from "../services/context.js";
+import { authUnavailableError } from "./failure.js";
 import { keyInstallation } from "./installation.js";
 
 export const userIdentitySchema = z.object({
@@ -87,6 +89,51 @@ export function activeMembership<
   return { user, member };
 }
 
+const invalidKey = (): ServiceError =>
+  new ServiceError(
+    401,
+    "INVALID_API_KEY",
+    "The API key is invalid, expired, or revoked.",
+  );
+/** Verdicts Better Auth reaches only after it found the key row; the lookup completed. */
+const completedKeyVerdicts = new Set([
+  "KEY_NOT_FOUND",
+  "KEY_DISABLED",
+  "KEY_EXPIRED",
+]);
+type VerifiedKey = NonNullable<
+  Awaited<ReturnType<NativeAuth["api"]["verifyApiKey"]>>["key"]
+>;
+/**
+ * The key row for a secret, or the caller's 401 when the lookup completed and found
+ * none. Better Auth reports an exception inside its own lookup (a statement timeout, an
+ * exhausted pool) as `INVALID_API_KEY`, the same code as a missing key, so that negative
+ * is confirmed against the stored digest: a missing row is a rejection, an existing row
+ * or a failed lookup is `AUTH_UNAVAILABLE` (§9.2).
+ */
+async function verifyKey(
+  db: PrismaClient | Prisma.TransactionClient,
+  auth: NativeAuth,
+  secret: string,
+): Promise<VerifiedKey> {
+  const verified = await auth.api.verifyApiKey({ body: { key: secret } });
+  if (verified.valid && verified.key) return verified.key;
+  const code = verified.error?.code ?? null;
+  if (code !== null && completedKeyVerdicts.has(code)) throw invalidKey();
+  if (code === "INVALID_API_KEY") {
+    const existing = await db.apikey.findFirst({
+      where: { key: await defaultKeyHasher(secret) },
+      select: { id: true },
+    });
+    if (existing === null) throw invalidKey();
+  }
+  throw authUnavailableError(
+    new Error(
+      `API key verification did not complete (${code ?? "no verdict"}).`,
+    ),
+  );
+}
+
 /** Browser sessions act with their membership role; owners and admins also hold admin authority. */
 export function cookieCaller(
   member: Pick<Member, "organizationId" | "userId" | "role">,
@@ -132,14 +179,7 @@ export async function identityFromHeaders(
         "INVALID_API_KEY",
         "Provide a valid organization API key.",
       );
-    const verified = await auth.api.verifyApiKey({ body: { key: secret } });
-    if (!verified.valid || !verified.key)
-      throw new ServiceError(
-        401,
-        "INVALID_API_KEY",
-        "The API key is invalid, expired, or revoked.",
-      );
-    const key = verified.key;
+    const key = await verifyKey(db, auth, secret);
     const owner = await db.apiKeyOwner.findUnique({ where: { keyId: key.id } });
     if (!owner || owner.organizationId !== key.referenceId)
       throw new ServiceError(

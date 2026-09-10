@@ -80,42 +80,44 @@ export function ModerationPage() {
       {
         accessorKey: "title",
         header: fields.title,
+        size: 260,
         cell: ({ row }) => (
-          <span className="line-clamp-2 max-w-md font-medium">
+          <span className="line-clamp-2 font-medium">
             {row.original.title?.trim() || copy.app.common.untitledSession}
           </span>
         ),
       },
-      { accessorKey: "user_email", header: fields.user_email },
+      { accessorKey: "user_email", header: fields.user_email, size: 170 },
       {
         accessorKey: "repo_name",
         header: fields.repo_name,
+        size: 170,
         cell: ({ row }) =>
           row.original.repo_name ?? copy.app.common.unavailable,
       },
       {
         accessorKey: "harness",
         header: fields.harness,
+        size: 100,
         cell: ({ row }) => harnessLabel(row.original.harness),
       },
       {
         accessorKey: "started_at",
         header: fields.started_at,
-        cell: ({ row }) => (
-          <span className="whitespace-nowrap">
-            {dateTime(row.original.started_at)}
-          </span>
-        ),
+        size: 120,
+        cell: ({ row }) => dateTime(row.original.started_at),
       },
       {
         accessorKey: "status",
         header: fields.status,
+        size: 90,
         cell: ({ row }) => <StatusBadge value={row.original.status} />,
       },
       {
         accessorKey: "visibility",
         header: fields.visibility,
         enableSorting: false,
+        size: 90,
         cell: ({ row }) => (
           <StatusBadge
             value={row.original.purged_at ? "PURGED" : row.original.visibility}
@@ -125,17 +127,20 @@ export function ModerationPage() {
       {
         accessorKey: "message_count",
         header: fields.message_count,
+        size: 80,
         cell: ({ row }) => number(row.original.message_count),
       },
       {
         accessorKey: "branch",
         header: fields.branch,
+        size: 150,
         cell: ({ row }) => row.original.branch ?? copy.app.common.unavailable,
       },
       {
         accessorKey: "session_id",
         header: fields.session_id,
         enableSorting: false,
+        size: 220,
         cell: ({ row }) => (
           <span className="font-mono text-xs">{row.original.session_id}</span>
         ),

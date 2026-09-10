@@ -739,10 +739,12 @@ it("cancels a rescan whose key is revoked after native writes without blocking l
     where: { id: caller.apiKeyId ?? "" },
     data: { enabled: true },
   });
+  // A record is needed for a new revision: an empty sync records only its receipt (R-ING-19).
   const next = await ingest.execute(org.context, {
     ...envelope,
     batchId: randomUUID(),
-    records: [],
+    sourcePos: envelope.records.length,
+    records: [textRecord(envelope.records.length, "After the revoked scan")],
     cursor: "after-revoked-scan",
   });
   await projection.process(caller.organizationId, next.result.sessionId);
@@ -1054,7 +1056,14 @@ it("reclaims the rows superseded below the published revision at every tenth pub
     );
     sessionId = accepted.result.sessionId;
     await projection.process(caller.organizationId, sessionId);
-    expect((await control()).publishedRevision).toBe(BigInt(index + 1));
+    // The worker started earlier in this file may have reserved the same revision first;
+    // either publisher leaves exactly one new revision.
+    await expect
+      .poll(async () => (await control()).publishedRevision, {
+        timeout: 20_000,
+        interval: 50,
+      })
+      .toBe(BigInt(index + 1));
   };
   for (let index = 0; index < 9; index++) await publish(index);
   // Nine publishes left nine headers; nothing is reclaimed before the tenth revision.

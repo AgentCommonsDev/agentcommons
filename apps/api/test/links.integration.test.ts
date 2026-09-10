@@ -270,7 +270,7 @@ describe("persisted explicit harness relationships", () => {
     const header = await reader.get(first.context, {
       session_id: parent.result.sessionId,
     });
-    expect(header.result.header.children).toEqual([
+    expect(header.result.header?.children).toEqual([
       expect.objectContaining({
         session_id: created.result.sessionId,
         parent_tool_use_id: call?.tool_use_id,
@@ -279,7 +279,7 @@ describe("persisted explicit harness relationships", () => {
     const childHeader = await reader.get(first.context, {
       session_id: created.result.sessionId,
     });
-    expect(childHeader.result.header.parent_tool_use_id).toBe(
+    expect(childHeader.result.header?.parent_tool_use_id).toBe(
       call?.tool_use_id,
     );
     const tree = await reader.tree(first.context, parent.result.sessionId, {});

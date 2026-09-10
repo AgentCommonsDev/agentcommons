@@ -258,7 +258,7 @@ function OrganizationSwitcher({
     return (
       <span
         data-testid="organization-name"
-        className="flex h-9 max-w-[220px] items-center truncate px-2.5 text-sm font-medium"
+        className="flex h-9 min-w-0 max-w-[min(220px,40vw)] shrink items-center truncate px-2.5 text-sm font-medium"
       >
         {current?.name ?? copy.app.navigation.chooseOrganization}
       </span>
@@ -268,7 +268,7 @@ function OrganizationSwitcher({
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
-          className="h-9 max-w-[220px] justify-between gap-2 px-2.5 font-medium"
+          className="h-9 min-w-0 max-w-[min(220px,40vw)] shrink justify-between gap-2 px-2.5 font-medium"
           disabled={disabled}
           aria-label={copy.app.navigation.switchOrganization}
         >

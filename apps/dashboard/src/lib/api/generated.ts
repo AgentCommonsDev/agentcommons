@@ -3669,6 +3669,15 @@ export interface operations {
                 hit: boolean;
                 /** @description True when content is an excerpt of a longer message */
                 truncated: boolean;
+                /** @description Where the excerpt sits in the full content when truncated; null when content is complete. Read the rest with get(session_id, cursor: {seq, offset: start}) */
+                content_range: {
+                  /** @description First UTF-8 byte of the excerpt inside the full content */
+                  start: number;
+                  /** @description Byte after the excerpt's last byte */
+                  end: number;
+                  /** @description UTF-8 bytes of the full content */
+                  total: number;
+                } | null;
                 /**
                  * @description Fields shortened to fit the response
                  * @default []
@@ -4414,8 +4423,14 @@ export interface operations {
           /** @description Byte offset inside that message's content */
           offset: number;
         } | null;
+        /** @description Message kinds to return, in seq order. Left out: META, the harness's housekeeping records (tool listings, skill listings, reminders); list it to read them. Default TEXT, THINKING, TOOL_USE, TOOL_RESULT */
+        kinds?: ("TEXT" | "THINKING" | "TOOL_USE" | "TOOL_RESULT" | "META")[];
         /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
+        /** @description Response budget of one page in bytes, 32768 to 262144; each message slice is bounded to one eighth of it */
+        page_bytes?: number;
+        /** @description Compute and return the session header; false answers header: null for a reader that already holds it, so a later page costs only its messages */
+        header?: boolean;
       };
       header?: never;
       path: {
@@ -4432,7 +4447,7 @@ export interface operations {
         };
         content: {
           "application/json": {
-            /** @description Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions */
+            /** @description Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions; null when the REST caller asked for messages only (header=false) */
             header: {
               /**
                * Format: uuid
@@ -4571,7 +4586,7 @@ export interface operations {
                * @description Top of this session's parent chain; equals session_id for a root session
                */
               root_session_id: string;
-            };
+            } | null;
             /** @description Messages in seq order within the requested range */
             messages: {
               /**
@@ -4588,7 +4603,7 @@ export interface operations {
               raw_record_id: string | null;
               /** @description Upload batch that delivered it */
               ingest_batch_id: string | null;
-              /** @description Position of the block within the session, ascending */
+              /** @description Position of the block within the session, ascending; counts every kind, so a read that leaves META out shows gaps */
               seq: number;
               /**
                * @description USER, ASSISTANT, TOOL_RESULT or SYSTEM
@@ -4602,7 +4617,7 @@ export interface operations {
               kind: "TEXT" | "THINKING" | "TOOL_USE" | "TOOL_RESULT" | "META";
               /** @description Redacted text of the block; tool results and metadata are stored as text */
               content: string;
-              /** @description Set when content continues beyond this page; pass it as cursor to read on */
+              /** @description Set when this message's content is bounded here; to read the rest, call get with from and to set to this seq and cursor set to this value */
               content_cursor: {
                 /** @description Message position (seq) to continue from */
                 seq: number;
@@ -4634,7 +4649,7 @@ export interface operations {
                */
               truncated_fields: string[];
             }[];
-            /** @description Cursor for the following page; null when the range is complete */
+            /** @description Cursor for the following page: the next message, or the rest of the last message when the range ends inside it; null when the range is complete */
             next: {
               /** @description Message position (seq) to continue from */
               seq: number;

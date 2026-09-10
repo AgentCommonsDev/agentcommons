@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
 import { z } from "zod";
+import { auroraDatabase } from "./aurora.js";
 import type { Secrets, SingleNodeSettings } from "./config.js";
 import {
   type AlarmDefinition,
@@ -164,85 +165,6 @@ export function singleNodeStack(
       : cloud && settings.clickhouseCloudPostgresTls === "require"
         ? "?sslmode=require"
         : "";
-  const databaseUrl = (user: string, password: string) =>
-    `postgres://${user}:${encodeURIComponent(password)}@db:5432/agentcommons`;
-  const fixed = {
-    COMPOSE_PROJECT_NAME: "agentcommons",
-    PUBLIC_URL: publicUrl,
-    TRACE_STORE: settings.traceStore,
-    // The hourly updater (ADR 0059) reads this from the rendered .env.
-    AUTO_UPDATE: settings.autoUpdate ? "true" : "false",
-    CLICKHOUSE_URL: cloud?.origin ?? "http://clickhouse:8123",
-    CLICKHOUSE_POSTGRES_PORT: "5432",
-    ...traceNames.runtime,
-    ...traceNames.migration,
-  };
-  const generated = [
-    "CLICKHOUSE_POSTGRES_HOST",
-    "POSTGRES_PASSWORD",
-    "DATABASE_MIGRATION_URL",
-    "DATABASE_URL",
-    "DATABASE_TRACE_CONTROL_URL",
-    "CLICKHOUSE_MIGRATION_PASSWORD",
-    "CLICKHOUSE_WRITER_PASSWORD",
-    "CLICKHOUSE_ACCESS_PASSWORD",
-    "CLICKHOUSE_READER_SECRET",
-    "BETTER_AUTH_SECRET",
-  ] as const;
-  const values = pulumi
-    .output({
-      master: secrets.masterPassword,
-      app: secrets.appPassword,
-      traceControl: secrets.traceControlPassword,
-      authSecret: secrets.authSecret,
-      clickhouseAdmin: secrets.clickhouseAdminPassword,
-      clickhouseWriter: policed(secrets.clickhouseWriterPassword),
-      clickhouseAccess: policed(secrets.clickhouseAccessPassword),
-      clickhouseReader: secrets.clickhouseReaderSecret,
-      clickhouseCloud: cloudPassword ?? pulumi.output(""),
-      additional: secrets.additional,
-      publicIp: address.publicIp,
-    })
-    .apply((secret) =>
-      z.record(z.string(), environmentValue).parse({
-        ...settings.environment,
-        ...secret.additional,
-        ...fixed,
-        CLICKHOUSE_POSTGRES_HOST: cloud ? secret.publicIp : "db",
-        POSTGRES_PASSWORD: secret.master,
-        DATABASE_MIGRATION_URL: databaseUrl("agentcommons", secret.master),
-        DATABASE_URL: databaseUrl("ac_app", secret.app),
-        DATABASE_TRACE_CONTROL_URL:
-          databaseUrl("ac_trace_control", secret.traceControl) + controlSuffix,
-        CLICKHOUSE_MIGRATION_PASSWORD: cloud
-          ? secret.clickhouseCloud
-          : secret.clickhouseAdmin,
-        CLICKHOUSE_WRITER_PASSWORD: secret.clickhouseWriter,
-        CLICKHOUSE_ACCESS_PASSWORD: secret.clickhouseAccess,
-        CLICKHOUSE_READER_SECRET: secret.clickhouseReader,
-        BETTER_AUTH_SECRET: secret.authSecret,
-      } satisfies Record<string, string>),
-    );
-  const keys = [
-    ...new Set([
-      ...Object.keys(settings.environment),
-      ...secrets.additionalKeys,
-      ...Object.keys(fixed),
-      ...generated,
-    ]),
-  ].sort();
-  const parameters = keys.map(
-    (key) =>
-      new aws.ssm.Parameter(`${name}-env-${key}`, {
-        name: `${parameterPath}/${key}`,
-        type: "SecureString",
-        value: pulumi.secret(
-          values.apply((record) => z.string().parse(record[key])),
-        ),
-        tags,
-      }),
-  );
-
   const security = new aws.ec2.SecurityGroup(name, {
     vpcId: vpc.id,
     description: "AgentCommons host: HTTP and HTTPS only; management via SSM",
@@ -281,6 +203,121 @@ export function singleNodeStack(
     ],
     tags,
   });
+  const alerts = alertTopic(name, tags, settings.alarmEmail);
+  // The control database is the Compose `db` container or, with `database.kind:
+  // aurora-serverless-v2`, an Aurora cluster the host, its migration and the local
+  // ClickHouse reach at the cluster endpoint over TLS (ADR 0063).
+  const managed =
+    settings.database.kind === "aurora-serverless-v2"
+      ? auroraDatabase({
+          name,
+          tags,
+          settings: settings.database,
+          vpcId: vpc.id,
+          subnetIds: subnets.ids,
+          availabilityZone: aws.ec2.getSubnetOutput({ id: subnetId })
+            .availabilityZone,
+          hostSecurityGroupId: security.id,
+          masterUsername: "agentcommons",
+          masterPassword: secrets.masterPassword,
+          alerts,
+        })
+      : undefined;
+  // node-postgres (pg-boss, the migration) verifies server certificates against Node's
+  // CA store unless told to follow libpq, whose `require` encrypts without verifying, as
+  // Prisma and ClickHouse do for the same URL. libpq itself rejects the unknown flag, so
+  // the runbook's psql and pg_restore calls strip it.
+  const databaseSuffix = managed ? "?sslmode=require&uselibpqcompat=true" : "";
+  const databaseUrl = (host: string, user: string, password: string) =>
+    `postgres://${user}:${encodeURIComponent(password)}@${host}:5432/agentcommons${databaseSuffix}`;
+  const fixed = {
+    COMPOSE_PROJECT_NAME: "agentcommons",
+    PUBLIC_URL: publicUrl,
+    TRACE_STORE: settings.traceStore,
+    // The hourly updater (ADR 0059) reads this from the rendered .env.
+    AUTO_UPDATE: settings.autoUpdate ? "true" : "false",
+    // The Compose stack parks its `db` service when the database lives elsewhere.
+    AGENTCOMMONS_DATABASE: managed ? "external" : "bundled",
+    CLICKHOUSE_URL: cloud?.origin ?? "http://clickhouse:8123",
+    CLICKHOUSE_POSTGRES_PORT: "5432",
+    ...traceNames.runtime,
+    ...traceNames.migration,
+  };
+  const generated = [
+    "CLICKHOUSE_POSTGRES_HOST",
+    "POSTGRES_PASSWORD",
+    "DATABASE_MIGRATION_URL",
+    "DATABASE_URL",
+    "DATABASE_TRACE_CONTROL_URL",
+    "CLICKHOUSE_MIGRATION_PASSWORD",
+    "CLICKHOUSE_WRITER_PASSWORD",
+    "CLICKHOUSE_ACCESS_PASSWORD",
+    "CLICKHOUSE_READER_SECRET",
+    "BETTER_AUTH_SECRET",
+  ] as const;
+  const values = pulumi
+    .output({
+      master: secrets.masterPassword,
+      app: secrets.appPassword,
+      traceControl: secrets.traceControlPassword,
+      authSecret: secrets.authSecret,
+      clickhouseAdmin: secrets.clickhouseAdminPassword,
+      clickhouseWriter: policed(secrets.clickhouseWriterPassword),
+      clickhouseAccess: policed(secrets.clickhouseAccessPassword),
+      clickhouseReader: secrets.clickhouseReaderSecret,
+      clickhouseCloud: cloudPassword ?? pulumi.output(""),
+      additional: secrets.additional,
+      publicIp: address.publicIp,
+      databaseHost: managed?.endpoint ?? pulumi.output("db"),
+    })
+    .apply((secret) =>
+      z.record(z.string(), environmentValue).parse({
+        ...settings.environment,
+        ...secret.additional,
+        ...fixed,
+        CLICKHOUSE_POSTGRES_HOST: cloud ? secret.publicIp : secret.databaseHost,
+        POSTGRES_PASSWORD: secret.master,
+        DATABASE_MIGRATION_URL: databaseUrl(
+          secret.databaseHost,
+          "agentcommons",
+          secret.master,
+        ),
+        DATABASE_URL: databaseUrl(secret.databaseHost, "ac_app", secret.app),
+        DATABASE_TRACE_CONTROL_URL:
+          databaseUrl(
+            secret.databaseHost,
+            "ac_trace_control",
+            secret.traceControl,
+          ) + controlSuffix,
+        CLICKHOUSE_MIGRATION_PASSWORD: cloud
+          ? secret.clickhouseCloud
+          : secret.clickhouseAdmin,
+        CLICKHOUSE_WRITER_PASSWORD: secret.clickhouseWriter,
+        CLICKHOUSE_ACCESS_PASSWORD: secret.clickhouseAccess,
+        CLICKHOUSE_READER_SECRET: secret.clickhouseReader,
+        BETTER_AUTH_SECRET: secret.authSecret,
+      } satisfies Record<string, string>),
+    );
+  const keys = [
+    ...new Set([
+      ...Object.keys(settings.environment),
+      ...secrets.additionalKeys,
+      ...Object.keys(fixed),
+      ...generated,
+    ]),
+  ].sort();
+  const parameters = keys.map(
+    (key) =>
+      new aws.ssm.Parameter(`${name}-env-${key}`, {
+        name: `${parameterPath}/${key}`,
+        type: "SecureString",
+        value: pulumi.secret(
+          values.apply((record) => z.string().parse(record[key])),
+        ),
+        tags,
+      }),
+  );
+
   // SSM manages the host; the CloudWatch agent (installed by the release step)
   // publishes memory and root disk usage for the alarms below.
   const { role, profile, attachments } = ec2InstanceRole(name, tags, {
@@ -383,7 +420,6 @@ export function singleNodeStack(
           "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole",
       }),
   });
-  const alerts = alertTopic(name, tags, settings.alarmEmail);
   // Status-check alarms also self-heal: a failed system check recovers the instance
   // onto new hardware (same volume, same address); a failed instance check reboots it.
   const automate = pulumi.interpolate`arn:aws:automate:${region}:ec2`;
@@ -481,5 +517,6 @@ export function singleNodeStack(
     releaseBucket: releases.bucket,
     parameterPath,
     region,
+    ...(managed ? { databaseEndpoint: managed.endpoint } : {}),
   };
 }

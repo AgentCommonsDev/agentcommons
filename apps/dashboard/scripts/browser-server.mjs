@@ -704,6 +704,7 @@ try {
     prisma: database.prisma,
     audit: database.audit,
     traces: database.traces,
+    readers: database.traceReaders,
   }).flush();
   const embeddingCookie = z
     .string()

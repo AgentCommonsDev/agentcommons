@@ -107,6 +107,7 @@ export function UsersPage() {
       {
         accessorKey: "email",
         header: copy.app.fields.email,
+        size: 200,
         cell: ({ row }) => (
           <span className="font-medium">{row.original.email}</span>
         ),
@@ -114,6 +115,7 @@ export function UsersPage() {
       {
         accessorKey: "name",
         header: copy.app.fields.name,
+        size: 150,
         cell: ({ row }) =>
           row.original.name && row.original.name !== row.original.email
             ? row.original.name
@@ -122,9 +124,10 @@ export function UsersPage() {
       {
         accessorKey: "role",
         header: copy.app.fields.role,
+        size: 130,
         cell: ({ row }) => (
           <RoleSelect
-            className="w-32"
+            className="w-full"
             label={text.roleSelect(row.original.email)}
             value={row.original.role}
             disabled={row.original.user_id === me.user.id}
@@ -138,6 +141,7 @@ export function UsersPage() {
       {
         accessorKey: "suspended",
         header: text.filterStatus,
+        size: 90,
         cell: ({ row }) => (
           <Badge variant={row.original.suspended ? "warning" : "success"}>
             {row.original.suspended ? text.suspended : text.active}
@@ -147,12 +151,14 @@ export function UsersPage() {
       {
         accessorKey: "created_at",
         header: text.addedAt,
+        size: 120,
         cell: ({ row }) => dateTime(row.original.created_at),
       },
       {
         accessorKey: "user_id",
         header: copy.app.fields.user_id,
         enableSorting: false,
+        size: 220,
         cell: ({ row }) => (
           <span className="inline-flex items-center gap-1 font-mono text-xs">
             {row.original.user_id}

@@ -12,11 +12,12 @@ ready_interval=${AGENTCOMMONS_READY_INTERVAL:-5}
 # The image that was running before an update; the rollback target.
 previous_tag=agentcommons:previous
 
-# setting KEY: one value from the stack's .env; surrounding single or double quotes are
-# stripped (the single-node stack quotes every value, .env.example quotes none).
+# setting KEY [FILE]: one value from the stack's .env (or another rendered env file);
+# surrounding single or double quotes are stripped (the single-node stack quotes every
+# value, .env.example quotes none).
 setting() {
   local value
-  value=$(sed -n "s/^$1=//p" "$app/.env" | tail -n 1)
+  value=$(sed -n "s/^$1=//p" "${2:-$app/.env}" | tail -n 1)
   case $value in
   \'*\')
     value=${value#\'}
@@ -108,6 +109,24 @@ stack_log=
 logged() {
   if [ -n "$stack_log" ]; then "$@" >>"$stack_log" 2>&1; else "$@"; fi
 }
+# stack_version: the AGENTCOMMONS_VERSION an on-host build stamps into the image: the
+# exported value, else the release archive's <name>.commit file in the stack (12 characters,
+# as the release workflow tags images), else the checkout's git HEAD, else "development".
+# Every fallback prints, so a build that would report "development" says why.
+stack_version() {
+  local commit_file version=${AGENTCOMMONS_VERSION:-}
+  if [ -z "$version" ]; then
+    commit_file=$(ls -1 "$app"/*.commit 2>/dev/null | head -n 1 || true)
+    if [ -n "$commit_file" ]; then
+      version=$(cut -c1-12 "$commit_file" | head -n 1)
+    elif version=$(git -C "$app" rev-parse --short=12 HEAD 2>/dev/null) && [ -n "$version" ]; then
+      :
+    else
+      version=development
+    fi
+  fi
+  printf '%s' "$version"
+}
 # stack_up MODE [LOG]: MODE pull fetches the configured image, build builds it from the
 # checkout, start uses what is already present. Then starts every service (the migration
 # runs before the API), waits for /ready and restarts Caddy when it is part of the stack so
@@ -119,7 +138,12 @@ stack_up() {
   # returns explicitly so a failed pull, build or start is reported as a failure.
   case $mode in
   pull) logged compose pull --quiet api || return 1 ;;
-  build) logged compose build --build-arg "AGENTCOMMONS_VERSION=${AGENTCOMMONS_VERSION:-development}" api || return 1 ;;
+  build)
+    local version
+    version=$(stack_version)
+    echo "Building the image with AGENTCOMMONS_VERSION=$version"
+    logged compose build --build-arg "AGENTCOMMONS_VERSION=$version" api || return 1
+    ;;
   start) ;;
   *)
     echo "stack_up: unknown mode $mode" >&2

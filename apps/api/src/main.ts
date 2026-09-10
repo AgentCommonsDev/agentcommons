@@ -104,7 +104,12 @@ export async function createRuntime(env: Env) {
     const dashboards = new DashboardService({ prisma, audit, query });
     const jobs: JobService = new JobService({
       traces: projection,
-      traceAudit: new TraceAuditProjectionService({ prisma, audit, traces }),
+      traceAudit: new TraceAuditProjectionService({
+        prisma,
+        audit,
+        traces,
+        readers,
+      }),
       dashboards,
       ...(billingMeter ? { billingMeter } : {}),
       authConfiguration: env.auth,

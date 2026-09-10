@@ -167,6 +167,12 @@ export const sessionsCopy = {
       files: "Files",
       raw: "Raw",
     },
+    /** Titles of the error notice for each part of the page, so a reader knows what failed. */
+    errors: {
+      header: "The session header failed to load.",
+      messages: "Messages failed to load.",
+      runs: "Subagent runs failed to load.",
+    },
     transcript: {
       label: "Transcript",
       find: "Find in loaded messages",
@@ -193,11 +199,12 @@ export const sessionsCopy = {
       toolCall: "Tool call",
       toolResult: "Tool result",
       toolResults: "results",
-      toolResultOne: "result",
       meta: "Metadata",
       input: "Input",
       output: "Output",
-      continues: "This message continues in the next page.",
+      longMessage: "This message is longer than one page.",
+      showRest: "Show the rest",
+      loadingRest: "Loading the rest…",
       tokens: "Tokens",
       source: "Source",
       empty_content: "(empty)",

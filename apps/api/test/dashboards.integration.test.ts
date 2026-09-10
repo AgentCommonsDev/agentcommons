@@ -288,8 +288,8 @@ it("ships the built-in Team overview as the default and renders its tiles with t
   expect(tileValue(inline, "fine")).toBe("1");
 });
 
-// @req R-DASH-25 @req R-DASH-29 @req R-RED-08
-it("saves organization-visible dashboards with creator/admin editing, revision conflicts, guard errors, defaults, redaction and MCP tools", async () => {
+// @req R-DASH-25 @req R-DASH-29 @req R-RED-08 @req R-DASH-40
+it("saves organization-visible dashboards with creator/admin editing, revision conflicts, guard errors, defaults, redaction and MCP tools with compact text", async () => {
   const created = await request("/dashboards", member, {
     method: "POST",
     body: { name: "Reuse focus", description: "Member view", definition },
@@ -475,6 +475,42 @@ it("saves organization-visible dashboards with creator/admin editing, revision c
       "captured_sessions",
     ),
   ).toBe("1");
+  // The text an agent reads: age, cache status and how to refresh, then rows (ADR 0064).
+  const textOf = (result: unknown) =>
+    z
+      .object({
+        content: z.array(
+          z.object({ type: z.literal("text"), text: z.string() }),
+        ),
+      })
+      .parse(result)
+      .content.map((part) => part.text)
+      .join("\n");
+  expect(textOf(rendered).startsWith("1 tile | rendered_at: ")).toBe(true);
+  expect(textOf(rendered)).toContain("cached: false (rendered just now)");
+  expect(textOf(rendered)).toContain("tile captured_sessions: 1 row\n");
+  const warm = {
+    name: "dashboard_render",
+    arguments: {
+      id: builtinDashboardId,
+      variables: { time_range: "14d" },
+      tiles: ["captured_sessions"],
+    },
+  };
+  await client.callTool(warm);
+  expect(textOf(await client.callTool(warm))).toContain(
+    "cached: true (served from the render cache, rendered just now; pass refresh: true to re-run the tiles)",
+  );
+  const listed = textOf(
+    await client.callTool({ name: "dashboard_list", arguments: {} }),
+  );
+  expect(listed).toMatch(/^\d+ dashboards \| default_id: /);
+  expect(listed).toContain(
+    `${saved.id} | Renamed by creator | 3 | editable | `,
+  );
+  expect(listed).toContain("tile templates for dashboard_save (id: title): ");
+  expect(listed).not.toContain('"properties"');
+  expect(listed.length).toBeLessThan(6000);
   const fetched = await client.callTool({
     name: "dashboard_get",
     arguments: { id: saved.id },
@@ -482,6 +518,14 @@ it("saves organization-visible dashboards with creator/admin editing, revision c
   expect(dashboardSchema.parse(fetched.structuredContent).name).toBe(
     "Renamed by creator",
   );
+  expect(
+    textOf(fetched).startsWith(
+      `id: ${saved.id} | name: Renamed by creator | revision: `,
+    ),
+  ).toBe(true);
+  expect(textOf(fetched)).toContain("id | type | title | layout | details");
+  expect(textOf(fetched).split("sql captured_sessions:\n")).toHaveLength(2);
+  expect(textOf(fetched)).not.toContain('"encode"');
   expect(
     (
       await client.callTool({
@@ -509,7 +553,7 @@ it("saves organization-visible dashboards with creator/admin editing, revision c
 });
 
 // @req R-DASH-32
-it("serves saved dashboard renders from the cache for an hour per caller scope, revision and variables, keeps serving them across new data until a refresh, and never caches inline definitions", async () => {
+it("serves saved dashboard renders from the cache for an hour per caller scope, revision and variables, misses once a new session is published or on refresh, and never caches inline definitions", async () => {
   const body = { id: builtinDashboardId, variables: { time_range: "30d" } };
   const initial = await render(member, body);
   expect(initial.cached, "first render").toBe(false);
@@ -542,20 +586,22 @@ it("serves saved dashboard renders from the cache for an hour per caller scope, 
   ).toEqual(["captured_sessions"]);
   expect(subset.cached, "tile subset hit").toBe(true);
   expect(subset.rendered_at, "tile subset run").toBe(second.rendered_at);
-  // New data does not invalidate: the entry stays valid until it is refreshed,
-  // pre-rendered or expires, so the new session shows only after a refresh.
+  // A newly published session moves the organization's session version, so the next
+  // render misses and shows it (ADR 0064); the entry then serves again until a refresh.
   await ingestSession("https://github.com/rek7/agentcommons-cache.git");
-  const stale = await render(member, body);
-  expect(stale.cached, "after new data").toBe(true);
-  expect(tileValue(stale, "captured_sessions")).toBe(
-    tileValue(initial, "captured_sessions"),
+  const current = await render(member, body);
+  expect(current.cached, "after a new session").toBe(false);
+  expect(current.rendered_at > initial.rendered_at).toBe(true);
+  expect(Number(tileValue(current, "captured_sessions"))).toBe(
+    Number(tileValue(initial, "captured_sessions")) + 1,
   );
-  // refresh re-runs and replaces the entry.
+  expect((await render(member, body)).cached, "settled").toBe(true);
+  // refresh re-runs and replaces the entry even without new data.
   const refreshed = await render(member, { ...body, refresh: true });
   expect(refreshed.cached, "refresh").toBe(false);
-  expect(refreshed.rendered_at > initial.rendered_at).toBe(true);
-  expect(Number(tileValue(refreshed, "captured_sessions"))).toBe(
-    Number(tileValue(initial, "captured_sessions")) + 1,
+  expect(refreshed.rendered_at > current.rendered_at).toBe(true);
+  expect(tileValue(refreshed, "captured_sessions")).toBe(
+    tileValue(current, "captured_sessions"),
   );
   expect((await render(member, body)).rendered_at).toBe(refreshed.rendered_at);
   // Inline definitions are never cached.
@@ -783,7 +829,7 @@ it("caches saved dashboards per tile: an errored tile is returned but not cached
         failOnce = false;
         throw new ServiceError(
           400,
-          "159",
+          "READ_TIME_LIMIT",
           "The query exceeded its time limit. Narrow the query and try again.",
         );
       }
@@ -797,7 +843,7 @@ it("caches saved dashboards per tile: an errored tile is returned but not cached
       initial.tiles.map((tile) => [tile.id, tile.error?.code ?? null]),
     ).toEqual([
       ["captured_sessions", null],
-      ["sessions_per_day", "159"],
+      ["sessions_per_day", "READ_TIME_LIMIT"],
     ]);
     expect(initial.tiles[1]?.error?.message).toContain(
       "exceeded its time limit",

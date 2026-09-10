@@ -26,8 +26,11 @@ import {
   type TraceTable,
 } from "./schema.js";
 import { emptyTraceRow, traceWire, validateTraceRow } from "./rows.js";
+import { SESSION_READS_TABLE } from "./reads.js";
 import {
   traceAuditSchema,
+  traceSessionReadSchema,
+  type TraceSessionRead,
   traceEmbeddingChunkSchema,
   traceEmbeddingVectorSchema,
   traceEmbeddingWriteSchema,
@@ -54,6 +57,7 @@ const pageInput = z.object({
   after: z.string().nullable(),
   limit: z.number().int().min(1).max(1000),
 });
+const backfillName = z.string().regex(/^[a-z][a-z0-9_]*$/);
 const jsonText = z
   .string()
   .transform((value) => jsonValueSchema.parse(JSON.parse(value)));
@@ -607,6 +611,40 @@ export class TraceRepository {
         values,
         format: "JSONEachRow",
       });
+  }
+  /** Reads the audit projection credited to active sessions; the key dedupes a retried flush. */
+  async appendSessionReads(rows: readonly TraceSessionRead[]): Promise<void> {
+    const values = rows.map(
+      (row) =>
+        traceWire(traceSessionReadSchema.parse(row)) as Record<string, unknown>,
+    );
+    if (values.length)
+      await this.client.insert({
+        table: `${this.config.database}.${SESSION_READS_TABLE}`,
+        values,
+        format: "JSONEachRow",
+      });
+  }
+  /** Whether the named one-time derivation has run to completion on this corpus. */
+  async backfillCompleted(name: string): Promise<boolean> {
+    const result = await queryTrace(
+      this.client,
+      `SELECT count() AS count FROM ${sqlIdentifier(this.config.database)}.backfills FINAL WHERE name={name:String}`,
+      { name: backfillName.parse(name) },
+    );
+    return z.coerce.number().int().parse(result.rows[0]?.count) > 0;
+  }
+  async completeBackfill(name: string): Promise<void> {
+    await this.client.insert({
+      table: `${this.config.database}.backfills`,
+      values: [
+        {
+          name: backfillName.parse(name),
+          completed_at: new Date().toISOString(),
+        },
+      ],
+      format: "JSONEachRow",
+    });
   }
   async sessionCounts(scope: {
     organizationId: string;

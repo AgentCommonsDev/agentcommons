@@ -13,6 +13,9 @@ import {
 } from "better-auth/plugins/organization/access";
 import { apiKey } from "@better-auth/api-key";
 import { sso } from "@better-auth/sso";
+
+/** The digest Better Auth stores in `apikey.key`; identity resolution confirms a negative lookup with it. */
+export { defaultKeyHasher } from "@better-auth/api-key";
 import { stripe } from "@better-auth/stripe";
 
 const keyActions = ["create", "read", "update", "delete"] as const;

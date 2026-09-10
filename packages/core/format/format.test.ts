@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { formatGet, formatSearch, formatSql } from "./index.js";
+import { formatGet, formatMessage, formatSearch, formatSql } from "./index.js";
 import {
   messageSchema,
   type GetOutput,
+  type Message,
   type SessionHeader,
 } from "../schemas/get.js";
 import { searchOutputSchema, type SearchOutput } from "../schemas/search.js";
@@ -106,6 +107,7 @@ const search: SearchOutput = {
           content: "FAILED retry.test.ts",
           hit: true,
           truncated: true,
+          content_range: { start: 4096, end: 4396, total: 13745 },
           truncated_fields: [],
         },
       ],
@@ -120,8 +122,28 @@ describe("shared text and structured formatters", () => {
     const formatted = formatSearch(search);
     expect(formatted.structuredContent).toEqual(search);
     expect(formatted.text).toContain(`session_id: ${sessionId}`);
+    // @req R-SRCH-15: an excerpt names its byte range and marks both cut ends inline.
     expect(formatted.text).toContain(
-      "seq 2 TOOL_RESULT TOOL_RESULT tool_name=Bash tool_use_id=call-1 [hit] [truncated]",
+      "seq 2 TOOL_RESULT TOOL_RESULT tool_name=Bash tool_use_id=call-1 [hit] [truncated 4096-4396 of 13745]\n…FAILED retry.test.ts…",
+    );
+    const block0 = search.blocks[0];
+    const message0 = block0?.messages[0];
+    if (!block0 || !message0) throw new Error("fixture message");
+    const variants = (patch: Partial<typeof message0>) =>
+      formatSearch({
+        ...search,
+        blocks: [{ ...block0, messages: [{ ...message0, ...patch }] }],
+      }).text;
+    // The head of a message: no leading ellipsis; the tail: no trailing one.
+    expect(
+      variants({ content_range: { start: 0, end: 300, total: 900 } }),
+    ).toContain("[hit] [truncated 0-300 of 900]\nFAILED retry.test.ts…");
+    expect(
+      variants({ content_range: { start: 600, end: 900, total: 900 } }),
+    ).toContain("[truncated 600-900 of 900]\n…FAILED retry.test.ts\n");
+    // A complete message carries neither the flag nor a marker.
+    expect(variants({ truncated: false, content_range: null })).toContain(
+      "[hit]\nFAILED retry.test.ts\n",
     );
     expect(formatted.text).toContain('cursor: "next-search-page"');
     expect(formatted.text).not.toMatch(
@@ -172,18 +194,40 @@ describe("shared text and structured formatters", () => {
       }).text,
     ).toBe("0 hits in 0 sessions");
   });
-  // @req R-GET-03
-  it("includes every header fact, nullable usage, thinking, and message continuation", () => {
+  // @req R-GET-03 @req R-GET-06
+  it("includes every header fact an agent uses, nullable usage, thinking, and message continuation", () => {
     const formatted = formatGet(get);
     expect(formatted.structuredContent).toEqual(get);
     for (const key of Object.keys(header))
-      expect(formatted.text).toContain(`${key}:`);
+      if (key === "organization_id" || key === "installation_id")
+        expect(formatted.text).not.toContain(`${key}:`);
+      else expect(formatted.text).toContain(`${key}:`);
     expect(formatted.text).toContain("input_tokens: 9007199254740993");
     expect(formatted.text).toContain("reuse_count: 2");
     expect(formatted.text).toContain("output_tokens: null");
     expect(formatted.text).toContain("seq 2 ASSISTANT THINKING");
     expect(formatted.text).toContain('content_cursor: {"seq":2,"offset":4096}');
     expect(formatted.text).toContain('next: {"seq":2,"offset":4096}');
+    // Record and batch ids stay in the JSON; a message without recorded usage has no
+    // token line; a continuation page carries one header line, not the full header.
+    expect(formatted.text).not.toContain("raw_record_id");
+    expect(formatted.text).not.toContain("ingest_batch_id");
+    expect(formatted.text).toContain(
+      `message_id: ${get.messages[0]?.message_id ?? ""}`,
+    );
+    const quiet = formatMessage({
+      ...(get.messages[0] as Message),
+      input_tokens: null,
+      output_tokens: null,
+    });
+    expect(quiet).not.toContain("input_tokens");
+    const continued = formatGet(get, { continuation: true }).text;
+    expect(continued.startsWith(`session ${header.session_id} | title:`)).toBe(
+      true,
+    );
+    expect(continued).toContain("| continued");
+    expect(continued).not.toContain("repo_url:");
+    expect(continued).toContain("seq 2 ASSISTANT THINKING");
   });
   // @req R-GET-03
   it("names child sessions so agents can follow subagent runs", () => {
@@ -220,13 +264,14 @@ describe("shared text and structured formatters", () => {
     expect(formatGet(get).text).not.toContain("subagent_runs");
   });
   it("validates the message content byte bound", () => {
+    // One slice is at most a quarter of the largest page (256 KB): 64 KB (R-GET-02).
     const message = get.messages[0];
     expect(
-      messageSchema.safeParse({ ...message, content: "界".repeat(1365) })
+      messageSchema.safeParse({ ...message, content: "界".repeat(21845) })
         .success,
     ).toBe(true);
     expect(
-      messageSchema.safeParse({ ...message, content: "界".repeat(1366) })
+      messageSchema.safeParse({ ...message, content: "界".repeat(21846) })
         .success,
     ).toBe(false);
   });
@@ -249,7 +294,9 @@ describe("shared text and structured formatters", () => {
     expect(formatted.structuredContent).toEqual(result);
     expect(formatted.text).toContain("tokens (int8) | content (text)");
     expect(formatted.text).toContain("9007199254740993 | line1\\nline2\\|cell");
-    expect(formatted.text).toContain("2 rows (capped)");
+    expect(formatted.text).toContain(
+      "2 rows (capped). Add LIMIT/OFFSET to page.",
+    );
     expect(formatted.text).toContain("truncated_cells: [[0,1]]");
   });
 });

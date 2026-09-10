@@ -423,9 +423,12 @@ admission, quota decision, durable outbox and audit commit before acknowledgemen
 There is no partial batch admission. Projection is asynchronous; queued data is not
 claimed searchable. The durable outbox survives queue terminal failures and is removed
 only in the transaction publishing the complete ClickHouse revision.
-Errors: `401/403` (suspend and report), `409` (session owned by another user, or
+Errors: `401/403` (suspend and report, once the shim has confirmed the rejection with a
+second verdict, §6.2 step 3), `409` (session owned by another user, or
 tombstoned), `413` (split), `422` (permanently invalid record: quarantined client-side,
-other records accepted on resend without it), `429/5xx` (retry with backoff).
+other records accepted on resend without it), `429/5xx` (retry with backoff). A server
+that could not verify the key answers `503 AUTH_UNAVAILABLE` with `Retry-After` (§9.2),
+never a 401: an overloaded server is a retry, not a lost session.
 
 ### 5.2 Semantics
 
@@ -468,7 +471,29 @@ other records accepted on resend without it), `429/5xx` (retry with backoff).
   copy. An active-leaf change updates pi's displayed branch even without new records.
 - Admission uses one PostgreSQL transaction for the ownership/purge check, complete
   redacted batch, record identities, quota ledger, compact receipt, durable outbox,
-  queue intent and AuditEvent. `202` means that transaction committed.
+  queue intent and AuditEvent. `202` means that transaction committed. The transaction
+  has two phases. Redaction, parsing, deduplication against the session's admitted
+  identities, tool-result masking and shape validation run first under a per-session
+  accept lock only, so sessions of one organization redact concurrently and a retried
+  or taken-over batch waits for the accept in flight and then replays its receipt; a
+  replay takes no organization lock. The writes then take the organization row (the
+  membership and key recheck, the free-plan admission count of §9.6 and per-policy
+  counters of §5.3 depend on it), the exclusive publication fence and the session
+  control row, in that order, so the fence and organization row are held across the
+  control-row revision bump, receipt, outbox and queue intent only. Publication takes
+  the fence and the control row and never the organization row.
+- A `sync` batch that accepts no new record and changes neither lifecycle, normalizer
+  context nor parent link creates no revision and no outbox and takes no fence: it
+  commits its receipt (revision equal to the accepted revision it observed, published
+  when that revision is), the installation digest, `lastActivityAt` and the context
+  watermark, its audit row and a projection job; its `publication` reports whether the
+  session has published that revision. The worker appends such receipts to ClickHouse
+  at the current published revision as a receipt-only publication (fence and control
+  row, no rebuild) when no revision is pending, or with the pending publish otherwise,
+  so receipt-derived analytics (§10 active windows, the persisted lifecycle decision of
+  R-ING-07) see them on the worker's next run like any other receipt. Everything else
+  (`start`, `end`, new records, a changed pi leaf or Gemini document metadata, a new
+  parent hint) takes the full path.
 - A worker claims a bounded source revision and reconstructs the canonical session
   from redacted raw records and receipt observations. It writes only changed native
   messages/files plus the complete header to ClickHouse. Older versions remain
@@ -486,8 +511,11 @@ other records accepted on resend without it), `429/5xx` (retry with backoff).
   acknowledged does a PostgreSQL transaction advance the published revision, mark
   receipts published, remove the corresponding outboxes, and schedule embeddings.
   Readers hold a shared publication fence; publication, visibility, purge and redaction
-  generation changes take its exclusive counterpart. Partial writes and failed
-  publication checkpoints remain invisible and retry with stable identities.
+  generation changes take its exclusive counterpart, and accept holds it across its
+  control-row revision bump, receipt, outbox and queue intent. Every writer takes the
+  fence before any session control row, and the organization row before the fence when
+  it needs both. Partial writes and failed publication checkpoints remain invisible and
+  retry with stable identities.
 - Durable outbox recovery does not depend on a surviving queue job. A failed worker
   leaves the last published revision readable; status exposes queued, waiting-source
   and failed projections separately from completed publication.
@@ -514,7 +542,12 @@ Matches from both native scans merge before replacement/counting; overlaps count
 and repeat scans preserve terminal replacements (ADR 0039). Ordinary reads cache policies for 30 s.
 Transactional ingestion, embedding, rescan, policy changes, moderation and audit redaction
 load policies through the active transaction client; their local cache never publishes uncommitted policies to the
-shared cache or requests an extra root-pool connection (ADR 0033). Worker audits use their
+shared cache or requests an extra root-pool connection (ADR 0033). Compiled engines are
+shared process-wide by organization and the fingerprint of the composed policy set (ADR
+0066): every transaction still reads its own policy rows and redacts with exactly the rules
+it sees, while the compiled secretlint configuration and its bounded scan memo (repeated
+keys and protocol values are scanned once per engine) are reused across accepts, audits
+and rescan sessions until a row changes, which selects a freshly compiled engine. Worker audits use their
 explicit organization policy set. Admins manage policies from the
 dashboard or `/admin/redaction/policies`; `REDACTION_EXTRA_PATTERNS` seeds rows at boot. Each changed organization seeds and
 writes one `redaction.policies.seed` audit in the same transaction; restart or concurrent
@@ -580,9 +613,16 @@ redaction context, then re-derives Message, SessionFile, title, first prompt, an
 on the session and its organization-scoped installation are re-redacted too. Pending tree leaves do not prevent a rescan:
 `projectedContext` retains the last displayed branch so it can be rebuilt safely.
 New policy hits add to the originating receipt's RedactionEvent counters and appear
-in one audit row per session touched. The session rewrite, audit, target checkpoint,
-progress counters, and next native job commit together, serialized with ingest.
-The worker rechecks current membership/key authority for each session and skips
+in one audit row per session touched. The session rewrite, audit, target checkpoint and
+progress counters commit together per session, serialized with ingest. A job claims up to
+three unprocessed targets in one transaction under the organization row, publishes them
+concurrently (three in flight; the fence and control rows serialize only the commits),
+records one progress audit per batch and repeats until the run completes or its 60 s
+budget ends, when it enqueues its successor in the same transaction as that audit (ADR
+0066). A claimed target another publisher is finishing is awaited while its projection
+lease is held; a target that reached no checkpoint fails the job, which retries from the
+committed checkpoints.
+The worker rechecks current membership/key authority for each batch and skips
 tombstoned targets. It stores no request headers or credentials in job data.
 `GET /admin/redaction/rescan/:id` exposes organization-scoped progress as specified in
 §7.6. Completed and failed progress is retained for `AUDIT_RETENTION_DAYS`. See ADR 0016.
@@ -772,12 +812,28 @@ SubagentStop confirms the child through agent_transcript_path.
    intent is set or the source grew, read from `ackedCursor` with the reader, write the
    batch file, set `pending`, send. On `202`: `ackedCursor = cursorEnd`, delete the batch
    file, clear `pending`, `lastSyncAt = now`. On `end` intent with nothing pending: send
-   the `end` envelope. Repeat for each registered child source. Continue while intent
-   changed during the loop or the source grew again; then clear intent, release the
-   lock, exit.
+   the `end` envelope. A `sync` intent whose read finds no record past `ackedCursor` and
+   whose context (cwd, git, pi active leaf, transcript metadata, parent hint) the server
+   already holds completes locally without a request: it is marked processed and its
+   journal file removed, cursors unchanged. Only lifecycle intents (`start`, `end`) and
+   context changes ship an empty `records` array, so the `end` batch never queues behind
+   empty syncs and each such intent costs no server round trip. Repeat for each
+   registered child source. Continue while intent changed during the loop or the source
+   grew again; then clear intent, release the lock, exit.
 3. Failures: `429/5xx/network` → backoff (1 s, 5 s, 30 s) up to three tries, then leave
-   `pending` in place and exit (the next hook or sweep resumes). `401/403/409` → suspend
-   the session (state `suspended` with reason), write to `hook.log`, exit. `413` → split
+   `pending` in place and exit (the next hook or sweep resumes). `401/403` → a rejection
+   only when confirmed: the body carries the server's error `code` and a second request,
+   `GET /api/v1/me` with the same credential, reaches a verdict consistent with it
+   (401/403 for a 401; for a 403 any verdict, 200 or 401/403, since the server reaches a
+   403 only after resolving the credential). A confirmed rejection suspends the session
+   (state `suspended` with status and code), writes to `hook.log` and exits; an
+   unconfirmed one (no code in the body, or a 5xx, 429, network failure or timeout on
+   the confirmation) is retried through the same backoff and then left pending, so a
+   server that answered a valid key wrongly under load never parks a session. `409` →
+   suspend at once (the server resolved the session). The first credential check of a
+   state (`GET /api/v1/me` when no organization is verified yet) follows the same rule:
+   a 401/403 is confirmed with a second `/me` before suspending, and a server that could
+   not answer leaves the spool for the next hook. `413` → split
    the pending batch. `422` → durably quarantine the named record before rewriting
    pending, then resend the remainder; `UNPAIRED_TOOL_RESULT` quarantines are retried
    after the next successful source batch, through the same single pending-batch path.
@@ -1022,7 +1078,12 @@ truncated, truncated_fields }], truncated_fields }`,
   callback as the page so the two never drift apart. The text rendering opens with
   `N hits in M sessions` from these totals.
   `content` is a match-centered excerpt (~300 chars around the first match; tool text
-  300 chars). No scores or timings in the agent-facing text. Response budget 32 KB
+  300 chars); when it is an excerpt, `content_range` gives its `{start, end, total}` in
+  UTF-8 bytes of the full content (the unit `get` cursors use) and the text rendering
+  shows `[truncated <start>-<end> of <total>]` after `[hit]` with an ellipsis at each cut
+  end, so a mid-message fragment is recognisable and readable on with
+  `get(session_id, cursor: {seq, offset: start})`; a complete message has
+  `content_range: null`. No scores or timings in the agent-facing text. Response budget 32 KB
   (transport cap 256 KB). Block title, model, repository, and branch previews, plus
   message tool name and tool identity previews, are bounded to 256 UTF-8 bytes,
   including an ellipsis when shortened. Each object's `truncated_fields` identifies
@@ -1030,18 +1091,43 @@ truncated, truncated_fields }], truncated_fields }`,
 
 ### 7.3 `get`
 
-`{ session_id, from?, to?, cursor?: {seq, offset} }`; inclusive `seq` bounds;
+`{ session_id, from?, to?, cursor?: {seq, offset}, kinds? }`; inclusive `seq` bounds;
 `to < from` → 400. Cursor offsets count UTF-8 bytes and must fall on character boundaries;
 REST encodes the cursor object as JSON in its query parameter. Same behavior
-with or without a range. Returns a header with every session-level fact: `session_id`,
+with or without a range. `kinds` selects the message kinds returned; by default a read
+returns the conversation (`TEXT`, `THINKING`, `TOOL_USE`, `TOOL_RESULT`) and leaves out
+`META`, the harness's housekeeping records (deferred tool listings, skill listings,
+reminders), which were 94% of the bytes an agent paged through in production; a caller
+lists `META` to read them, and the CSV export carries every kind because a file is not a
+context window. `seq` counts every kind, so a default read shows gaps where META records
+sit and `message_count` in the header still counts them. Returns a header with every session-level fact: `session_id`,
 `title`, `harness`, `harness_version`, `entrypoint`, `model`, `models_used`,
 `user_email`, `installation_id`, `installation_hostname`, `repo_name`, `repo_url`, `branch`, `cwd_relative`,
 `start_commit`, `end_commit`, `started_at`, `ended_at`, `status`, `visibility` (`PUBLIC`/`PRIVATE`), `end_reason`,
 `message_count`, `tool_call_count`, `input_tokens`, `output_tokens`, `tools_used`,
 `file_count`, `observed_commit_count`, `reuse_count`, `agent_type`, `parent_tool_use_id`, `parent` ref and `children` refs
-that the caller may see (each ref carries `parent_tool_use_id`), `root_session_id`; then messages in order, every kind including thinking and tool results, each
-`content` bounded to 4 KB with `content_cursor` for the remainder, total budget 32 KB,
-`next` cursor `{ seq, offset }`. Full file lists, commits, and trees come from SQL.
+that the caller may see (each ref carries `parent_tool_use_id`), `root_session_id`; then the selected messages in order, thinking and tool results included, each
+`content` bounded to a quarter of the page budget (META records to one thirty-second)
+with `content_cursor` for the rest, total page budget `page_bytes` (default 32 KB, so
+8 KB slices and 1 KB META previews), `next` cursor `{ seq, offset }`.
+A bounded message does not end the page: the page continues with the following messages,
+so a whole session reads as one bounded preview per message, and `next` names the next
+message, or the rest of the last message when the range ends inside it. The rest of one
+message is read with `from` and `to` set to its `seq` and `cursor` set to its
+`content_cursor` (ADR 0061). The text form an agent reads (§8) carries the full header,
+without `organization_id` and `installation_id`, on the first page of a read and one line
+(`session <id> | title | harness | N messages | continued`) on a continuation page (a call
+with a cursor); each message shows its seq, role, kind, timestamp, model, tool fields,
+content, `message_id`, token counts when recorded, `content_cursor` when bounded and
+`truncated_fields` when any. `raw_record_id`, `ingest_batch_id` and the omitted header
+fields stay in the JSON. REST callers may raise `page_bytes` up to the 256 KB page cap, and the
+dashboard reads at that cap (§10). The header is the expensive part of a read (one
+`sessions` scan carrying the row with its parent and child refs, plus the parent and
+root links from control); a REST caller that already holds it passes
+`header=false` and gets `header: null` with the messages, its visibility checked against
+the light session state instead, so a whole transcript computes the header once. The MCP
+tool advertises neither `page_bytes` nor `header` and rejects both, so agents always read
+32 KB pages with the header (ADR 0061). Full file lists, commits, and trees come from SQL.
 The header includes at most ten visible child references, exact `child_count`, and
 `children_truncated`. `truncated_fields` names any free-text or array fields shortened
 to keep the header within 12 KB; complete values remain queryable through SQL. Header
@@ -1072,8 +1158,21 @@ pagination, and stable database IDs are never shortened (ADR 0022).
   Fetch 501 to set `capped`; Int64/UInt64 and decimals retain the driver's lossless
   representation. Decimal constants requiring explicit precision use native string
   conversion, such as `toDecimal128('1.234567890123456789',18)`. Text cells are cut at
-  2 KB; total output is at most 256 KB. Errors contain a safe code, message and position
-  with schema guidance. Native SQL bodies and errors containing values are not logged.
+  2 KB; total output is at most 256 KB. A capped result's text form ends its count line
+  with "Add LIMIT/OFFSET to page." Errors contain a stable code, a safe message and a
+  position, mapped in one place for REST, MCP and dashboard tiles: `SQL_REJECTED` and
+  `EMBEDDINGS_DISABLED` from the guard, `SQL_RESULT_TOO_WIDE`, and for a query ClickHouse
+  refused `QUERY_INVALID` (unknown column, table or function, type mismatch, syntax,
+  alias, aggregate and parameter errors; the message names the class of mistake and
+  points to `schema_columns`; `apps/api/src/repositories/sql-guard.ts`). The §7.5 limits
+  and availability use the read codes every trace read shares
+  (`apps/api/src/repositories/read-failure.ts`, below in §7.5): `READ_TIME_LIMIT`,
+  `READ_BUSY`, `TRACE_QUERY_UNAVAILABLE` (all 503 with `retry_after`), while a caller's
+  own SELECT outgrowing the memory or result limit is its own to narrow: `400
+QUERY_MEMORY_LIMIT` and `400 QUERY_RESULT_LIMIT`.
+  `500 QUERY_FAILED` covers an unclassified native error, logged with its cause. Native
+  error numbers never appear as codes, and messages never echo the SQL or its values.
+  Native SQL bodies and errors containing values are not logged.
 
 ### 7.5 Security, silently
 
@@ -1084,10 +1183,39 @@ pagination, and stable database IDs are never shortened (ADR 0022).
    operator embedding capability and SaaS mode. Its credentials derive from the private
    reader secret. Grants permit only canonical views; the default role has no vector
    views. Native settings require read-only queries, a five-second deadline, 256 MiB
-   memory and a 32 MiB internal result limit.
+   memory and a 32 MiB internal result limit. Hitting a limit is a documented, stable
+   failure on every read path (`search`, `get`, lists, tree, reuse, similar, events, CSV
+   exports, `sql`, dashboard tiles), REST and MCP alike, classified once in
+   `apps/api/src/repositories/read-failure.ts` at the single funnel every read shares
+   (`readOperation`, before the audit row). A server-authored query exceeding the
+   reader's limits or a control database that could not answer is a server condition,
+   so every such failure is a `503` with `detail.retry_after` and a `Retry-After` header
+   and a message that says what to do next: the five-second deadline (ClickHouse
+   `TIMEOUT_EXCEEDED`, or the read budget around it) is `READ_TIME_LIMIT` (retry; narrow
+   the time range or filters; for text search run `sql` over `search_messages(q=…)`);
+   the memory limit is `READ_MEMORY_LIMIT` and the result limit `READ_RESULT_LIMIT`
+   (narrow the range); a PostgreSQL lock or statement timeout, serialization failure,
+   deadlock or exhausted pool during the read is `READ_BUSY` (retry); an unreachable,
+   cancelled or saturated trace database is `TRACE_QUERY_UNAVAILABLE`. A caller's own
+   SQL (`sql`, dashboard tiles) keeps `400 QUERY_*` for what only the caller can fix
+   (`QUERY_INVALID`, `QUERY_MEMORY_LIMIT`, `QUERY_RESULT_LIMIT`); its time limit and busy
+   databases are the same 503s. Only a failure outside these classes is
+   `500 OPERATION_FAILED`, logged with its cause and request id. An MCP tool failure
+   carries the same code, message and `retry_after` in its `isError` text (§8.1).
 3. Native row policies protect every underlying corpus table and PostgreSQL-engine
-   control metadata table. Fresh direct dictionaries read current publication,
-   redaction generation, visibility, purge and embedding entitlement. A missing or
+   control metadata table. Each policy reads the caller's organization's current
+   publication, redaction generation, visibility, purge and embedding entitlement once
+   per guarded table read from the PostgreSQL control source (a scalar subquery over the
+   `control_session_scope` engine table, whose organization filter runs in PostgreSQL,
+   hashed against each row's session with `transform`; ADR 0062), never once per
+   scanned row. The control table's own row policy admits only the caller-visible
+   sessions, so every policy scalar in one query context shares one control read, and the
+   session views read their per-session metadata (parent link, lifecycle, ownership,
+   member email and name, machine hostname) by joining that control read once per query,
+   never through a per-row dictionary lookup; the few remaining keyed lookups
+   (installation policy, audit retention) keep the fresh direct dictionaries. A view scans
+   each base table once, and a public view is one query context rather than a stack of
+   `api_ro` views. A missing or
    unavailable control source fails closed. Published rows require their current
    generation and an accepted publication revision. Vector rows additionally require
    the completed vector epoch whose source equals the published trace revision.
@@ -1099,7 +1227,12 @@ pagination, and stable database IDs are never shortened (ADR 0022).
 4. A shared PostgreSQL publication lock covers the complete bounded reader callback;
    publication, visibility and purge mutations use its exclusive counterpart. Compact
    graph reads use that same transaction. This prevents a single response combining
-   two publication generations without acquiring nested PostgreSQL connections.
+   two publication generations without acquiring nested PostgreSQL connections. A read
+   request scans each relation at most once inside that callback: page totals are window
+   aggregates of the row scan itself, a session's header row and its parent and child
+   references are one query, parent and root links come from compact control in the
+   same transaction, and any later query of a request reads only the ids the first one
+   returned (context rows, headers and payloads of a page), never the base view again.
 5. The shared official `@clickhouse/parser` guard accepts one SELECT/CTE, canonical
    relations and reviewed scalar/aggregate functions, at most 20 KB. It serializes the
    vetted AST without comments. Writes, settings, caller query parameters, external
@@ -1127,9 +1260,11 @@ same bounded page as JSON, with `X-Next-Cursor` when another page exists.
 `GET /sessions/:id?format=csv` instead streams the whole requested range as one
 attachment named `session-<id>.csv`: one row per message in `seq` order, the `get`
 message columns except `content_cursor`, a message split across pages rejoined into its
-row. Its pages are `get` reads (the same audit rows, budgets, redaction and visibility),
-and the first page is read before the response starts, so a caller who cannot read the
-session receives the JSON error and no file. Full filtered
+row. Its pages are `get` reads (the same audit rows, budgets, redaction and visibility)
+at the 256 KB REST page cap whatever `page_bytes` the caller passed, the header computed
+on the first page only (`header=false` afterwards), and the rows stream as each page
+arrives. The first page is read before the response starts, so a caller who cannot read
+the session receives the JSON error and no file. Full filtered
 dashboard exports follow JSON cursors. REST and dashboard exports use one shared CSV
 formatter with formula escaping, JSON serialization for structured cells, and empty
 cells for null values. Table exports retain duplicate SQL column labels and their order.
@@ -1142,10 +1277,10 @@ cells for null values. Table exports retain duplicate SQL column labels and thei
 | GET/DELETE      | `/dashboards/:id`                                                                                          | read              | definition; delete by creator or organization admin                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST            | `/dashboards/:id/default`                                                                                  | admin             | make a saved dashboard the organization's Home default; the Team overview's id restores the shipped default and any other built-in is refused (409)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST            | `/search`                                                                                                  | `sessions:read`   | = `search`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| GET             | `/sessions/:id`                                                                                            | read              | = `get`; `?from=&to=&cursor=`; `?format=csv` streams the whole range as one CSV file (§10)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| GET             | `/sessions/:id`                                                                                            | read              | = `get`; `?from=&to=&cursor=&page_bytes=` (32 KB default, at most 256 KB); `?header=false` answers messages only for a caller that holds the header; `?format=csv` streams the whole range as one CSV file (§10)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | POST            | `/query`                                                                                                   | read              | = `sql`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET             | `/schema`                                                                                                  | read              | `schema_columns`, `schema_functions` as JSON                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| GET             | `/sessions`                                                                                                | read              | list with the §7.2 filters, no text; `total: { sessions, messages }` counts the sessions the filters and `roots_only` match under the caller's visibility and sums their `message_count`, over the whole set rather than the page, computed with the page's own predicate in the same read callback                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET             | `/sessions`                                                                                                | read              | list with the §7.2 filters, no text; `total: { sessions, messages }` counts the sessions the filters and `roots_only` match under the caller's visibility and sums their `message_count`, over the whole set rather than the page, computed as window aggregates of the page's own scan (one query) in the same read callback                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET             | `/sessions/:id/events`                                                                                     | read              | SSE `event: session`, data `{session_id,status,message_count,last_received_at}`; `last_received_at` is the server receipt timestamp exposed in SQL as `last_activity_at`; initial snapshot then changed snapshots, checked every 5 seconds. IDs are connection-local counters; reconnect sends a fresh snapshot, not a replay. Each tick reauthenticates current membership/key and reads through tenant visibility views; loss of access closes the stream. One read audit records the subscription. A `: keepalive` comment every 30 seconds keeps idle-timeout proxies (Cloudflare closes idle responses after 100 s) from cutting a quiet stream. Dashboard falls back to polling every 5 seconds while `ACTIVE`. |
 | GET             | `/sessions/:id/raw`                                                                                        | read              | paginated redacted raw records; oversized payloads are canonical JSON string fragments with `payload_fragment: { offset, next_offset }`; concatenate UTF-8 fragments before parsing. Raw pages order observations by `(pos, sourceVersion, id)`; the opaque cursor includes this complete identity and binds a fragment's redacted payload digest, rejecting continuation if a rescan changes it. Ordinary complete payloads have `payload_fragment: null`.                                                                                                                                                                                                                                                           |
 | GET             | `/sessions/:id/tree`                                                                                       | read              | paginated visible tree containing the session, `{ nodes, cursor }`, limit default 50/max 100: ancestors to the root and all descendants, each node `{ session_id, title, harness, agent_type, parent_relation, parent_session_id, parent_tool_use_id, user_email, started_at, status, message_count, gap }`, via a recursive CTE over `parent_session_id`; hidden nodes are omitted and their visible children attach to the nearest visible ancestor with `gap: true`                                                                                                                                                                                                                                                |
@@ -1200,6 +1335,15 @@ time and query/organization/authority-bound keyset cursor retain bounded sort va
 hiding the preceding page's anchor does not skip the next visible peer. Hidden or purged peers never leak
 through lists or counts; the requested session must also be visible.
 
+`GET /sessions` sorts by any list column of `api_ro.sessions`: `title`, `harness`,
+`harness_version`, `model`, `repo_name`, `branch`, `user_email`, `installation_hostname`,
+`started_at` (the default), `duration_seconds`, `message_count`, `tool_call_count`,
+`observed_commit_count`, `reuse_count`, `status` or `last_activity_at`, ascending or
+descending with nulls last and ties broken by `session_id` (ClickHouse's UUID order, stable
+but not the text order), as one `ORDER BY` on the page's own scan. Its cursor is an offset bound to the sort, order, filters and `roots_only`, so a
+page continues the same order without repeating or skipping a row, and a cursor issued for
+one sort or order is refused (`INVALID_CURSOR`) under another.
+
 `GET /installations` and `GET /repos` use the shared list envelope with server-side
 sort/order, limit/cursor, and filters. Installations sort by hostname, OS user, platform,
 architecture, first/last seen, session count, or tools enabled; filters accept a literal
@@ -1251,7 +1395,12 @@ impersonate a user session.
 operation or protocol rejection has one audit row. SDK schema/transport rejections
 and unsupported methods are audited before any response bytes; audit failure returns
 503 instead of an unaudited protocol response. Clients may cache `tools/list`; nothing
-depends on re-listing.
+depends on re-listing. A tool failure is an `isError` result whose text is the same
+`{ code, message, detail }` the REST route would answer, so an agent sees the §7.5 read
+codes (`READ_TIME_LIMIT`, `READ_BUSY`, …) with their hint and `retry_after`, the
+`QUERY_*` codes for its own SQL, and `OPERATION_FAILED` only for an unexpected failure;
+a credential the server could not verify is an HTTP `503 AUTH_UNAVAILABLE` (§9.2), never
+a tool result.
 
 ### 8.2 Catalog: static, permission-filtered
 
@@ -1308,7 +1457,8 @@ moment the product exists for. `tools/list` therefore stays under 20 KB for a re
 regex `pattern`s that only restate a `format`; and the dashboard tools advertise the compact
 tool-facing definition (`dashboardDefinitionToolSchema`: variables and tiles as described
 JSON objects whose text is derived from the strict schema, naming the allowlisted ECharts
-keys and pointing at `dashboard_list` for the complete `definition_schema` and templates)
+keys and pointing at `dashboard_list`, whose `structuredContent.definition_schema` carries
+the complete schema and whose text names the templates)
 instead of inlining the style allowlist once per series. Every call is still parsed with the
 strict shared schema, so validation is unchanged. No advertised schema contains `$ref` or
 recursion, which the Gemini API rejects. The contract test measures both catalogs.
@@ -1453,6 +1603,21 @@ Key names contain 1–128 characters; optional `expires_in` is 1–31,536,000 se
 Omitting expiration creates a non-expiring key. Native Better Auth settings enforce
 the same bounds as the shared input schema.
 
+**Verification failures are not rejections.** `authenticate` answers `401`
+(`INVALID_API_KEY`, `SIGN_IN_REQUIRED`, `INVALID_AUTHENTICATION`) or a `403` gate only
+when the lookup completed and found no matching, enabled, unexpired key or session, or a
+closed membership gate. Any failure to verify (a PostgreSQL error, statement or lock
+timeout, pool exhaustion, a Better Auth error other than an explicit 401/403 verdict) is
+`503 AUTH_UNAVAILABLE` with `detail.retry_after` and a `Retry-After` header, the same
+retryable shape as `429` and `AUDIT_UNAVAILABLE`, classified by one helper
+(`apps/api/src/auth/failure.ts`) behind every adapter (REST, MCP, SSE re-authentication),
+logged with its cause and request id, and audited as `auth.failure` with status 503 and a
+null organization. Better Auth's `verifyApiKey` reports an exception inside its own lookup
+as `INVALID_API_KEY`, indistinguishable from a missing key, so that negative is confirmed
+against the stored key digest: a missing row is a rejection, an existing row or a failed
+confirmation is `AUTH_UNAVAILABLE`. The shim therefore never suspends a session on a
+server that could not check its key (§6.2 step 3).
+
 **Recoverable keys (ADR 0051).** Better Auth keeps only the hash for verification; the
 plaintext of every key is also stored encrypted in `api_key_secret`, written in the
 transaction that creates the key: AES-256-GCM, a random 12-byte IV per row, the key id as
@@ -1481,7 +1646,8 @@ organization, so agent reads can be attributed to the session active on that mac
 `mcp` | `web`),
 `action`, `resourceType`, `resourceIds`, `statusCode`, `durationMs`, `detail` jsonb
 (redacted; ≤ 8 KB). Written in the mutation transaction for writes, before the response
-for reads; authentication failures audited; health and static assets not. Retention
+for reads; authentication failures audited (rejections and `503 AUTH_UNAVAILABLE` alike,
+as `auth.failure` with the status and code, §9.2); health and static assets not. Retention
 `AUDIT_RETENTION_DAYS` (default 365). Append-only otherwise.
 Failures before an organization can be authenticated have a null organization and are
 visible only to instance operations, never through organization audit queries. All
@@ -1489,7 +1655,12 @@ identified operations, including membership and invitation changes, carry their 
 Audit writes resolve installation attribution in the same transaction as mutations, so
 the first accepted ingest can attribute its own audit row. Cookie operations, keys with
 no accepted ingest, and historical rows without attribution have null installation ids.
-The composite installation foreign key prevents cross-organization attribution.
+The composite installation foreign key prevents cross-organization attribution. The audit
+projection worker, which copies audit rows into ClickHouse, also credits each successful
+key-authenticated MCP/REST `search`, `get` or `sql` row to the sessions active on its
+installation at that instant and stores those `session_reads` rows in the same flush; the
+reuse relations of §10 read them (ADR 0060). A one-time backfill derives the rows for the
+audit history retained when the table is introduced and records completion.
 
 ### 9.4 Public exposure
 
@@ -1729,9 +1900,13 @@ advertises the compact tool-facing rendering of §8.2 and validates calls with t
 Rendering a saved or built-in dashboard runs its data tiles four at a time and caches each
 tile's result in the API for one hour, keyed by organization, caller scope (admins share
 one entry; each member has their own because row policies show them their private
-sessions), dashboard revision and resolved variables. The organization's data version is
-not part of the key (ADR 0058): a hit may be up to an hour old, and new sessions appear on
-the next refresh, pre-render or expiry. A tile whose query failed is returned with its
+sessions), dashboard revision, resolved variables and the organization's published-session
+version: the counts of published unpurged, purged and private sessions in
+`trace_session_control`, one PostgreSQL aggregate read before the cache is consulted
+(ADR 0064). A newly published session, a purge or a visibility change therefore misses on
+the next render; messages added to an already published session do not move the version,
+so a hit may still be up to an hour old in that respect (ADR 0058 had dropped the
+activity-based data version because it moved every few seconds). A tile whose query failed is returned with its
 error but never cached, so the next request retries it alone while the other tiles come
 from the cache; `refresh: true` re-runs the requested tiles and replaces their entries; a
 save bumps the revision; inline definitions (editor previews) are never cached. A
@@ -1743,7 +1918,15 @@ scope's membership and key and skipping, with a 403 audit row, those that lost a
 each scope's run is audited as `dashboard.prerender` by the worker actor, and one
 organization's failure does not stop the others. The response reports `rendered_at` (the
 oldest returned tile's run) and `cached` (true when no tile ran); the page shows when the
-data was rendered under the tiles, and Refresh re-runs them.
+data was rendered under the tiles, and Refresh re-runs them. The MCP dashboard tools render
+compact text from `packages/core/format/dashboards.ts` while `structuredContent` carries the
+full validated result: `dashboard_list` is one line per dashboard (id, name, tile count,
+default/built-in/editable flags, updated_at, description) plus the template ids and where the
+definition JSON Schema lives, never a definition; `dashboard_get` and `dashboard_save` show
+header facts, variables and tiles as tables and each data tile's SQL once; `dashboard_render`
+opens with the tile count, `rendered_at`, its age in words, whether the result came from the
+cache and that `refresh: true` re-runs the tiles, then each tile's rows in the `sql` text
+format or its error (ADR 0064).
 
 Variables are typed query parameters that a tile may reference as `{name:Type}` only when
 the dashboard declares them: `time_range` exposes `{name_from:DateTime}` and
@@ -1783,7 +1966,18 @@ header carries with human labels and copyable ids; a Details panel with token to
 models used, installation, cwd, entrypoint, start and end commits, end reason, and links;
 a bounded virtualized transcript whose rows show role, kind, tool name, timestamp, and the
 model when it changes, with token counts and raw record id on hover; collapsible tool
-blocks and thinking toggle; **subagent runs inline, as a tree**: the root session's page
+blocks and thinking toggle. The transcript reads `get` with `page_bytes` at the 256 KB
+page cap: a head page from the start (or two messages above a deep link), which is the
+only request that computes the session header, then the remaining seq ranges up to
+`message_count` with `header=false`, sized from the head page's bytes per message so one
+range usually fits one page, with at most three requests in flight and the first sixteen
+ranges loading without a reader's action; each range renders as it lands and a "Load
+more" control takes over beyond them. An active session's status and count come from the
+live stream's own events; a header-only read (`from=0&to=0`) under the stream's
+invalidation key is polled every 5 s only while the stream is down; growth extends the
+ranges instead of re-reading loaded pages (ADR 0061). Each part of the page fails on its
+own with a notice naming it (session header, messages, subagent runs, reuse) and a retry;
+a later range failing leaves the header and the messages before it on the page; **subagent runs inline, as a tree**: the root session's page
 takes its subagent, fork and spawned child sessions from `/sessions/:id/tree`. A child
 whose `parent_tool_use_id` matches exactly one loaded `TOOL_USE` message nests directly
 under that tool call as a collapsed "Subagent run" block (relation, agent type, title,
@@ -1801,6 +1995,11 @@ message. Search hits and `get` child refs carry `root_session_id` and
 a reader or an agent places a child under its call without another call. The sessions
 list sends `roots_only`
 and offers an "Include subagent runs" toggle; its Subagents column shows `child_count`.
+Its six default columns are title, repository/branch, user, started, messages
+(`message_count`) and status, the set that reads at 1024 px beside the sidebar; coding
+tool, model, hostname, duration, tool calls, commits, reused by and subagents wait in the
+column chooser. Counts and durations are right-aligned, and every column header except
+Subagents sorts on the server in both directions through the list's `sort` and `order`.
 Beside the list controls it shows the response's `total.sessions` and `total.messages`
 ("128 sessions · 4,210 messages"), and the Messages view heads its results with
 `total.hits` in `total.sessions` ("12 hits in 4 sessions"); both are server counts over
@@ -1877,7 +2076,9 @@ in the `sessions` view and the `get` header; per member, `api_ro.member_impact (
 sessions_reused_by_others, distinct_readers, reuses_made)`, available through SQL and
 dashboard tiles. Reuse is
 recorded only from `get` reads made through MCP or REST by a key whose installation had
-an active session at the time; dashboard views by humans do not count.
+an active session at the time; dashboard views by humans do not count. The audit
+projection writes the attributed reads once (ADR 0060); these views aggregate them
+instead of recomputing the graph from audit rows and receipts on every read.
 
 - _Health_: installations active in the last 7 days over the organization's member
   count; sessions per day per harness and per user; median capture latency (record
@@ -1932,7 +2133,18 @@ or causation. The UI states the captured-tool coverage and keeps server-audit us
 measures available separately. See ADR 0034.
 
 Reuse has one canonical `api_ro.reuse_edges` relation, shared by weekly, session and member
-aggregates. Both reading and read sessions must be caller-visible and nonpurged. Only
+aggregates. It is materialized, not derived on read (ADR 0060): the audit projection worker
+credits each successful key-authenticated MCP/REST `search`, `get` or `sql` audit row to the
+sessions active on its installation at that instant, as `api_ro.metrics_active_windows`
+defines activity, and stores one `session_reads` row per pair in the same flush that
+projects the audit row; `reuse_edges` is the `get` rows whose target is another session,
+and `session_reuse`, `sessions.reuse_count`, `member_impact`, the `metrics_reuse_*` flags
+and memory-assisted attribution aggregate those rows. An edge therefore appears when the
+projection flushes, and a window is judged from the receipts known at that time. A
+one-time backfill derives the rows for retained audit history and records its completion.
+Native row policies on the table require the caller's organization, audit retention, and a
+published, unpurged, caller-visible source and target, so both reading and read sessions
+must be caller-visible and nonpurged. Only
 successful key-authenticated MCP/REST gets count. Source-time lifecycle receipt windows
 exclude ended/resumed gaps and receipt gaps longer than six hours; start is included and
 end excluded. New receipts use their persisted `lifecycleApplied` decision, so equal
@@ -2018,7 +2230,11 @@ Landing and dashboard are responsive at mobile and desktop sizes, including form
 admin tables, transcript controls, touch targets, and navigation. Both themes meet the
 existing accessibility and browser verification bar. No horizontal viewport overflow;
 tables fit the viewport with a small selectable summary of fields, mobile labeled
-records, and an accessible full-record dialog. Actions remain visible without horizontal
+records, and an accessible full-record dialog. A table uses a fixed layout whose columns
+share the container width by weight, so no table container scrolls sideways at any
+supported width; long values wrap or truncate with the full value in a tooltip. The only
+sideways scrollers are the SQL results grid and author-written Markdown tables inside a
+transcript, each inside its own bounded region. Actions remain visible without horizontal
 scrolling. CSV exports include all data fields, independently of the summary selection.
 No global overflow clipping may hide an oversized layout.
 
@@ -2217,10 +2433,29 @@ automatic TLS for `PUBLIC_URL`, plain HTTP on the address, `TRUST_PROXY=uniquelo
 Stack config becomes SSM SecureString parameters that only the instance role reads;
 `infra/scripts/single-node-release.sh` publishes `git archive` of a commit to a private
 bucket and applies it through SSM Run Command (pull of the published image, or an on-host
-build with `--build`, both migrations, restart, updater install);
+build with `--build` that stamps `AGENTCOMMONS_VERSION` from the archive's `.commit` file,
+else the checkout's git HEAD, else `development`, printing the value it used; both
+migrations, restart, updater install);
 `single-node-run.sh bootstrap.sh` seeds the owner organization and enrolls Google sign-in
 domains through a native owner session. Seven daily DLM snapshots; no replica, no ALB,
 no NAT.
+The control database is a stack setting (ADR 0063): `database: { kind: bundled }` (default)
+runs the Compose `db` container; `{ kind: aurora-serverless-v2, minCapacity, maxCapacity,
+engineVersion, forceSsl }` provisions an encrypted, deletion-protected Aurora PostgreSQL 16
+Serverless v2 cluster with one `db.serverless` writer in the host's zone when the cluster's zones include it (a new cluster always does), a subnet group over
+the host's VPC subnets, a security group admitting 5432 from the host only, a cluster
+parameter group pinning `rds.force_ssl`, and CPU, ACU, memory and connection alarms on the
+stack topic. The rendered `.env` then names the cluster endpoint in the three
+`DATABASE_*_URL` values (`?sslmode=require&uselibpqcompat=true`) and
+`CLICKHOUSE_POSTGRES_HOST`, and `AGENTCOMMONS_DATABASE=external` selects
+`docker-compose.external-database.yml`, which parks the `db` service and drops the
+migration's dependency on it. `pnpm db:migrate` bootstraps roles and schemas on a TLS-only
+PostgreSQL owned by a non-superuser, and ClickHouse (whose container sets `HOME` to a
+readable directory) reads the control tables and dictionaries over TLS.
+`scripts/self-host/migrate-database.sh` copies roles (from `pg_roles`, without passwords)
+and data (`pg_dump -Fc`, `pg_restore --no-owner --role`, one transaction) and compares row
+counts; `single-node/migrate-database.sh` performs the cutover and `--rollback`. ClickHouse
+Cloud and an Aurora cluster do not combine.
 Releases and updates (ADR 0059): `.github/workflows/release.yml` runs after each
 successful CI run on `main` (and on manual dispatch from `main`) and publishes one
 `linux/amd64` and `linux/arm64` image to `ghcr.io/<owner>/agentcommons` tagged
@@ -2712,7 +2947,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
 [
   {
     "name": "dashboard_list",
-    "description": "Use this when the user asks to view, build or change dashboards. List the organization's dashboards, which one is the Home default, the JSON Schema for definitions and starter tile templates. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers).",
+    "description": "Use this when the user asks to view, build or change dashboards. List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -2746,7 +2981,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
   },
   {
     "name": "dashboard_render",
-    "description": "Use this when the user asks to view, build or change dashboards. Run the queries of a dashboard (by id or an inline definition) with variable values such as {\"time_range\":\"7d\",\"repo\":[\"github.com/org/repo\"]} and return each tile's rows. Pass tiles to render a subset.",
+    "description": "Use this when the user asks to view, build or change dashboards. Run the queries of a dashboard (by id or an inline definition) with variable values such as {\"time_range\":\"7d\",\"repo\":[\"github.com/org/repo\"]} and return each tile's rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2786,7 +3021,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
           },
           "required": ["version", "tiles"],
           "additionalProperties": false,
-          "description": "Dashboard definition. dashboard_list returns its complete JSON Schema as definition_schema with starter templates; dashboard_render validates an inline definition and names the failing path."
+          "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
         },
         "variables": {
           "default": {},
@@ -2874,7 +3109,7 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
           },
           "required": ["version", "tiles"],
           "additionalProperties": false,
-          "description": "Dashboard definition. dashboard_list returns its complete JSON Schema as definition_schema with starter templates; dashboard_render validates an inline definition and names the failing path."
+          "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
         }
       },
       "required": ["name", "definition"],
@@ -3239,6 +3474,15 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
             }
           ]
         },
+        "kinds": {
+          "description": "Message kinds to return, in seq order. Left out: META, the harness's housekeeping records (tool listings, skill listings, reminders); list it to read them. Default TEXT, THINKING, TOOL_USE, TOOL_RESULT",
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["TEXT", "THINKING", "TOOL_USE", "TOOL_RESULT", "META"]
+          }
+        },
         "session_id": {
           "type": "string",
           "format": "uuid",
@@ -3454,25 +3698,23 @@ Investigate the transport session index
 `get` text rendering; structuredContent contains the corresponding schema-validated fixture value.
 
 ```text
-session_id: 00000000-0000-4000-8000-000000000001 | organization_id: fixture-organization | title: Investigate the transport session index
-harness: CLAUDE_CODE | harness_version: null | entrypoint: null
-model: null | models_used: [] | user_email: transport-primary@example.com
-installation_hostname: transport-fixture | installation_id: 00000000-0000-4000-8000-000000000002 | repo_name: github.com/rek7/agentcommons
-repo_url: github.com/rek7/agentcommons | branch: main | cwd_relative: .
-start_commit: abc123 | end_commit: null | started_at: 2026-09-07T01:00:00.000Z
-ended_at: null | status: ACTIVE | visibility: PUBLIC
-purged_at: null | end_reason: null | message_count: 1
-tool_call_count: 0 | input_tokens: 0 | output_tokens: 0
-tools_used: [] | file_count: 0 | observed_commit_count: 0
-reuse_count: 0 | agent_type: null | parent_session_id: null
-parent_relation: null | parent_tool_use_id: null | parent: null
-children: [] | child_count: 0 | children_truncated: false
-truncated_fields: [] | root_session_id: 00000000-0000-4000-8000-000000000001
+session_id: 00000000-0000-4000-8000-000000000001 | title: Investigate the transport session index | harness: CLAUDE_CODE
+harness_version: null | entrypoint: null | model: null
+models_used: [] | user_email: transport-primary@example.com | installation_hostname: transport-fixture
+repo_name: github.com/rek7/agentcommons | repo_url: github.com/rek7/agentcommons | branch: main
+cwd_relative: . | start_commit: abc123 | end_commit: null
+started_at: 2026-09-07T01:00:00.000Z | ended_at: null | status: ACTIVE
+visibility: PUBLIC | purged_at: null | end_reason: null
+message_count: 1 | tool_call_count: 0 | input_tokens: 0
+output_tokens: 0 | tools_used: [] | file_count: 0
+observed_commit_count: 0 | reuse_count: 0 | agent_type: null
+parent_session_id: null | parent_relation: null | parent_tool_use_id: null
+parent: null | children: [] | child_count: 0
+children_truncated: false | truncated_fields: [] | root_session_id: 00000000-0000-4000-8000-000000000001
 
 seq 0 USER TEXT timestamp=2026-09-07T01:00:00.000Z model=null
 Investigate the transport session index
-message_id: 00000000-0000-4000-8000-000000000003 | raw_record_id: 00000000-0000-4000-8000-000000000004 | ingest_batch_id: null
-input_tokens: null | output_tokens: null
+message_id: 00000000-0000-4000-8000-000000000003
 ```
 
 `sql` text rendering; structuredContent contains the corresponding schema-validated fixture value.

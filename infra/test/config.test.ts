@@ -219,3 +219,68 @@ it("requires a ClickHouse Cloud endpoint for the cloud trace store and parses it
     }).success,
   ).toBe(false);
 });
+
+// @req R-INF-11
+it("keeps the bundled PostgreSQL container by default and validates the Aurora Serverless v2 option", () => {
+  const base = {
+    deployment: "single-node",
+    stack: "zpghl",
+    hostname: "hooks.example.com",
+  };
+  expect(singleNodeSettingsSchema.parse(base).database).toEqual({
+    kind: "bundled",
+  });
+  // Pulumi object config arrives with string leaves; capacities coerce.
+  expect(
+    singleNodeSettingsSchema.parse({
+      ...base,
+      database: { kind: "aurora-serverless-v2" },
+    }).database,
+  ).toEqual({
+    kind: "aurora-serverless-v2",
+    minCapacity: 0.5,
+    maxCapacity: 4,
+    engineVersion: "16",
+    forceSsl: true,
+  });
+  expect(
+    singleNodeSettingsSchema.parse({
+      ...base,
+      database: {
+        kind: "aurora-serverless-v2",
+        minCapacity: "1",
+        maxCapacity: "2.5",
+        engineVersion: "16.11",
+        forceSsl: "false",
+      },
+    }).database,
+  ).toMatchObject({
+    minCapacity: 1,
+    maxCapacity: 2.5,
+    engineVersion: "16.11",
+    forceSsl: false,
+  });
+  for (const database of [
+    { kind: "rds" },
+    { kind: "aurora-serverless-v2", minCapacity: 0 },
+    { kind: "aurora-serverless-v2", minCapacity: 0.75 },
+    { kind: "aurora-serverless-v2", minCapacity: 4, maxCapacity: 2 },
+    { kind: "aurora-serverless-v2", maxCapacity: 256 },
+    { kind: "aurora-serverless-v2", engineVersion: "15.8" },
+    { kind: "aurora-serverless-v2", engineVersion: "17" },
+    { kind: "aurora-serverless-v2", forceSsl: "yes" },
+  ])
+    expect(
+      singleNodeSettingsSchema.safeParse({ ...base, database }).success,
+      JSON.stringify(database),
+    ).toBe(false);
+  // ClickHouse Cloud reaches PostgreSQL at the public address; a private cluster cannot serve it.
+  expect(
+    singleNodeSettingsSchema.safeParse({
+      ...base,
+      traceStore: "clickhouse-cloud",
+      clickhouseCloudUrl: "https://abc.us-west-2.aws.clickhouse.cloud:8443",
+      database: { kind: "aurora-serverless-v2" },
+    }).success,
+  ).toBe(false);
+});

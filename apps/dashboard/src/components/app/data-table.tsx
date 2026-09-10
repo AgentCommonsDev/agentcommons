@@ -2,12 +2,23 @@ import {
   flexRender,
   getCoreRowModel,
   useReactTable,
+  type Column,
   type ColumnDef,
   type OnChangeFn,
   type Row,
+  type RowData,
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
+
+declare module "@tanstack/react-table" {
+  // The parameters repeat the library's declaration; an augmentation must match it.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData extends RowData, TValue> {
+    /** `end` sets the header and every cell flush right, for counts and durations. */
+    align?: "start" | "end";
+  }
+}
 import {
   ArrowDown,
   ArrowUp,
@@ -17,7 +28,14 @@ import {
   Download,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { z } from "zod";
 import { copy } from "../../copy";
 import { csvBlob, downloadBlob } from "../../lib/csv";
@@ -52,6 +70,13 @@ export interface DataTablePage {
 }
 interface DataTableProps<T> {
   data: T[];
+  /**
+   * A data column's `size` is its relative width: the visible data columns share the
+   * table width in proportion to their sizes (default 150), each at least as wide as its
+   * longest header word, so the table always fits its container and long values wrap
+   * inside their cell. An action column (no accessor) takes `size` as a pixel width,
+   * one icon button when omitted.
+   */
   columns: ColumnDef<T>[];
   /** Server-side sorting state; omit for unsortable tables. */
   sorting?: SortingState;
@@ -87,6 +112,91 @@ function columnId<T>(column: ColumnDef<T>, index: number): string {
 }
 function headerText<T>(column: ColumnDef<T>, fallback: string): string {
   return typeof column.header === "string" ? column.header : fallback;
+}
+/** Action cells hold one icon button unless the column says otherwise. */
+const actionColumnWidth = 56;
+const isAction = <T,>(column: Column<T>) => column.accessorFn === undefined;
+/** The header and cells of a column declared `align: "end"` sit flush right. */
+const alignment = <T,>(column: Column<T>) =>
+  column.columnDef.meta?.align === "end" ? "text-right" : undefined;
+/** Rough 12 px header glyph widths: capitals, lowercase, digits, punctuation. */
+function approximateTextWidth(word: string): number {
+  let width = 0;
+  for (const character of word)
+    width += /[A-Z]/.test(character)
+      ? 8
+      : /[a-z]/.test(character)
+        ? 5.9
+        : /\d/.test(character)
+          ? 6.5
+          : 3.5;
+  return width;
+}
+/**
+ * The narrowest a data column may be: its widest header word, the cell padding and the
+ * sort arrow when it is the sorted column. Keeps count columns from being squeezed below
+ * "Messages" when a reader turns every column on.
+ */
+function minColumnWidth<T>(column: Column<T>): number {
+  const widest = Math.max(
+    0,
+    ...headerText(column.columnDef, column.id)
+      .split(/\s+/)
+      .map(approximateTextWidth),
+  );
+  return widest + 28 + (column.getIsSorted() ? 16 : 0);
+}
+/**
+ * Pixel widths for the fixed layout once the container is measured: action columns take
+ * their pixels, data columns share the rest by `size`, and no data column goes below
+ * its header floor while others still have room to give. When even the floors do not
+ * fit, every column scales down together and header words break (`wrap-anywhere`).
+ */
+function columnWidths<T>(
+  columns: Column<T>[],
+  containerWidth: number,
+): number[] {
+  const entries = columns.map((column) => ({
+    fixed: isAction(column) ? (column.columnDef.size ?? actionColumnWidth) : 0,
+    floor: isAction(column) ? 0 : minColumnWidth(column),
+    weight: isAction(column) ? 0 : column.getSize(),
+    width: 0,
+  }));
+  const available = Math.max(
+    0,
+    containerWidth - entries.reduce((sum, entry) => sum + entry.fixed, 0),
+  );
+  const floorTotal = entries.reduce((sum, entry) => sum + entry.floor, 0);
+  if (floorTotal >= available) {
+    const scale = floorTotal === 0 ? 0 : available / floorTotal;
+    return entries.map((entry) => entry.fixed || entry.floor * scale);
+  }
+  let flexible = entries.filter((entry) => entry.weight > 0);
+  let room = available;
+  // Pin every column that would fall under its floor, then share what is left again.
+  while (flexible.length > 0) {
+    const weightTotal = flexible.reduce((sum, entry) => sum + entry.weight, 0);
+    const pinned = flexible.filter(
+      (entry) => (entry.weight / weightTotal) * room < entry.floor,
+    );
+    if (pinned.length === 0) {
+      for (const entry of flexible)
+        entry.width = (entry.weight / weightTotal) * room;
+      break;
+    }
+    for (const entry of pinned) {
+      entry.width = entry.floor;
+      room -= entry.floor;
+    }
+    flexible = flexible.filter((entry) => !pinned.includes(entry));
+  }
+  return entries.map((entry) => entry.fixed || entry.width);
+}
+/** Before the first measurement: pixels for actions and percentage shares for the rest. */
+function fallbackWidth<T>(column: Column<T>, weightTotal: number): string {
+  if (isAction(column))
+    return `${String(column.columnDef.size ?? actionColumnWidth)}px`;
+  return `${((column.getSize() / weightTotal) * 100).toFixed(3)}%`;
 }
 /** Column choices survive navigation: one browser-local entry per table, keyed by its label. */
 const storedVisibility = z.record(z.string(), z.boolean());
@@ -187,6 +297,30 @@ export function DataTable<T>({
     ...(rowId ? { getRowId: rowId } : {}),
   });
   const rows = table.getRowModel().rows;
+  const visibleColumns = table.getVisibleLeafColumns();
+  const weightTotal = visibleColumns
+    .filter((column) => !isAction(column))
+    .reduce((sum, column) => sum + column.getSize(), 0);
+  // The fixed layout needs the container's width in pixels to honor header floors.
+  const frame = useRef<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const node = frame.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setContainerWidth(entry.contentRect.width);
+    });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  const widths =
+    containerWidth === null
+      ? visibleColumns.map((column) => fallbackWidth(column, weightTotal))
+      : columnWidths(visibleColumns, containerWidth).map(
+          (width) => `${width.toFixed(2)}px`,
+        );
   const exportCsv = async () => {
     if (!csv) return;
     const controller = new AbortController();
@@ -301,7 +435,10 @@ export function DataTable<T>({
           {exportError}
         </Alert>
       )}
-      <div className="overflow-hidden rounded-lg border border-line bg-surface">
+      <div
+        ref={frame}
+        className="overflow-hidden rounded-lg border border-line bg-surface"
+      >
         {error !== null && error !== undefined ? (
           <RequestError
             error={error}
@@ -326,6 +463,11 @@ export function DataTable<T>({
             aria-busy={loading}
             className={cn("stacked-table", loading && "opacity-60")}
           >
+            <colgroup>
+              {visibleColumns.map((column, index) => (
+                <col key={column.id} style={{ width: widths[index] }} />
+              ))}
+            </colgroup>
             <TableHeader>
               {table.getHeaderGroups().map((group) => (
                 <TableRow key={group.id} className="hover:bg-transparent">
@@ -341,7 +483,10 @@ export function DataTable<T>({
                               ? "descending"
                               : undefined
                         }
-                        className={cn(compact && "h-9")}
+                        className={cn(
+                          compact && "h-9",
+                          alignment(header.column),
+                        )}
                       >
                         {header.isPlaceholder ? null : header.column.getCanSort() ? (
                           <button
@@ -403,7 +548,10 @@ export function DataTable<T>({
                       data-actions={
                         cell.column.accessorFn === undefined || undefined
                       }
-                      className={cn(compact && "py-1.5")}
+                      className={cn(
+                        compact && "py-1.5",
+                        alignment(cell.column),
+                      )}
                       onClick={(event) => {
                         // Interactive content inside a cell must not also open the row.
                         if (

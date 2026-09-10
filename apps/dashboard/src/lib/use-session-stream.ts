@@ -1,16 +1,19 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import type { z } from "zod";
 import { sessionEventSchema } from "@agentcommons/core/schemas/get";
 import type { paths } from "./api/generated";
 import { registerStream } from "./streams";
 
 const endpoint = "/api/v1/sessions/{id}/events" satisfies keyof paths;
+/** One `session` event: the status and message count the server saw at that tick. */
+export type SessionEvent = z.infer<typeof sessionEventSchema>;
 export function useSessionStream(
   organizationId: string,
   sessionId: string,
   active: boolean,
   setConnected: (connected: boolean) => void,
-  setLatestSequence: (sequence: number) => void,
+  onEvent: (event: SessionEvent) => void,
 ): void {
   const client = useQueryClient();
   useEffect(() => {
@@ -30,7 +33,7 @@ export function useSessionStream(
       try {
         const data = sessionEventSchema.parse(JSON.parse(event.data));
         if (data.session_id !== sessionId) return;
-        setLatestSequence(Math.max(0, data.message_count - 1));
+        onEvent(data);
         void Promise.all(
           ["session", "raw", "tree"].map((key) =>
             client.invalidateQueries({
@@ -47,12 +50,5 @@ export function useSessionStream(
       dispose();
       setConnected(false);
     };
-  }, [
-    active,
-    organizationId,
-    sessionId,
-    client,
-    setConnected,
-    setLatestSequence,
-  ]);
+  }, [active, organizationId, sessionId, client, setConnected, onEvent]);
 }

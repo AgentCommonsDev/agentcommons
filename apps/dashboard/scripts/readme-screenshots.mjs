@@ -2649,20 +2649,13 @@ async function capture({ hero }) {
         await admin.goto(`${origin}/app/sessions`);
         await admin.getByTestId("sessions-total").waitFor({ timeout: 30_000 });
         await admin.locator("tbody tr").nth(12).waitFor({ timeout: 30_000 });
-        // Show the coding tool column and drop the reuse count so the table fits the width.
+        // Show the coding tool column beside the six defaults (the reuse count is off by default).
         await admin
           .getByRole("button", { name: "Columns", exact: true })
           .click();
         const menu = admin.getByRole("menu");
         await menu
           .getByRole("menuitemcheckbox", { name: "Coding tool", exact: true })
-          .click();
-        await admin
-          .getByRole("menu")
-          .getByRole("menuitemcheckbox", {
-            name: "Reused by (sessions)",
-            exact: true,
-          })
           .click();
         await admin.keyboard.press("Escape");
         await admin.getByRole("menu").waitFor({ state: "hidden" });

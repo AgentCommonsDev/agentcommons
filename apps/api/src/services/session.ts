@@ -1,10 +1,13 @@
 import {
   utf8Slice,
   truncateUtf8,
+  contentSliceBytes,
   decimalIntegerSchema,
+  defaultMessageKinds,
   getInputSchema,
   getOutputSchema,
   jsonByteLength,
+  messageKindSchema,
   messageRowSchema,
   messageSchema,
   paginationSchema,
@@ -34,14 +37,16 @@ import {
   formatGet,
   formatMessage,
   formatSessionHeader,
+  formatSessionLine,
 } from "@agentcommons/core/format";
 import { hasAdminAuthority } from "@agentcommons/db";
 import { z } from "zod";
 import {
   Parameters,
+  andSql,
   filterSql,
   rawRecords,
-  sessionHeader,
+  sessionHeaderById,
   sessionHeaders,
   visibleSession,
   sessionTreePage,
@@ -80,6 +85,8 @@ type GetInput = z.infer<typeof getInputSchema>;
 const MESSAGE_ROW_COLUMNS: readonly string[] = Object.keys(
   messageRowSchema.shape,
 );
+/** Metadata rows one 32 KB page considers; a larger `page_bytes` budget scales this in proportion. */
+const MESSAGE_ROWS_PER_READ_BUDGET = 100;
 /** Message columns read before payloads; content and its cursor come from the payload pass. */
 const MESSAGE_METADATA_COLUMNS = Object.keys(messageSchema.shape)
   .filter(
@@ -128,11 +135,21 @@ class GetPageBudget {
   private json: number;
   private text: number;
   private count = 0;
-  constructor(header: SessionHeader) {
+  constructor(
+    header: SessionHeader | null,
+    private readonly limit: number,
+    continuation: boolean,
+  ) {
     this.json =
       jsonByteLength({ header, messages: [], next: null }) -
       jsonByteLength(null);
-    this.text = Buffer.byteLength(formatSessionHeader(header));
+    this.text = header
+      ? Buffer.byteLength(
+          continuation
+            ? formatSessionLine(header)
+            : formatSessionHeader(header),
+        )
+      : 0;
   }
   private cost(message: Message) {
     return {
@@ -150,8 +167,8 @@ class GetPageBudget {
             text: 2 + Buffer.byteLength(`next: ${JSON.stringify(next)}`),
           };
     return (
-      this.json + added.json + tail.json <= responseBytes.read &&
-      this.text + added.text + tail.text <= responseBytes.read
+      this.json + added.json + tail.json <= this.limit &&
+      this.text + added.text + tail.text <= this.limit
     );
   }
   add(message: Message): void {
@@ -193,33 +210,31 @@ export class SessionService {
             )
           : null;
         return this.dependencies.readers.read(caller, async (client) => {
-          await visibleSession(client, id);
-          const clock =
-            position?.asOf ??
-            (
-              await client.query<{ time: string }>(
-                "SELECT now64(6, 'UTC') AS time",
-              )
-            ).rows[0]?.time;
-          if (!clock)
-            throw new Error("The reuse snapshot time is unavailable.");
-          const rows = await reuseEdgePage(client, {
-            scope: { sessionId: id, direction: request.direction },
-            asOf: clock,
-            sort: request.sort ?? "read_at",
-            order: request.order,
-            readerUserId: request.reader_user_id,
-            after: position,
-            limit: request.limit + 1,
-          });
+          // The visibility answer and the edge page are independent; the first page's
+          // snapshot clock comes back with the edges instead of from a query of its own.
+          const [rows] = await Promise.all([
+            reuseEdgePage(client, {
+              scope: { sessionId: id, direction: request.direction },
+              asOf: position?.asOf ?? null,
+              sort: request.sort ?? "read_at",
+              order: request.order,
+              readerUserId: request.reader_user_id,
+              after: position,
+              limit: request.limit + 1,
+            }),
+            visibleSession(client, id),
+          ]);
           const items = rows.slice(0, request.limit).map((row) => row.item);
           return sessionReuseOutputSchema.parse(
-            boundedPage(items, rows.length > request.limit, (_last, count) =>
-              this.dependencies.cursors.encode(binding, {
-                asOf: clock,
-                ...rows[count - 1]?.position,
-              }),
-            ),
+            boundedPage(items, rows.length > request.limit, (_last, count) => {
+              const last = rows[count - 1];
+              if (!last)
+                throw new Error("The reuse page position is unavailable.");
+              return this.dependencies.cursors.encode(binding, {
+                asOf: position?.asOf ?? last.asOf,
+                ...last.position,
+              });
+            }),
           );
         });
       },
@@ -233,40 +248,69 @@ export class SessionService {
   }
 
   get(context: ServiceContext, input: unknown) {
+    let sessionId: string | null = null;
     return readOperation(
       this.dependencies.audit,
       context,
       { action: "get", resourceType: "session", detail: input ?? null },
       async (caller) => {
         const request = getInputSchema.parse(input);
+        sessionId = request.session_id;
         return this.dependencies.readers.read(caller, async (client) => {
-          const row = await visibleSession(
-            client,
-            request.session_id,
-            "header",
+          // Metadata rows scale with the page budget: 100 for the 32 KB agent page, 800 for
+          // the 256 KB dashboard page; one more row tells whether the range continues.
+          const rowLimit = Math.round(
+            (MESSAGE_ROWS_PER_READ_BUDGET * request.page_bytes) /
+              responseBytes.read,
           );
-          const header = await sessionHeader(client, row);
+          // The header is the expensive part of a read: the `sessions` row with its
+          // relatives, one scan that also answers visibility. A caller that already holds
+          // it (`header: false`) is checked against the light session state instead and
+          // gets messages only. Either answer runs beside the metadata read; row policies
+          // fence the metadata of a hidden session on their own.
+          const [header, rows] = await Promise.all([
+            request.header
+              ? sessionHeaderById(client, caller, request.session_id)
+              : visibleSession(client, request.session_id).then(() => null),
+            client.query(
+              `SELECT ${MESSAGE_METADATA_COLUMNS},payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND seq >= {first:UInt32} AND ({last:Nullable(UInt32)} IS NULL OR seq <= {last:Nullable(UInt32)}) AND kind IN {kinds:Array(String)} ORDER BY seq LIMIT {rows:UInt32}`,
+              {
+                id: request.session_id,
+                first: request.cursor?.seq ?? request.from ?? 0,
+                last: request.to ?? null,
+                // The conversation by default; META housekeeping only when asked for (§7.3).
+                kinds: request.kinds ?? defaultMessageKinds[request.format],
+                rows: rowLimit + 1,
+              },
+            ),
+          ]);
           const output: GetOutput = { header, messages: [], next: null };
-          if (!fitsToolBudget(output, formatGet))
+          if (header && !fitsToolBudget(output, formatGet))
             throw new ServiceError(
               413,
               "SESSION_HEADER_TOO_LARGE",
               "The session header exceeds the response limit. Use SQL to select the fields you need.",
             );
-          const budget = new GetPageBudget(header);
-          const rows = await client.query(
-            `SELECT ${MESSAGE_METADATA_COLUMNS},payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND seq >= {first:UInt32} AND ({last:Nullable(UInt32)} IS NULL OR seq <= {last:Nullable(UInt32)}) ORDER BY seq LIMIT 101`,
-            {
-              id: request.session_id,
-              first: request.cursor?.seq ?? request.from ?? 0,
-              last: request.to ?? null,
-            },
+          const budget = new GetPageBudget(
+            header,
+            request.page_bytes,
+            request.cursor !== null && request.cursor !== undefined,
           );
           // Fetch only a prefix that can contribute to this bounded page. One large
           // first message remains readable through the existing lossless byte cursor.
+          // A row costs the slice the page will carry, not its whole payload, so a page
+          // of bounded previews reads every row it can show in one payload query.
           const firstBatch = messagePayloadBatches(
-            rows.rows.slice(0, 100),
-            responseBytes.read,
+            rows.rows.slice(0, rowLimit),
+            request.page_bytes,
+            (row) =>
+              Math.min(
+                Number(row.payload_bytes),
+                contentSliceBytes(
+                  request.page_bytes,
+                  messageKindSchema.parse(row.kind),
+                ),
+              ),
           ).next();
           const batch = firstBatch.done ? [] : firstBatch.value;
           const payloads = await readMessagePayloads(client, batch);
@@ -303,10 +347,15 @@ export class SessionService {
             let item: Message | null = null;
             // JSON escaping and the header affect the remaining byte budget. Reduce the
             // content slice until both representations fit, preserving character boundaries.
+            const sliceBytes = contentSliceBytes(
+              request.page_bytes,
+              messageKindSchema.parse(message.kind),
+            );
+            const step = Math.max(256, sliceBytes / 16);
             for (
-              let size = Math.min(4096, Buffer.byteLength(full) - offset);
+              let size = Math.min(sliceBytes, Buffer.byteLength(full) - offset);
               size >= 0;
-              size = size === 0 ? -1 : Math.max(0, size - 256)
+              size = size === 0 ? -1 : Math.max(0, size - step)
             ) {
               let slice;
               try {
@@ -328,11 +377,13 @@ export class SessionService {
                 content: slice.content,
                 content_cursor: remainder,
               });
-              const next =
-                remainder ??
-                (rows.rows[index + 1]
-                  ? { seq: Number(rows.rows[index + 1]?.seq), offset: 0 }
-                  : null);
+              // A bounded message does not end the page: the page goes on with the
+              // following message and this one's rest waits behind its content_cursor.
+              // Only the range's last message continues through `next`.
+              const following = rows.rows[index + 1]
+                ? { seq: Number(rows.rows[index + 1]?.seq), offset: 0 }
+                : null;
+              const next = following ?? remainder;
               if (budget.fits(candidate, next)) {
                 item = candidate;
                 output.next = next;
@@ -351,18 +402,18 @@ export class SessionService {
             }
             output.messages.push(item);
             budget.add(item);
-            if (item.content_cursor) break;
           }
           return getOutputSchema.parse(output);
         });
       },
       {
         describeResult: (result) => ({
-          session_id: result.header.session_id,
+          session_id: sessionId,
+          header: result.header !== null,
           message_count: result.messages.length,
           next: result.next,
         }),
-        describeResources: (result) => [result.header.session_id],
+        describeResources: () => (sessionId === null ? [] : [sessionId]),
       },
     );
   }
@@ -371,17 +422,24 @@ export class SessionService {
    * The CSV form of `get`: every message of the range as one row each, in seq order. The
    * pages a JSON reader would walk are read to the end under the same audit, budgets and
    * redaction, and the content slices of a message that spans pages are rejoined into its
-   * row. The first page is read before the rows stream, so a caller who cannot read the
-   * session gets that error and no file.
+   * row. Every page is the largest REST page, whatever `page_bytes` the caller passed: a
+   * file has no reader-side page budget, and each page is a fenced read with its own
+   * audit row, so fewer pages mean a shorter export. The first page is read before the
+   * rows stream, so a caller who cannot read the session gets that error and no file;
+   * later pages arrive as the consumer pulls rows.
    */
   async export(
     context: ServiceContext,
     input: unknown,
   ): Promise<{ columns: readonly string[]; rows: AsyncIterable<MessageRow> }> {
-    const first = (await this.get(context, input)).result;
+    const request: GetInput = {
+      ...getInputSchema.parse(input),
+      page_bytes: responseBytes.page,
+    };
+    const first = (await this.get(context, request)).result;
     return {
       columns: MESSAGE_ROW_COLUMNS,
-      rows: this.exportRows(context, getInputSchema.parse(input), first),
+      rows: this.exportRows(context, request, first),
     };
   }
   private async *exportRows(
@@ -403,12 +461,55 @@ export class SessionService {
           pickSchema(wireRow(message), messageRowSchema),
         );
         slices = [message.content];
+        // A bounded message the page moved past keeps its rest behind content_cursor;
+        // the page's own `next` continues only the range's last one.
+        if (
+          message.content_cursor &&
+          !(
+            page.next?.seq === message.content_cursor.seq &&
+            page.next.offset === message.content_cursor.offset
+          )
+        )
+          for await (const slice of this.rest(
+            context,
+            request,
+            message.content_cursor,
+          ))
+            slices.push(slice);
       }
       if (page.next === null) break;
-      page = (await this.get(context, { ...request, cursor: page.next }))
-        .result;
+      // The first page carried the header and the visibility answer; later pages read
+      // messages only.
+      page = (
+        await this.get(context, {
+          ...request,
+          cursor: page.next,
+          header: false,
+        })
+      ).result;
     }
     if (row) yield { ...row, content: slices.join("") };
+  }
+  /** The rest of one bounded message, slice by slice, under the same audit and visibility. */
+  private async *rest(
+    context: ServiceContext,
+    request: GetInput,
+    cursor: ContentCursor,
+  ): AsyncGenerator<string> {
+    let position: ContentCursor | null = cursor;
+    while (position !== null) {
+      const page: GetOutput = (
+        await this.get(context, {
+          ...request,
+          from: cursor.seq,
+          to: cursor.seq,
+          cursor: position,
+          header: false,
+        })
+      ).result;
+      for (const slice of page.messages) yield slice.content;
+      position = page.next;
+    }
   }
 
   list(context: ServiceContext, input: unknown) {
@@ -438,33 +539,49 @@ export class SessionService {
           (offset, take) =>
             this.dependencies.readers.read(caller, async (client) => {
               const params = new Parameters();
-              const filter = await filterSql(client, request.filters, params);
+              const plan = await filterSql(client, request.filters, params);
               const sort = request.sort ?? "started_at";
-              const scoped = filter.joinsMessages
-                ? `s.session_id IN (SELECT m.session_id FROM api_ro.messages m JOIN api_ro.sessions s ON s.session_id=m.session_id WHERE ${filter.sql})`
-                : filter.sql;
-              // parent_session_id is the caller-visible parent, so a child of a hidden session lists as a root.
-              const predicate = request.roots_only
-                ? `(${scoped}) AND s.parent_session_id IS NULL`
-                : scoped;
-              // The totals share the page's predicate and read callback (fence and row
-              // policies), without its window, so the two never drift apart.
-              const totalParameters = { ...params.values };
-              const [rows, counts] = await Promise.all([
-                client.query(
-                  `SELECT s.* FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
-                  params.values,
-                ),
-                client.query(
-                  `SELECT count() AS sessions,sum(s.message_count) AS messages FROM api_ro.sessions s WHERE ${predicate}`,
-                  totalParameters,
-                ),
+              // Message predicates narrow the sessions through the lightest message
+              // relation that serves them; session predicates stay on the page's own scan.
+              // parent_session_id is the caller-visible parent, so a child of a hidden
+              // session lists as a root.
+              const predicate = andSql([
+                ...plan.session,
+                ...(plan.message.length
+                  ? [
+                      `s.session_id IN (SELECT m.session_id FROM api_ro.${plan.messageView} m WHERE ${andSql(plan.message)})`,
+                    ]
+                  : []),
+                ...(request.roots_only ? ["s.parent_session_id IS NULL"] : []),
               ]);
+              // The totals are window aggregates of the page's own scan: the same
+              // predicate, fence and row policies, evaluated before the window is cut.
+              const totalParameters = { ...params.values };
+              const rows = await client.query(
+                `SELECT s.*,count() OVER () AS total_sessions,sum(s.message_count) OVER () AS total_messages FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
+                params.values,
+              );
+              const first = rows.rows[0];
+              // A window past the last row carries no aggregate; only then is a count of
+              // the predicate (with no window) needed to state the totals.
+              const counts = first
+                ? {
+                    sessions: first.total_sessions,
+                    messages: first.total_messages,
+                  }
+                : offset === 0
+                  ? { sessions: 0, messages: 0 }
+                  : (
+                      await client.query(
+                        `SELECT count() AS sessions,sum(s.message_count) AS messages FROM api_ro.sessions s WHERE ${predicate}`,
+                        totalParameters,
+                      )
+                    ).rows[0];
               total = sessionsTotalSchema.parse({
-                sessions: Number(counts.rows[0]?.sessions ?? 0),
-                messages: Number(counts.rows[0]?.messages ?? 0),
+                sessions: Number(counts?.sessions ?? 0),
+                messages: Number(counts?.messages ?? 0),
               });
-              const headers = await sessionHeaders(client, rows.rows);
+              const headers = await sessionHeaders(client, caller, rows.rows);
               return rows.rows.map((row, index) => ({
                 ...headers[index],
                 duration_seconds:
@@ -626,19 +743,8 @@ export class SessionService {
               treePosition,
             )
           : null;
-        const rows = await this.dependencies.readers.read(
-          caller,
-          async (client) => {
-            await visibleSession(client, sessionId);
-            return sessionTreePage(
-              client.control,
-              client,
-              caller,
-              sessionId,
-              after,
-              request.limit,
-            );
-          },
+        const rows = await this.dependencies.readers.read(caller, (client) =>
+          sessionTreePage(client, caller, sessionId, after, request.limit),
         );
         const nodes = rows.slice(0, request.limit).map((row) => {
           const node = wireRow(row);

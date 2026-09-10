@@ -159,7 +159,7 @@ it("supports admin-only keys and applies visibility only to the authenticated or
     ).result.updated,
   ).toBe(true);
   expect(
-    (await sessions.get(reader, { session_id: id })).result.header.session_id,
+    (await sessions.get(reader, { session_id: id })).result.header?.session_id,
   ).toBe(id);
   expect(
     (

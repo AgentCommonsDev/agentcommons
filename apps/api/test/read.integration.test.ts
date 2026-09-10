@@ -3,21 +3,26 @@ import { readFile } from "node:fs/promises";
 import { Client } from "pg";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
-import { TraceReaders } from "@agentcommons/traces";
+import { ClickHouseError, TraceReaders } from "@agentcommons/traces";
 import {
   messageRowSchema,
+  responseBytes,
   type ContentCursor,
   type GetOutput,
+  type MessageKind,
 } from "@agentcommons/core";
 import { formatGet, formatSearch } from "@agentcommons/core/format";
+import { claudeCode } from "@agentcommons/core/normalizers";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@agentcommons/db";
 import { CursorCodec } from "../src/services/cursor.js";
 import { QueryService } from "../src/services/query.js";
 import { SearchService } from "../src/services/search.js";
 import { SessionService } from "../src/services/session.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
+import { countingReaders, scansPerRelation } from "./query-counter.js";
 import {
   releaser,
   syntheticContext,
@@ -28,6 +33,7 @@ const { defer, release } = releaser();
 let writer: Client;
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let fixtures: TraceFixtures;
+let counter: ReturnType<typeof countingReaders>;
 let search: SearchService;
 let sessions: SessionService;
 let query: QueryService;
@@ -40,6 +46,7 @@ const ids = {
   other: randomUUID(),
   weights: randomUUID(),
   long: randomUUID(),
+  wide: randomUUID(),
   second: randomUUID(),
   empty: randomUUID(),
 };
@@ -163,9 +170,10 @@ beforeAll(async () => {
   writer = new Client({ connectionString: db.urls.migration });
   await writer.connect();
   defer(() => writer.end());
+  counter = countingReaders(db.traceReaders);
   const dependencies = {
     prisma: db.prisma,
-    readers: db.traceReaders,
+    readers: counter.readers,
     audit: db.audit,
     cursors: new CursorCodec("integration-cursor-secret-with-enough-entropy"),
   };
@@ -244,6 +252,16 @@ beforeAll(async () => {
     input: { command: "x".repeat(12000) },
     tool: "Bash",
   });
+  // Sixty 1 KB messages: more than one 32 KB page, well within one 256 KB page.
+  const wide = await session(ids.wide, { title: "Wide page fixture" });
+  for (let seq = 0; seq < 60; seq++)
+    await message(
+      ids.wide,
+      wide,
+      seq,
+      `wide message ${String(seq)} ${"w".repeat(1024)}`,
+      { role: seq % 2 ? "ASSISTANT" : "USER" },
+    );
   const second = await session(ids.second, { repo: "host/second/repo" });
   await message(ids.second, second, 0, "Circuit breaker at exclusive date", {
     timestamp: "2026-09-01T00:00:00Z",
@@ -555,6 +573,65 @@ describe("read services on ClickHouse", () => {
     expect(found.sort()).toEqual(expected.sort());
     expect(pages).toBeGreaterThan(1);
   });
+  // @req R-SRCH-15
+  it("places a truncated excerpt with its UTF-8 byte range and marks the cut ends in the agent text", async () => {
+    const id = randomUUID();
+    const batch = await session(id, { repo: "host/team/excerpt" });
+    // 350 emoji (4 bytes each) after the marker: the excerpt keeps the first 300 code points.
+    await message(id, batch, 0, `rangemarker ${"🙂".repeat(350)}`);
+    // The marker as its own word at code point 201 of 700 ASCII characters (bytes equal
+    // code points here): the window opens 100 before it.
+    await message(
+      id,
+      batch,
+      1,
+      `${"a".repeat(200)} rangemarker ${"b".repeat(487)}`,
+    );
+    const page = await search.execute(context(), {
+      query: "rangemarker",
+      filters: { repo_name: "host/team/excerpt" },
+      context: 0,
+      limit: 5,
+      cursor: null,
+    });
+    const messages = page.result.blocks.flatMap((block) => block.messages);
+    const head = messages.find((item) => item.seq === 0);
+    const middle = messages.find((item) => item.seq === 1);
+    if (!head || !middle) throw new Error("both hits are on the page");
+    expect(head.truncated).toBe(true);
+    expect(head.content_range).toEqual({
+      start: 0,
+      end: 12 + 288 * 4,
+      total: 12 + 350 * 4,
+    });
+    expect(Buffer.byteLength(head.content)).toBe(12 + 288 * 4);
+    expect(middle.content_range).toEqual({ start: 101, end: 401, total: 700 });
+    expect(middle.content.startsWith("a".repeat(99) + " rangemarker ")).toBe(
+      true,
+    );
+    const text = formatSearch(page.result).text;
+    expect(text).toContain(
+      `[hit] [truncated 0-${String(12 + 288 * 4)} of ${String(12 + 350 * 4)}]\nrangemarker `,
+    );
+    expect(text).toContain(
+      "[hit] [truncated 101-401 of 700]\n…" + "a".repeat(99),
+    );
+    expect(text).toContain("b".repeat(188) + "…");
+    // A short message is complete: no range, no markers.
+    await message(id, batch, 2, "rangemarker short");
+    const again = await search.execute(context(), {
+      query: "rangemarker short",
+      filters: { repo_name: "host/team/excerpt" },
+      context: 0,
+      limit: 5,
+      cursor: null,
+    });
+    const short = again.result.blocks
+      .flatMap((block) => block.messages)
+      .find((item) => item.seq === 2);
+    expect(short?.truncated).toBe(false);
+    expect(short?.content_range).toBeNull();
+  });
   // @req R-GET-02 @req R-SRCH-09
   it("keeps search and transcript pagination usable with oversized native metadata", async () => {
     const id = randomUUID();
@@ -621,25 +698,36 @@ describe("read services on ClickHouse", () => {
       from: 1,
       to: 2,
     });
-    expect(root.result.header.children).toEqual([]);
-    expect(root.result.header.input_tokens).toBe("9007199254740993");
+    expect(root.result.header?.children).toEqual([]);
+    expect(root.result.header?.input_tokens).toBe("9007199254740993");
     expect(root.result.messages.map((row) => row.kind)).toEqual([
       "THINKING",
       "TEXT",
     ]);
     const child = await sessions.get(context(), { session_id: ids.child });
-    expect(child.result.header.parent).toBeNull();
-    expect(child.result.header.root_session_id).toBe(ids.child);
+    expect(child.result.header?.parent).toBeNull();
+    expect(child.result.header?.root_session_id).toBe(ids.child);
     const first = await sessions.get(context(), { session_id: ids.long });
+    // One slice is a quarter of the 32 KB page.
     expect(Buffer.byteLength(first.result.messages[0]?.content ?? "")).toBe(
-      4096,
+      8192,
     );
-    expect(first.result.next).toEqual({ seq: 0, offset: 4096 });
+    // The bounded first message does not end the page: the tool call follows it, and
+    // the rest of each waits behind its own content_cursor; next continues the range's
+    // last message because the range ends inside it.
+    expect(first.result.messages[0]?.content_cursor).toEqual({
+      seq: 0,
+      offset: 8192,
+    });
+    expect(first.result.messages.map((row) => row.seq)).toEqual([0, 1]);
+    expect(first.result.next).toEqual(first.result.messages[1]?.content_cursor);
     const next = await sessions.get(context(), {
       session_id: ids.long,
-      cursor: first.result.next,
+      from: 0,
+      to: 0,
+      cursor: first.result.messages[0]?.content_cursor,
     });
-    expect(next.result.next).toEqual({ seq: 0, offset: 8192 });
+    expect(next.result.next).toEqual({ seq: 0, offset: 16384 });
     expect(next.result.messages[0]?.content).not.toContain("�");
     const end = await sessions.get(context(), {
       session_id: ids.long,
@@ -672,6 +760,193 @@ describe("read services on ClickHouse", () => {
       sessions.get(context(), { session_id: ids.long, from: 2, to: 1 }),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
+  // @req R-DASH-39 @req R-GET-02
+  it("raises the page budget for REST readers without widening visibility or the agent default", async () => {
+    const wide = 60;
+    const small = (await sessions.get(context(), { session_id: ids.wide }))
+      .result;
+    expect(small.messages.length).toBeLessThan(wide);
+    expect(small.next).not.toBeNull();
+    const page = (
+      await sessions.get(context(), {
+        session_id: ids.wide,
+        page_bytes: 262144,
+      })
+    ).result;
+    expect(page.messages.map((row) => row.seq)).toEqual(
+      Array.from({ length: wide }, (_, seq) => seq),
+    );
+    expect(page.next).toBeNull();
+    expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(262144);
+    // A message slice grows with the budget: a quarter of the page.
+    const slice = (
+      await sessions.get(context(), {
+        session_id: ids.long,
+        page_bytes: 262144,
+      })
+    ).result;
+    expect(Buffer.byteLength(slice.messages[0]?.content ?? "")).toBe(65536);
+    expect(slice.messages[0]?.content).not.toContain("�");
+    expect(slice.messages[0]?.content_cursor).toEqual({
+      seq: 0,
+      offset: 65536,
+    });
+    // The 12 KB tool call fits a 64 KB slice whole, so the range is complete.
+    expect(slice.messages[1]?.content_cursor).toBeNull();
+    expect(slice.next).toBeNull();
+    // A caller that holds the header reads messages only: same rows, no header, and the
+    // visibility answer unchanged.
+    const light = (
+      await sessions.get(context(), {
+        session_id: ids.wide,
+        page_bytes: 262144,
+        header: false,
+      })
+    ).result;
+    expect(light.header).toBeNull();
+    expect(light.messages).toEqual(page.messages);
+    expect(light.next).toBeNull();
+    expect(formatGet(light).text.startsWith("seq 0 USER TEXT")).toBe(true);
+    // The budget is bounded, and neither it nor the header switch widens what a caller may see.
+    for (const page_bytes of [32767, 262145])
+      await expect(
+        sessions.get(context(), { session_id: ids.wide, page_bytes }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+    for (const id of [ids.private, ids.other])
+      for (const header of [true, false])
+        await expect(
+          sessions.get(context(), {
+            session_id: id,
+            page_bytes: 262144,
+            header,
+          }),
+        ).rejects.toMatchObject({ statusCode: 404 });
+  });
+  // @req R-GET-05 @req R-GET-02
+  it("reads a captured 16-turn Claude Code session as one bounded preview per message in few pages", async () => {
+    // The sanitized parent transcript, 16 turns: 18 messages per turn, ten of them
+    // housekeeping attachments (14 KB deferred tools, 7 KB skill listing, reminders).
+    const turn = claudeCode.toMessages(
+      (
+        await readFile(
+          new URL(
+            "../../../fixtures/transcripts/claude-code/parent.jsonl",
+            import.meta.url,
+          ),
+          "utf8",
+        )
+      )
+        .trim()
+        .split("\n")
+        .map((line, index) => ({
+          id: randomUUID(),
+          pos: BigInt(index),
+          key: null,
+          sourceVersion: 0,
+          payload: JSON.parse(line) as Record<string, unknown>,
+          receivedAt: new Date(),
+        })),
+    );
+    expect(turn).toHaveLength(18);
+    const id = randomUUID();
+    // Its own repository keeps it out of the totals other tests count.
+    const batch = await session(id, {
+      title: "Captured sixteen turns",
+      repo: "host/team/captured",
+    });
+    const turns = 16;
+    const received = new Date("2026-08-15T00:00:00Z");
+    for (let index = 0; index < turns; index++)
+      for (const [offset, item] of turn.entries())
+        await fixtures.insert("messages", id, {
+          message_id: randomUUID(),
+          raw_record_id: randomUUID(),
+          ingest_batch_id: batch,
+          seq: index * turn.length + offset,
+          block_index: 0,
+          role: item.role,
+          kind: item.kind,
+          content: item.content,
+          tool_name: item.toolName,
+          tool_input: JSON.stringify(item.toolInput),
+          searchable: !["THINKING", "META"].includes(item.kind),
+          search_text: item.content.slice(0, 2048),
+          timestamp: "2026-08-15T00:00:00Z",
+          received_at: received,
+          input_tokens: null,
+          output_tokens: null,
+        });
+    await fixtures.update("sessions", id, {
+      message_count: turns * turn.length,
+    });
+    const every = Array.from({ length: turns * turn.length }, (_, seq) => seq);
+    const metaSeqs = new Set(
+      every.filter((seq) => turn[seq % turn.length]?.kind === "META"),
+    );
+    // Walks every page of one read and returns the seqs seen and the page count.
+    const walk = async (input: { kinds?: MessageKind[] }) => {
+      const seen: number[] = [];
+      let pages = 0;
+      let cursor: ContentCursor | null = null;
+      do {
+        const page: GetOutput = (
+          await sessions.get(context(), { session_id: id, cursor, ...input })
+        ).result;
+        pages++;
+        for (const row of page.messages) {
+          seen.push(row.seq);
+          if (row.kind === "META")
+            expect(Buffer.byteLength(row.content)).toBeLessThanOrEqual(1024);
+          else expect(row.content_cursor).toBeNull();
+        }
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(
+          32768,
+        );
+        expect(
+          Buffer.byteLength(
+            formatGet(page, { continuation: cursor !== null }).text,
+          ),
+        ).toBeLessThanOrEqual(32768);
+        cursor = page.next;
+      } while (cursor !== null);
+      return { seen, pages };
+    };
+    // The default read is the conversation: META housekeeping is left out, seq keeps
+    // every kind's position, and the header still counts every message.
+    const conversation = await walk({});
+    expect(conversation.seen).toEqual(
+      every.filter((seq) => !metaSeqs.has(seq)),
+    );
+    expect(conversation.pages).toBeLessThanOrEqual(4);
+    const header = (await sessions.get(context(), { session_id: id })).result
+      .header;
+    expect(header?.message_count).toBe(turns * turn.length);
+    // Naming META reads everything, each attachment as a 1 KB preview.
+    const everything = await walk({
+      kinds: ["TEXT", "THINKING", "TOOL_USE", "TOOL_RESULT", "META"],
+    });
+    expect(everything.seen).toEqual(every);
+    expect(everything.pages).toBeLessThanOrEqual(12);
+    const onlyMeta = (
+      await sessions.get(context(), { session_id: id, kinds: ["META"] })
+    ).result;
+    expect(onlyMeta.messages.every((row) => row.kind === "META")).toBe(true);
+    expect(onlyMeta.messages[0]?.seq).toBe([...metaSeqs][0]);
+    // The export is a file: every kind, every attachment whole.
+    const exported = await sessions.export(context(), {
+      session_id: id,
+      format: "csv",
+    });
+    const rows = [];
+    for await (const row of exported.rows) rows.push(row);
+    expect(rows).toHaveLength(turns * turn.length);
+    const largest = Math.max(
+      ...turn.map((item) => Buffer.byteLength(item.content)),
+    );
+    expect(Math.max(...rows.map((row) => Buffer.byteLength(row.content)))).toBe(
+      largest,
+    );
+  }, 120_000);
   // @req R-DASH-38
   it("exports every message of a range as one row each, rejoining pages under the same get audit and visibility", async () => {
     const collect = async (ctx: ServiceContext, input: unknown) => {
@@ -703,16 +978,27 @@ describe("read services on ClickHouse", () => {
     );
     expect(whole.rows.map((row) => row.seq)).toEqual([0, 1, 2, 3, 4, 5, 6]);
     // A message that spans pages is one row whose content is its slices in order, and
-    // every page the export walked is a `get` read of the same request marked as CSV.
+    // every page the export walked is a `get` read of the same request marked as CSV at
+    // the REST page cap, however small a page the caller asked for.
     const ctx = context();
-    const range = { session_id: ids.long, from: 1, to: 1 };
-    const spanning = await collect(ctx, { ...range, format: "csv" });
+    // The 1 MB thinking message spans several pages even at the 256 KB export page.
+    const range = { session_id: ids.long, from: 0, to: 0 };
+    const spanning = await collect(ctx, {
+      ...range,
+      format: "csv",
+      page_bytes: responseBytes.read,
+    });
     const slices: string[] = [];
     let pages = 0;
     let next: ContentCursor | null = null;
     do {
       const step: GetOutput = (
-        await sessions.get(context(), { ...range, cursor: next })
+        await sessions.get(context(), {
+          ...range,
+          cursor: next,
+          page_bytes: responseBytes.page,
+          header: next === null,
+        })
       ).result;
       slices.push(...step.messages.map((message) => message.content));
       next = step.next;
@@ -720,19 +1006,25 @@ describe("read services on ClickHouse", () => {
     } while (next !== null);
     expect(pages).toBeGreaterThan(1);
     expect(spanning.rows).toHaveLength(1);
-    expect(spanning.rows[0]?.seq).toBe(1);
+    expect(spanning.rows[0]?.seq).toBe(0);
     expect(spanning.rows[0]?.content).toBe(slices.join(""));
     const audits = await writer.query<{
       action: string;
       format: string | null;
+      page_bytes: string | null;
+      header: string | null;
     }>(
-      "SELECT action, detail->'input'->>'format' AS format FROM audit_event WHERE request_id=$1",
+      "SELECT action, detail->'input'->>'format' AS format, detail->'input'->>'page_bytes' AS page_bytes, detail->'input'->>'header' AS header FROM audit_event WHERE request_id=$1",
       [ctx.requestId],
     );
     expect(audits.rows).toHaveLength(pages);
     expect(
       new Set(audits.rows.map((row) => `${row.action}:${row.format ?? ""}`)),
     ).toEqual(new Set(["get:csv"]));
+    expect(new Set(audits.rows.map((row) => row.page_bytes))).toEqual(
+      new Set([String(responseBytes.page)]),
+    );
+    expect(audits.rows.filter((row) => row.header === "true")).toHaveLength(1);
     // The refusal a JSON read gets is the refusal the export gets, before any row.
     await expect(
       sessions.export(context(), { session_id: ids.private }),
@@ -788,6 +1080,67 @@ describe("read services on ClickHouse", () => {
     ).text;
     expect(formatted).toContain("subagent_runs: 1");
     expect(formatted).toContain(ids.leaf);
+  });
+  // @req R-DASH-41
+  it("sorts the list by message count in both directions with a session_id tie-break that cursors continue", async () => {
+    type Item = { session_id: string; message_count: number };
+    const list = (input: Record<string, unknown>) =>
+      sessions.list(context(), { sort: "message_count", ...input });
+    /** Session ids per count in list order: the tie-break is `session_id` whichever way the count runs. */
+    const ties = (items: Item[]) => {
+      const groups = new Map<number, string[]>();
+      for (const item of items)
+        groups.set(item.message_count, [
+          ...(groups.get(item.message_count) ?? []),
+          item.session_id,
+        ]);
+      return groups;
+    };
+    const whole: Record<"asc" | "desc", Item[]> = { asc: [], desc: [] };
+    for (const order of ["desc", "asc"] as const) {
+      const page = await list({ order, limit: 100 });
+      expect(page.result.cursor).toBeNull();
+      const items: Item[] = page.result.items;
+      whole[order] = items;
+      expect(items.length).toBeGreaterThan(3);
+      const counts = items.map((item) => item.message_count);
+      expect(counts).toEqual(
+        [...counts].sort((left, right) =>
+          order === "asc" ? left - right : right - left,
+        ),
+      );
+      // Ties are real: the fixture holds several one-message sessions.
+      expect(new Set(counts).size).toBeLessThan(counts.length);
+      // Pages of three walk the same order without a repeated or skipped row.
+      const paged: Item[] = [];
+      let cursor: string | null = null;
+      do {
+        const next = await list({ order, limit: 3, cursor });
+        expect(next.result.items.length).toBeLessThanOrEqual(3);
+        expect(next.result.total).toEqual(page.result.total);
+        paged.push(...next.result.items);
+        cursor = next.result.cursor;
+      } while (cursor !== null);
+      expect(paged).toEqual(items);
+    }
+    // Reversing the count keeps one session_id order inside every group of equal counts.
+    expect(ties(whole.asc)).toEqual(ties(whole.desc));
+    expect(whole.asc.map((item) => item.session_id)).not.toEqual(
+      whole.desc.map((item) => item.session_id),
+    );
+    // The cursor is bound to its sort and order; another sort cannot reuse it.
+    const first = await list({ order: "desc", limit: 3 });
+    await expect(
+      list({ order: "asc", limit: 3, cursor: first.result.cursor }),
+    ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
+    await expect(
+      sessions.list(context(), {
+        sort: "started_at",
+        order: "desc",
+        limit: 3,
+        cursor: first.result.cursor,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
   });
   // @req R-DASH-37
   it("reports session, message and hit totals over the whole visible set beside every page", async () => {
@@ -920,7 +1273,7 @@ describe("read services on ClickHouse", () => {
       .catch((error: unknown) => error);
     expect(memoryFailure).toMatchObject({
       statusCode: 400,
-      code: "241",
+      code: "QUERY_MEMORY_LIMIT",
       audited: true,
     });
     expect(memoryFailure).toHaveProperty(
@@ -951,7 +1304,7 @@ describe("read services on ClickHouse", () => {
         message: z.string(),
       })
       .parse(sqlError);
-    expect(failure.code).toBe("47");
+    expect(failure.code).toBe("QUERY_INVALID");
     expect(failure.detail.position).toBeNull();
     expect(failure.message).toContain("schema_columns");
     const prefixedSql = "/* lead */ SELECT '🙂',missing_column FROM sessions";
@@ -973,7 +1326,7 @@ describe("read services on ClickHouse", () => {
       .catch((error: unknown) => error);
     expect(failed).toMatchObject({
       statusCode: 400,
-      code: "179",
+      code: "QUERY_INVALID",
       audited: true,
     });
     const error = z.object({ message: z.string() }).parse(failed);
@@ -999,9 +1352,9 @@ describe("read services on ClickHouse", () => {
     await session(nested, { parent, parentToolUseId: toolUseId });
     await session(listed, { parent });
     const page = await sessions.get(context(), { session_id: parent });
-    expect(page.result.header.parent_tool_use_id).toBeNull();
+    expect(page.result.header?.parent_tool_use_id).toBeNull();
     expect(
-      page.result.header.children.map((child) => [
+      page.result.header?.children.map((child) => [
         child.session_id,
         child.parent_tool_use_id,
       ]),
@@ -1012,7 +1365,7 @@ describe("read services on ClickHouse", () => {
       ]),
     );
     const child = await sessions.get(context(), { session_id: nested });
-    expect(child.result.header.parent_tool_use_id).toBe(toolUseId);
+    expect(child.result.header?.parent_tool_use_id).toBe(toolUseId);
     const tree = await sessions.tree(context(), parent, {});
     expect(
       tree.result.nodes.find((node) => node.session_id === nested)
@@ -1049,10 +1402,10 @@ describe("read services on ClickHouse", () => {
     }
     await session(randomUUID(), { parent, visibility: "PRIVATE" });
     const page = await sessions.get(context(), { session_id: parent });
-    expect(page.result.header.child_count).toBe(12);
-    expect(page.result.header.children).toHaveLength(10);
-    expect(page.result.header.children_truncated).toBe(true);
-    expect(page.result.header.truncated_fields).toEqual(
+    expect(page.result.header?.child_count).toBe(12);
+    expect(page.result.header?.children).toHaveLength(10);
+    expect(page.result.header?.children_truncated).toBe(true);
+    expect(page.result.header?.truncated_fields).toEqual(
       expect.arrayContaining([
         "title",
         "tools_used",
@@ -1237,6 +1590,87 @@ describe("read services on ClickHouse", () => {
         .flatMap((block) => block.messages)
         .some((message) => message.content.includes("TS2322")),
     ).toBe(true);
+  });
+  // @req R-DASH-37 @req R-GET-01 @req R-GET-04 @req R-LNK-06
+  it("scans each relation at most once per read request and takes totals from the page's own scan", async () => {
+    const scans = async (run: () => Promise<unknown>) => {
+      counter.drain();
+      await run();
+      return counter.drain();
+    };
+    const perRelation = async (run: () => Promise<unknown>) =>
+      scansPerRelation(await scans(run));
+    for (const ctx of [context(), context("org-a", { admin: true })]) {
+      // get: the header row with its parent and children, the metadata and the payloads
+      // are three queries; the header query also answers visibility.
+      expect(
+        await perRelation(() => sessions.get(ctx, { session_id: ids.child })),
+      ).toEqual({
+        sessions: 1,
+        session_details: 1,
+        message_metadata: 1,
+        messages: 1,
+      });
+      expect(
+        await perRelation(() =>
+          sessions.get(ctx, { session_id: ids.child, header: false }),
+        ),
+      ).toEqual({ session_state: 1, message_metadata: 1, messages: 1 });
+      // list: rows and totals come from one scan of `sessions`, relatives from one of
+      // `session_details`; a message filter narrows inside the same query through the
+      // metadata relation.
+      expect(await perRelation(() => sessions.list(ctx, { limit: 2 }))).toEqual(
+        { sessions: 1, session_details: 1 },
+      );
+      expect(
+        await perRelation(() =>
+          sessions.list(ctx, {
+            limit: 2,
+            roots_only: true,
+            filters: { tool_name: "Bash", repo_name: "host/team/repo" },
+          }),
+        ),
+      ).toEqual({ sessions: 1, message_metadata: 1, session_details: 1 });
+      // tree: control walks the graph; one ClickHouse scan presents the visible nodes and
+      // answers whether the requested session is visible.
+      expect(await perRelation(() => sessions.tree(ctx, ids.leaf))).toEqual({
+        session_details: 1,
+      });
+      // reuse: the edge page carries both titles and its snapshot clock in one query.
+      expect(
+        await perRelation(() =>
+          sessions.reuse(ctx, ids.public, { direction: "by" }),
+        ),
+      ).toEqual({ reuse_edges: 1, session_details: 1, session_state: 1 });
+      // search: one candidate scan carries the totals; context, headers and payloads
+      // read only the page's session and message ids afterwards.
+      const searched = await scans(() =>
+        search.execute(ctx, {
+          query: "circuit breaker",
+          filters: { repo_name: "host/team/repo" },
+          context: 1,
+          limit: 5,
+        }),
+      );
+      expect(searched).toHaveLength(4);
+      expect(
+        searched.filter((entry) => entry.relations.includes("search_messages")),
+      ).toHaveLength(1);
+      expect(
+        searched
+          .slice(1)
+          .every((entry) => /\{(ids|sessions):Array\(UUID\)\}/.test(entry.sql)),
+      ).toBe(true);
+    }
+    // A member's continuation cursor past the last hit still reports the totals.
+    const page = await search.execute(context(), {
+      query: "circuit breaker",
+      filters: { repo_name: "host/team/repo" },
+      context: 0,
+      limit: 5,
+    });
+    expect(page.result.cursor).toBeNull();
+    expect(page.result.total).toEqual({ sessions: 2, hits: 5 });
   });
 });
 
@@ -1475,4 +1909,98 @@ describe("structured search conditions on ClickHouse", () => {
       ).blocks.map((block) => block.session_id),
     ).toEqual([foreign]);
   });
+});
+
+// @req R-GET-07 @req R-SQL-07 @req R-AUD-01
+it("maps trace read limits and busy databases to stable retryable codes on search, get and sql, and leaves unexpected failures as OPERATION_FAILED", async () => {
+  const failing = (error: unknown) =>
+    vi.spyOn(counter.readers, "read").mockRejectedValueOnce(error);
+  const requestId = randomUUID();
+  const scoped = (): ServiceContext => ({ ...context(), requestId });
+  try {
+    failing(
+      new ClickHouseError({
+        code: "159",
+        type: "TIMEOUT_EXCEEDED",
+        message: "Timeout exceeded: elapsed 5.01 s (query: SELECT secret)",
+      }),
+    );
+    const timedOut: unknown = await search
+      .execute(scoped(), { query: "circuit breaker", context: 0 })
+      .catch((error: unknown) => error);
+    expect(timedOut).toMatchObject({
+      statusCode: 503,
+      code: "READ_TIME_LIMIT",
+      detail: { retry_after: 5 },
+      audited: true,
+    });
+    const timedOutMessage = z.object({ message: z.string() }).parse(timedOut);
+    expect(timedOutMessage.message).toContain("5 second");
+    expect(timedOutMessage.message).toContain("search_messages(q=");
+    expect(timedOutMessage.message).not.toContain("secret");
+    failing(
+      new Prisma.PrismaClientKnownRequestError("Raw query failed", {
+        code: "P2010",
+        clientVersion: "test",
+        meta: {
+          code: "55P03",
+          message: "canceling statement due to lock timeout",
+        },
+      }),
+    );
+    await expect(
+      sessions.get(scoped(), { session_id: ids.long }),
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: "READ_BUSY",
+      detail: { retry_after: 5 },
+      audited: true,
+    });
+    failing(
+      new ClickHouseError({
+        code: "241",
+        type: "MEMORY_LIMIT_EXCEEDED",
+        message: "Memory limit (for query) exceeded",
+      }),
+    );
+    await expect(
+      query.execute(scoped(), { sql: "SELECT count() FROM messages" }),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: "QUERY_MEMORY_LIMIT",
+      detail: { position: null },
+      audited: true,
+    });
+    failing(new Error("unexpected reader failure"));
+    await expect(
+      sessions.get(scoped(), { session_id: ids.long }),
+    ).rejects.toMatchObject({
+      statusCode: 500,
+      code: "OPERATION_FAILED",
+      audited: true,
+    });
+  } finally {
+    vi.restoreAllMocks();
+  }
+  // Every failure is audited before it is thrown, with its stable code in the detail.
+  const audited = await db.prisma.auditEvent.findMany({
+    where: { requestId },
+    orderBy: { ts: "asc" },
+  });
+  expect(
+    audited.map((row) => [
+      row.action,
+      row.statusCode,
+      z.object({ code: z.string() }).loose().parse(row.detail).code,
+    ]),
+  ).toEqual([
+    ["search", 503, "READ_TIME_LIMIT"],
+    ["get", 503, "READ_BUSY"],
+    ["sql", 400, "QUERY_MEMORY_LIMIT"],
+    ["get", 500, "OPERATION_FAILED"],
+  ]);
+  // The reader is intact once the databases answer again.
+  expect(
+    (await sessions.get(context(), { session_id: ids.long })).result.header,
+  ).not.toBeNull();
 });

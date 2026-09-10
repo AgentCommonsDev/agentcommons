@@ -21,6 +21,24 @@ export function lockTracePublication(
   return advisoryXactLock(tx, `trace-publication:${organizationId}`, mode);
 }
 
+/**
+ * One accept at a time per native session, taken before any organization-wide lock: a
+ * retried or taken-over batch waits for the accept in flight and then replays its receipt,
+ * while other sessions of the organization redact and validate concurrently (§5.2).
+ */
+export function lockTraceAccept(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  harness: string,
+  nativeIdentity: string,
+): Promise<void> {
+  return advisoryXactLock(
+    tx,
+    `trace-accept:${organizationId}:${harness}:${nativeIdentity}`,
+    "write",
+  );
+}
+
 /** Payload writes share this per-session fence; physical purge excludes every writer. */
 export function lockTraceSink(
   tx: Prisma.TransactionClient,

@@ -163,6 +163,7 @@ beforeAll(async () => {
     prisma: db.prisma,
     audit: db.audit,
     traces: db.traces,
+    readers: db.traceReaders,
   });
   org = await provisionOrganization(db, "metrics");
   member = await provisionMember(db, org.owner, "metrics-member@example.com");

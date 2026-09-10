@@ -145,6 +145,22 @@ export async function createApp(options: {
     }
   });
   registerRequestDecompression(app);
+  /**
+   * Name and message of an unexpected failure. ClickHouse repeats the statement in its
+   * messages and the statement may be a caller's `sql` body, so the text stops before it.
+   */
+  const describeCause = (cause: unknown) => {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const cut = message.search(
+      /\(query:|in scope |Stack trace|\bSELECT\b|\bWITH\b/i,
+    );
+    return {
+      name: cause instanceof Error ? cause.name : typeof cause,
+      message: (cut >= 0 ? message.slice(0, cut) : message)
+        .trim()
+        .slice(0, 300),
+    };
+  };
   app.setErrorHandler(async (error, request, reply) => {
     const status = statusSchema.safeParse(error);
     let failure =
@@ -189,8 +205,19 @@ export async function createApp(options: {
         }
       }
     }
+    if (failure.statusCode >= 500)
+      request.log.error(
+        {
+          requestId: request.id,
+          method: request.method,
+          path,
+          code: failure.code,
+          cause: describeCause(failure.cause ?? error),
+        },
+        "request failed",
+      );
+    // Retryable failures (429, 503 AUTH_UNAVAILABLE, TRACE_QUERY_UNAVAILABLE) share one detail shape.
     if (
-      failure.statusCode === 429 &&
       typeof failure.detail === "object" &&
       failure.detail !== null &&
       "retry_after" in failure.detail &&

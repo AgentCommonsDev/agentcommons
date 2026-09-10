@@ -96,7 +96,8 @@ export function AuditRecordDialog({
                           <Badge
                             key={id}
                             variant="outline"
-                            className="font-mono"
+                            // A UUID is wider than a 320 px dialog; the pill wraps rather than widening it.
+                            className="max-w-full font-mono break-all whitespace-normal"
                           >
                             {id}
                           </Badge>

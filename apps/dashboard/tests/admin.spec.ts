@@ -23,8 +23,10 @@ import {
   closeDialog,
   collectErrors,
   confirm,
+  expectNoHorizontalOverflow,
   fixture,
   rowAction,
+  showColumn,
   signInAsMember,
   signInAsOwner,
   tableRow,
@@ -41,21 +43,6 @@ const exportCsv = async (page: Page, scope = page.locator("body")) => {
     .click();
   return parseCsv(await readFile(await (await downloaded).path(), "utf8"));
 };
-/** The column chooser adds a column; stacked phone rows label cells instead of headers. */
-async function showColumn(page: Page, label: string) {
-  await page
-    .getByRole("button", { name: copy.app.common.columns, exact: true })
-    .first()
-    .click();
-  const item = page
-    .getByRole("menu")
-    .getByRole("menuitemcheckbox", { name: label, exact: true });
-  await expect(item).toHaveAttribute("aria-checked", "false");
-  await item.click();
-  await expect(item).toHaveAttribute("aria-checked", "true");
-  await page.keyboard.press("Escape");
-  await expect(page.locator(`td[data-label="${label}"]`).first()).toBeVisible();
-}
 
 test.beforeEach(async ({ context }) => {
   await signInAsOwner(context);
@@ -71,6 +58,7 @@ test("People: an admin adds an email, copies its setup link, changes the role, s
   await page.goto(paths.admin.users);
   const table = page.getByTestId("admin-users-table");
   await expect(tableRow(table, /browser-primary@example.com/)).toBeVisible();
+  await expectNoHorizontalOverflow(page);
   await page.getByTestId("admin-add-people").click();
   let dialog = page.getByRole("dialog");
   await dialog.getByLabel(copy.admin.users.emails, { exact: true }).fill(email);
@@ -182,6 +170,7 @@ test("All keys: filters narrow the list and revoking a key requires a reason and
   const table = page.getByTestId("admin-keys-table");
   const row = tableRow(table, name);
   await expect(row).toBeVisible();
+  await expectNoHorizontalOverflow(page);
   // All keys uses the member Keys page's words for the same key.
   await expect(row).toContainText(copy.keys.permissions.read);
   await expect(row).toContainText(copy.keys.list.active);
@@ -243,6 +232,7 @@ test("Audit: filters apply, a row opens the JSON record and the CSV export carri
   await page.goto(paths.admin.audit);
   const table = page.getByTestId("admin-audit-table");
   await expect(table.locator("tbody tr").first()).toBeVisible();
+  await expectNoHorizontalOverflow(page);
   const filters = page.getByRole("button", { name: copy.admin.audit.filters });
   await expect(filters).toHaveAttribute("aria-expanded", "false");
   await filters.click();

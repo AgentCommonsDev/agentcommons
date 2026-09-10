@@ -221,7 +221,7 @@ export function DefinitionList({
           className={cn("min-w-0", item.wide && "sm:col-span-full")}
         >
           <dt className="text-xs text-muted">{item.label}</dt>
-          <dd className="mt-0.5 flex min-w-0 items-center gap-1 text-sm break-words">
+          <dd className="mt-0.5 flex min-w-0 items-center gap-1 text-sm wrap-anywhere">
             {item.value}
           </dd>
         </div>

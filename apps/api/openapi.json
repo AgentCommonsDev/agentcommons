@@ -13527,6 +13527,43 @@
                                   "type": "boolean",
                                   "description": "True when content is an excerpt of a longer message"
                                 },
+                                "content_range": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "start": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991,
+                                          "description": "First UTF-8 byte of the excerpt inside the full content"
+                                        },
+                                        "end": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991,
+                                          "description": "Byte after the excerpt's last byte"
+                                        },
+                                        "total": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991,
+                                          "description": "UTF-8 bytes of the full content"
+                                        }
+                                      },
+                                      "required": [
+                                        "start",
+                                        "end",
+                                        "total"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "Where the excerpt sits in the full content when truncated; null when content is complete. Read the rest with get(session_id, cursor: {seq, offset: start})"
+                                },
                                 "truncated_fields": {
                                   "default": [],
                                   "description": "Fields shortened to fit the response",
@@ -13543,6 +13580,7 @@
                                 "content",
                                 "hit",
                                 "truncated",
+                                "content_range",
                                 "truncated_fields"
                               ],
                               "additionalProperties": false
@@ -15910,6 +15948,26 @@
           },
           {
             "schema": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "TEXT",
+                  "THINKING",
+                  "TOOL_USE",
+                  "TOOL_RESULT",
+                  "META"
+                ]
+              }
+            },
+            "in": "query",
+            "name": "kinds",
+            "required": false,
+            "description": "Message kinds to return, in seq order. Left out: META, the harness's housekeeping records (tool listings, skill listings, reminders); list it to read them. Default TEXT, THINKING, TOOL_USE, TOOL_RESULT"
+          },
+          {
+            "schema": {
               "default": "json",
               "type": "string",
               "enum": [
@@ -15921,6 +15979,28 @@
             "name": "format",
             "required": false,
             "description": "Response format: json, or csv for a text/csv export"
+          },
+          {
+            "schema": {
+              "default": 32768,
+              "type": "integer",
+              "minimum": 32768,
+              "maximum": 262144
+            },
+            "in": "query",
+            "name": "page_bytes",
+            "required": false,
+            "description": "Response budget of one page in bytes, 32768 to 262144; each message slice is bounded to one eighth of it"
+          },
+          {
+            "schema": {
+              "default": true,
+              "type": "boolean"
+            },
+            "in": "query",
+            "name": "header",
+            "required": false,
+            "description": "Compute and return the session header; false answers header: null for a reader that already holds it, so a later page costs only its messages"
           },
           {
             "schema": {
@@ -15950,476 +16030,483 @@
                   "type": "object",
                   "properties": {
                     "header": {
-                      "type": "object",
-                      "properties": {
-                        "session_id": {
-                          "type": "string",
-                          "format": "uuid",
-                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                          "description": "Primary key; every other view joins on it"
-                        },
-                        "organization_id": {
-                          "type": "string",
-                          "minLength": 1,
-                          "description": "Owning organization (already scoped)"
-                        },
-                        "title": {
-                          "description": "Short title derived from the session",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "harness": {
-                          "type": "string",
-                          "enum": [
-                            "CLAUDE_CODE",
-                            "CODEX",
-                            "GEMINI_CLI",
-                            "PI"
-                          ],
-                          "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
-                        },
-                        "harness_version": {
-                          "description": "Harness version, if reported",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "entrypoint": {
-                          "description": "How the harness was launched, if reported",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "model": {
-                          "description": "Primary model used",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "models_used": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "description": "Every model seen in the session"
-                        },
-                        "user_email": {
-                          "type": "string",
-                          "format": "email",
-                          "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
-                          "description": "Email of the member who ran it"
-                        },
-                        "installation_hostname": {
-                          "type": "string",
-                          "description": "Hostname of the capturing machine"
-                        },
-                        "installation_id": {
-                          "type": "string",
-                          "format": "uuid",
-                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                          "description": "Machine install that captured it; joins installations.installation_id"
-                        },
-                        "repo_name": {
-                          "description": "Repository name such as owner/repo; joins repos.repo_name",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "repo_url": {
-                          "description": "Remote URL of the repository",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "branch": {
-                          "description": "Git branch at session start",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "cwd_relative": {
-                          "description": "cwd relative to repo_root",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "start_commit": {
-                          "description": "HEAD SHA at session start",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "end_commit": {
-                          "description": "HEAD SHA at session end",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "started_at": {
-                          "type": "string",
-                          "format": "date-time",
-                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
-                          "description": "When the session started (UTC)"
-                        },
-                        "ended_at": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "format": "date-time",
-                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "description": "When the session ended; NULL while active"
-                        },
-                        "status": {
-                          "type": "string",
-                          "enum": [
-                            "ACTIVE",
-                            "ENDED",
-                            "INACTIVE"
-                          ],
-                          "description": "ACTIVE, ENDED or INACTIVE"
-                        },
-                        "visibility": {
-                          "type": "string",
-                          "enum": [
-                            "PUBLIC",
-                            "PRIVATE"
-                          ],
-                          "description": "PUBLIC or PRIVATE"
-                        },
-                        "purged_at": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "format": "date-time",
-                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "description": "When content was purged; NULL otherwise"
-                        },
-                        "end_reason": {
-                          "description": "Why the session ended, as the harness reported it",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "message_count": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991,
-                          "description": "Rows in messages for this session"
-                        },
-                        "tool_call_count": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991,
-                          "description": "Tool calls made"
-                        },
-                        "input_tokens": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "pattern": "^\\d+$"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "description": "Input tokens consumed"
-                        },
-                        "output_tokens": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "pattern": "^\\d+$"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "description": "Output tokens produced"
-                        },
-                        "tools_used": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          },
-                          "description": "Distinct tool names called; see session_tools"
-                        },
-                        "file_count": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991,
-                          "description": "Files read, edited, written or deleted; see session_files"
-                        },
-                        "observed_commit_count": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991,
-                          "description": "Commits observed during the session"
-                        },
-                        "reuse_count": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991,
-                          "description": "Later sessions that read this one; see session_reuse"
-                        },
-                        "agent_type": {
-                          "description": "Subagent type when the session is a subagent",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "parent_session_id": {
-                          "anyOf": [
-                            {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "session_id": {
                               "type": "string",
                               "format": "uuid",
-                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                              "description": "Primary key; every other view joins on it"
                             },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "description": "Parent session of a subagent, fork or spawned session"
-                        },
-                        "parent_relation": {
-                          "anyOf": [
-                            {
+                            "organization_id": {
                               "type": "string",
-                              "enum": [
-                                "SUBAGENT",
-                                "FORK",
-                                "SPAWNED"
+                              "minLength": 1,
+                              "description": "Owning organization (already scoped)"
+                            },
+                            "title": {
+                              "description": "Short title derived from the session",
+                              "type": [
+                                "string",
+                                "null"
                               ]
                             },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "description": "SUBAGENT, FORK or SPAWNED"
-                        },
-                        "parent_tool_use_id": {
-                          "description": "Parent tool_use_id of the call that spawned this child; NULL when unrecorded",
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
-                        "parent": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "session_id": {
+                            "harness": {
+                              "type": "string",
+                              "enum": [
+                                "CLAUDE_CODE",
+                                "CODEX",
+                                "GEMINI_CLI",
+                                "PI"
+                              ],
+                              "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
+                            },
+                            "harness_version": {
+                              "description": "Harness version, if reported",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "entrypoint": {
+                              "description": "How the harness was launched, if reported",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "model": {
+                              "description": "Primary model used",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "models_used": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Every model seen in the session"
+                            },
+                            "user_email": {
+                              "type": "string",
+                              "format": "email",
+                              "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
+                              "description": "Email of the member who ran it"
+                            },
+                            "installation_hostname": {
+                              "type": "string",
+                              "description": "Hostname of the capturing machine"
+                            },
+                            "installation_id": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                              "description": "Machine install that captured it; joins installations.installation_id"
+                            },
+                            "repo_name": {
+                              "description": "Repository name such as owner/repo; joins repos.repo_name",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "repo_url": {
+                              "description": "Remote URL of the repository",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "branch": {
+                              "description": "Git branch at session start",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "cwd_relative": {
+                              "description": "cwd relative to repo_root",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "start_commit": {
+                              "description": "HEAD SHA at session start",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "end_commit": {
+                              "description": "HEAD SHA at session end",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "started_at": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+                              "description": "When the session started (UTC)"
+                            },
+                            "ended_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "When the session ended; NULL while active"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "ACTIVE",
+                                "ENDED",
+                                "INACTIVE"
+                              ],
+                              "description": "ACTIVE, ENDED or INACTIVE"
+                            },
+                            "visibility": {
+                              "type": "string",
+                              "enum": [
+                                "PUBLIC",
+                                "PRIVATE"
+                              ],
+                              "description": "PUBLIC or PRIVATE"
+                            },
+                            "purged_at": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "format": "date-time",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "When content was purged; NULL otherwise"
+                            },
+                            "end_reason": {
+                              "description": "Why the session ended, as the harness reported it",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "message_count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Rows in messages for this session"
+                            },
+                            "tool_call_count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Tool calls made"
+                            },
+                            "input_tokens": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^\\d+$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Input tokens consumed"
+                            },
+                            "output_tokens": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^\\d+$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Output tokens produced"
+                            },
+                            "tools_used": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Distinct tool names called; see session_tools"
+                            },
+                            "file_count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Files read, edited, written or deleted; see session_files"
+                            },
+                            "observed_commit_count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Commits observed during the session"
+                            },
+                            "reuse_count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Later sessions that read this one; see session_reuse"
+                            },
+                            "agent_type": {
+                              "description": "Subagent type when the session is a subagent",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "parent_session_id": {
+                              "anyOf": [
+                                {
                                   "type": "string",
                                   "format": "uuid",
-                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                                  "description": "Related session; pass to get"
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                                 },
-                                "title": {
-                                  "description": "Short title derived from the session",
-                                  "type": [
-                                    "string",
-                                    "null"
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "Parent session of a subagent, fork or spawned session"
+                            },
+                            "parent_relation": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "SUBAGENT",
+                                    "FORK",
+                                    "SPAWNED"
                                   ]
                                 },
-                                "parent_relation": {
-                                  "anyOf": [
-                                    {
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "SUBAGENT, FORK or SPAWNED"
+                            },
+                            "parent_tool_use_id": {
+                              "description": "Parent tool_use_id of the call that spawned this child; NULL when unrecorded",
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "parent": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "session_id": {
                                       "type": "string",
-                                      "enum": [
-                                        "SUBAGENT",
-                                        "FORK",
-                                        "SPAWNED"
+                                      "format": "uuid",
+                                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                                      "description": "Related session; pass to get"
+                                    },
+                                    "title": {
+                                      "description": "Short title derived from the session",
+                                      "type": [
+                                        "string",
+                                        "null"
                                       ]
                                     },
-                                    {
-                                      "type": "null"
+                                    "parent_relation": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "SUBAGENT",
+                                            "FORK",
+                                            "SPAWNED"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "description": "SUBAGENT, FORK or SPAWNED"
+                                    },
+                                    "parent_tool_use_id": {
+                                      "description": "Parent tool_use_id of the call that spawned this child; NULL when unrecorded",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "agent_type": {
+                                      "description": "Subagent type when the session is a subagent",
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
                                     }
+                                  },
+                                  "required": [
+                                    "session_id",
+                                    "title",
+                                    "parent_relation",
+                                    "parent_tool_use_id",
+                                    "agent_type"
                                   ],
-                                  "description": "SUBAGENT, FORK or SPAWNED"
+                                  "additionalProperties": false
                                 },
-                                "parent_tool_use_id": {
-                                  "description": "Parent tool_use_id of the call that spawned this child; NULL when unrecorded",
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
-                                },
-                                "agent_type": {
-                                  "description": "Subagent type when the session is a subagent",
-                                  "type": [
-                                    "string",
-                                    "null"
-                                  ]
+                                {
+                                  "type": "null"
                                 }
-                              },
-                              "required": [
-                                "session_id",
-                                "title",
-                                "parent_relation",
-                                "parent_tool_use_id",
-                                "agent_type"
                               ],
-                              "additionalProperties": false
+                              "description": "Parent session when visible; null for a root session"
                             },
-                            {
-                              "type": "null"
-                            }
-                          ],
-                          "description": "Parent session when visible; null for a root session"
-                        },
-                        "children": {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "session_id": {
-                                "type": "string",
-                                "format": "uuid",
-                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                                "description": "Related session; pass to get"
-                              },
-                              "title": {
-                                "description": "Short title derived from the session",
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
-                              "parent_relation": {
-                                "anyOf": [
-                                  {
+                            "children": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "session_id": {
                                     "type": "string",
-                                    "enum": [
-                                      "SUBAGENT",
-                                      "FORK",
-                                      "SPAWNED"
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                                    "description": "Related session; pass to get"
+                                  },
+                                  "title": {
+                                    "description": "Short title derived from the session",
+                                    "type": [
+                                      "string",
+                                      "null"
                                     ]
                                   },
-                                  {
-                                    "type": "null"
+                                  "parent_relation": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "SUBAGENT",
+                                          "FORK",
+                                          "SPAWNED"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "description": "SUBAGENT, FORK or SPAWNED"
+                                  },
+                                  "parent_tool_use_id": {
+                                    "description": "Parent tool_use_id of the call that spawned this child; NULL when unrecorded",
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  },
+                                  "agent_type": {
+                                    "description": "Subagent type when the session is a subagent",
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
                                   }
+                                },
+                                "required": [
+                                  "session_id",
+                                  "title",
+                                  "parent_relation",
+                                  "parent_tool_use_id",
+                                  "agent_type"
                                 ],
-                                "description": "SUBAGENT, FORK or SPAWNED"
+                                "additionalProperties": false
                               },
-                              "parent_tool_use_id": {
-                                "description": "Parent tool_use_id of the call that spawned this child; NULL when unrecorded",
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
-                              "agent_type": {
-                                "description": "Subagent type when the session is a subagent",
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
+                              "description": "Up to 10 direct child sessions: subagents, forks and spawned runs"
+                            },
+                            "child_count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Direct child sessions"
+                            },
+                            "children_truncated": {
+                              "type": "boolean",
+                              "description": "True when more children exist than are listed"
+                            },
+                            "truncated_fields": {
+                              "default": [],
+                              "description": "Fields shortened to fit the response",
+                              "type": "array",
+                              "items": {
+                                "type": "string"
                               }
                             },
-                            "required": [
-                              "session_id",
-                              "title",
-                              "parent_relation",
-                              "parent_tool_use_id",
-                              "agent_type"
-                            ],
-                            "additionalProperties": false
+                            "root_session_id": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                              "description": "Top of this session's parent chain; equals session_id for a root session"
+                            }
                           },
-                          "description": "Up to 10 direct child sessions: subagents, forks and spawned runs"
+                          "required": [
+                            "session_id",
+                            "organization_id",
+                            "title",
+                            "harness",
+                            "harness_version",
+                            "entrypoint",
+                            "model",
+                            "models_used",
+                            "user_email",
+                            "installation_hostname",
+                            "installation_id",
+                            "repo_name",
+                            "repo_url",
+                            "branch",
+                            "cwd_relative",
+                            "start_commit",
+                            "end_commit",
+                            "started_at",
+                            "ended_at",
+                            "status",
+                            "visibility",
+                            "purged_at",
+                            "end_reason",
+                            "message_count",
+                            "tool_call_count",
+                            "input_tokens",
+                            "output_tokens",
+                            "tools_used",
+                            "file_count",
+                            "observed_commit_count",
+                            "reuse_count",
+                            "agent_type",
+                            "parent_session_id",
+                            "parent_relation",
+                            "parent_tool_use_id",
+                            "parent",
+                            "children",
+                            "child_count",
+                            "children_truncated",
+                            "truncated_fields",
+                            "root_session_id"
+                          ],
+                          "additionalProperties": false
                         },
-                        "child_count": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991,
-                          "description": "Direct child sessions"
-                        },
-                        "children_truncated": {
-                          "type": "boolean",
-                          "description": "True when more children exist than are listed"
-                        },
-                        "truncated_fields": {
-                          "default": [],
-                          "description": "Fields shortened to fit the response",
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "root_session_id": {
-                          "type": "string",
-                          "format": "uuid",
-                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
-                          "description": "Top of this session's parent chain; equals session_id for a root session"
+                        {
+                          "type": "null"
                         }
-                      },
-                      "required": [
-                        "session_id",
-                        "organization_id",
-                        "title",
-                        "harness",
-                        "harness_version",
-                        "entrypoint",
-                        "model",
-                        "models_used",
-                        "user_email",
-                        "installation_hostname",
-                        "installation_id",
-                        "repo_name",
-                        "repo_url",
-                        "branch",
-                        "cwd_relative",
-                        "start_commit",
-                        "end_commit",
-                        "started_at",
-                        "ended_at",
-                        "status",
-                        "visibility",
-                        "purged_at",
-                        "end_reason",
-                        "message_count",
-                        "tool_call_count",
-                        "input_tokens",
-                        "output_tokens",
-                        "tools_used",
-                        "file_count",
-                        "observed_commit_count",
-                        "reuse_count",
-                        "agent_type",
-                        "parent_session_id",
-                        "parent_relation",
-                        "parent_tool_use_id",
-                        "parent",
-                        "children",
-                        "child_count",
-                        "children_truncated",
-                        "truncated_fields",
-                        "root_session_id"
                       ],
-                      "additionalProperties": false,
-                      "description": "Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions"
+                      "description": "Who ran the session, where and when, with message, tool, token, file and reuse counts and related sessions; null when the REST caller asked for messages only (header=false)"
                     },
                     "messages": {
                       "type": "array",
@@ -16468,7 +16555,7 @@
                             "type": "integer",
                             "minimum": 0,
                             "maximum": 9007199254740991,
-                            "description": "Position of the block within the session, ascending"
+                            "description": "Position of the block within the session, ascending; counts every kind, so a read that leaves META out shows gaps"
                           },
                           "role": {
                             "type": "string",
@@ -16524,7 +16611,7 @@
                                 "type": "null"
                               }
                             ],
-                            "description": "Set when content continues beyond this page; pass it as cursor to read on"
+                            "description": "Set when this message's content is bounded here; to read the rest, call get with from and to set to this seq and cursor set to this value"
                           },
                           "tool_name": {
                             "description": "Tool called or answered, for TOOL_USE and TOOL_RESULT",
@@ -16659,7 +16746,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "Cursor for the following page; null when the range is complete"
+                      "description": "Cursor for the following page: the next message, or the rest of the last message when the range ends inside it; null when the range is complete"
                     }
                   },
                   "required": [

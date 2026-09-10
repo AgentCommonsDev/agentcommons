@@ -292,6 +292,22 @@ export const searchMessageSchema = z.strictObject({
   truncated: z
     .boolean()
     .describe("True when content is an excerpt of a longer message"),
+  content_range: z
+    .strictObject({
+      start: nonnegativeIntegerSchema.describe(
+        "First UTF-8 byte of the excerpt inside the full content",
+      ),
+      end: nonnegativeIntegerSchema.describe(
+        "Byte after the excerpt's last byte",
+      ),
+      total: nonnegativeIntegerSchema.describe(
+        "UTF-8 bytes of the full content",
+      ),
+    })
+    .nullable()
+    .describe(
+      "Where the excerpt sits in the full content when truncated; null when content is complete. Read the rest with get(session_id, cursor: {seq, offset: start})",
+    ),
   truncated_fields: truncatedFieldsSchema,
 });
 export const searchBlockSchema = z.strictObject({

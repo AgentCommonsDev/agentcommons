@@ -225,11 +225,13 @@ export function HealthMetricsCard({
       {
         accessorKey: "date",
         header: dimension("date"),
+        size: 100,
         cell: ({ row }) => textValue(row.original.date),
       },
       {
         accessorKey: "value",
         header: dimension("value"),
+        size: 90,
         cell: ({ row }) => (
           <span className="tabular-nums">
             {metricValue(row.original.value, row.original.unit)}
@@ -239,17 +241,20 @@ export function HealthMetricsCard({
       {
         accessorKey: "repo_name",
         header: dimension("repo_name"),
+        size: 170,
         cell: ({ row }) => textValue(row.original.repo_name),
       },
       {
         accessorKey: "harness",
         header: dimension("harness"),
+        size: 100,
         cell: ({ row }) =>
           harnessName(row.original.harness) ?? copy.app.common.unavailable,
       },
       {
         accessorKey: "user_id",
         header: dimension("user_id"),
+        size: 200,
         cell: ({ row }) => (
           <span className="font-mono text-xs">
             {textValue(row.original.user_id)}
@@ -259,11 +264,13 @@ export function HealthMetricsCard({
       {
         accessorKey: "tool",
         header: dimension("tool"),
+        size: 120,
         cell: ({ row }) => textValue(row.original.tool),
       },
       {
         accessorKey: "policy_id",
         header: dimension("policy_id"),
+        size: 200,
         cell: ({ row }) => (
           <span className="font-mono text-xs">
             {textValue(row.original.policy_id)}
@@ -273,22 +280,26 @@ export function HealthMetricsCard({
       {
         accessorKey: "tools_enabled",
         header: dimension("tools_enabled"),
+        size: 90,
         cell: ({ row }) =>
           toolsLabel(row.original.tools_enabled) ?? copy.app.common.unavailable,
       },
       {
         accessorKey: "numerator",
         header: dimension("numerator"),
+        size: 80,
         cell: ({ row }) => number(row.original.numerator),
       },
       {
         accessorKey: "denominator",
         header: dimension("denominator"),
+        size: 80,
         cell: ({ row }) => number(row.original.denominator),
       },
       {
         accessorKey: "unit",
         header: dimension("unit"),
+        size: 80,
         cell: ({ row }) => copy.app.units[row.original.unit],
       },
     ],
@@ -465,7 +476,7 @@ function HookState({
   if (digest === null)
     return <Badge variant="neutral">{words.hookUnknown}</Badge>;
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
       {manifest === null ? null : digest === manifest.sha256 ? (
         <Badge variant="neutral">{words.hookCurrent}</Badge>
       ) : (
@@ -515,6 +526,7 @@ export function InstallationsCard() {
       {
         accessorKey: "hostname",
         header: words.host,
+        size: 180,
         cell: ({ row }) => (
           <span className="font-medium">{row.original.hostname}</span>
         ),
@@ -522,6 +534,7 @@ export function InstallationsCard() {
       {
         accessorKey: "tools_enabled",
         header: words.tools,
+        size: 100,
         cell: ({ row }) => (
           <Badge variant={row.original.tools_enabled ? "success" : "warning"}>
             {row.original.tools_enabled
@@ -534,6 +547,7 @@ export function InstallationsCard() {
         accessorKey: "hook_sha256",
         header: words.hook,
         enableSorting: false,
+        size: 150,
         cell: ({ row }) => (
           <HookState digest={row.original.hook_sha256} manifest={manifest} />
         ),
@@ -541,29 +555,29 @@ export function InstallationsCard() {
       {
         accessorKey: "session_count",
         header: words.sessions,
+        size: 80,
         cell: ({ row }) => number(row.original.session_count),
       },
       {
         accessorKey: "last_seen_at",
         header: words.lastSeen,
-        cell: ({ row }) => (
-          <span className="whitespace-nowrap">
-            {dateTime(row.original.last_seen_at)}
-          </span>
-        ),
+        size: 120,
+        cell: ({ row }) => dateTime(row.original.last_seen_at),
       },
       {
         accessorKey: "first_seen_at",
         header: words.firstSeen,
+        size: 120,
         cell: ({ row }) => dateTime(row.original.first_seen_at),
       },
-      { accessorKey: "os_user", header: copy.app.fields.os_user },
-      { accessorKey: "platform", header: copy.app.fields.platform },
-      { accessorKey: "arch", header: copy.app.fields.arch },
+      { accessorKey: "os_user", header: copy.app.fields.os_user, size: 100 },
+      { accessorKey: "platform", header: copy.app.fields.platform, size: 90 },
+      { accessorKey: "arch", header: copy.app.fields.arch, size: 80 },
       {
         accessorKey: "installation_id",
         header: copy.app.fields.installation_id,
         enableSorting: false,
+        size: 220,
         cell: ({ row }) => (
           <span className="font-mono text-xs">
             {row.original.installation_id}

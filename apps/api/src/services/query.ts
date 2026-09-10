@@ -2,7 +2,7 @@ import {
   embeddingAvailability,
   type EmbeddingAvailability,
 } from "../embeddings/settings.js";
-import { ClickHouseError, type TraceParameters } from "@agentcommons/traces";
+import type { TraceParameters } from "@agentcommons/traces";
 import {
   jsonByteLength,
   sqlInputSchema,
@@ -13,8 +13,8 @@ import {
   type SqlOutput,
 } from "@agentcommons/core";
 import type { Prisma } from "@agentcommons/db";
-import { guardSql, sqlError } from "../repositories/sql-guard.js";
-import { ServiceError, type ServiceContext } from "./context.js";
+import { guardSql, queryFailure, sqlError } from "../repositories/sql-guard.js";
+import type { ServiceContext } from "./context.js";
 import { wireValue } from "./read-budget.js";
 import { readOperation, type ReadDependencies } from "./read-operation.js";
 
@@ -143,20 +143,7 @@ ${validated}
         return sqlOutputSchema.parse(output);
       });
     } catch (error) {
-      if (error instanceof ServiceError) throw error;
-      const code = error instanceof ClickHouseError ? error.code : null;
-      const failure = code === null ? undefined : queryFailures[code];
-      if (code === null || failure === undefined)
-        throw sqlError(
-          503,
-          "TRACE_QUERY_UNAVAILABLE",
-          "The trace database did not complete the query. Try again.",
-        );
-      throw sqlError(
-        400,
-        code,
-        `${failure} Query schema_columns for available columns.`,
-      );
+      throw queryFailure(error);
     }
   }
   execute(context: ServiceContext, input: unknown) {
@@ -178,30 +165,3 @@ ${validated}
     );
   }
 }
-
-/** Native errors are classified without returning SQL, parameter values or server details. */
-const queryFailures: Readonly<Record<string, string>> = {
-  "6": "A query value could not be parsed.",
-  "27": "A query value could not be parsed.",
-  "36": "A function argument is invalid.",
-  "43": "A function received an incompatible value type.",
-  "44": "A function requires a constant or a different column type.",
-  "47": "A column in this query is unavailable.",
-  "53": "The query combines incompatible value types.",
-  "60": "A table in this query is unavailable.",
-  "62": "The SQL syntax is invalid.",
-  "207":
-    "A column appears in more than one source. Qualify it with its table alias.",
-  "159": "The query exceeded its time limit. Narrow the query and try again.",
-  "160": "The query exceeded its time limit. Narrow the query and try again.",
-  "179":
-    "Different expressions use the same alias. Give each one a unique alias.",
-  "184": "An aggregate function is used outside an aggregate expression.",
-  "215": "Include the selected column in GROUP BY or an aggregate function.",
-  "206": "Give each joined subquery a table alias.",
-  "241": "The query exceeded its memory limit. Narrow the query and try again.",
-  "396":
-    "The query result exceeded its size limit. Select fewer or smaller values.",
-  "386": "The query combines value types that cannot share a result column.",
-  "456": "A query parameter is missing or has the wrong type.",
-};

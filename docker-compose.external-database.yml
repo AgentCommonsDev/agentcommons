@@ -1,0 +1,18 @@
+# Control database outside the Compose stack: a managed PostgreSQL 16 such as Amazon
+# Aurora (ADR 0063). List it after the other files so its resets win, and say so in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml:docker-compose.external-database.yml
+#   AGENTCOMMONS_DATABASE=external
+# (the single-node release derives the file list from that setting). The bundled db service
+# is parked behind a profile and keeps its volume for a rollback; the migration, the API and
+# ClickHouse use DATABASE_MIGRATION_URL, DATABASE_URL, DATABASE_TRACE_CONTROL_URL and
+# CLICKHOUSE_POSTGRES_HOST/PORT exactly as .env gives them (append ?sslmode=require for a
+# server that enforces TLS). POSTGRES_PASSWORD stays set so the parked service still validates.
+services:
+  db:
+    profiles: ["bundled-database"]
+  migrate:
+    depends_on:
+      db: !reset null
+    environment:
+      CLICKHOUSE_POSTGRES_HOST: ${CLICKHOUSE_POSTGRES_HOST:?Set CLICKHOUSE_POSTGRES_HOST to the external PostgreSQL host}
+      CLICKHOUSE_POSTGRES_PORT: ${CLICKHOUSE_POSTGRES_PORT:-5432}

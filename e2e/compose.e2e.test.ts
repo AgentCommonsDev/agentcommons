@@ -286,8 +286,8 @@ it(
       );
       expect(detail.status).toBe(200);
       const session = getOutputSchema.parse(await detail.json());
-      expect(session.header.harness).toBe("CLAUDE_CODE");
-      expect(session.header.message_count).toBeGreaterThan(0);
+      expect(session.header?.harness).toBe("CLAUDE_CODE");
+      expect(session.header?.message_count).toBeGreaterThan(0);
       const search = await fetch(`${origin}/api/v1/search`, {
         method: "POST",
         headers: apiHeaders,

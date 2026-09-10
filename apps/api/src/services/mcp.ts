@@ -11,6 +11,9 @@ import {
   formatGet,
   formatSql,
   formatJson,
+  formatDashboard,
+  formatDashboardList,
+  formatDashboardRender,
   type Formatted,
 } from "@agentcommons/core/format";
 import type { Services } from "../routes/services.js";
@@ -74,7 +77,8 @@ interface Definition<
     context: ServiceContext,
     input: z.output<I>,
   ): Promise<ServiceResult<unknown>>;
-  format(value: z.output<O>): Formatted<z.output<O>>;
+  /** Renders the text form; `input` lets a formatter know what was asked (a continuation page). */
+  format(value: z.output<O>, input: z.output<I>): Formatted<z.output<O>>;
 }
 /** Types one tool's input and output from its schemas; the catalog holds the erased form. */
 const define = <I extends z.ZodType, O extends z.ZodType>(
@@ -108,12 +112,12 @@ export class McpService {
         readOnly: true,
         destructive: false,
         description:
-          "List the organization's dashboards, which one is the Home default, the JSON Schema for definitions and starter tile templates. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers).",
+          "List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
         permission: "read",
         input: schema.emptySchema,
         output: schema.dashboardListOutputSchema,
         execute: (ctx) => services.dashboards.list(ctx),
-        format: formatJson,
+        format: formatDashboardList,
       }),
       define({
         name: "dashboard_get",
@@ -126,7 +130,7 @@ export class McpService {
         input: schema.dashboardIdInputSchema,
         output: schema.dashboardSchema,
         execute: (ctx, input) => services.dashboards.get(ctx, input),
-        format: formatJson,
+        format: formatDashboard,
       }),
       define({
         name: "dashboard_render",
@@ -134,13 +138,13 @@ export class McpService {
         readOnly: true,
         destructive: false,
         description:
-          'Run the queries of a dashboard (by id or an inline definition) with variable values such as {"time_range":"7d","repo":["github.com/org/repo"]} and return each tile\'s rows. Pass tiles to render a subset.',
+          'Run the queries of a dashboard (by id or an inline definition) with variable values such as {"time_range":"7d","repo":["github.com/org/repo"]} and return each tile\'s rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.',
         permission: "read",
         input: schema.dashboardRenderInputSchema,
         toolInput: schema.dashboardRenderToolInputSchema,
         output: schema.dashboardRenderOutputSchema,
         execute: (ctx, input) => services.dashboards.render(ctx, input),
-        format: formatJson,
+        format: (result) => formatDashboardRender(result),
       }),
       define({
         name: "dashboard_save",
@@ -154,7 +158,7 @@ export class McpService {
         toolInput: schema.dashboardSaveToolInputSchema,
         output: schema.dashboardSchema,
         execute: (ctx, input) => services.dashboards.save(ctx, input),
-        format: formatJson,
+        format: formatDashboard,
       }),
       define({
         name: "dashboard_delete",
@@ -193,7 +197,10 @@ export class McpService {
         toolInput: schema.getToolInputSchema,
         output: schema.getOutputSchema,
         execute: (ctx, input) => services.sessions.get(ctx, input),
-        format: formatGet,
+        format: (result, input) =>
+          formatGet(result, {
+            continuation: input.cursor !== null && input.cursor !== undefined,
+          }),
       }),
       define({
         name: "sql",
@@ -387,12 +394,15 @@ export class McpService {
               "This MCP tool is not available.",
             );
           requirePermission(current, definition.permission);
-          const value = await definition.execute(
-            current,
-            definition.input.parse(input ?? {}),
-          );
+          // A call satisfies the advertised schema first: fields the catalog does not
+          // show (the REST page budget, the CSV format) are not open to agents.
+          const args = input ?? {};
+          definition.toolInput?.parse(args);
+          const parsed = definition.input.parse(args);
+          const value = await definition.execute(current, parsed);
           const formatted = definition.format(
             definition.output.parse(value.result),
+            parsed,
           );
           return {
             content: [{ type: "text" as const, text: formatted.text }],

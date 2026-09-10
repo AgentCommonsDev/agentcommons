@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configure, install } from "../src/install.js";
+import { recordHook } from "../src/hook.js";
 import { HARNESSES } from "../src/harnesses.js";
 import { readSource, initialCursor } from "../src/readers.js";
 import { acquireLock } from "../src/lock.js";
@@ -97,9 +98,13 @@ describe("durable uploader", () => {
     });
     await upload(f.directory, SHIM, f.path, f.config, {
       sweep: false,
-      fetch: stubFetch(() => new Response(null, { status: 401 })),
+      fetch: rejectingFetch({ code: "INVALID_API_KEY", status: 401, me: 401 }),
     });
-    expect(loadState(f.path).suspended?.code).toBe(401);
+    expect(loadState(f.path).suspended).toEqual({
+      code: 401,
+      reason:
+        "The server rejected this session or credential (INVALID_API_KEY).",
+    });
     expect(readFileSync(join(f.directory, "hook.log"), "utf8")).not.toContain(
       f.config.key,
     );
@@ -313,8 +318,234 @@ it.each([429, 500, 503, 401, 403, 409, 0])(
     const state = loadState(f.path);
     expect(state.pending).not.toBeNull();
     expect(state.ackedCursor).toEqual({ kind: "jsonl", offset: 0 });
-    if ([401, 403, 409].includes(status))
-      expect(state.suspended?.code).toBe(status);
-    else expect(delays).toEqual([1000, 5000, 30000]);
+    if (status === 409) expect(state.suspended?.code).toBe(status);
+    else {
+      // A 401/403 without the API error code (a proxy page, an empty body) is not a
+      // verdict: it is retried like a 5xx and never parks the session.
+      expect(state.suspended).toBeNull();
+      expect(delays).toEqual([1000, 5000, 30000]);
+    }
   },
 );
+
+/** Whether a request is the shim's credential check or confirmation, not the manifest probe. */
+const isMe = (url: Parameters<typeof fetch>[0]) =>
+  String(url instanceof Request ? url.url : url).endsWith("/api/v1/me");
+/**
+ * A server answering ingest with `status` and the API error body `{ code }`, and every
+ * `GET /api/v1/me` (the credential check and each confirmation) with `me`: a status, or
+ * a thrown network error. Other requests (the manifest probe) answer 404.
+ */
+function rejectingFetch(
+  answer: {
+    status: 401 | 403;
+    code: string | null;
+    me: number | "network";
+  },
+  seen: { posts: number; me: number } = { posts: 0, me: 0 },
+): typeof fetch {
+  return (url, options) => {
+    if (options?.method === "POST") {
+      seen.posts++;
+      return Promise.resolve(
+        answer.code === null
+          ? new Response("<html>Access denied</html>", {
+              status: answer.status,
+            })
+          : Response.json({ code: answer.code }, { status: answer.status }),
+      );
+    }
+    if (!isMe(url)) return Promise.resolve(new Response(null, { status: 404 }));
+    seen.me++;
+    if (answer.me === "network") return Promise.reject(new Error("offline"));
+    return Promise.resolve(
+      answer.me === 200
+        ? Response.json({ organization: { id: "org" } })
+        : Response.json({ code: "INVALID_API_KEY" }, { status: answer.me }),
+    );
+  };
+}
+// @req R-CAP-07 @req R-ING-10
+it.each([
+  // status, body code, /me verdict, outcome
+  [401, "INVALID_API_KEY", 401, "suspend"],
+  [401, "INVALID_API_KEY", 403, "suspend"],
+  [401, "INVALID_AUTHENTICATION", 200, "retry"],
+  [401, "INVALID_API_KEY", 503, "retry"],
+  [401, "INVALID_API_KEY", "network", "retry"],
+  [401, null, 401, "retry"],
+  [403, "FORBIDDEN", 200, "suspend"],
+  [403, "MEMBERSHIP_REQUIRED", 403, "suspend"],
+  [403, "FORBIDDEN", 503, "retry"],
+] as const)(
+  "suspends on HTTP %i with code %s only when GET /api/v1/me answers %s (%s)",
+  async (status, code, me, outcome) => {
+    // A verified installation: the only GET /api/v1/me requests are confirmations.
+    const f = fixture({ initial: '{"uuid":"one","type":"user"}\n' });
+    const path = f.hook();
+    const seen = { posts: 0, me: 0 };
+    const delays: number[] = [];
+    await upload(f.directory, SHIM, path, f.config, {
+      fetch: rejectingFetch({ status, code, me }, seen),
+      sweep: false,
+      sleep: (delay) => {
+        delays.push(delay);
+        return Promise.resolve();
+      },
+    });
+    const state = loadState(path);
+    expect(state.pending).not.toBeNull();
+    expect(state.ackedCursor).toEqual({ kind: "jsonl", offset: 0 });
+    if (outcome === "suspend") {
+      expect(state.suspended).toEqual({
+        code: status,
+        reason: `The server rejected this session or credential (${code}).`,
+      });
+      expect(seen).toEqual({ posts: 1, me: 1 });
+      expect(delays).toEqual([]);
+      expect(readFileSync(join(f.directory, "hook.log"), "utf8")).toContain(
+        `Upload paused (HTTP ${String(status)})`,
+      );
+    } else {
+      expect(state.suspended).toBeNull();
+      expect(delays).toEqual([1000, 5000, 30000]);
+      expect(seen.posts).toBe(3);
+      // The body must carry a code before a confirmation request is spent.
+      expect(seen.me).toBe(code === null ? 0 : 3);
+    }
+  },
+);
+// @req R-CAP-07 @req R-ING-10
+it("confirms a rejected credential with a second verdict before parking the spool, and keeps it when the server cannot answer", async () => {
+  const answers: (number | "network")[] = [];
+  const meFetch =
+    (...sequence: (number | "network")[]): typeof fetch =>
+    (url, options) => {
+      if (options?.method === "POST")
+        return Promise.resolve(new Response(null, { status: 202 }));
+      if (!isMe(url))
+        return Promise.resolve(new Response(null, { status: 404 }));
+      const next = sequence.shift() ?? 200;
+      answers.push(next);
+      if (next === "network") return Promise.reject(new Error("offline"));
+      return Promise.resolve(
+        next === 200
+          ? Response.json({ organization: { id: "org" } })
+          : Response.json({ code: "INVALID_API_KEY" }, { status: next }),
+      );
+    };
+  // The first credential check fails to reach the server: nothing is sent or parked.
+  let f = setup();
+  await upload(f.directory, SHIM, f.path, f.config, {
+    sweep: false,
+    fetch: meFetch(503),
+  });
+  expect(loadState(f.path).suspended).toBeNull();
+  expect(loadState(f.path).organizationId).toBeNull();
+  expect(intents(f.path, loadState(f.path))).toHaveLength(1);
+  // A 401 whose confirmation reaches 200 is transient: retried, not parked.
+  f = setup();
+  await upload(f.directory, SHIM, f.path, f.config, {
+    sweep: false,
+    fetch: meFetch(401, 200),
+  });
+  expect(loadState(f.path).suspended).toBeNull();
+  expect(intents(f.path, loadState(f.path))).toHaveLength(1);
+  // A 401 the server repeats parks the session under this credential.
+  f = setup();
+  await upload(f.directory, SHIM, f.path, f.config, {
+    sweep: false,
+    fetch: meFetch(401, 401),
+  });
+  expect(loadState(f.path).suspended).toEqual({
+    code: 401,
+    reason: "The server rejected this credential (INVALID_API_KEY).",
+  });
+  expect(answers).toEqual([503, 401, 200, 401, 401]);
+  // The parked session is left alone until the credential changes.
+  let posts = 0;
+  await upload(f.directory, SHIM, f.path, f.config, {
+    sweep: false,
+    fetch: stubFetch(() => {
+      posts++;
+      return new Response(null, { status: 202 });
+    }),
+  });
+  expect(posts).toBe(0);
+});
+// @req R-CAP-18 @req R-CAP-05
+it("completes a sync intent with nothing new locally and still ships lifecycle and context changes", async () => {
+  const f = fixture({ harness: "pi" });
+  const start = {
+    session_id: randomUUID(),
+    cwd: f.directory,
+    hook_event_name: "session_start",
+    transcript_path: f.transcript,
+  };
+  const path = recordHook(f.directory, SHIM, f.config, "pi", start);
+  if (!path) throw new Error("Missing state.");
+  const options = { fetch: f.fetcher, sweep: false };
+  await upload(f.directory, SHIM, path, f.config, options);
+  expect(
+    f.received.map((body) => [body.behavior, body.records.length]),
+  ).toEqual([
+    ["start", 0],
+    ["sync", 1],
+  ]);
+  const acked = loadState(path).ackedCursor;
+  // Turn-end and prompt intents with no new record and no context change send nothing.
+  for (const event of ["input", "agent_end", "input"]) {
+    recordHook(f.directory, SHIM, f.config, "pi", {
+      ...start,
+      hook_event_name: event,
+      event_id: `${event}-${String(f.received.length)}-${randomUUID()}`,
+    });
+    await upload(f.directory, SHIM, path, f.config, options);
+  }
+  expect(f.received).toHaveLength(2);
+  expect(intents(path, loadState(path))).toHaveLength(0);
+  expect(loadState(path).ackedCursor).toEqual(acked);
+  expect(loadState(path).pending).toBeNull();
+  // A context change (pi's selected branch) still needs the server projection.
+  recordHook(f.directory, SHIM, f.config, "pi", {
+    ...start,
+    hook_event_name: "session_tree",
+    activeLeafId: "leaf-2",
+  });
+  await upload(f.directory, SHIM, path, f.config, options);
+  expect(f.received).toHaveLength(3);
+  expect(f.received[2]).toMatchObject({
+    behavior: "sync",
+    records: [],
+    context: { activeLeafId: "leaf-2" },
+  });
+  // The same branch again carries nothing new; a new record ships with its intent.
+  recordHook(f.directory, SHIM, f.config, "pi", {
+    ...start,
+    hook_event_name: "session_tree",
+    activeLeafId: "leaf-2",
+  });
+  await upload(f.directory, SHIM, path, f.config, options);
+  expect(f.received).toHaveLength(3);
+  appendFileSync(f.transcript, '{"id":"two"}\n');
+  recordHook(f.directory, SHIM, f.config, "pi", {
+    ...start,
+    hook_event_name: "input",
+  });
+  await upload(f.directory, SHIM, path, f.config, options);
+  expect(f.received[3]?.records.map((record) => record.key)).toEqual(["two"]);
+  // The end batch is never queued behind empty syncs.
+  recordHook(f.directory, SHIM, f.config, "pi", {
+    ...start,
+    hook_event_name: "session_shutdown",
+    reason: "exit",
+  });
+  await upload(f.directory, SHIM, path, f.config, options);
+  expect(f.received.map((body) => body.behavior)).toEqual([
+    "start",
+    "sync",
+    "sync",
+    "sync",
+    "end",
+  ]);
+});

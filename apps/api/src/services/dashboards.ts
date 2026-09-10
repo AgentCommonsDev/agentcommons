@@ -119,11 +119,17 @@ const definitionJsonSchema = z.toJSONSchema(dashboardDefinitionSchema, {
 
 /**
  * Rendered tiles live at most an hour, keyed by organization, caller scope, dashboard
- * revision and resolved variables, one entry per tile (§10). The organization's data
- * version is not part of the key: it moves on every ingest, so keying by it made every
- * working-hours render a miss (ADR 0058). The hourly pre-render job replaces entries
- * before they expire.
+ * revision, resolved variables and the organization's published-session version, one
+ * entry per tile (§10). The version counts published, purged and private sessions, so a
+ * newly published session misses while messages added to a published session do not
+ * (ADR 0064; ADR 0058 had dropped the activity-based data version because it moved
+ * every few seconds). The hourly pre-render job replaces entries before they expire.
  */
+const sessionVersionSchema = z.object({
+  published: z.number().int().nonnegative(),
+  purged: z.number().int().nonnegative(),
+  hidden: z.number().int().nonnegative(),
+});
 const RENDER_CACHE_TTL_MS = 60 * 60_000;
 /** Dashboards kept at once; the earliest inserted is evicted first. */
 const RENDER_CACHE_DASHBOARDS = 256;
@@ -637,6 +643,7 @@ export class DashboardService {
             plan.cacheId.id,
             plan.cacheId.revision,
             resolved,
+            await this.sessionVersion(caller.organizationId),
           ]);
     const now = Date.now();
     const cached =
@@ -677,6 +684,20 @@ export class DashboardService {
       ),
       cached: data.length > 0 && pending.length === 0,
     });
+  }
+
+  /**
+   * The organization's published-session version for the render cache key (ADR 0064):
+   * counts of published unpurged, purged and private sessions from the control plane, one
+   * indexed PostgreSQL aggregate. A newly published session, a purge or a visibility change
+   * misses; messages added to an already published session do not move it.
+   */
+  private async sessionVersion(organizationId: string): Promise<string> {
+    const rows = await this.dependencies.prisma.$queryRaw<
+      unknown[]
+    >`SELECT count(*) FILTER (WHERE published_revision > 0 AND purged_at IS NULL)::int AS published, count(*) FILTER (WHERE purged_at IS NOT NULL)::int AS purged, count(*) FILTER (WHERE visibility = 'PRIVATE')::int AS hidden FROM trace_session_control WHERE organization_id = ${organizationId}`;
+    const counts = sessionVersionSchema.parse(rows[0] ?? {});
+    return `${String(counts.published)}/${String(counts.purged)}/${String(counts.hidden)}`;
   }
 
   /** Run data tiles four at a time; a tile's error is its result, never the request's. */

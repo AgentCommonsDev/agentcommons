@@ -67,6 +67,7 @@ export function traceServices(
     prisma,
     audit,
     traces: db.traces,
+    readers: db.traceReaders,
   });
   const jobs: JobService = new JobService({
     prisma,

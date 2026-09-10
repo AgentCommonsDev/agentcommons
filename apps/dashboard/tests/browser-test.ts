@@ -175,16 +175,69 @@ export async function accessible(page: Page) {
       ),
     )
     .toBe(0);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  ).toBe(true);
+  await expectNoHorizontalOverflow(page);
   expect(
     (await new AxeBuilder({ page }).analyze()).violations.filter((entry) =>
       ["critical", "serious"].includes(entry.impact ?? ""),
     ),
   ).toEqual([]);
+}
+/**
+ * R-DASH-21: nothing scrolls sideways at the configured viewport width: not the document,
+ * not a table's container and not an open dialog. The one sanctioned exception is a grid
+ * of arbitrary result columns marked `data-table-layout="scroll-x"` (SQL results,
+ * Markdown tables inside a transcript). Mobile emulation grows `innerWidth` with the
+ * content, so the viewport width is the bar, never `innerWidth`.
+ */
+export async function expectNoHorizontalOverflow(page: Page) {
+  const width = page.viewportSize()?.width ?? 1440;
+  const overflow = await page.evaluate((viewportWidth) => {
+    const problems: string[] = [];
+    const root = document.documentElement;
+    if (root.scrollWidth > viewportWidth) {
+      // Name the widest boxes and text runs past the viewport so the failure says what to fix.
+      const culprits: string[] = [];
+      for (const element of document.querySelectorAll("body *")) {
+        const box = element.getBoundingClientRect();
+        if (box.width > 0 && box.right > viewportWidth + 1)
+          culprits.push(
+            `${element.tagName.toLowerCase()}.${[...element.classList].slice(0, 4).join(".")} right=${String(Math.round(box.right))}`,
+          );
+      }
+      const walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_TEXT,
+      );
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent?.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const box = range.getBoundingClientRect();
+        if (box.width > 0 && box.right > viewportWidth + 1)
+          culprits.push(
+            `text "${node.textContent.trim().slice(0, 40)}" right=${String(Math.round(box.right))}`,
+          );
+      }
+      problems.push(
+        `document ${String(root.scrollWidth)} > ${String(viewportWidth)}: ${culprits.slice(0, 6).join("; ")}`,
+      );
+    }
+    for (const table of document.querySelectorAll("table")) {
+      const container = table.parentElement;
+      if (!container || container.dataset.tableLayout === "scroll-x") continue;
+      if (container.scrollWidth > container.clientWidth + 1)
+        problems.push(
+          `table "${table.getAttribute("aria-label") ?? ""}" ${String(container.scrollWidth)} > ${String(container.clientWidth)}`,
+        );
+    }
+    for (const dialog of document.querySelectorAll("[role=dialog]"))
+      if (dialog.scrollWidth > dialog.clientWidth + 1)
+        problems.push(
+          `dialog ${String(dialog.scrollWidth)} > ${String(dialog.clientWidth)}`,
+        );
+    return problems;
+  }, width);
+  expect(overflow).toEqual([]);
 }
 export async function setTheme(page: Page, theme: "dark" | "light") {
   await page.addInitScript((value) => {
@@ -229,6 +282,25 @@ export async function confirm(
   }
   await button.click();
   await expect(dialog).toHaveCount(0);
+}
+/**
+ * The column chooser adds a column and the table still fits (R-DASH-21); stacked phone
+ * rows label cells instead of headers.
+ */
+export async function showColumn(page: Page, label: string) {
+  await page
+    .getByRole("button", { name: copy.app.common.columns, exact: true })
+    .first()
+    .click();
+  const item = page
+    .getByRole("menu")
+    .getByRole("menuitemcheckbox", { name: label, exact: true });
+  await expect(item).toHaveAttribute("aria-checked", "false");
+  await item.click();
+  await expect(item).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(`td[data-label="${label}"]`).first()).toBeVisible();
+  await expectNoHorizontalOverflow(page);
 }
 /** Opens the row overflow menu and picks one item. */
 export async function rowAction(row: Locator, label: string) {

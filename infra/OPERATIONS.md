@@ -240,7 +240,7 @@ docker-compose.yml -f docker-compose.caddy.yml logs`), release logs are in
 in Pulumi and ignores image and first-boot changes because its root volume holds the
 data; replacing it means `pulumi state unprotect`, then restoring the latest DLM snapshot
 into a new volume. Outputs: `url`, `publicIp`, `instanceId`, `releaseBucket`,
-`parameterPath`, `region`.
+`parameterPath`, `region`, and `databaseEndpoint` when the database runs on Aurora.
 
 Trace store. `traceStore: local` (default) runs ClickHouse in the Compose stack.
 `traceStore: clickhouse-cloud` with `clickhouseCloudUrl`
@@ -281,6 +281,88 @@ ten tables) are left in place for that switch.
 Cloud is billed by ClickHouse separately from the AWS estimate below; egress from Cloud to
 this host is small (dictionary lookups). The workstation's resolver sometimes fails for
 `*.clickhouse.cloud`; `dig @1.1.1.1` and `curl --resolve` work around it.
+
+PostgreSQL outside the box (Aurora). The control database can leave the host (ADR 0063).
+`database: { kind: aurora-serverless-v2 }` provisions an Aurora PostgreSQL 16 Serverless v2
+cluster in the same VPC: one `db.serverless` writer in the host's availability zone when the cluster's zones include it (a new cluster always does; RDS adds two more) scaling
+between `minCapacity` (default 0.5 ACU) and `maxCapacity` (default 4 ACU), encrypted, seven
+days of backups, deletion protection, a final snapshot on destroy, `applyImmediately:
+false`, PostgreSQL logs to CloudWatch and Pulumi protection; a subnet group over the
+default VPC subnets; a security group admitting 5432 only from the host's security group; a
+cluster parameter group pinning `rds.force_ssl=1` (`forceSsl: "false"` is the fallback for
+a ClickHouse release that cannot negotiate TLS); and four alarms on the existing topic (CPU
+above 80% for 15 min, ACU utilization above 90% for 15 min, freeable memory below 256 MiB,
+more than 150 connections). The master user is `agentcommons` with
+`databaseMigrationPassword`, as in the container, so bootstrap, dump and restore see one
+identity. The rendered `.env` then carries the cluster endpoint in `DATABASE_MIGRATION_URL`,
+`DATABASE_URL`, `DATABASE_TRACE_CONTROL_URL` (suffix `?sslmode=require&uselibpqcompat=true`:
+encrypted, certificate unverified, the flag makes node-postgres follow libpq) and
+`CLICKHOUSE_POSTGRES_HOST`, plus `AGENTCOMMONS_DATABASE=external`, which makes the release
+add `docker-compose.external-database.yml` (the `db` service parked behind a profile, its
+volume kept). The stack exports `databaseEndpoint`. Not combinable with `traceStore:
+clickhouse-cloud`, which needs a public PostgreSQL. `engineVersion` accepts a major (`16`,
+the region's default minor) or an exact `16.x`. A release never switches databases on its own: when the stack's parameters name an external database while the host still runs the bundled container, `apply.sh` keeps the bundled settings, writes the external render to `.env.external`, and says so; only `migrate-database.sh` performs the cutover.
+
+Enable and cut over (downtime a few minutes; the ClickHouse corpus is untouched):
+
+```sh
+pulumi -C infra config set --stack "$PULUMI_STACK" --path database.kind aurora-serverless-v2
+pulumi -C infra config set --stack "$PULUMI_STACK" --path database.minCapacity 0.5
+pulumi -C infra config set --stack "$PULUMI_STACK" --path database.maxCapacity 4
+pulumi -C infra preview --stack "$PULUMI_STACK"
+pulumi -C infra up --stack "$PULUMI_STACK"        # cluster in 10 to 15 minutes; parameters re-rendered; host untouched
+infra/scripts/single-node-run.sh migrate-database.sh --organization zpghl
+```
+
+`pulumi up` creates the cluster and rewrites the SSM parameters; the host keeps running
+on the container until the cutover script runs (the preview shows every parameter as an
+update because the endpoint is unknown until the cluster exists; only the database URLs,
+`CLICKHOUSE_POSTGRES_HOST` and the new `AGENTCOMMONS_DATABASE` change). On the host,
+`migrate-database.sh` renders the new parameters into `.env.external`, requires
+`AGENTCOMMONS_DATABASE=external` there and `bundled` in the running `.env`, stops the API,
+copies roles and data with `scripts/self-host/migrate-database.sh` (`pg_dump -Fc` and
+`pg_restore --no-owner --role=agentcommons --single-transaction --exit-on-error` through
+the `postgres:16` image on the Compose network, roles rebuilt from `pg_roles` without
+passwords, per-table row counts compared; the dump stays in
+`/var/lib/agentcommons/database-migration-<time>/`), stops the `db` container (volume
+kept), keeps the previous `.env` as `.env.bundled`, installs the new one and starts the
+stack: the migration task runs `pnpm db:migrate` against Aurora (no pending migrations,
+role passwords set from the URLs, ClickHouse control tables and dictionaries re-pointed at
+the endpoint), the API starts, `/ready` answers, one `dictGet` proves ClickHouse reads
+Aurora and, with `--organization`, a session list as the owner proves the API does. If the
+stack does not come up, the script restores `.env.bundled` and restarts the container.
+Later releases and the hourly updater need nothing: `apply.sh` derives the Compose files
+from the setting and the probe runs after every release.
+
+Rollback: `single-node-run.sh migrate-database.sh --rollback` stops the API, swaps
+`.env.bundled` back and restarts on the container, whose volume holds the data as of the
+cutover (writes made on Aurora since are not copied back; run the copy script in the other
+direction by hand if they matter). For a durable rollback also set `database.kind bundled`
+and `pulumi up`; otherwise the next release re-renders the external `.env`. Pulumi refuses
+to destroy the cluster while `deletionProtection` is on and takes the final snapshot when
+it does.
+
+After the cutover check `agentcommons-update.sh --status`, `docker compose ps` (no `db`
+container), Admin → Status, the `database-*` alarms leaving INSUFFICIENT_DATA, and the
+census queries: every control read now crosses the network (sub-millisecond within the
+zone, which is why the writer is pinned there), which was not measured before the cutover.
+
+Size and HA: `maxCapacity` raises the ceiling with `pulumi up` and no downtime. A second
+`aws.rds.ClusterInstance` in another zone (a reader with automatic failover) is the HA
+upgrade, not built today, at the same ACU price again. Cost, us-west-2 on-demand list
+prices from the Price List API on 2026-09-10: $0.12 per ACU-hour (Standard; I/O-Optimized
+$0.16), storage $0.10 per GB-month, I/O $0.20 per million requests, backups free up to
+the cluster's size ($0.021 per GB-month beyond), alarms $0.10 each. Idle at 0.5 ACU
+(730 h): $43.80 compute, $1.00 storage for 10 GB, about $1 of I/O, $0.40 alarms, about
+**$46 per month**; averaging 2 ACU: $175.20 plus the same, about **$178**. A second instance
+adds $43.80 (0.5 ACU) or $175.20 (2 ACU). The host's own cost is unchanged.
+
+Plain Compose installs have the same option: set `AGENTCOMMONS_DATABASE=external`, append
+`docker-compose.external-database.yml` to `COMPOSE_FILE`, point the three
+`DATABASE_*_URL` values and `CLICKHOUSE_POSTGRES_HOST` at the server (with
+`?sslmode=require&uselibpqcompat=true` when it enforces TLS), stop the API, run
+`scripts/self-host/migrate-database.sh copy --source <bundled URL> --target <server URL>
+--work <dir>`, then `docker compose up -d`.
 
 Capacity and alarms. The Compose override limits memory so one service cannot starve the
 others on the 8 GiB host: ClickHouse 3.5 GiB when it runs locally (server limit 3 GiB,

@@ -3,8 +3,16 @@
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
-/* Stacked rows on phones: each cell shows its column label. */
+/*
+ * Stacked rows: each cell shows its column label. Applies on phones and inside a narrow
+ * dashboard tile (the tile body is the `tile` container). The two blocks are identical;
+ * a media query and a container query cannot share one prelude.
+ */
 @media (max-width: 639px) {
+  .stacked-table {
+    table-layout: auto;
+  }
+  .stacked-table colgroup,
   .stacked-table thead {
     display: none;
   }
@@ -24,6 +32,41 @@
   .stacked-table td::before {
     content: attr(data-label);
     font-size: 11px;
+    text-align: left;
+    color: var(--muted);
+  }
+  .stacked-table td[data-actions] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .stacked-table td[data-actions]::before {
+    content: none;
+  }
+}
+@container tile (max-width: 319px) {
+  .stacked-table {
+    table-layout: auto;
+  }
+  .stacked-table colgroup,
+  .stacked-table thead {
+    display: none;
+  }
+  .stacked-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding: 10px 14px;
+  }
+  .stacked-table td {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 10px;
+    padding: 3px 0;
+    align-items: baseline;
+  }
+  .stacked-table td::before {
+    content: attr(data-label);
+    font-size: 11px;
+    text-align: left;
     color: var(--muted);
   }
   .stacked-table td[data-actions] {

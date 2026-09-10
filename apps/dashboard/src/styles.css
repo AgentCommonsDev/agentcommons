@@ -310,6 +310,7 @@
 }
 .hero-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 11px;
@@ -480,6 +481,7 @@
 }
 .example-command {
   height: 53px;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -1511,12 +1513,14 @@
   color: var(--muted);
   font-size: 15px;
   line-height: 1.85;
+  overflow-wrap: anywhere;
 }
 .docs-page article p {
   margin: 0 0 24px;
 }
 .docs-links {
   display: flex;
+  flex-wrap: wrap;
   gap: 30px;
   flex-wrap: wrap;
   border-top: 1px solid var(--line);

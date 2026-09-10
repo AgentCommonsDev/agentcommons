@@ -123,6 +123,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
       {
         accessorKey: "name",
         header: text.name,
+        size: 180,
         cell: ({ row }) => (
           <span className="font-medium">{row.original.name}</span>
         ),
@@ -130,6 +131,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
       {
         accessorKey: "kind",
         header: text.kind,
+        size: 110,
         cell: ({ row }) => <StatusBadge value={row.original.kind} />,
       },
       {
@@ -140,6 +142,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
             : (policy.rule_id ?? ""),
         header: copy.app.fields.pattern,
         enableSorting: false,
+        size: 220,
         cell: ({ row }) =>
           row.original.kind === "REGEX" ? (
             <code className="font-mono text-xs break-all">
@@ -152,6 +155,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
       {
         accessorKey: "enabled",
         header: text.enabled,
+        size: 80,
         cell: ({ row }) => (
           <Switch
             checked={row.original.enabled}
@@ -165,6 +169,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
       {
         accessorKey: "builtin",
         header: text.source,
+        size: 90,
         cell: ({ row }) => (
           <Badge variant={row.original.builtin ? "neutral" : "accent"}>
             {row.original.builtin ? text.builtin : text.custom}
@@ -174,12 +179,14 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
       {
         accessorKey: "updated_at",
         header: copy.app.common.updated,
+        size: 120,
         cell: ({ row }) => dateTime(row.original.updated_at),
       },
       {
         accessorKey: "replacement",
         header: copy.app.fields.replacement,
         enableSorting: false,
+        size: 150,
         cell: ({ row }) => (
           <code className="font-mono text-xs">{row.original.replacement}</code>
         ),
@@ -187,6 +194,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
       {
         accessorKey: "created_at",
         header: copy.app.common.created,
+        size: 120,
         cell: ({ row }) => dateTime(row.original.created_at),
       },
       {

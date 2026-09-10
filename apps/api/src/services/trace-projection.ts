@@ -79,13 +79,16 @@ const SINK_BATCH = 500;
 const SUPERSEDED_CLEANUP_EVERY_REVISIONS = 10n;
 const SUPERSEDED_CLEANUP_ROWS = 1000;
 
-/** Serializes publication of one session: organization row, publication fence, then its control row. */
+/**
+ * Serializes publication of one session: the publication fence, then its control row.
+ * Publication changes no membership, admission or policy state, so it never takes the
+ * organization row that ingest, membership and policy mutations serialize on (§5.2).
+ */
 async function lockSession(
   tx: Prisma.TransactionClient,
   organizationId: string,
   sessionId: string,
 ): Promise<void> {
-  await tx.$queryRaw`SELECT id FROM organization WHERE id=${organizationId} FOR NO KEY UPDATE`;
   await lockTracePublication(tx, organizationId, "write");
   await lockTraceSessionControl(tx, organizationId, sessionId);
 }
@@ -127,7 +130,10 @@ export class TraceProjectionService {
     }
     await this.cleanupGenerations(organizationId, sessionId, control);
     const plan = await this.reserve(organizationId, sessionId);
-    if (!plan) return;
+    if (!plan) {
+      await this.publishReceipts(organizationId, sessionId);
+      return;
+    }
     try {
       const build = await this.build(plan);
       if (!build) return;
@@ -309,14 +315,14 @@ export class TraceProjectionService {
           outbox_batches: outboxes.length,
         },
       });
+      // A rescan re-appends every receipt at the new generation; a publish appends the
+      // ones not yet in ClickHouse, including empty receipts that created no revision.
       const receipts = await tx.traceReceipt.findMany({
         where: {
           organizationId,
           sessionId,
-          revision: {
-            ...(rescan ? {} : { gt: control.publishedRevision }),
-            lte: last.revision,
-          },
+          revision: { lte: last.revision },
+          ...(rescan ? {} : { publishedAt: null }),
         },
         include: { redactions: true },
       });
@@ -674,11 +680,13 @@ export class TraceProjectionService {
         organizationId,
         sessionId,
       });
+      // Only the receipts this plan appended: an empty receipt accepted since the
+      // reservation waits for the next publish rather than being marked without a row.
       await tx.traceReceipt.updateMany({
         where: {
           organizationId,
           sessionId,
-          revision: { lte: plan.revision },
+          id: { in: plan.receipts.map((receipt) => receipt.id) },
           publishedAt: null,
         },
         data: { publishedAt: new Date() },
@@ -709,6 +717,76 @@ export class TraceProjectionService {
         },
       });
     });
+  }
+  /**
+   * Receipts accepted without a revision (empty syncs, §5.2) are appended at the current
+   * published revision once nothing else is pending, so analytics see their lifecycle
+   * decision without waiting for the next content publish. A pending revision carries
+   * them instead; an unpublished session gets them with its first publish.
+   */
+  private async publishReceipts(
+    organizationId: string,
+    sessionId: string,
+  ): Promise<void> {
+    const { prisma, repository } = this.dependencies;
+    await prisma.$transaction(
+      async (tx) => {
+        await lockSession(tx, organizationId, sessionId);
+        const control = await tx.traceSessionControl.findUnique({
+          where: { organizationId_id: { organizationId, id: sessionId } },
+        });
+        if (
+          !control ||
+          control.purgedAt ||
+          control.publishedRevision === 0n ||
+          control.acceptedRevision !== control.publishedRevision
+        )
+          return;
+        const receipts = await tx.traceReceipt.findMany({
+          where: { organizationId, sessionId, publishedAt: null },
+          include: { redactions: true },
+        });
+        if (!receipts.length) return;
+        await repository.appendReceipts(
+          {
+            organizationId,
+            sessionId,
+            revision: control.publishedRevision,
+            generation: control.redactionGeneration,
+          },
+          receipts,
+          receipts.flatMap((receipt) =>
+            receipt.redactions.map((hit) => ({
+              receiptId: receipt.id,
+              policyId: hit.policyId,
+              count: hit.count,
+            })),
+          ),
+        );
+        await tx.traceReceipt.updateMany({
+          where: {
+            organizationId,
+            sessionId,
+            id: { in: receipts.map((receipt) => receipt.id) },
+            publishedAt: null,
+          },
+          data: { publishedAt: new Date() },
+        });
+        await this.audit(tx, organizationId, {
+          action: "trace.publish",
+          resourceType: "session",
+          resourceIds: [sessionId],
+          detail: {
+            revision: String(control.publishedRevision),
+            receipts: receipts.length,
+            changed_messages: 0,
+            changed_files: 0,
+            projection_ready: control.projectionState === "published",
+          },
+        });
+      },
+      { timeout: 40_000, maxWait: 10_000 },
+    );
   }
   /** Release the lease and mark the failure; the accepted upload stays queued for a retry. */
   private async fail(plan: Plan, error: unknown): Promise<never> {

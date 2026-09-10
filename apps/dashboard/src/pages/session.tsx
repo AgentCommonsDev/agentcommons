@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 import { copy } from "../copy";
 import { api, unwrap } from "../lib/api/client";
 import { number } from "../lib/display";
-import { useSessionStream } from "../lib/use-session-stream";
+import { useSessionStream, type SessionEvent } from "../lib/use-session-stream";
 import { useWorkspace } from "../components/app/workspace";
 import {
   LoadingState,
@@ -34,7 +34,6 @@ import { SubagentRuns } from "../features/sessions/subagents";
 import {
   LoadMore,
   MessageList,
-  transcriptMessages,
   useTranscript,
   type RunFocus,
 } from "../features/sessions/transcript";
@@ -62,15 +61,20 @@ export function SessionPage({
   const [tab, setTab] = useState<Tab>("transcript");
   // Null until the event stream reports; the transcript polls until it does.
   const [connected, setConnected] = useState<boolean | null>(null);
-  const [latest, setLatest] = useState(0);
+  // The stream's latest event: status and message count without another header read.
+  const [snapshot, setSnapshot] = useState<SessionEvent | null>(null);
   // Null until the reader chooses; live sessions follow their tail unless deep-linked.
   const [follow, setFollow] = useState<boolean | null>(null);
   const [find, setFind] = useState("");
   const [expandThinking, setExpandThinking] = useState(false);
   const [expandTools, setExpandTools] = useState(false);
-  const transcript = useTranscript(id, from, { polling: connected !== true });
-  const header = transcript.data?.pages[0]?.header;
+  const transcript = useTranscript(id, from, {
+    polling: connected !== true,
+    snapshot,
+  });
+  const { header, messages } = transcript;
   const active = header?.status === "ACTIVE";
+  const latest = (header?.message_count ?? 0) - 1;
   const following = follow ?? (active && selected === null && focus === null);
   const stream: StreamState | undefined = active
     ? connected === null
@@ -79,10 +83,7 @@ export function SessionPage({
         ? "streaming"
         : "reconnecting"
     : undefined;
-  useSessionStream(organization.id, id, active, setConnected, setLatest);
-  useEffect(() => {
-    if (header) setLatest((prior) => Math.max(prior, header.message_count - 1));
-  }, [header]);
+  useSessionStream(organization.id, id, active, setConnected, setSnapshot);
   const tree = useQuery({
     queryKey: [organization.id, "tree", id],
     queryFn: async ({ signal }) =>
@@ -94,27 +95,22 @@ export function SessionPage({
       ),
     enabled: header !== undefined,
   });
-  const messages = useMemo(
-    () => (transcript.data ? transcriptMessages(transcript.data.pages) : []),
-    [transcript.data],
-  );
   const lastSeq = messages.at(-1)?.seq ?? -1;
-  // A deep link keeps loading pages until its message is on the page: a page is
-  // byte-bounded, so long context records ahead of the target can fill the first one.
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = transcript;
+  // A deep link keeps loading ranges until its message is on the page: the head page
+  // is byte-bounded, so long context records ahead of the target can fill it.
   useEffect(() => {
     if (selected === null || lastSeq >= selected) return;
-    if (transcript.hasNextPage && !transcript.isFetchingNextPage)
-      void transcript.fetchNextPage();
-  }, [selected, lastSeq, transcript]);
-  // Following the tail keeps loading pages until the newest message is on screen,
+    if (hasNextPage && !isFetchingNextPage) fetchNextPage();
+  }, [selected, lastSeq, hasNextPage, isFetchingNextPage, fetchNextPage]);
+  // Following the tail keeps loading ranges until the newest message is on screen,
   // then scrolls only when a newer message lands so a reader can still look back.
-  const { hasNextPage, isFetchingNextPage, fetchNextPage } = transcript;
   // Scrolls this page starts itself must not count as the reader looking back.
   const ownScroll = useRef(false);
   useEffect(() => {
     if (!following || !active) return;
     if (hasNextPage && !isFetchingNextPage) {
-      void fetchNextPage();
+      fetchNextPage();
       return;
     }
     if (lastSeq >= 0) {
@@ -154,17 +150,23 @@ export function SessionPage({
   if (transcript.error || !header)
     return (
       <RequestError
+        title={labels.errors.header}
         error={transcript.error}
-        retry={() => {
-          void transcript.refetch();
-        }}
+        retry={transcript.refetch}
       />
     );
   const nodes = tree.data?.nodes ?? [];
   const root = nodes.find((node) => node.session_id === header.root_session_id);
-  const behind = !following && !transcript.hasNextPage && latest > lastSeq;
+  // Only a live session a reader stopped following can be behind; ranges still landing
+  // on first load are not news.
+  const behind =
+    active &&
+    !following &&
+    !hasNextPage &&
+    !isFetchingNextPage &&
+    latest > lastSeq;
   // Following a live session with pages still to load: catch up first, render once.
-  const catchingUp = following && active && transcript.hasNextPage;
+  const catchingUp = following && active && hasNextPage;
   return (
     <div className="flex flex-col gap-5">
       {header.parent_session_id && (
@@ -331,20 +333,23 @@ export function SessionPage({
               />
             )}
           </div>
-          {transcript.hasNextPage && !catchingUp && (
-            <LoadMore
-              fetching={transcript.isFetchingNextPage}
-              onLoad={() => {
-                void transcript.fetchNextPage();
-              }}
-            >
-              {transcript.isFetchingNextPage
+          {transcript.rangeError !== null && (
+            <RequestError
+              title={labels.errors.messages}
+              error={transcript.rangeError}
+              retry={transcript.retryRanges}
+            />
+          )}
+          {hasNextPage && !catchingUp && (
+            <LoadMore fetching={isFetchingNextPage} onLoad={fetchNextPage}>
+              {isFetchingNextPage
                 ? labels.transcript.loading
                 : labels.transcript.loadMore}
             </LoadMore>
           )}
           {tree.error && (
             <RequestError
+              title={labels.errors.runs}
               error={tree.error}
               retry={() => {
                 void tree.refetch();

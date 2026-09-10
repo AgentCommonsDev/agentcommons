@@ -139,6 +139,25 @@ docs              SPEC.md, adr/, reviews/
   testcontainers for the API, e2e for shim, MCP, and dashboard flows.
 - No secrets in the repo. Fixtures pass through the redactor in CI.
 
+## Read-path performance rules
+
+Reads run as ClickHouse reader principals with a 5 s time limit, 2 threads and 256 MiB, while
+holding the organization's publication fence. Measured on the hosted instance, the failures users
+saw came from a class of query shapes, not one query. Every read path follows these rules:
+
+- Row policies and views never call a dictionary per row when the predicate can be set membership
+  or a scalar map over the same live dictionary (ADR 0062).
+- One scan per relation per request. Counts, totals and paging metadata come from the same scan
+  (`count() OVER ()`, `WITH TOTALS`, `LIMIT n+1`); never a second query over the base view.
+- No per-page recomputation of request-level data and no N+1 queries per row or page.
+- A view scans each base table once; a layered view must not re-evaluate an expensive parent view.
+- Every new or changed query is measured on a fixture with at least 40,000 messages as the admin
+  reader and as a member reader before it ships, and stays well under the reader limit at four-way
+  concurrency.
+- Concurrent work (dashboard tiles, transcript pages) runs under a fixed, documented in-flight cap.
+- Unexpected failures are logged with the request id and their cause; request bodies and statement
+  text are never logged.
+
 ## Writing: public-facing text only
 
 Use the vendored `no-ai-slop` skill (`.agents/skills/no-ai-slop/SKILL.md`, linked into

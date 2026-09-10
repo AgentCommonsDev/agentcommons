@@ -32,6 +32,7 @@ const scripts = [
   "single-node/isolation-check.sh",
   "single-node/revoke-key.sh",
   "single-node/add-members.sh",
+  "single-node/migrate-database.sh",
   "clickhouse-cloud-egress.sh",
 ];
 let exported: Record<string, unknown> = {};
@@ -257,6 +258,7 @@ describe("single-node resource contract", () => {
       COMPOSE_PROJECT_NAME: "agentcommons",
       TRACE_STORE: "local",
       AUTO_UPDATE: "true",
+      AGENTCOMMONS_DATABASE: "bundled",
       CLICKHOUSE_POSTGRES_PORT: "5432",
       PUBLIC_URL: "https://hooks.example.com",
       INSTANCE_MODE: "customer",
@@ -327,13 +329,11 @@ describe("single-node resource contract", () => {
       new URL("../scripts/single-node/apply.sh", import.meta.url),
       "utf8",
     );
-    expect(apply).toContain("get-parameters-by-path");
-    expect(apply).toContain("--with-decryption");
-    // The Compose file list is data in .env, shared with the updater, and the image is
-    // pulled unless --build asks for an on-host build.
-    expect(apply).toContain(
-      "files=docker-compose.yml:docker-compose.caddy.yml",
-    );
+    // The .env rendering and the Compose file list live in the host library, shared with
+    // the database cutover script; the list is data in .env, shared with the updater, and
+    // the image is pulled unless --build asks for an on-host build.
+    expect(apply).toContain("render_env .env.new");
+    expect(apply).toContain("files=$(compose_files .env)");
     expect(apply).toContain(`printf "COMPOSE_FILE='%s'\\n" "$files" >>.env`);
     expect(apply).toContain("build=${AGENTCOMMONS_BUILD:-false}");
     expect(apply).toContain("--build) build=true ;;");
@@ -343,16 +343,19 @@ describe("single-node resource contract", () => {
     expect(apply).toContain('agentcommons-update.timer" /etc/systemd/system/');
     expect(apply).toContain("systemctl enable --now agentcommons-update.timer");
     expect(apply).toContain("amazon-cloudwatch-agent-ctl -a fetch-config");
-    // ClickHouse Cloud mode: third Compose file, a certificate for the public address,
-    // pg_hba.conf limited to Cloud egress addresses, and a dictionary probe after start.
-    expect(apply).toContain("files=$files:docker-compose.clickhouse-cloud.yml");
+    // ClickHouse Cloud mode: a certificate for the public address, pg_hba.conf limited to
+    // Cloud egress addresses, and a dictionary probe after start (also in external
+    // database mode, where the local ClickHouse must reach the managed PostgreSQL).
     expect(apply).toContain("openssl req -x509");
     expect(apply).toContain("subjectAltName=IP:$host,DNS:db");
     expect(apply).toContain(
       "hostssl agentcommons ac_trace_control $address/32 scram-sha-256",
     );
     expect(apply).toContain("infra/compose/clickhouse-cloud-egress.json");
-    expect(apply).toContain("dictGet(");
+    expect(apply).toContain(
+      '[ "$(setting TRACE_STORE)" = clickhouse-cloud ] || [ "$(setting AGENTCOMMONS_DATABASE)" = external ]',
+    );
+    expect(apply).toContain("lookup=$(probe_control_dictionary)");
     expect(apply).toContain("infra/compose/cloudwatch-agent.json");
     const bootstrap = readFileSync(
       new URL("../scripts/single-node/bootstrap.sh", import.meta.url),
@@ -390,9 +393,18 @@ describe("single-node resource contract", () => {
       "owner_sign_in()",
       "api()",
       "sign_out()",
+      "render_env()",
+      "compose_files()",
+      "probe_control_dictionary()",
       "/auth/sign-in/email",
       "/auth/sign-out",
       "/root/agentcommons",
+      "get-parameters-by-path",
+      "--with-decryption",
+      "files=docker-compose.yml:docker-compose.caddy.yml",
+      "files=$files:docker-compose.clickhouse-cloud.yml",
+      "files=$files:docker-compose.external-database.yml",
+      "dictGet(",
     ])
       expect(hostLib).toContain(helper);
     // The stack reader and Compose steps live once, in the library the updater shares.
@@ -416,6 +428,41 @@ describe("single-node resource contract", () => {
     ])
       expect(shared).toContain(helper);
     expect(bootstrap).toContain('state="$state_dir/owner-$organization.json"');
+    // The database cutover renders the stack's new parameters beside the running .env,
+    // copies through the generic self-host script and keeps a rollback path (ADR 0063).
+    const cutover = readFileSync(
+      new URL("../scripts/single-node/migrate-database.sh", import.meta.url),
+      "utf8",
+    );
+    for (const text of [
+      "render_env .env.external",
+      "compose_files .env.external",
+      '[ "$(setting AGENTCOMMONS_DATABASE .env.external)" = external ]',
+      "compose stop api",
+      'scripts/self-host/migrate-database.sh" copy',
+      "cp .env .env.bundled",
+      "stack_up start",
+      "probe_control_dictionary",
+      "/api/v1/sessions?limit=1",
+      "--rollback",
+      "mv .env.bundled .env",
+    ])
+      expect(cutover).toContain(text);
+    const copy = readFileSync(
+      new URL("../../scripts/self-host/migrate-database.sh", import.meta.url),
+      "utf8",
+    );
+    execFileSync("bash", ["-n"], { input: copy });
+    for (const text of [
+      "set -euo pipefail",
+      "FROM pg_roles WHERE rolname IN ('ac_app', 'ac_trace_control')",
+      "JOIN pg_db_role_setting s ON s.setrole = r.oid",
+      'pg_dump -d "$SOURCE_URL" -Fc --no-owner',
+      '--no-owner --role="$TARGET_ROLE" --single-transaction --exit-on-error',
+      "uselibpqcompat",
+      "--env-file",
+    ])
+      expect(copy).toContain(text);
     const isolation = readFileSync(
       new URL("../scripts/single-node/isolation-check.sh", import.meta.url),
       "utf8",

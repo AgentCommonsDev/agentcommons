@@ -1,5 +1,8 @@
 # The API and its migration run the published release (ADR 0059). AGENTCOMMONS_IMAGE in
 # .env pins another tag or a local build; `docker compose build` still builds from here.
+# docker-compose.caddy.yml adds HTTPS; docker-compose.clickhouse-cloud.yml moves the trace
+# store to ClickHouse Cloud; docker-compose.external-database.yml moves PostgreSQL to a
+# managed server such as Aurora (AGENTCOMMONS_DATABASE=external, ADR 0063).
 x-application: &application
   image: ${AGENTCOMMONS_IMAGE:-ghcr.io/agentcommonsdev/agentcommons:stable}
   build: .
@@ -26,6 +29,10 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_MIGRATION_USER:-default}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_MIGRATION_PASSWORD:?Set CLICKHOUSE_MIGRATION_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      # The server runs as the clickhouse user but inherits root's HOME; when PostgreSQL
+      # offers TLS (a managed database, ADR 0063) libpq looks for a client certificate
+      # there and fails on the unreadable /root. Its own directory is readable and empty.
+      HOME: /var/lib/clickhouse
     volumes:
       - agentcommons-traces:/var/lib/clickhouse
       - ./packages/traces/config/privacy.xml:/etc/clickhouse-server/config.d/privacy.xml:ro

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  CompiledRedactors,
   Redactor,
   PolicyCache,
   policyDefinitionSchema,
+  policyFingerprint,
   sanitizeRecord,
 } from "./index.js";
 import { jsonByteLength } from "../schemas/common.js";
@@ -122,15 +124,21 @@ describe("redaction before persistence", () => {
     expect(JSON.parse(JSON.stringify(result.value))).toEqual(result.value);
   });
 
-  it("keeps policy caches separate by organization and reloads after 30 seconds", async () => {
+  // @req R-RED-02
+  it("keeps policy caches separate by organization, reloads rows after 30 seconds and recompiles only changed rows", async () => {
     let now = 0;
     const calls: string[] = [];
+    const rows = new Map<string, RedactionPolicy[]>([
+      ["one", [custom]],
+      ["two", []],
+    ]);
     const cache = new PolicyCache(
       (organizationId) => {
         calls.push(organizationId);
-        return Promise.resolve(organizationId === "one" ? [custom] : []);
+        return Promise.resolve(rows.get(organizationId) ?? []);
       },
       () => now,
+      new CompiledRedactors(),
     );
     const first = await cache.get("one");
     expect(await cache.get("one")).toBe(first);
@@ -138,8 +146,82 @@ describe("redaction before persistence", () => {
       (await (await cache.get("two")).text("confidential-blue")).value,
     ).toBe("confidential-blue");
     now = 30_000;
-    expect(await cache.get("one")).not.toBe(first);
+    // Unchanged rows reload into the same compiled engine.
+    expect(await cache.get("one")).toBe(first);
     expect(calls).toEqual(["one", "two", "one"]);
+    rows.set("one", [{ ...custom, enabled: false }]);
+    now = 60_000;
+    const disabled = await cache.get("one");
+    expect(disabled).not.toBe(first);
+    expect((await disabled.text("confidential-blue")).value).toBe(
+      "confidential-blue",
+    );
+  });
+
+  // @req R-RED-02
+  it("shares one compiled engine per organization and policy set, isolates organizations and bounds its size", () => {
+    const compiled = new CompiledRedactors(2);
+    const first = compiled.get("one", [custom]);
+    expect(compiled.get("one", [custom])).toBe(first);
+    const reordered = [
+      { ...custom, id: "policy-b", name: "second", pattern: "second-[a-z]+" },
+      custom,
+    ];
+    const ordered = compiled.get("one", [...reordered].reverse());
+    expect(compiled.get("one", reordered)).toBe(ordered);
+    // Same rows, other organization: its own engine.
+    expect(compiled.get("two", [custom])).not.toBe(first);
+    // A changed definition compiles anew.
+    expect(
+      compiled.get("one", [{ ...custom, replacement: "[HIDDEN]" }]),
+    ).not.toBe(first);
+    // Bounded: the two least recently used engines were evicted.
+    expect(compiled.size).toBe(2);
+    expect(compiled.get("one", [custom])).not.toBe(first);
+  });
+
+  // @req R-RED-02
+  it("fingerprints the composed policy set independent of row order and sensitive to every change", () => {
+    const other: RedactionPolicy = {
+      ...custom,
+      id: "policy-b",
+      name: "other",
+      pattern: "other-[a-z]+",
+    };
+    const base = policyFingerprint([custom, other]);
+    expect(policyFingerprint([other, custom])).toBe(base);
+    expect(policyFingerprint([custom])).not.toBe(base);
+    expect(policyFingerprint([custom, { ...other, enabled: false }])).not.toBe(
+      base,
+    );
+    expect(
+      policyFingerprint([custom, { ...other, pattern: "other-[0-9]+" }]),
+    ).not.toBe(base);
+    expect(policyFingerprint([custom, { ...other, id: "policy-c" }])).not.toBe(
+      base,
+    );
+    expect(policyFingerprint([])).toBe(policyFingerprint([]));
+  });
+
+  // @req R-RED-01 @req R-RED-02
+  it("memoizes repeated scans per engine without sharing count objects", async () => {
+    const redactor = new Redactor([custom]);
+    const first = await redactor.text("confidential-red", "note=");
+    const again = await redactor.text("confidential-red", "note=");
+    expect(again).toEqual(first);
+    const [hit] = first.counts;
+    expect(hit).toEqual({ policyId: "policy-a", name: "internal", count: 1 });
+    expect(again.counts[0]).not.toBe(hit);
+    if (hit) hit.count = 99;
+    expect((await redactor.text("confidential-red", "note=")).counts).toEqual([
+      { policyId: "policy-a", name: "internal", count: 1 },
+    ]);
+    // The prefix is part of the identity: the same value scanned bare is a different scan.
+    expect((await redactor.text("confidential-red")).value).toBe(
+      "[REDACTED:internal]",
+    );
+    expect(await redactor.text("")).toEqual({ value: "", counts: [] });
+    expect(await redactor.text("", "key=")).toEqual({ value: "", counts: [] });
   });
 
   it("redacts before hashing and omitting oversized leaves, without mutating its input", async () => {

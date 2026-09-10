@@ -14,8 +14,13 @@ import {
   type RedactionResult,
   type Redactor,
 } from "@agentcommons/core";
-import type { Prisma, TraceSessionControl } from "@agentcommons/db";
+import type {
+  Prisma,
+  PrismaClient,
+  TraceSessionControl,
+} from "@agentcommons/db";
 import type { TraceRawRecord, TraceSession } from "@agentcommons/traces";
+import { setTimeout as delay } from "node:timers/promises";
 
 export const traceRescanPayloadSchema = z.strictObject({
   organizationId: z.string().min(1),
@@ -24,6 +29,54 @@ export const traceRescanPayloadSchema = z.strictObject({
   requestId: z.string(),
   input: redactionRescanInputSchema,
 });
+
+/**
+ * Targets one rescan job publishes at a time (ADR 0066). Their ClickHouse reads and inserts
+ * overlap; only the claim step is serialized on the organization row, and each target still
+ * commits its own rewrite, counters, audit and checkpoint.
+ */
+export const RESCAN_CONCURRENCY = 3;
+/** A job hands over to its successor after this long, well inside pg-boss's 180 s job expiry. */
+export const RESCAN_JOB_BUDGET_MS = 60_000;
+
+/**
+ * Waits for claimed targets whose checkpoint another publisher is about to commit (the
+ * projection worker races the rescan job for the same outbox row) and returns the session
+ * ids still unprocessed once no projection lease is outstanding or the timeout passes.
+ */
+export async function awaitRescanCheckpoints(
+  prisma: PrismaClient,
+  organizationId: string,
+  runId: string,
+  sessionIds: readonly string[],
+  timeoutMs = 15_000,
+): Promise<string[]> {
+  const deadline = Date.now() + timeoutMs;
+  let pending = [...sessionIds];
+  for (;;) {
+    const processed = await prisma.redactionRunSession.findMany({
+      where: {
+        organizationId,
+        runId,
+        sessionId: { in: pending },
+        processedAt: { not: null },
+      },
+      select: { sessionId: true },
+    });
+    const done = new Set(processed.map((row) => row.sessionId));
+    pending = pending.filter((sessionId) => !done.has(sessionId));
+    if (!pending.length) return pending;
+    const leased = await prisma.traceSessionControl.count({
+      where: {
+        organizationId,
+        id: { in: pending },
+        projectionLeaseUntil: { gt: new Date() },
+      },
+    });
+    if (!leased || Date.now() >= deadline) return pending;
+    await delay(100);
+  }
+}
 
 /**
  * Marks one session of a redaction run processed and advances the run, which completes

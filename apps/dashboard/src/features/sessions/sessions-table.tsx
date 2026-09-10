@@ -25,12 +25,15 @@ import type { ApiFilters } from "./search-state";
 import { SessionStatusBadge } from "./session-header";
 
 const fields = copy.app.fields;
+/** Counts and durations sit flush right so their digits line up down the column. */
+const numeric = { meta: { align: "end" } } as const;
 /** Every R-DASH-11 column plus the subagent count; ids double as server sort keys. */
 function sessionColumns(): ColumnDef<SessionItem>[] {
   return [
     {
       accessorKey: "title",
       header: fields.title,
+      size: 240,
       cell: ({ row }) => (
         <Link
           to="/app/sessions/$id"
@@ -48,8 +51,9 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
           .filter(Boolean)
           .join(" "),
       header: fields.harness,
+      size: 110,
       cell: ({ row }) => (
-        <span className="whitespace-nowrap">
+        <span>
           {harnessLabel(row.original.harness)}
           {row.original.harness_version && (
             <span className="ml-1 text-muted">
@@ -62,6 +66,7 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "model",
       header: fields.model,
+      size: 130,
       cell: ({ getValue }) => (
         <span className="font-mono text-xs">{textValue(getValue())}</span>
       ),
@@ -71,11 +76,20 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
       accessorFn: (row) =>
         [row.repo_name, row.branch].filter(Boolean).join(" @ "),
       header: copy.sessions.list.repoBranch,
+      size: 180,
       cell: ({ row }) => (
         <span className="flex min-w-0 flex-col">
-          <span className="truncate">{textValue(row.original.repo_name)}</span>
+          <span
+            className="truncate"
+            title={row.original.repo_name ?? undefined}
+          >
+            {textValue(row.original.repo_name)}
+          </span>
           {row.original.branch && (
-            <span className="truncate font-mono text-xs text-muted">
+            <span
+              className="truncate font-mono text-xs text-muted"
+              title={row.original.branch}
+            >
               {row.original.branch}
             </span>
           )}
@@ -85,23 +99,23 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "user_email",
       header: fields.user_email,
-      cell: ({ getValue }) => (
-        <span className="truncate">{textValue(getValue())}</span>
-      ),
+      size: 170,
+      cell: ({ getValue }) => textValue(getValue()),
     },
     {
       accessorKey: "installation_hostname",
       header: fields.installation_hostname,
+      size: 140,
       cell: ({ getValue }) => textValue(getValue()),
     },
     {
       accessorKey: "started_at",
       header: fields.started_at,
+      size: 100,
       cell: ({ row }) => (
         <time
           dateTime={row.original.started_at}
           title={dateTime(row.original.started_at)}
-          className="whitespace-nowrap"
         >
           {relativeTime(row.original.started_at)}
         </time>
@@ -110,8 +124,10 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "duration_seconds",
       header: copy.sessions.list.duration,
+      size: 80,
+      ...numeric,
       cell: ({ row }) => (
-        <span className="whitespace-nowrap tabular-nums">
+        <span className="tabular-nums">
           {duration(row.original.duration_seconds)}
         </span>
       ),
@@ -119,6 +135,8 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "message_count",
       header: fields.message_count,
+      size: 80,
+      ...numeric,
       cell: ({ getValue }) => (
         <span className="tabular-nums">{number(getValue<number>())}</span>
       ),
@@ -126,6 +144,8 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "tool_call_count",
       header: fields.tool_call_count,
+      size: 80,
+      ...numeric,
       cell: ({ getValue }) => (
         <span className="tabular-nums">{number(getValue<number>())}</span>
       ),
@@ -133,6 +153,8 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "observed_commit_count",
       header: fields.observed_commit_count,
+      size: 80,
+      ...numeric,
       cell: ({ getValue }) => (
         <span className="tabular-nums">{number(getValue<number>())}</span>
       ),
@@ -140,6 +162,8 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "reuse_count",
       header: fields.reuse_count,
+      size: 110,
+      ...numeric,
       cell: ({ getValue }) => (
         <span className="tabular-nums">{number(getValue<number>())}</span>
       ),
@@ -147,6 +171,7 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
     {
       accessorKey: "status",
       header: fields.status,
+      size: 130,
       cell: ({ row }) => (
         <SessionStatusBadge
           status={row.original.status}
@@ -158,19 +183,27 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
       accessorKey: "child_count",
       header: copy.sessions.list.subagentCount,
       enableSorting: false,
+      size: 80,
+      ...numeric,
       cell: ({ getValue }) => (
         <span className="tabular-nums">{number(getValue<number>())}</span>
       ),
     },
   ];
 }
+/**
+ * The six-column default (title, repository, user, started, messages, status) fits a
+ * 1024 px desktop beside the sidebar; the chooser adds the rest. Messages holds the
+ * default slot over the reuse count because it is the size of the session at a glance.
+ */
 const hiddenColumns = [
   "harness",
   "model",
   "installation_hostname",
-  "message_count",
+  "duration_seconds",
   "tool_call_count",
   "observed_commit_count",
+  "reuse_count",
   "child_count",
 ] as const;
 

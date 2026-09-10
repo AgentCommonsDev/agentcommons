@@ -22,9 +22,10 @@ import {
 } from "@agentcommons/core/schemas";
 import { z } from "zod";
 import {
+  andSql,
   filterSql,
   Parameters,
-  rootSessionIds,
+  sessionLinks,
 } from "../repositories/read-model.js";
 import {
   messagePayloadBatches,
@@ -35,6 +36,7 @@ import { ServiceError, type ServiceContext } from "./context.js";
 import {
   compactMetadata,
   fitsToolBudget,
+  pickSchema,
   wireRow,
   wireValue,
 } from "./read-budget.js";
@@ -88,12 +90,15 @@ interface Window {
   last: number;
   rows: Record<string, unknown>[];
 }
+/** The excerpt's place inside the full content in UTF-8 bytes, the unit `get` cursors use. */
+type ContentRange = { start: number; end: number; total: number };
 function excerpt(
   value: string,
   query: string,
-): { content: string; truncated: boolean } {
+): { content: string; truncated: boolean; content_range: ContentRange | null } {
   const points = Array.from(value);
-  if (points.length <= 300) return { content: value, truncated: false };
+  if (points.length <= 300)
+    return { content: value, truncated: false, content_range: null };
   const lower = value.toLocaleLowerCase("en-US");
   const terms = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
   const matches = terms
@@ -104,9 +109,16 @@ function excerpt(
     ? Array.from(value.slice(0, Math.min(...matches))).length
     : 0;
   const start = Math.max(0, Math.min(points.length - 300, character - 100));
+  const content = points.slice(start, start + 300).join("");
+  const startBytes = Buffer.byteLength(points.slice(0, start).join(""));
   return {
-    content: points.slice(start, start + 300).join(""),
+    content,
     truncated: true,
+    content_range: {
+      start: startBytes,
+      end: startBytes + Buffer.byteLength(content),
+      total: Buffer.byteLength(value),
+    },
   };
 }
 /** Windows of one session whose ordinal ranges touch or overlap merge into one group, in hit order. */
@@ -213,19 +225,25 @@ export class SearchService {
           );
         return this.dependencies.readers.read(caller, async (client) => {
           const params = new Parameters();
-          const { sql: conditions } = await filterSql(
-            client,
-            request.filters,
-            params,
-          );
+          const plan = await filterSql(client, request.filters, params);
           const query = params.add(request.query);
           const lexical = request.query.trim().length > 0;
           const order = lexical
             ? "rank DESC, session_id, seq"
             : "time DESC, session_id, seq DESC";
+          // Eligible messages come from the lightest message relation the predicates
+          // allow; session predicates narrow them through one `session_details` scan
+          // only when the filters name a session field.
           const eligible = `SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq,coalesce(m.timestamp,m.received_at) AS time
-            FROM api_ro.messages m LEFT ANY JOIN api_ro.session_details s USING(session_id)
-            WHERE ${conditions} AND ${lexical ? "m.searchable" : "m.kind!='THINKING'"}`;
+            FROM api_ro.${plan.messageView} m
+            WHERE ${andSql([
+              ...plan.message,
+              ...(plan.session.length
+                ? [
+                    `m.session_id IN (SELECT s.session_id FROM api_ro.session_details s WHERE ${andSql(plan.session)})`,
+                  ]
+                : []),
+            ])} AND ${lexical ? "m.searchable" : "m.kind!='THINKING'"}`;
           const lexicalMatches = `SELECT e.*,l.rank FROM eligible e
             JOIN api_ro.search_messages(q=${query}) l USING(session_id,seq)`;
           const candidates = vector
@@ -245,36 +263,44 @@ export class SearchService {
                 ) GROUP BY message_id
               ) SELECT e.message_id AS message_id,e.session_id AS session_id,e.seq AS seq,e.time AS time,f.rank AS rank FROM fused f JOIN eligible e USING(message_id)`
             : `WITH eligible AS (${eligible}) ${lexical ? lexicalMatches : "SELECT *,toFloat64(0) AS rank FROM eligible"}`;
-          // The totals count the same candidate set before the per-session cap, the
-          // cursor and the limit, in the same read callback as the page.
+          // The totals are window aggregates of the same candidate scan, taken before
+          // the per-session cap, the cursor and the limit cut the page.
           const totalParameters = { ...params.values };
           const continuation = after
             ? lexical
               ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
               : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
             : "true";
-          const [result, counts] = await Promise.all([
-            client.query(
-              `WITH candidates AS (${candidates}), ranked AS (
-              SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session FROM candidates
-            ) SELECT session_id,seq,rank,time FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
+          const result = await client.query(
+            `WITH candidates AS (${candidates}), ranked AS (
+              SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session,
+                count() OVER () AS total_hits,uniqExact(session_id) OVER () AS total_sessions FROM candidates
+            ) SELECT session_id,seq,rank,time,total_hits,total_sessions FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
               ORDER BY ${order} LIMIT ${params.add(request.limit + 1, "UInt32")}`,
-              params.values,
-            ),
-            client.query(
-              `WITH candidates AS (${candidates}) SELECT uniqExact(session_id) AS sessions,count() AS hits FROM candidates`,
-              totalParameters,
-            ),
-          ]);
+            params.values,
+          );
           const hits = result.rows.map((row) =>
             positionSchema.parse({
-              ...wireRow(row),
+              ...pickSchema(wireRow(row), positionSchema),
               strategy: vector ? "rrf" : "lexical",
             }),
           );
+          // A continuation past the last hit carries no aggregate; only then is a count
+          // of the candidates (with no window) needed to state the totals.
+          const first = result.rows[0];
+          const counts = first
+            ? { sessions: first.total_sessions, hits: first.total_hits }
+            : after
+              ? (
+                  await client.query(
+                    `WITH candidates AS (${candidates}) SELECT uniqExact(session_id) AS sessions,count() AS hits FROM candidates`,
+                    totalParameters,
+                  )
+                ).rows[0]
+              : { sessions: 0, hits: 0 };
           const total = searchTotalSchema.parse({
-            sessions: Number(counts.rows[0]?.sessions ?? 0),
-            hits: Number(counts.rows[0]?.hits ?? 0),
+            sessions: Number(counts?.sessions ?? 0),
+            hits: Number(counts?.hits ?? 0),
           });
           const output: SearchOutput = {
             blocks: [],
@@ -286,8 +312,9 @@ export class SearchService {
           const headers = new Map<string, SearchHeader>();
           const pageHits = hits.slice(0, request.limit);
           const ids = [...new Set(pageHits.map((hit) => hit.session_id))];
-          // Fetch all context, headers and tree roots in three queries for the whole page.
-          const [neighbours, values, roots] = await Promise.all([
+          // Fetch all context and headers in two ClickHouse queries and the tree roots
+          // from control, together, for the whole page.
+          const [neighbours, values, links] = await Promise.all([
             ids.length
               ? client.query(
                   `WITH ordered AS (
@@ -315,7 +342,7 @@ export class SearchService {
                   { ids },
                 )
               : Promise.resolve({ rows: [] }),
-            rootSessionIds(client, ids),
+            sessionLinks(client.control, caller, ids),
           ]);
           for (const row of values.rows)
             headers.set(
@@ -325,7 +352,7 @@ export class SearchService {
                   {
                     ...wireRow(row),
                     root_session_id:
-                      roots.get(String(row.session_id)) ??
+                      links.get(String(row.session_id))?.root_session_id ??
                       String(row.session_id),
                   },
                   ["title", "model", "repo_name", "branch", "agent_type"],

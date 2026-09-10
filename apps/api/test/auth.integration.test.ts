@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { hasAdminAuthority, type PrismaClient } from "@agentcommons/db";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { APIError } from "better-auth/api";
 import { z } from "zod";
 import { createAuth, type AuthConfiguration } from "../src/auth/config.js";
 import { bootstrap, operatorContext, recover } from "../src/auth/bootstrap.js";
@@ -847,4 +848,113 @@ it("applies the configured domain restriction to password sessions and existing 
       operatorContext(),
     ),
   ).rejects.toMatchObject({ statusCode: 403 });
+});
+
+// @req R-AUTH-06 @req R-AUD-02
+it("answers 503 AUTH_UNAVAILABLE when a credential cannot be verified and 401 only for a confirmed rejection", async () => {
+  const minted = await auth.createKey(ownerA, {
+    name: "verified under load",
+    permissions: { sessions: ["read", "ingest"] },
+  });
+  const headers = new Headers({ authorization: `Bearer ${minted.result.key}` });
+  const failuresBefore = await prisma.auditEvent.count({
+    where: { action: "auth.failure" },
+  });
+  const unavailable = {
+    statusCode: 503,
+    code: "AUTH_UNAVAILABLE",
+    detail: { retry_after: 5 },
+    audited: true,
+  };
+  // Better Auth reports an exception inside its lookup as an invalid key.
+  const verify = vi
+    .spyOn(auth.native.api, "verifyApiKey")
+    .mockResolvedValueOnce({
+      valid: false,
+      error: { message: "Invalid API key.", code: "INVALID_API_KEY" },
+      key: null,
+    });
+  await expect(
+    auth.authenticate(headers, operatorContext()),
+  ).rejects.toMatchObject(unavailable);
+  verify.mockRejectedValueOnce(
+    new Error("canceling statement due to statement timeout"),
+  );
+  await expect(
+    auth.authenticate(headers, operatorContext()),
+  ).rejects.toMatchObject(unavailable);
+  verify.mockRestore();
+  // A database that answers neither Better Auth's lookup nor the confirming one is not a verdict.
+  const lookup = vi
+    .spyOn(prisma.apikey, "findFirst")
+    .mockRejectedValue(new Error("Timed out fetching a new connection"));
+  await expect(
+    auth.authenticate(
+      new Headers({ authorization: "Bearer ac_not_a_real_key" }),
+      operatorContext(),
+    ),
+  ).rejects.toMatchObject(unavailable);
+  lookup.mockRestore();
+  // Cookie sessions: Better Auth's own 500 is unavailable, its 401 is a rejection.
+  const session = vi.spyOn(auth.native.api, "getSession").mockRejectedValueOnce(
+    new APIError("INTERNAL_SERVER_ERROR", {
+      code: "FAILED_TO_GET_SESSION",
+      message: "Failed to get session",
+    }),
+  );
+  await expect(
+    auth.authenticate(ownerB.headers, operatorContext()),
+  ).rejects.toMatchObject(unavailable);
+  session.mockRejectedValueOnce(
+    new APIError("UNAUTHORIZED", {
+      code: "FAILED_TO_GET_SESSION",
+      message: "Failed to get session",
+    }),
+  );
+  await expect(
+    auth.authenticate(ownerB.headers, operatorContext()),
+  ).rejects.toMatchObject({
+    statusCode: 401,
+    code: "INVALID_AUTHENTICATION",
+    audited: true,
+  });
+  session.mockRestore();
+  // Completed lookups still reject: a missing key, a revoked key, a disabled verdict.
+  await expect(
+    auth.authenticate(
+      new Headers({ authorization: "Bearer ac_not_a_real_key" }),
+      operatorContext(),
+    ),
+  ).rejects.toMatchObject({ statusCode: 401, code: "INVALID_API_KEY" });
+  await auth.revokeKey(
+    ownerA,
+    minted.result.metadata.id,
+    { reason: "Revoke key" },
+    false,
+  );
+  await expect(
+    auth.authenticate(headers, operatorContext()),
+  ).rejects.toMatchObject({ statusCode: 401, code: "INVALID_API_KEY" });
+  // The key is intact and usable once the server can verify again.
+  const reissued = await auth.createKey(ownerA, {
+    name: "verified again",
+    permissions: { sessions: ["read"] },
+  });
+  expect(
+    (
+      await auth.authenticate(
+        new Headers({ authorization: `Bearer ${reissued.result.key}` }),
+        operatorContext(),
+      )
+    ).caller?.organizationId,
+  ).toBe(ownerA.caller?.organizationId);
+  const failures = await prisma.auditEvent.findMany({
+    where: { action: "auth.failure" },
+    orderBy: { ts: "asc" },
+    skip: failuresBefore,
+  });
+  expect(failures.map((row) => row.statusCode)).toEqual([
+    503, 503, 503, 503, 401, 401, 401,
+  ]);
+  expect(failures.every((row) => row.organizationId === null)).toBe(true);
 });

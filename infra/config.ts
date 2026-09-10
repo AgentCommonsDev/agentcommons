@@ -92,6 +92,50 @@ export const clickhouseCloudUrlSchema = z
     };
   });
 
+/**
+ * Where the PostgreSQL control plane runs. `bundled` is the `db` container of the Compose
+ * stack; `aurora-serverless-v2` provisions an Aurora PostgreSQL cluster (ADR 0063) that
+ * the host, the migration and ClickHouse reach over TLS, and the Compose stack then
+ * skips the container (`AGENTCOMMONS_DATABASE=external`).
+ */
+const databaseSettingsSchema = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("bundled") }),
+    z.object({
+      kind: z.literal("aurora-serverless-v2"),
+      /** Aurora Capacity Units (2 GiB each); 0.5 is the floor of a always-on cluster. */
+      minCapacity: z.coerce
+        .number()
+        .min(0.5)
+        .max(128)
+        .multipleOf(0.5)
+        .default(0.5),
+      maxCapacity: z.coerce.number().min(1).max(128).multipleOf(0.5).default(4),
+      /** Aurora PostgreSQL version; a major alone takes the region's default minor. */
+      engineVersion: z
+        .string()
+        .regex(/^16(?:\.\d{1,2})?$/)
+        .default("16"),
+      /**
+       * `rds.force_ssl` in the cluster parameter group. On by default, matching the
+       * `sslmode=require` URLs the program renders; `false` is the fallback for a
+       * ClickHouse release that cannot negotiate TLS to PostgreSQL.
+       */
+      forceSsl: z
+        .enum(["true", "false"])
+        .default("true")
+        .transform((value) => value === "true"),
+    }),
+  ])
+  .refine(
+    (value) =>
+      value.kind === "bundled" || value.minCapacity <= value.maxCapacity,
+    {
+      message: "minCapacity must not exceed maxCapacity.",
+      path: ["minCapacity"],
+    },
+  );
+
 const singleNodeHost = z.object({
   deployment: z.literal("single-node"),
   stack: z.string().regex(/^[a-z][a-z0-9-]{0,23}$/),
@@ -118,22 +162,33 @@ const singleNodeHost = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
+  database: databaseSettingsSchema.default({ kind: "bundled" }),
   environment: environmentSchema.default({}),
 });
 /**
  * One Compose host behind Caddy; the stack name becomes the resource and parameter
  * prefix. The trace store selects the variant: the cloud one requires the endpoint.
  */
-export const singleNodeSettingsSchema = z.discriminatedUnion("traceStore", [
-  singleNodeHost.extend({
-    traceStore: z.literal("local").default("local"),
-    clickhouseCloudUrl: clickhouseCloudUrlSchema.optional(),
-  }),
-  singleNodeHost.extend({
-    traceStore: z.literal("clickhouse-cloud"),
-    clickhouseCloudUrl: clickhouseCloudUrlSchema,
-  }),
-]);
+export const singleNodeSettingsSchema = z
+  .discriminatedUnion("traceStore", [
+    singleNodeHost.extend({
+      traceStore: z.literal("local").default("local"),
+      clickhouseCloudUrl: clickhouseCloudUrlSchema.optional(),
+    }),
+    singleNodeHost.extend({
+      traceStore: z.literal("clickhouse-cloud"),
+      clickhouseCloudUrl: clickhouseCloudUrlSchema,
+    }),
+  ])
+  .refine(
+    (settings) =>
+      settings.traceStore === "local" || settings.database.kind === "bundled",
+    {
+      message:
+        "ClickHouse Cloud reads PostgreSQL over the public address; an Aurora cluster is private to the VPC, so the two cannot be combined.",
+      path: ["database"],
+    },
+  );
 export type SingleNodeSettings = z.infer<typeof singleNodeSettingsSchema>;
 type Settings = FargateSettings | SingleNodeSettings;
 
@@ -153,6 +208,7 @@ export function readSettings(): Settings {
       clickhouseCloudUrl: config.get("clickhouseCloudUrl"),
       clickhouseCloudPostgresTls: config.get("clickhouseCloudPostgresTls"),
       autoUpdate: config.get("autoUpdate"),
+      database: config.getObject<unknown>("database"),
       environment: config.getObject<unknown>("environment"),
     });
   return settingsSchema.parse({
