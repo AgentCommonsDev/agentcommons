@@ -59,7 +59,6 @@ try {
     {
       PUBLIC_URL: publicUrl,
       TRUST_PROXY: "loopback",
-      // Embeddings default on with the deterministic provider; an operator-off
       // The fixture defines its own instance settings: the suites and their visual baselines
       // assume embeddings surfaces exist, whatever the ambient CI matrix sets. Specs that
       // cover the disabled state flip the organization toggle instead.
