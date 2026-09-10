@@ -60,9 +60,11 @@ try {
       PUBLIC_URL: publicUrl,
       TRUST_PROXY: "loopback",
       // Embeddings default on with the deterministic provider; an operator-off
-      // fixture sets EMBEDDINGS_ENABLED=false to exercise the disabled surface.
-      EMBEDDINGS_ENABLED: process.env.EMBEDDINGS_ENABLED ?? "true",
-      EMBEDDINGS_PROVIDER: process.env.EMBEDDINGS_PROVIDER ?? "fake",
+      // The fixture defines its own instance settings: the suites and their visual baselines
+      // assume embeddings surfaces exist, whatever the ambient CI matrix sets. Specs that
+      // cover the disabled state flip the organization toggle instead.
+      EMBEDDINGS_ENABLED: "true",
+      EMBEDDINGS_PROVIDER: "fake",
     },
     {
       jobs: true,
