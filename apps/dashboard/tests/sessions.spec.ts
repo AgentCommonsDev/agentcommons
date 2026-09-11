@@ -1555,6 +1555,37 @@ test("the list gives back the width a wider-than-planned badge or its own border
   await expectNoHorizontalOverflow(page);
 });
 
+// @req R-DASH-21
+test("the list refits live when the window narrows and widens again, without a reload", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "Phone rows stack; there is no column layout to refit");
+  await page.goto(paths.sessions);
+  const list = page.getByRole("table", { name: labels.list.label });
+  await expect(list).toBeVisible();
+  await settled(page);
+  // Docking a sidebar or resizing the window must not leave the table at its old width.
+  for (const width of [1440, 1024, 1440, 1280]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await expect
+      .poll(() =>
+        list.evaluate((table) => {
+          const container = table.parentElement;
+          return container
+            ? {
+                fits: container.scrollWidth <= container.clientWidth,
+                same:
+                  table.getBoundingClientRect().width === container.clientWidth,
+              }
+            : null;
+        }),
+      )
+      .toEqual({ fits: true, same: true });
+    await expectNoHorizontalOverflow(page);
+  }
+});
+
 // @req R-WEB-02 @req R-DASH-21 @req R-DASH-01
 for (const theme of ["dark", "light"] as const)
   test(`the list and the session page fit the viewport without errors in ${theme}`, async ({

@@ -312,6 +312,13 @@ export function DataTable<T>({
     const table = tableRef.current;
     const container = table?.parentElement;
     if (!table || !container || containerWidth === null) return;
+    // A resize is in flight until the observer reports the new width; measuring now would
+    // compare the old layout with the new box and trim a phantom overflow.
+    if (
+      frame.current &&
+      Math.floor(frame.current.clientWidth) !== Math.floor(containerWidth)
+    )
+      return;
     const own =
       table.offsetWidth -
       table.clientWidth +
@@ -484,10 +491,11 @@ export function DataTable<T>({
             aria-busy={loading}
             className={cn("stacked-table", loading && "opacity-60")}
           >
-            {/* Keyed by the column set: Chromium keeps a stale column structure when a
-                `<col>` is inserted into an existing colgroup (the table lays out at its old
-                width plus the new column), so a changed set gets a fresh element. */}
-            <colgroup key={columnsKey}>
+            {/* Keyed by the widths: Chromium keeps a stale fixed layout when a `<col>` is
+                inserted into an existing colgroup or its width changes (the table stays at
+                its old width, or old width plus the new column), so any change replaces the
+                element and the structure is rebuilt. */}
+            <colgroup key={widths.join(",")}>
               {visibleColumns.map((column, index) => (
                 <col key={column.id} style={{ width: widths[index] }} />
               ))}
