@@ -2465,7 +2465,10 @@ the Codex `config.toml` block with its `export` line and the Gemini `settings.js
 with a copy button, the key literal in the Claude Code and Gemini entries and `alwaysLoad` in
 none), and the organization's management keys: the All keys table (`GET /admin/keys`) with
 `filters.tool_group = administration` as a fixed server-side filter, owner, created, last used,
-status and the audited admin revoke, one implementation for both pages. Install mints only
+status and the audited admin revoke, one implementation for both pages. Because the secret shows
+once, a persistent collapsed reference on the page renders the same three entries from the one
+formatter with the key as the `YOUR_ADMIN_KEY` placeholder (Codex keeps its `export` line, on the
+placeholder), so an admin can look up the shapes and paste a saved key in later. Install mints only
 the standard ingest/read key.
 **Settings** holds organization embeddings (§11), sign-in domains (§9.1: list and add an
 exact Google domain; no DNS proof) and the default dashboard. The existing Usage,

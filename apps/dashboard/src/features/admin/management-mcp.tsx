@@ -25,27 +25,29 @@ import { createPersonalKey, useRefreshKeys } from "../keys/queries";
 
 const text = copy.admin.mcp;
 
-/** The `agentcommons-admin` entry for each MCP-capable harness, with the key in it. */
-function Registrations({ secret }: { secret: string }) {
+/**
+ * The `agentcommons-admin` entry for each MCP-capable harness. `keyValue` is the literal
+ * key right after creation, or `null` for the persistent reference, which renders the
+ * placeholder where the key goes (§10). `prefix` scopes the test ids so the one-time
+ * reveal and the reference do not collide.
+ */
+function RegistrationSnippets({
+  keyValue,
+  prefix,
+}: {
+  keyValue: string | null;
+  prefix: string;
+}) {
   return (
-    <div
-      className="flex flex-col gap-4 border-t border-line-soft pt-4"
-      data-testid="management-registrations"
-    >
-      <div>
-        <p className="text-sm font-medium">{text.register.title}</p>
-        <p className="text-xs leading-relaxed text-muted">
-          {text.register.description}
-        </p>
-      </div>
-      {managementRegistrations(window.location.origin, secret).map(
+    <>
+      {managementRegistrations(window.location.origin, keyValue).map(
         (registration) => {
           const harness = harnessLabel(registration.harness);
           return (
             <div
               key={registration.harness}
               className="flex flex-col gap-1.5"
-              data-testid={`management-registration-${registration.harness}`}
+              data-testid={`${prefix}-${registration.harness}`}
             >
               <p className="text-xs font-medium text-muted">
                 {harness}
@@ -58,7 +60,7 @@ function Registrations({ secret }: { secret: string }) {
                 wrap
                 copyLabel={text.register.copy(harness)}
                 showCopyLabel
-                testId={`management-registration-${registration.harness}-content`}
+                testId={`${prefix}-${registration.harness}-content`}
                 className="my-0"
               />
               {registration.shell !== null && (
@@ -72,7 +74,7 @@ function Registrations({ secret }: { secret: string }) {
                     wrap
                     copyLabel={text.register.copyShell}
                     showCopyLabel
-                    testId={`management-registration-${registration.harness}-shell`}
+                    testId={`${prefix}-${registration.harness}-shell`}
                     className="my-0"
                   />
                 </>
@@ -81,13 +83,59 @@ function Registrations({ secret }: { secret: string }) {
           );
         },
       )}
+    </>
+  );
+}
+
+/** The registrations with the freshly created key, shown once inside the secret panel. */
+function Registrations({ secret }: { secret: string }) {
+  return (
+    <div
+      className="flex flex-col gap-4 border-t border-line-soft pt-4"
+      data-testid="management-registrations"
+    >
+      <div>
+        <p className="text-sm font-medium">{text.register.title}</p>
+        <p className="text-xs leading-relaxed text-muted">
+          {text.register.description}
+        </p>
+      </div>
+      <RegistrationSnippets
+        keyValue={secret}
+        prefix="management-registration"
+      />
     </div>
   );
 }
 
 /**
+ * A persistent, collapsed copy of the registrations with the key as a placeholder. The
+ * secret shows once; this stays on the page so an admin can look up the shapes later and
+ * paste their saved key into the placeholder (§10).
+ */
+function RegistrationReference() {
+  return (
+    <details
+      className="rounded-lg border border-line-soft"
+      data-testid="management-registration-reference"
+    >
+      <summary className="cursor-pointer rounded-lg px-4 py-3 text-sm font-medium select-none hover:bg-raised">
+        {text.reference.summary}
+      </summary>
+      <div className="flex flex-col gap-4 border-t border-line-soft px-4 py-4">
+        <p className="text-xs leading-relaxed text-muted">
+          {text.reference.description}
+        </p>
+        <RegistrationSnippets keyValue={null} prefix="management-reference" />
+      </div>
+    </details>
+  );
+}
+
+/**
  * Create a management key (the same key service and audit as the Keys page, §9.2) and
- * show it once with the registration for each harness (§10, ADR 0072 amendment).
+ * show it once with the registration for each harness. A collapsed reference below keeps
+ * those registrations available after the secret is gone (§10, ADR 0072 amendment).
  */
 export function ManagementKeyCard() {
   const { organization } = useWorkspace();
@@ -161,6 +209,7 @@ export function ManagementKeyCard() {
           </form>
         )}
         {create.error !== null && <RequestError error={create.error} />}
+        <RegistrationReference />
       </CardContent>
     </Card>
   );

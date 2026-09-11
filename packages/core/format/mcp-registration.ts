@@ -11,6 +11,12 @@ import { shellQuote } from "./install.js";
 export const managementServerName = "agentcommons-admin";
 /** Codex reads its bearer token from the environment; a second variable keeps the standard key's. */
 export const managementKeyVariable = "AGENTCOMMONS_ADMIN_API_KEY";
+/**
+ * Stands in for the key where the real one is not on screen. The key is shown once at
+ * creation; the persistent reference on the Management MCP page (§10) renders these
+ * entries with this token so a reader can paste their saved key into it.
+ */
+export const managementKeyPlaceholder = "YOUR_ADMIN_KEY";
 /** What a management key grants: reads, both tool groups and admin (§9.2); never ingest. */
 export const managementPermissions = {
   sessions: ["read"],
@@ -50,11 +56,16 @@ export const managementEntries = {
     headers: { Authorization: `Bearer ${key}` },
   }),
 } as const;
-/** The management server registration for each MCP-capable harness, ready to paste. */
+/**
+ * The management server registration for each MCP-capable harness, ready to paste. Pass the
+ * literal key right after creation (it is shown once); pass `null` for the persistent
+ * reference, which renders `managementKeyPlaceholder` where the key goes.
+ */
 export function managementRegistrations(
   origin: string,
-  key: string,
+  key: string | null,
 ): ManagementRegistration[] {
+  const value = key ?? managementKeyPlaceholder;
   const url = mcpServerUrl(origin);
   const codex = managementEntries.CODEX(url);
   return [
@@ -67,7 +78,7 @@ export function managementRegistrations(
         managementServerName,
         shellQuote(url),
         "--header",
-        shellQuote(`Authorization: Bearer ${key}`),
+        shellQuote(`Authorization: Bearer ${value}`),
       ].join(" "),
       shell: null,
     },
@@ -80,7 +91,7 @@ export function managementRegistrations(
         `url = ${JSON.stringify(codex.url)}`,
         `bearer_token_env_var = ${JSON.stringify(codex.bearer_token_env_var)}`,
       ].join("\n"),
-      shell: `export ${managementKeyVariable}=${shellQuote(key)}`,
+      shell: `export ${managementKeyVariable}=${shellQuote(value)}`,
     },
     {
       harness: "GEMINI_CLI",
@@ -89,7 +100,7 @@ export function managementRegistrations(
       content: JSON.stringify(
         {
           mcpServers: {
-            [managementServerName]: managementEntries.GEMINI_CLI(url, key),
+            [managementServerName]: managementEntries.GEMINI_CLI(url, value),
           },
         },
         null,

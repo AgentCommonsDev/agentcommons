@@ -1,3 +1,5 @@
+import { managementKeyPlaceholder } from "@agentcommons/core/format/mcp-registration";
+
 /** Strings for the Organization (admin) area. Owned by the admin feature. */
 export const adminCopy = {
   title: "Organization",
@@ -107,6 +109,10 @@ export const adminCopy = {
         "Codex reads the key from the environment. Add this line to your shell startup file and open a new terminal.",
       copy: (harness: string) => `Copy ${harness} registration`,
       copyShell: "Copy export line",
+    },
+    reference: {
+      summary: "How to register this key",
+      description: `The full key showed once when you created it. Paste your saved key wherever ${managementKeyPlaceholder} appears below.`,
     },
     keys: {
       title: "Management keys",

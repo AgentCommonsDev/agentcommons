@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   managementEntries,
+  managementKeyPlaceholder,
   managementKeyVariable,
   managementServerName,
 } from "@agentcommons/core/format/mcp-registration";
@@ -94,6 +95,11 @@ describe("MCP registration", () => {
     });
     expect(managementServerName).not.toBe("agentcommons");
     expect(managementKeyVariable).not.toBe("AGENTCOMMONS_API_KEY");
+    // The dashboard's persistent reference stands the key in with this token, not an env
+    // expansion the installer would write; it is never a real credential.
+    expect(managementKeyPlaceholder).toBe("YOUR_ADMIN_KEY");
+    expect(managementKeyPlaceholder).not.toContain("${");
+    expect(managementKeyPlaceholder.startsWith("ac_")).toBe(false);
   });
 
   // @req R-INST-02 @req R-CAP-17

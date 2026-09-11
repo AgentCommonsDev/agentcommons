@@ -14,6 +14,7 @@ import {
 } from "@agentcommons/core/schemas/dashboards";
 import { standardDashboardVariables } from "@agentcommons/core/dashboards";
 import {
+  managementKeyPlaceholder,
   managementKeyVariable,
   managementRegistrations,
   managementServerName,
@@ -245,6 +246,21 @@ test("Management MCP: an owner creates a management key, sees the three registra
   expect(text).toContain(`${managementKeyVariable}='${secret}'`);
   expect(text).not.toContain("alwaysLoad");
   expect(text).not.toContain("${");
+  // A persistent reference sits below, collapsed by default, with the key as a placeholder.
+  const reference = card.getByTestId("management-registration-reference");
+  await expect(reference).toBeVisible();
+  expect(await reference.getAttribute("open")).toBeNull();
+  const referenceContent = (await reference.textContent()) ?? "";
+  expect(referenceContent).toContain(managementServerName);
+  expect(referenceContent).toContain(managementKeyPlaceholder);
+  expect(referenceContent).not.toContain(secret);
+  expect(referenceContent).not.toContain("${");
+  // It opens to reveal the three harness snippets, still with the placeholder.
+  await reference.locator("summary").click();
+  await expect(reference).toHaveAttribute("open", "");
+  await expect(
+    reference.getByTestId("management-reference-CLAUDE_CODE-content"),
+  ).toContainText(managementKeyPlaceholder);
   // The key carries reads, both tool groups and admin, and the list shows it.
   const listed = z
     .object({
@@ -289,6 +305,11 @@ test("Management MCP: an owner creates a management key, sees the three registra
     .click();
   await expect(card.getByTestId("keys-secret")).toHaveCount(0);
   await expect(registrations).toHaveCount(0);
+  // The reference remains for future use, still the placeholder, never the secret.
+  await expect(reference).toBeVisible();
+  const afterDismiss = (await reference.textContent()) ?? "";
+  expect(afterDismiss).toContain(managementKeyPlaceholder);
+  expect(afterDismiss).not.toContain(secret);
   await expect(row).toBeVisible();
   // Revoke through the same admin flow as All keys.
   await (await rowAction(row, copy.admin.keys.revoke)).click();
