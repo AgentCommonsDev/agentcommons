@@ -87,3 +87,51 @@ holds no AWS keys so the same mechanism works for anyone.
 - Open questions: whether the updater should verify the Sigstore signature before starting
   a release (needs `cosign` on the host), and whether a maintenance window setting is
   wanted for hosts that prefer updates at night.
+
+## Amendment 2026-09-11: a floating tag never moves a host backwards
+
+Incident. The hosted instance was released by hand several times on 2026-09-11 with
+`single-node-release.sh <commit> --build` (images built on the host, versions 9bcb208 →
+048d978) while the GHCR package, made public that morning, still held only the first
+CI-published image, 84f9941. At 17:01 UTC the hourly updater pulled `:stable`, saw a digest
+that differed from the running image and swapped production back to 84f9941
+(`last_result=updated`); it would have repeated every hour. The served hook bundle went
+backwards with it, so every client machine stayed on a bundle whose MCP registration was
+broken. The stop-gap was `AUTO_UPDATE=false` and a re-release.
+
+Decision 3 compared digests only, so "different" meant "new". It now compares releases:
+
+- Both build paths stamp the image with the full commit and an RFC 3339 build time. The
+  Dockerfile arguments `AGENTCOMMONS_REVISION` and `AGENTCOMMONS_CREATED` become the OCI
+  labels `org.opencontainers.image.revision` and `org.opencontainers.image.created`; the
+  release workflow passes them as build arguments (it no longer sets those two labels
+  itself), and `stack_up build` derives them from the archive's `.commit` file, else the
+  checkout's git HEAD, and the clock. Only `AGENTCOMMONS_VERSION` was stamped before.
+- For a floating tag the updater installs the pulled image only when its `created` is
+  later than the running image's and its revision differs. An older or equal build is held
+  (`held-newer-running`), a rebuild of the running commit is not installed
+  (`same-release`), and a stamp missing or unreadable on either side holds as unknown
+  (`held-unknown-age`) rather than swapping blindly. A hold is a completed check: nothing
+  is touched, both stamps are recorded in the state file, and `--status` and Admin →
+  Status show both releases (commit and build time) and the reason.
+- `AGENTCOMMONS_IMAGE` set to a `sha-` tag or a digest is a pin and is installed as
+  configured, older or not. Any other reference, including an explicit `:stable`, is
+  compared.
+- With no API container running there is nothing to protect; the stack starts.
+
+Consequences added:
+
+- A hand release with `--build` is newer than `stable` until CI publishes that commit. In
+  that window every hourly run records `held-newer-running` and leaves the host alone;
+  the updater resumes on its own when CI publishes a later build of another commit.
+  Setting `AUTO_UPDATE=false` around a hand release is no longer needed.
+- A re-run of the release workflow for the commit a host already runs is not installed;
+  the commit decides, not the digest.
+- An image without the stamp (a plain `docker compose build`, or any image built before
+  this amendment) is never replaced automatically and never installed automatically. A
+  host running such an image needs one release by hand (`single-node-release.sh`, or
+  `docker compose pull && docker compose up -d`) to reach a stamped release; Admin →
+  Status shows `Release age unknown` until then. The hosted instance itself was in this
+  state after the incident: its hand-built 048d978 carried no stamp.
+- Order is build time, not commit ancestry, because the updater sees images, not history.
+  Both builders stamp UTC from their own clocks, which is what the operator sees too.

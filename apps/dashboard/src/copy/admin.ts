@@ -283,12 +283,20 @@ export const adminCopy = {
     updaterChecked: (when: string) => `Checked ${when}`,
     updaterFailures: (count: string) => `${count} failed runs in a row`,
     updaterHeld: (image: string) => `Release ${image} held`,
+    updaterReleases: (running: string, offered: string) =>
+      `Running ${running}. The tag offers ${offered}.`,
+    updaterRelease: (version: string, built: string) =>
+      `${version}, built ${built}`,
+    updaterReleaseUnknown: "an image without a release stamp",
     updaterResults: {
       unchanged: "Up to date",
       updated: "Updated",
       updating: "Updating",
       disabled: "Updates off",
       skipped: "Release held",
+      "same-release": "Up to date (rebuilt)",
+      "held-newer-running": "Newer release running",
+      "held-unknown-age": "Release age unknown",
       "pull-failed": "Pull failed",
       failed: "Start failed",
       "rolled-back": "Rolled back",

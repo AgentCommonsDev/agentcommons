@@ -346,6 +346,12 @@ export function Install() {
               testId="repository-guidance-command"
               className="my-0"
             />
+            <p
+              className="text-xs leading-relaxed text-muted"
+              data-testid="repository-guidance-off"
+            >
+              {copy.install.prepare.repository.off}
+            </p>
             {/* The block itself stays behind a native disclosure so the step reads as a step. */}
             <details
               className="text-xs"

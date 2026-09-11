@@ -292,16 +292,18 @@ it("publishes a signed multi-architecture image per green main commit with only 
     "${{ steps.release.outputs.image }}:sha-${{ steps.release.outputs.version }}",
     "${{ steps.release.outputs.image }}:stable",
   ]);
-  const labels = z.string().parse(build?.labels);
-  for (const label of [
+  expect(z.string().parse(build?.labels)).toContain(
     "org.opencontainers.image.source=",
-    "org.opencontainers.image.revision=",
-    "org.opencontainers.image.created=",
-  ])
-    expect(labels).toContain(label);
-  expect(z.string().parse(build?.["build-args"])).toContain(
-    "AGENTCOMMONS_VERSION=${{ steps.release.outputs.version }}",
   );
+  // The revision and created stamps travel as build arguments so the Dockerfile writes the
+  // labels once, for this workflow and for an on-host build alike (R-INF-14).
+  const buildArgs = z.string().parse(build?.["build-args"]);
+  for (const argument of [
+    "AGENTCOMMONS_VERSION=${{ steps.release.outputs.version }}",
+    "AGENTCOMMONS_REVISION=${{ github.event.workflow_run.head_sha || github.sha }}",
+    "AGENTCOMMONS_CREATED=${{ steps.release.outputs.created }}",
+  ])
+    expect(buildArgs).toContain(argument);
   const release = job?.steps.find((step) =>
     step.run?.includes("GITHUB_OUTPUT"),
   );

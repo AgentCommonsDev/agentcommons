@@ -34,6 +34,10 @@ describe("host updater state", () => {
           "failures=1",
           "updated_at=",
           "last_ok=2026-09-11T02:00:09Z",
+          "running_revision=048d978aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "running_created=2026-09-11T16:30:00Z",
+          "pulled_revision=84f9941bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pulled_created=",
           "",
         ].join("\n"),
       ),
@@ -48,6 +52,33 @@ describe("host updater state", () => {
       failed_image: "sha256:ccc",
       failed_at: "2026-09-11T03:00:12Z",
       failures: 1,
+      running_revision: "048d978aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      running_created: "2026-09-11T16:30:00Z",
+      pulled_revision: "84f9941bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      pulled_created: null,
+    });
+  });
+  // @req R-INF-14
+  it("reports the release stamps of both sides of a held update", async () => {
+    const state = await readUpdaterState(
+      stateFile(
+        [
+          "last_result=held-newer-running",
+          "running_revision=048d978aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "running_created=2026-09-11T16:30:00Z",
+          "pulled_revision=84f9941bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "pulled_created=2026-09-11T04:12:41Z",
+          "",
+        ].join("\n"),
+      ),
+    );
+    expect(state).toMatchObject({
+      last_result: "held-newer-running",
+      running_revision: "048d978aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      running_created: "2026-09-11T16:30:00Z",
+      pulled_revision: "84f9941bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      pulled_created: "2026-09-11T04:12:41Z",
+      failures: 0,
     });
   });
   // @req R-INF-13

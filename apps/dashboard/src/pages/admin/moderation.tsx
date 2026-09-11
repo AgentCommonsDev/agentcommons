@@ -194,6 +194,7 @@ export function ModerationPage() {
         accessorKey: "status",
         header: fields.status,
         size: 90,
+        minSize: 112,
         cell: ({ row }) => (
           <SessionStatusBadge
             status={row.original.status}
@@ -205,6 +206,7 @@ export function ModerationPage() {
         accessorKey: "visibility",
         header: fields.visibility,
         size: 90,
+        minSize: 92,
         cell: ({ row }) => <StatusBadge value={row.original.visibility} />,
       },
       {

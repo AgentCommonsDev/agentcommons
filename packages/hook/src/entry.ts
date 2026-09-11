@@ -62,10 +62,24 @@ async function main(): Promise<void> {
     const root = resolve(
       (repoIndex >= 0 ? args[repoIndex + 1] : undefined) ?? process.cwd(),
     );
-    const { writeRepositoryGuidance } = await import("./install.js");
-    const { written, linked } = writeRepositoryGuidance(root);
+    const {
+      recordGuidanceCommand,
+      removeRepositoryGuidance,
+      writeRepositoryGuidance,
+    } = await import("./guidance.js");
+    if (args.includes("--off")) {
+      // Removes the block and records the choice: the uploader leaves this repository alone.
+      const removed = removeRepositoryGuidance(root);
+      recordGuidanceCommand(directory, root, "declined", removed);
+      process.stdout.write(
+        `${removed.length ? `Removed the AgentCommons guidance from ${removed.join(", ")}.` : "No AgentCommons guidance to remove."}\nSessions in this repository no longer add it; run the command without --off to add it again.\n`,
+      );
+      return;
+    }
+    const { written, linked, skipped } = writeRepositoryGuidance(root);
+    recordGuidanceCommand(directory, root, "written", [...written, ...linked]);
     process.stdout.write(
-      `Wrote the AgentCommons guidance to ${written.join(", ")}${linked.length ? ` and linked ${linked.join(", ")} to it` : ""}.\nCommit these files so every teammate's agent reads the guidance.\n`,
+      `${written.length ? `Wrote the AgentCommons guidance to ${written.join(", ")}${linked.length ? ` and linked ${linked.join(", ")} to it` : ""}.` : "Wrote nothing."}${skipped.length ? `\nLeft ${skipped.join(", ")} alone: not a regular file inside the repository.` : ""}\nCommit these files so every teammate's agent reads the guidance.\n`,
     );
     return;
   }

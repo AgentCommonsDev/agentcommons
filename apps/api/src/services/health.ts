@@ -47,6 +47,10 @@ export async function readUpdaterState(
     failed_image: field("failed_image", textSchema),
     failed_at: field("failed_at", dateSchema),
     failures: failures.success ? failures.data : 0,
+    running_revision: field("running_revision", textSchema),
+    running_created: field("running_created", dateSchema),
+    pulled_revision: field("pulled_revision", textSchema),
+    pulled_created: field("pulled_created", dateSchema),
   });
 }
 export class HealthService {

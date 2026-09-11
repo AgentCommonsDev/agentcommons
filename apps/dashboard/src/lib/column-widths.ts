@@ -79,3 +79,28 @@ export function columnWidths(
   }
   return whole.map((width, index) => fixed[index] || width);
 }
+/**
+ * Gives `trim` pixels back from the widest weight-bearing column that can spare them above
+ * its floor (else the widest one), for a rendered table that proved wider than planned: a
+ * nowrap badge a runner's fonts drew a little wider, or a themed border on the table.
+ */
+export function trimWidest(
+  widths: readonly number[],
+  specs: readonly ColumnSpec[],
+  trim: number,
+): number[] {
+  if (trim <= 0) return [...widths];
+  const candidates = specs
+    .map((spec, index) => ({ index, spec, width: widths[index] ?? 0 }))
+    .filter(({ spec }) => spec.weight > 0);
+  if (candidates.length === 0) return [...widths];
+  const spare = candidates.filter(
+    ({ spec, width }) => width - trim >= spec.floor,
+  );
+  const widest = (spare.length > 0 ? spare : candidates).reduce(
+    (best, entry) => (entry.width > best.width ? entry : best),
+  );
+  return widths.map((width, index) =>
+    index === widest.index ? Math.max(0, width - trim) : width,
+  );
+}

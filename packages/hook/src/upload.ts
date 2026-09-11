@@ -24,6 +24,7 @@ import {
   rejectionConfirmed,
 } from "./identity.js";
 import { gitContext, gitEnd } from "./git.js";
+import { applyRepositoryGuidance } from "./guidance.js";
 import { HARNESSES, type HarnessDefinition } from "./harnesses.js";
 import { spawnUpload } from "./hook.js";
 import { acquireLock, MAX_UPLOADER_MS, type Lock } from "./lock.js";
@@ -93,6 +94,8 @@ interface UploadOptions {
   update?: boolean;
   /** Refresh the repository's recall hint cache after the drain (§6.2); tests turn it off. */
   recall?: boolean;
+  /** Write the §8.3 block into the session's repository once (§6.2); tests turn it off. */
+  guidance?: boolean;
 }
 interface DrainResult {
   readonly children: readonly string[];
@@ -877,14 +880,26 @@ async function drainAll(
         sweep: false,
       });
   }
+  // The session's repository, as the first drain recorded it; an unreadable state was
+  // already logged by its drain and has no repository to serve.
+  let git: HookState["context"]["git"] = null;
+  try {
+    git = loadState(path).context.git;
+  } catch {
+    return retry;
+  }
   // The session's repository count is refreshed at most every 15 minutes so the next
   // prompt hook answers from the cache without a request (§6.2 recall hint).
   if (options.recall !== false)
     await refreshRecallHint(
       directory,
       config,
-      loadState(path).context.git,
+      git,
       options.fetch ? { fetch: options.fetch } : {},
     );
+  // The first uploader run of a session in a checkout writes the §8.3 block into the
+  // checkout's instructions files, once per repository (§6.2 repository guidance).
+  if (options.guidance !== false)
+    applyRepositoryGuidance(directory, config, git);
   return retry;
 }

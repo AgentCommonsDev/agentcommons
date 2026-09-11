@@ -52,10 +52,12 @@ jobs:
             ${{ steps.release.outputs.image }}:stable
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha || github.sha }}
-            org.opencontainers.image.created=${{ steps.release.outputs.created }}
+          # The Dockerfile turns the revision and created arguments into the OCI labels the
+          # host updater compares (spec §13); the on-host build passes the same arguments.
           build-args: |
             AGENTCOMMONS_VERSION=${{ steps.release.outputs.version }}
+            AGENTCOMMONS_REVISION=${{ github.event.workflow_run.head_sha || github.sha }}
+            AGENTCOMMONS_CREATED=${{ steps.release.outputs.created }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Keyless signing: the certificate binds the image to this workflow and commit.

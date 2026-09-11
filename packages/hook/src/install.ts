@@ -4,24 +4,16 @@ import {
   chmodSync,
   constants,
   existsSync,
-  lstatSync,
   readFileSync,
-  rmSync,
-  symlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import * as z from "zod";
+import { replaceMarkedBlock, type BlockMarkers } from "./blocks.js";
 import { configSchema, objectSchema, type HookConfig } from "./config.js";
-import {
-  hash,
-  isCode,
-  readJsonOr,
-  writeAtomic,
-  writeUserFile,
-} from "./files.js";
+import { hash, readJsonOr, writeAtomic, writeUserFile } from "./files.js";
 import { credentialOrganization } from "./identity.js";
 import {
   HARNESSES,
@@ -32,116 +24,14 @@ import {
 import {
   agentInstructions,
   guidanceMarkers,
-  repositoryInstructions,
 } from "@agentcommons/core/format/install";
 export { agentInstructions };
 const MARKER = "agentcommons-hook";
 const MCP_NAME = "agentcommons";
-/** Delimits the one block the installer owns inside a file the user owns. */
-interface BlockMarkers {
-  begin: string;
-  end: string;
-}
 const SHELL_MARKERS: BlockMarkers = {
   begin: `# ${MARKER} begin`,
   end: `# ${MARKER} end`,
 };
-const escapeRegExp = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/**
- * Writes or replaces the marked block in place, or removes it when `content` is null
- * (a self-update carries new text; uninstall removes it). Everything outside the
- * markers is the user's and is kept byte for byte; a file left empty is removed.
- */
-function replaceMarkedBlock(
-  path: string,
-  markers: BlockMarkers,
-  content: string | null,
-): void {
-  const original = existsSync(path) ? readFileSync(path, "utf8") : "";
-  if (content === null && !original) return;
-  const kept = original.replace(
-    new RegExp(
-      `\\n?${escapeRegExp(markers.begin)}\\n[\\s\\S]*?${escapeRegExp(markers.end)}\\n?`,
-      "g",
-    ),
-    "",
-  );
-  if (content === null) {
-    if (kept === original) return;
-    if (kept.trim() === "") rmSync(path, { force: true });
-    else writeUserFile(path, kept);
-    return;
-  }
-  const separator =
-    kept === "" || kept.endsWith("\n\n")
-      ? ""
-      : kept.endsWith("\n")
-        ? "\n"
-        : "\n\n";
-  const next = `${kept}${separator}${markers.begin}\n${content}\n${markers.end}\n`;
-  if (next !== original) writeUserFile(path, next);
-}
-interface RepositoryGuidance {
-  /** Files that now carry the block. */
-  written: string[];
-  /** Files created as symlinks to the written file. */
-  linked: string[];
-}
-/** The one repository file the block is written to: the name most harnesses read (`AGENTS.md`). */
-export function primaryRepositoryInstructionsFile(): string {
-  const counts = new Map<string, number>();
-  for (const definition of Object.values(HARNESSES))
-    counts.set(
-      definition.repositoryInstructionsFile,
-      (counts.get(definition.repositoryInstructionsFile) ?? 0) + 1,
-    );
-  return (
-    [...counts.entries()].sort(
-      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
-    )[0]?.[0] ?? "AGENTS.md"
-  );
-}
-/**
- * Writes the §8.3 repository guidance into the instructions files the supported harnesses
- * read from a repository root (`repositoryInstructionsFile` in HARNESSES). `AGENTS.md`
- * receives the marker-delimited block; every other name is created as a symlink to it when
- * absent, receives its own block when it is a regular file, and is left alone when it is
- * already a symlink (this repository links `CLAUDE.md` and `GEMINI.md` to `AGENTS.md`).
- * Everything outside the markers is kept, so the command is idempotent and safe to re-run.
- */
-export function writeRepositoryGuidance(root: string): RepositoryGuidance {
-  const primary = primaryRepositoryInstructionsFile();
-  const result: RepositoryGuidance = { written: [], linked: [] };
-  const write = (name: string) => {
-    replaceMarkedBlock(
-      join(root, name),
-      guidanceMarkers,
-      repositoryInstructions,
-    );
-    result.written.push(join(root, name));
-  };
-  write(primary);
-  const names = new Set(
-    Object.values(HARNESSES).map((d) => d.repositoryInstructionsFile),
-  );
-  names.delete(primary);
-  for (const name of [...names].sort()) {
-    const path = join(root, name);
-    let stat: ReturnType<typeof lstatSync> | null;
-    try {
-      stat = lstatSync(path);
-    } catch (error) {
-      if (!isCode(error, "ENOENT")) throw error;
-      stat = null;
-    }
-    if (stat === null) {
-      symlinkSync(primary, path);
-      result.linked.push(path);
-    } else if (stat.isFile()) write(name);
-  }
-  return result;
-}
 /** The global instructions files the installer manages for these harnesses. */
 export function instructionFiles(
   home: string,

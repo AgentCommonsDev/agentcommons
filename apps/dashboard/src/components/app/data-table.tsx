@@ -38,7 +38,11 @@ import {
 } from "react";
 import { z } from "zod";
 import { copy } from "../../copy";
-import { columnWidths, type ColumnSpec } from "../../lib/column-widths";
+import {
+  columnWidths,
+  trimWidest,
+  type ColumnSpec,
+} from "../../lib/column-widths";
 import { csvBlob, downloadBlob } from "../../lib/csv";
 import { errorMessage } from "../../lib/display";
 import type { Page } from "../../lib/types";
@@ -135,8 +139,9 @@ function approximateTextWidth(word: string): number {
 }
 /**
  * The narrowest a data column may be: its widest header word, the cell padding and the
- * sort arrow when it is the sorted column. Keeps count columns from being squeezed below
- * "Messages" when a reader turns every column on.
+ * sort arrow when it is the sorted column, or the column's own `minSize` when its cells
+ * hold something that cannot wrap (a badge). Keeps count columns from being squeezed
+ * below "Messages" when a reader turns every column on.
  */
 function minColumnWidth<T>(column: Column<T>): number {
   const widest = Math.max(
@@ -145,7 +150,20 @@ function minColumnWidth<T>(column: Column<T>): number {
       .split(/\s+/)
       .map(approximateTextWidth),
   );
-  return widest + 28 + (column.getIsSorted() ? 16 : 0);
+  return Math.max(
+    widest + 28 + (column.getIsSorted() ? 16 : 0),
+    column.columnDef.minSize ?? 0,
+  );
+}
+/**
+ * Horizontal border-spacing of a table. The computed style keeps the 2 px default even
+ * under `border-collapse: collapse`, where layout ignores it, so only a separated table
+ * has any.
+ */
+function horizontalSpacing(table: HTMLTableElement): number {
+  const style = getComputedStyle(table);
+  if (style.borderCollapse !== "separate") return 0;
+  return Number.parseFloat(style.borderSpacing) || 0;
 }
 /** What the width algorithm needs to know about one visible column. */
 function columnSpec<T>(column: Column<T>): ColumnSpec {
@@ -264,6 +282,7 @@ export function DataTable<T>({
     .reduce((sum, column) => sum + column.getSize(), 0);
   // The fixed layout needs the container's width in pixels to honor header floors.
   const frame = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   useLayoutEffect(() => {
     const node = frame.current;
@@ -276,12 +295,52 @@ export function DataTable<T>({
       observer.disconnect();
     };
   }, []);
+  // The table's own borders and border-spacing come off the width the columns share.
+  const [extras, setExtras] = useState(0);
+  // A rendered table can still prove wider than planned: a nowrap badge that a runner's
+  // fonts draw a few pixels wider than its column, or a themed border. Its overflow is
+  // taken from the widest column, once per layout, until the table fits.
+  const columnsKey = visibleColumns.map((column) => column.id).join("\0");
+  const layoutKey = `${columnsKey}|${String(containerWidth)}`;
+  const [correction, setCorrection] = useState({
+    key: layoutKey,
+    trim: 0,
+    rounds: 0,
+  });
+  const trim = correction.key === layoutKey ? correction.trim : 0;
+  useLayoutEffect(() => {
+    const table = tableRef.current;
+    const container = table?.parentElement;
+    if (!table || !container || containerWidth === null) return;
+    const own =
+      table.offsetWidth -
+      table.clientWidth +
+      horizontalSpacing(table) * (visibleColumns.length + 1);
+    if (own !== extras) {
+      setExtras(own);
+      return;
+    }
+    const overflow = container.scrollWidth - container.clientWidth;
+    if (overflow <= 0) return;
+    setCorrection((prior) => {
+      const rounds = prior.key === layoutKey ? prior.rounds : 0;
+      if (rounds >= 3) return prior;
+      return {
+        key: layoutKey,
+        trim: (prior.key === layoutKey ? prior.trim : 0) + overflow,
+        rounds: rounds + 1,
+      };
+    });
+  });
+  const specs = visibleColumns.map(columnSpec);
   const widths =
     containerWidth === null
       ? visibleColumns.map((column) => fallbackWidth(column, weightTotal))
-      : columnWidths(visibleColumns.map(columnSpec), containerWidth).map(
-          (width) => `${String(width)}px`,
-        );
+      : trimWidest(
+          columnWidths(specs, containerWidth - extras),
+          specs,
+          trim,
+        ).map((width) => `${String(width)}px`);
   const exportCsv = async () => {
     if (!csv) return;
     const controller = new AbortController();
@@ -420,11 +479,15 @@ export function DataTable<T>({
           />
         ) : (
           <Table
+            ref={tableRef}
             aria-label={label}
             aria-busy={loading}
             className={cn("stacked-table", loading && "opacity-60")}
           >
-            <colgroup>
+            {/* Keyed by the column set: Chromium keeps a stale column structure when a
+                `<col>` is inserted into an existing colgroup (the table lays out at its old
+                width plus the new column), so a changed set gets a fresh element. */}
+            <colgroup key={columnsKey}>
               {visibleColumns.map((column, index) => (
                 <col key={column.id} style={{ width: widths[index] }} />
               ))}

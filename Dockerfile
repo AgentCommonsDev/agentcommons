@@ -18,6 +18,14 @@ RUN pnpm build
 FROM base AS runtime
 # The release workflow passes the 12-character commit; local builds report "development".
 ARG AGENTCOMMONS_VERSION=development
+# The release stamp the host updater compares before replacing a running image (spec §13):
+# the full commit and the RFC 3339 build time. The release workflow and the on-host build
+# (`stack_up build`) both pass them; an image built without them is never replaced or
+# installed automatically, because its age is unknown.
+ARG AGENTCOMMONS_REVISION=
+ARG AGENTCOMMONS_CREATED=
+LABEL org.opencontainers.image.revision=$AGENTCOMMONS_REVISION \
+  org.opencontainers.image.created=$AGENTCOMMONS_CREATED
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 AGENTCOMMONS_VERSION=$AGENTCOMMONS_VERSION
 COPY --from=build --chown=node:node /app /app
 USER node

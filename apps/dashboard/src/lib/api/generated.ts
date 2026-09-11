@@ -7182,6 +7182,10 @@ export interface operations {
                 failed_image: string | null;
                 failed_at: string | null;
                 failures: number;
+                running_revision: string | null;
+                running_created: string | null;
+                pulled_revision: string | null;
+                pulled_created: string | null;
               } | null;
             };
             projection: {

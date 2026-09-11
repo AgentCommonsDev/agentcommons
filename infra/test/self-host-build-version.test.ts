@@ -86,10 +86,11 @@ function fixture() {
   }
   return { build, stack };
 }
-const buildArg = (docker: string[]) =>
+const buildArg = (docker: string[], name = "AGENTCOMMONS_VERSION") =>
   docker
     .find((line) => line.startsWith("compose build"))
-    ?.match(/--build-arg AGENTCOMMONS_VERSION=(\S+)/)?.[1];
+    ?.match(new RegExp(`--build-arg ${name}=(\\S*)`))?.[1];
+const rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
 describe("on-host image builds stamp AGENTCOMMONS_VERSION", () => {
   it("uses the exported version when the caller set one", () => {
@@ -108,6 +109,40 @@ describe("on-host image builds stamp AGENTCOMMONS_VERSION", () => {
     const run = build();
     expect(run.status, run.stderr).toBe(0);
     expect(buildArg(run.docker)).toBe("0123456789ab");
+  });
+  // @req R-INF-14
+  it("stamps the release labels the updater compares: the full commit and an RFC 3339 build time, through the Dockerfile's arguments", () => {
+    const dockerfile = readFileSync(join(repository, "Dockerfile"), "utf8");
+    expect(dockerfile).toContain("ARG AGENTCOMMONS_REVISION=");
+    expect(dockerfile).toContain("ARG AGENTCOMMONS_CREATED=");
+    expect(dockerfile).toMatch(
+      /LABEL org\.opencontainers\.image\.revision=\$AGENTCOMMONS_REVISION \\\n\s+org\.opencontainers\.image\.created=\$AGENTCOMMONS_CREATED/,
+    );
+    const { build, stack } = fixture();
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    writeFileSync(
+      join(stack, "agentcommons-release.Ab12Cd.commit"),
+      `${commit}\n`,
+    );
+    const fromArchive = build();
+    expect(fromArchive.status, fromArchive.stderr).toBe(0);
+    expect(buildArg(fromArchive.docker, "AGENTCOMMONS_REVISION")).toBe(commit);
+    expect(buildArg(fromArchive.docker, "AGENTCOMMONS_CREATED")).toMatch(
+      rfc3339,
+    );
+    expect(fromArchive.stdout).toContain(`revision ${commit}, created `);
+    // An exported revision wins, as the exported version does.
+    const exported = build({ AGENTCOMMONS_REVISION: "f".repeat(40) });
+    expect(buildArg(exported.docker, "AGENTCOMMONS_REVISION")).toBe(
+      "f".repeat(40),
+    );
+    // Without a commit the label stays empty and the build says the updater will hold the image.
+    rmSync(join(stack, "agentcommons-release.Ab12Cd.commit"));
+    const bare = build();
+    expect(bare.status, bare.stderr).toBe(0);
+    expect(buildArg(bare.docker, "AGENTCOMMONS_REVISION")).toBe("");
+    expect(buildArg(bare.docker, "AGENTCOMMONS_CREATED")).toMatch(rfc3339);
+    expect(bare.stderr).toContain("the updater will hold the image");
   });
   it("falls back to the checkout's git HEAD, then to development, and says so", () => {
     const { build, stack } = fixture();
@@ -134,6 +169,12 @@ describe("on-host image builds stamp AGENTCOMMONS_VERSION", () => {
     const fromGit = build();
     expect(fromGit.status, fromGit.stderr).toBe(0);
     expect(buildArg(fromGit.docker)).toBe(head);
+    expect(buildArg(fromGit.docker, "AGENTCOMMONS_REVISION")).toBe(
+      execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: stack,
+        encoding: "utf8",
+      }).trim(),
+    );
     rmSync(join(stack, ".git"), { recursive: true, force: true });
     const bare = build();
     expect(bare.status, bare.stderr).toBe(0);

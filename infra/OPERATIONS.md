@@ -135,10 +135,30 @@ API, and otherwise keeps the running image as `agentcommons:previous`, starts th
 (the migration runs first), waits for `/ready`, and if the new release does not come up
 restores the previous image and exits non-zero. A failed release is held until a newer one
 is published. Database migrations are not rolled back, so migrations must stay compatible
-with the previous image. Useful commands on the host (`aws ssm start-session`):
+with the previous image.
+
+The updater never moves backwards. Both build paths stamp the image with its commit and
+build time (OCI `revision` and `created` labels), and a floating tag such as `stable` is
+installed only when the pulled image is a later build of another commit than the running
+one. The rule this protects against, learned on 2026-09-11 when the hourly run replaced a
+hand-built 048d978 with the older 84f9941 that `stable` still held: **a release made by
+hand with `single-node-release.sh <commit> --build` is newer than `stable` until CI
+publishes that commit.** In that window every hourly run records `held-newer-running` and
+leaves the host alone, then resumes on its own once CI publishes a later commit; setting
+`autoUpdate: false` around a hand release is not needed. A rebuild of the running commit
+records `same-release` and is not installed. An image without the stamp on either side
+records `held-unknown-age` and is never swapped automatically: a host still running an
+image built before the stamp existed needs one release by hand to get onto a stamped one.
+To move to a specific image regardless, including an older one, pin `AGENTCOMMONS_IMAGE`
+to its `sha-` tag or digest and release. `--status` and Admin → Status show the running
+and offered releases (commit and build time), the pin, and the reason nothing moved. The
+release script itself has no such guard: without `--build` it pulls `stable`, whatever
+commit that tag holds, so release by pull only once CI has published the commit you name
+(its `sha-<12 hex>` tag exists on GHCR), and pass `--build` otherwise.
+Useful commands on the host (`aws ssm start-session`):
 
 ```sh
-/opt/agentcommons/agentcommons-update.sh --status   # running version, images, last result
+/opt/agentcommons/agentcommons-update.sh --status   # running and offered releases, pin, last result
 /opt/agentcommons/agentcommons-update.sh --now      # check and update now, even when opted out
 journalctl -u agentcommons-update.service -n 50     # the timer's log
 ```

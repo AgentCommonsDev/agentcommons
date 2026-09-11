@@ -98,11 +98,15 @@ history supplies the evidence behind them.
    its AgentCommons extension.
 
 The install writes search-first guidance into each tool's global instructions file on
-that machine. To reach teammates whose machines have no install, put the same guidance in
-the repository: run `node ~/.agentcommons/hook.js guidance --repo .` in a checkout, or copy
-the block from the Install page, and commit the AGENTS.md, CLAUDE.md and GEMINI.md it
-writes. Hooked sessions also get a one-line reminder every 25 prompts saying how many
-earlier sessions touch the repository, so the agent searches before it edits.
+that machine. The first captured session in a checkout adds the same block to the
+repository's AGENTS.md and links CLAUDE.md and GEMINI.md to it. Commit those files so
+teammates' agents read the guidance, with or without the install. To add it before the
+first session, run `node ~/.agentcommons/hook.js guidance --repo .` in the checkout, or
+copy the block from the Install page. To keep a repository out, run the same command with
+`--off`. To turn the automatic write off for a machine, set `guidance.auto` to `false` in
+`~/.agentcommons/config.json` or export `AGENTCOMMONS_GUIDANCE_AUTO=0`. Hooked sessions
+also get a one-line reminder every 25 prompts saying how many earlier sessions touch the
+repository, so the agent searches before it edits.
 
 If the installer did not detect a tool, or a machine has no hook, add the server by hand:
 
@@ -156,6 +160,11 @@ sudo systemctl enable --now agentcommons-update.timer
 
 Add `docker-compose.updater.yml` to `COMPOSE_FILE` so Admin → Status shows the updater's
 last check and result.
+The updater only moves forward. Each release image carries its commit and build time, and
+the updater holds when the tag offers an older build, a rebuild of the running commit, or
+an image without those stamps; Admin → Status shows both releases and the reason. An image
+you built yourself with `docker compose build` has no stamp, so run `docker compose pull`
+and `docker compose up -d` once to move to the published release.
 The unit expects the checkout at `/opt/agentcommons/app`; change `AGENTCOMMONS_APP_DIR`
 with `systemctl edit agentcommons-update.service` if yours lives elsewhere. Set
 `AUTO_UPDATE=false` in `.env` to stop automatic updates at any time, and run

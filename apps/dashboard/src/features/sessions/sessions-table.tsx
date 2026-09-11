@@ -198,6 +198,8 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
       accessorKey: "status",
       header: fields.status,
       size: 130,
+      // The widest status pill ("Incomplete") never wraps, so the column never goes under it.
+      minSize: 112,
       cell: ({ row }) => (
         <SessionStatusBadge
           status={row.original.status}

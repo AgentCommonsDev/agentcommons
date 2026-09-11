@@ -1,14 +1,14 @@
-import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import * as z from "zod";
 import { ageInWords } from "../../core/format/age.js";
-import { repositoryIdentity } from "../../core/metadata/repository.js";
 import { objectSchema, type HookConfig } from "./config.js";
 import { hash, readJsonOr, writeAtomic } from "./files.js";
+import { guidanceAnnouncement } from "./guidance.js";
 import { HARNESSES, nativeHookSchema, type CliHarness } from "./harnesses.js";
 import { note } from "./paths.js";
 import { registrationFile, registrationStatus } from "./registration.js";
+import { repositoryFromCwd, repositoryName } from "./repository.js";
 import { loadState, type HookState } from "./state.js";
 
 /** The uploader refreshes a repository's recall cache at most this often (§6.2). */
@@ -22,8 +22,6 @@ const REQUEST_TIMEOUT_MS = 10_000;
 /** Bounds on what hook mode reads and tokenizes (§6.2 budget). */
 const MAX_PROMPT_CHARS = 4096;
 const MAX_TITLE_CHARS = 100;
-const MAX_GIT_FILE_BYTES = 64 * 1024;
-const MAX_WALK = 64;
 
 const recentSchema = z.strictObject({
   id: z.string().min(1),
@@ -89,72 +87,6 @@ const listSchema = z.looseObject({
 });
 type GitContext = HookState["context"]["git"];
 
-/** The server's `repo_name` for this session's remote, so the cache key and the list filter agree. */
-function repositoryName(git: GitContext): string | null {
-  return git ? repositoryIdentity(git.remoteUrl).repoName : null;
-}
-function readBounded(path: string): string | null {
-  try {
-    if (statSync(path).size > MAX_GIT_FILE_BYTES) return null;
-    return readFileSync(path, "utf8");
-  } catch {
-    return null;
-  }
-}
-/** The `url` of `[remote "origin"]` in a git config file, by a line scan. */
-function originUrl(configText: string): string | null {
-  let inOrigin = false;
-  for (const raw of configText.split("\n")) {
-    const line = raw.trim();
-    if (line.startsWith("[")) inOrigin = /^\[remote\s+"origin"\]$/.test(line);
-    else if (inOrigin) {
-      const match = /^url\s*=\s*(.+?)\s*$/.exec(line);
-      if (match?.[1]) return match[1];
-    }
-  }
-  return null;
-}
-/**
- * The repository name of `cwd` from the working tree alone: walk up to `.git` (a
- * directory, or a worktree's `gitdir:` file whose common directory holds the config) and
- * read `remote.origin.url`. A few small file reads and no subprocess, so hook mode can
- * hint on the first event of a session, before the uploader has recorded git context, and
- * in a fresh clone of a repository other sessions already indexed.
- */
-export function repositoryNameFromCwd(cwd: string): string | null {
-  let directory = resolve(cwd);
-  for (let depth = 0; depth < MAX_WALK; depth++) {
-    const dotGit = join(directory, ".git");
-    let gitDirectory: string | null = null;
-    try {
-      const info = statSync(dotGit);
-      if (info.isDirectory()) gitDirectory = dotGit;
-      else {
-        const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(readBounded(dotGit) ?? "");
-        if (pointer?.[1])
-          gitDirectory = isAbsolute(pointer[1])
-            ? pointer[1]
-            : resolve(directory, pointer[1]);
-      }
-    } catch {
-      /* Not a repository root; keep walking. */
-    }
-    if (gitDirectory) {
-      const common = readBounded(join(gitDirectory, "commondir"))?.trim();
-      const configDirectory = common
-        ? isAbsolute(common)
-          ? common
-          : resolve(gitDirectory, common)
-        : gitDirectory;
-      const config = readBounded(join(configDirectory, "config"));
-      return config ? repositoryIdentity(originUrl(config)).repoName : null;
-    }
-    const parent = dirname(directory);
-    if (parent === directory) return null;
-    directory = parent;
-  }
-  return null;
-}
 /** One small file per repository under the data directory, keyed by the hashed repository name. */
 export function recallCachePath(directory: string, repoName: string): string {
   return join(directory, "recall", `${hash(repoName)}.json`);
@@ -321,8 +253,10 @@ const promptSchema = z.looseObject({ prompt: z.string().optional() });
  * prompt of a session that had no overview and then every RECALL_HINT_EVERY_PROMPTS
  * prompts. When the harness's own MCP configuration lacks a usable `agentcommons` entry,
  * the only hint is one repair notice per session, because a hint that names tools the
- * harness does not have is noise. Reads a few small files and writes one; the uploader
- * fills the cache, so hook mode never touches the network.
+ * harness does not have is noise. When the uploader wrote the §8.3 block into the
+ * repository since the last hinted event, the line saying so rides along once (alone when
+ * nothing else is due). Reads a few small files and writes one or two; the uploader fills
+ * the cache and writes the repository, so hook mode never touches the network or the tree.
  */
 export function promptHint(
   directory: string,
@@ -366,34 +300,41 @@ export function promptHint(
       ),
     );
   }
-  const repoName =
-    repositoryName(loadState(statePath).context.git) ??
-    repositoryNameFromCwd(event.cwd);
-  if (!repoName) return silent();
-  const cache = readCache(directory, repoName);
-  if (!cache || cache.sessions === 0) return silent();
-  const recent = recentOf(cache);
-  if (kind === "start") {
-    if (next.startHinted) return silent();
-    next.startHinted = true;
-    next.lastHintPrompt = 0;
-    return speak(startHintText(repoName, cache.sessions, recent, now));
-  }
-  const prompt = promptSchema.safeParse(input).data?.prompt ?? "";
-  const matches = matchRecent(prompt, recent).filter(
-    (session) => !next.matched.includes(session.id),
-  );
-  if (matches.length) {
-    next.matched = [...next.matched, ...matches.map((s) => s.id)].slice(-50);
+  const repository =
+    loadState(statePath).context.git ?? repositoryFromCwd(event.cwd);
+  const announcement = guidanceAnnouncement(directory, repository);
+  const hint = ((): string | null => {
+    const repoName = repositoryName(repository);
+    if (!repoName) return null;
+    const cache = readCache(directory, repoName);
+    if (!cache || cache.sessions === 0) return null;
+    const recent = recentOf(cache);
+    if (kind === "start") {
+      if (next.startHinted) return null;
+      next.startHinted = true;
+      next.lastHintPrompt = 0;
+      return startHintText(repoName, cache.sessions, recent, now);
+    }
+    const prompt = promptSchema.safeParse(input).data?.prompt ?? "";
+    const matches = matchRecent(prompt, recent).filter(
+      (session) => !next.matched.includes(session.id),
+    );
+    if (matches.length) {
+      next.matched = [...next.matched, ...matches.map((s) => s.id)].slice(-50);
+      next.lastHintPrompt = next.prompts;
+      return matchedHintText(repoName, matches, now);
+    }
+    const due =
+      next.lastHintPrompt < 0 ||
+      next.prompts - next.lastHintPrompt >= RECALL_HINT_EVERY_PROMPTS;
+    if (!due) return null;
     next.lastHintPrompt = next.prompts;
-    return speak(matchedHintText(repoName, matches, now));
-  }
-  const due =
-    next.lastHintPrompt < 0 ||
-    next.prompts - next.lastHintPrompt >= RECALL_HINT_EVERY_PROMPTS;
-  if (!due) return silent();
-  next.lastHintPrompt = next.prompts;
-  return speak(recallHintText(repoName, cache.sessions));
+    return recallHintText(repoName, cache.sessions);
+  })();
+  const text = [hint, announcement]
+    .filter((part): part is string => part !== null)
+    .join(" ");
+  return text ? speak(text) : silent();
 }
 
 // ---------------------------------------------------------------------------------------

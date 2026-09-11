@@ -776,12 +776,15 @@ mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add �
    (`instructionsPath` in `HARNESSES`: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
    `~/.gemini/GEMINI.md`; pi's extension adds the same text to its system prompt), replacing
    the marker-delimited block in place so a self-update carries new text, and name the
-   files in the output. The installer adds nothing to repositories; `node hook.js guidance
-[--repo <path>]` (no configuration needed) writes the repository variant of the block
-   (§8.3, ADR 0069) into the repository's `AGENTS.md`, creates `CLAUDE.md` and `GEMINI.md`
-   as symlinks to it when absent, adds the block to them when they already exist as files
-   and leaves a symlink that points elsewhere alone (`repositoryInstructionsFile` in
-   `HARNESSES`), so a team commits it once. Fields the
+   files in the output. The installer itself adds nothing to repositories: the uploader
+   writes the repository variant of the block (§8.3, ADR 0069, ADR 0071) into a checkout's
+   `AGENTS.md` on the first captured session there (§6.2 **Repository guidance**), and
+   `node hook.js guidance [--repo <path>]` (no configuration needed) does the same at once
+   for one checkout; both create `CLAUDE.md` and `GEMINI.md` as symlinks to it when absent,
+   add the block to them when they already exist as files and leave a symlink that points
+   elsewhere alone (`repositoryInstructionsFile` in `HARNESSES`), so a team commits it
+   once. `--off` removes the block from a checkout and records that its repository is left
+   alone from then on. Fields the
    native CLI cannot express are merged into the entry it wrote: Claude Code's entry gets
    `alwaysLoad: true`, because Claude Code 2.1.x otherwise defers every MCP tool behind
    `ToolSearch` (Appendix A) and the budgeted catalog (ADR 0053, R-MCP-09) is cheap to
@@ -869,6 +872,10 @@ context that session receives is one repair notice naming the file, the cause an
   touch <repo_name>; search them before changing code (search, get, sql over MCP)." on
   the first prompt of a session that had no overview and then every 25 prompts
   (R-CAP-20).
+
+Either kind also carries, once per repository, the line announcing a block the uploader
+wrote into the checkout (**Repository guidance**, below; R-CAP-26), alone when no hint is
+due and never in a session that received the repair notice.
 
 The per-session state is `<state>.hint`, written by hook mode (the uploader owns the state
 file): prompts seen, the prompt of the last hint, whether the overview and the repair
@@ -967,6 +974,40 @@ The data is the caller's visibility (row policies): the hint carries only what t
 key already reads through the list endpoint, and the file paths a session touched are not
 in it (the list endpoint does not return them; ADR 0070 follow-up).
 
+**Repository guidance.** After its drain, the first uploader run of a session inside a
+checkout writes the §8.3 repository block into the checkout's instructions files, so a
+repository carries the guidance from its first captured session without anyone running a
+command (ADR 0071). The checkout is the state's git root (`git rev-parse --show-toplevel`,
+recorded by the first drain): a session in a nested directory writes at the enclosing
+root, a linked worktree (its own `.git` file) counts as a checkout, and a bare repository,
+which has no working tree root, is never written. The write is `writeRepositoryGuidance`,
+the same code the command runs: `AGENTS.md` receives the marker-delimited block (through a
+symlink only when it points at a regular file inside the checkout; a link that leaves the
+checkout is never followed and skips the whole write), `CLAUDE.md` and `GEMINI.md` are
+created as symlinks to it when absent (a regular file carrying the block where the
+platform refuses symlinks), receive their own block when they are regular files and are
+left alone when they are symlinks; everything outside the markers is kept byte for byte.
+The gates are data: `guidance.auto` in `config.json` (default `true`),
+`AGENTCOMMONS_GUIDANCE_AUTO` in the environment (`0` off, `1` on, overriding the file), and
+a per-repository decision in `guidance/<sha256(key)>.json` in the data directory, keyed by
+`repositoryIdentity(remote)` when the checkout has an `origin` (every clone on the machine
+shares it) and by the resolved root path otherwise: `{ v: 1, repository, root, decision:
+"written" | "declined", blockHash, files, announce, at }`, read loosely like `update.json`.
+A recorded `declined` (written by `hook.js guidance --repo <path> --off`, which also
+removes the block and unlinks a `CLAUDE.md`/`GEMINI.md` link to `AGENTS.md` the removal
+left dangling) or a `written` whose `blockHash` is this bundle's block text ends the step
+before any repository file is read; a differing hash (a release changed the text) replaces
+the block in place once. A root that is missing, read-only, inside `node_modules` or
+without its own `.git` is skipped quietly and nothing is recorded, so a later session looks
+again. A block already present and identical (a teammate committed it) is adopted:
+recorded, not rewritten, not announced. The files that changed are named in `hook.log`.
+The next hinted hook event (**Recall hint**) then adds, once per repository, "AgentCommons
+guidance was added to AGENTS.md (with CLAUDE.md/GEMINI.md); commit it so every teammate's
+agent reads it." to its context: hook mode reads the decision file and clears `announce`,
+and never touches a repository file. Nothing here leaves the machine: the block is the same
+text for every server and the uploader writes it without a request. `hook.js guidance`
+without `--off` records `written` (no announcement) and lifts a `declined`.
+
 **Self-update.** A shim's identity is the sha256 of its own `hook.js` bundle (and of
 `pi-extension.mjs`), the same digests the server publishes in `/hook/manifest.json`
 (§6.1). Every envelope carries them as `hook: { sha256, extensionSha256 | null }`
@@ -1035,6 +1076,7 @@ machine that has that CLI within an hour of its next session.
 | child source                                                                                           | `SubagentStart` (+ `SubagentStop` confirms)               | `SubagentStart/Stop` | —                                        | —                                                   |
 | `end`                                                                                                  | `SessionEnd`                                              | `SessionEnd`         | `SessionEnd`                             | `session_shutdown`                                  |
 | `hint` (model context)                                                                                 | `SessionStart` (start), `UserPromptSubmit` (prompt)       | `UserPromptSubmit`   | `SessionStart` (start), `BeforeAgent`    | —                                                   |
+| repository instructions file (the §8.3 block, written once by the uploader)                            | `CLAUDE.md`                                               | `AGENTS.md`          | `GEMINI.md`                              | `AGENTS.md`                                         |
 | Readers: `jsonl-append` (byte offset) and `json-document` (per-index content hashes and                |
 | source versions; acknowledged only with the pending batch). Each entry also carries config path, hooks |
 | key, timeout unit (Gemini: ms), and MCP registration shape.                                            |
@@ -1043,7 +1085,9 @@ machine that has that CLI within an hour of its next session.
 
 `AGENTCOMMONS_SERVER`, `AGENTCOMMONS_API_KEY`, `AGENTCOMMONS_PARENT_SESSION_ID`,
 `AGENTCOMMONS_DISABLE=1`, `AGENTCOMMONS_DIR` (optional private config/state directory;
-default `~/.agentcommons`). Installer `--config-home` selects an isolated native settings
+default `~/.agentcommons`), `AGENTCOMMONS_GUIDANCE_AUTO` (`0` keeps the uploader from
+writing the §8.3 block into repositories, `1` forces it on; otherwise `guidance.auto` in
+`config.json` decides). Installer `--config-home` selects an isolated native settings
 root for canaries without changing the user home; `--no-shell-rc` suppresses exports.
 
 ---
@@ -1639,10 +1683,15 @@ that brings back only findings and session ids.
 **Repository block.** The same guidance framed for a project (`repositoryInstructions`,
 `agentInstructionsFor("repository")`, inside the same markers) reaches teammates whose
 machines have no install, and ADR 0057's measurement showed agents with git history
-available never searched without it. `hook.js guidance [--repo <path>]` writes it into
-`AGENTS.md` and links `CLAUDE.md` and `GEMINI.md` to it (§6.1 step 4); the Install page
-shows the block to copy with the instruction to commit it, and the README points at both
-(ADR 0069). It tells an agent without the `agentcommons` server to say so once:
+available never searched without it. It reaches a repository three ways through one
+implementation (`writeRepositoryGuidance`): the uploader writes it into a checkout's
+`AGENTS.md` on the first captured session there and links `CLAUDE.md` and `GEMINI.md` to
+it (§6.2 **Repository guidance**, ADR 0071; `hook.js guidance --repo <path> --off` removes
+it and keeps that repository out, `guidance.auto: false` in `config.json` or
+`AGENTCOMMONS_GUIDANCE_AUTO=0` keeps a machine out); `hook.js guidance [--repo <path>]`
+writes it at once (§6.1 step 4); and the Install page shows the block to paste, with the
+instruction to commit it, for a machine without the install. The README points at all
+three (ADR 0069). It tells an agent without the `agentcommons` server to say so once:
 
 ```
 ## AgentCommons
@@ -2667,7 +2716,8 @@ Stack config becomes SSM SecureString parameters that only the instance role rea
 `infra/scripts/single-node-release.sh` publishes `git archive` of a commit to a private
 bucket and applies it through SSM Run Command (pull of the published image, or an on-host
 build with `--build` that stamps `AGENTCOMMONS_VERSION` from the archive's `.commit` file,
-else the checkout's git HEAD, else `development`, printing the value it used; both
+else the checkout's git HEAD, else `development`, printing the value it used, plus the
+revision and created release labels the updater compares; both
 migrations, restart, updater install);
 `single-node-run.sh bootstrap.sh` seeds the owner organization and enrolls Google sign-in
 domains through a native owner session. Seven daily DLM snapshots; no replica, no ALB,
@@ -2700,11 +2750,27 @@ for `api` and `migrate` and keeps its `build:` block. Every self-hosted install 
 `scripts/self-host/agentcommons-update.sh` from an hourly systemd timer
 (`RandomizedDelaySec=15m`, `Persistent=true`): it exits quietly unless the stack's `.env`
 says `AUTO_UPDATE=true`, pulls the image Compose resolves, stops when its digest matches
-the running API container, otherwise tags the running image `agentcommons:previous`,
-starts the stack (migration before API), waits for `/ready`, and on failure restores the
-previous image with `--no-deps`, exits non-zero and holds that release until a newer one
-is published. `--now` forces a check regardless of `AUTO_UPDATE`; `--status` prints the
-running version, the configured and pulled images and the last result. Every run
+the running API container, and never moves a floating tag backwards: with a container
+running and no pin, the pulled image is installed only when it is a later build of another
+commit than the running one, judged from the release stamp both build paths write into
+the image. The Dockerfile arguments `AGENTCOMMONS_REVISION` (full commit) and
+`AGENTCOMMONS_CREATED` (RFC 3339) become the OCI labels `org.opencontainers.image.revision`
+and `org.opencontainers.image.created`; the release workflow passes them as build
+arguments and `stack_up build` derives them from the archive's `.commit` file, else the
+checkout's git HEAD (else the label stays empty and the build says so), and the build time.
+A pulled `created` older than or equal to the running one's is held
+(`last_result=held-newer-running`), a rebuild of the running commit is not installed
+(`same-release`), and a stamp missing or unreadable on either side holds as unknown
+(`held-unknown-age`) rather than swapping blindly; each is a completed check (`last_ok`,
+`failures=0`) that leaves the stack untouched and records both stamps
+(`running_revision`, `running_created`, `pulled_revision`, `pulled_created`) in the state
+file. `AGENTCOMMONS_IMAGE` naming a `sha-` tag or a digest is a pin: that image is
+installed as configured, older or not. Otherwise the updater tags the running image
+`agentcommons:previous`, starts the stack (migration before API), waits for `/ready`, and
+on failure restores the previous image with `--no-deps`, exits non-zero and holds that
+release until a newer one is published. `--now` forces a check regardless of
+`AUTO_UPDATE`; `--status` prints the running version, the configured image (marked when
+pinned) and the pulled image, both release stamps, and the last result. Every run
 records its outcome in `/var/lib/agentcommons/update-state`: `last_check` on every timer
 run (updates enabled or not, so the file proves the timer is alive), `last_result`,
 `last_ok` when a check completed (up to date, updated, disabled or a held release
@@ -2723,7 +2789,8 @@ files, mounted configuration) still arrive through the release script or `git pu
 `docker-compose.updater.yml` (part of `COMPOSE_FILE` on a host that runs the timer)
 mounts its directory read-only into the API container, null otherwise; Admin → Status
 shows the version, the automatic-update setting and the updater's last result, last
-check, failure streak and held release.
+check, failure streak and held release, and for a held update both releases (commit and
+build time) so the operator sees why nothing moved.
 Development runs both databases on loopback with `docker-compose.dev.yml`, plus `pnpm dev`.
 `pnpm db:migrate` applies the PostgreSQL control schema before the native ClickHouse schema.
 
@@ -3208,7 +3275,7 @@ ADR 0036 for live methods, successful/rejected captures, and projection rules.
 | `AUTO_UPDATE` | `true` | read from the stack `.env` by the host's hourly updater and reported as `server.auto_update`; `false` keeps the timer idle |
 | `UPDATE_STATE_FILE` | `/var/lib/agentcommons/update-state` | the host updater's state file, reported as `server.updater` by `/admin/status` when `docker-compose.updater.yml` mounts its directory into the container; absent file reads as null |
 | Compose `AGENTCOMMONS_IMAGE` | empty, meaning `ghcr.io/agentcommonsdev/agentcommons:stable` | image for `api` and `migrate` in `docker-compose.yml`; a `sha-<12 hex>` tag pins one release |
-| client `config.json`: `realtime`, `syncIntervalSeconds`, `syncBytesThreshold`, `disabledPaths`, `installationId` | `true`, `10`, `65536`, `[]`, generated | §6 |
+| client `config.json`: `realtime`, `syncIntervalSeconds`, `syncBytesThreshold`, `disabledPaths`, `installationId`, `guidance.auto` | `true`, `10`, `65536`, `[]`, generated, `true` | §6; `guidance.auto` lets the uploader write the §8.3 block into repositories (§6.2) |
 
 For Google sign-in domains, configure `AUTH_SOCIAL_PROVIDER=google` as the only login
 provider, its client credentials and `AUTH_SIGNUP_MODE=invite` or `open`. A nonempty

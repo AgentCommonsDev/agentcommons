@@ -891,8 +891,10 @@ test("the session page shows every header field, transcript controls, files and 
   );
   const follow = switchNamed(page, labels.detail.transcript.followLatest);
   if (output.header.status === "ACTIVE") {
+    // The badge follows the header read, which can take seconds on the CI runner.
     await expect(header.getByTestId("session-live")).toHaveText(
       labels.detail.live.badge,
+      { timeout: 20_000 },
     );
     await expect(header.getByTestId("session-stream")).toContainText(
       labels.detail.live.streaming,
@@ -1477,8 +1479,10 @@ test("live ingest reaches the transcript over SSE and through the polling fallba
       );
     await page.goto(paths.session(id));
     const header = page.getByTestId("session-header");
+    // The badge follows the header read, which can take seconds on the CI runner.
     await expect(header.getByTestId("session-live")).toHaveText(
       labels.detail.live.badge,
+      { timeout: 20_000 },
     );
     await expect(header.getByTestId("session-stream")).toContainText(
       fallback ? labels.detail.live.reconnecting : labels.detail.live.streaming,
@@ -1512,6 +1516,45 @@ test("live ingest reaches the transcript over SSE and through the polling fallba
   }
 });
 
+/** The session columns hidden by default, in chooser order. */
+const optionalColumns = [
+  fields.harness,
+  fields.model,
+  fields.installation_hostname,
+  labels.list.duration,
+  fields.tool_call_count,
+  fields.observed_commit_count,
+  fields.reuse_count,
+  labels.list.searched,
+  labels.list.usedPriorWork,
+  labels.list.subagentCount,
+];
+
+// @req R-DASH-21
+test("the list gives back the width a wider-than-planned badge or its own border takes", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "Phone rows stack; there is no column layout to correct");
+  await page.goto(paths.sessions);
+  await expect(
+    page.getByRole("table", { name: labels.list.label }),
+  ).toBeVisible();
+  await settled(page);
+  // A runner's fonts can draw a nowrap status pill a few pixels wider than the column
+  // planned for it, and a theme may give the table a border of its own. The table must
+  // measure both and give the excess back instead of scrolling sideways.
+  await page.addStyleTag({
+    content: [
+      "table.stacked-table { border-left: 1px solid transparent; border-right: 1px solid transparent; }",
+      'table.stacked-table td [class*="rounded-full"] { letter-spacing: 3px; }',
+    ].join("\n"),
+  });
+  await expectNoHorizontalOverflow(page);
+  for (const column of optionalColumns) await showColumn(page, column);
+  await expectNoHorizontalOverflow(page);
+});
+
 // @req R-WEB-02 @req R-DASH-21 @req R-DASH-01
 for (const theme of ["dark", "light"] as const)
   test(`the list and the session page fit the viewport without errors in ${theme}`, async ({
@@ -1528,19 +1571,7 @@ for (const theme of ["dark", "light"] as const)
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await accessible(page);
     // Every summary field the chooser offers still fits once turned on.
-    for (const column of [
-      fields.harness,
-      fields.model,
-      fields.installation_hostname,
-      labels.list.duration,
-      fields.tool_call_count,
-      fields.observed_commit_count,
-      fields.reuse_count,
-      labels.list.searched,
-      labels.list.usedPriorWork,
-      labels.list.subagentCount,
-    ])
-      await showColumn(page, column);
+    for (const column of optionalColumns) await showColumn(page, column);
     await accessible(page);
     await page.getByTestId("sessions-add-filter").click();
     await expect(

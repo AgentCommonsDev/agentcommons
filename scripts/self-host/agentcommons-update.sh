@@ -12,6 +12,14 @@
 # the previous image if the new one does not come up. A release that failed is skipped until a
 # newer one is published. Runs as root on the host; the stack is a checkout with a .env.
 #
+# It never moves backwards: a floating tag such as :stable is installed only when the pulled
+# image's release stamp (the OCI revision and created labels both build paths write) is a
+# later build of another commit than the running image's. An older or equal build is held
+# (last_result=held-newer-running), a rebuild of the running commit is not installed
+# (same-release), and a stamp missing on either side holds too (held-unknown-age) rather
+# than swapping blindly. AGENTCOMMONS_IMAGE set to a sha- tag or a digest is a pin and is
+# installed as asked, older or not.
+#
 # It reads .env as the last release left it and never renders or edits it, so an update can
 # change the image and nothing else: the database the stack runs on (ADR 0063), the Compose
 # file list and every other setting stay exactly as applied. Every run records its outcome in
@@ -50,11 +58,17 @@ enter_stack
 
 if [ "$mode" = status ]; then
   image=$(configured_image)
+  running=$(running_image)
+  pulled=$(local_image "$image")
+  pinned=
+  ! image_pinned "$image" || pinned=" (pinned: installed as is)"
   echo "stack:             $app"
   echo "running version:   $(running_version)"
-  echo "running image:     $(running_image)"
-  echo "configured image:  $image"
-  echo "pulled image:      $(local_image "$image")"
+  echo "running image:     $running"
+  echo "running release:   $(release_of "$running")"
+  echo "configured image:  $image$pinned"
+  echo "pulled image:      $pulled"
+  echo "pulled release:    $(release_of "$pulled")"
   echo "automatic updates: $(setting AUTO_UPDATE)"
   if [ -s "$state_root/update-state" ]; then
     echo "--- last run"
@@ -64,13 +78,14 @@ if [ "$mode" = status ]; then
 fi
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # record_outcome RESULT [KEY=VALUE...]: the run's result plus what an operator reads on Admin
-# -> Status: last_ok when the check completed (up to date, updated, disabled, or a held
-# release skipped), and the count of consecutive failed runs, reset by a completed check.
+# -> Status: last_ok when the check completed (up to date, updated, disabled, or a release
+# held: failed earlier, not newer, the running commit rebuilt, or of unknown age), and the
+# count of consecutive failed runs, reset by a completed check.
 record_outcome() {
   local result=$1 failures
   shift
   case $result in
-  unchanged | updated | skipped | disabled)
+  unchanged | updated | skipped | disabled | same-release | held-newer-running | held-unknown-age)
     record_state "last_result=$result" "last_ok=$now" "failures=0" "$@"
     ;;
   *)
@@ -101,6 +116,14 @@ after=$(local_image "$image")
   echo "Pulled $image but it is not present locally." >&2
   exit 1
 }
+# Both release stamps go into the state file on every completed pull, so Admin -> Status
+# and --status can show which release runs and which one the tag offers.
+running_revision=$(image_label "$before" "$revision_label")
+running_created=$(image_label "$before" "$created_label")
+pulled_revision=$(image_label "$after" "$revision_label")
+pulled_created=$(image_label "$after" "$created_label")
+record_state "running_revision=$running_revision" "running_created=$running_created" \
+  "pulled_revision=$pulled_revision" "pulled_created=$pulled_created"
 if [ "$after" = "$before" ]; then
   record_outcome unchanged "last_image=$after"
   echo "Up to date: $image is running ($(running_version))."
@@ -110,6 +133,34 @@ if [ "$after" = "$(state_value failed_image)" ]; then
   record_outcome skipped
   echo "Skipping $image: this release failed on $(state_value failed_at) and is held until a newer one is published."
   exit 0
+fi
+if [ -z "$before" ]; then
+  echo "No API container is running; starting $image."
+elif image_pinned "$image"; then
+  echo "$image is pinned: installing it as configured (release $(release_of "$after"), running $(release_of "$before"))."
+else
+  # A floating tag moves forward only. The pulled image must be a later build of another
+  # commit than the running one; anything else is held and the reason recorded, so a
+  # registry tag that fell behind the host (a hand-built release, a re-published older
+  # image) cannot roll production back.
+  case $(release_order "$running_revision" "$running_created" "$pulled_revision" "$pulled_created") in
+  newer) ;;
+  same-release)
+    record_outcome same-release "last_image=$after"
+    echo "Up to date: $image is a rebuild of the running release ${running_revision:0:12}; nothing to install."
+    exit 0
+    ;;
+  older)
+    record_outcome held-newer-running "last_image=$after"
+    echo "Holding: $image is release ${pulled_revision:0:12} created $pulled_created, not newer than the running release ${running_revision:0:12} created $running_created. Pin AGENTCOMMONS_IMAGE to its sha- tag to install it anyway."
+    exit 0
+    ;;
+  *)
+    record_outcome held-unknown-age "last_image=$after"
+    echo "Holding: cannot tell whether $image is newer than the running image (running release: $(release_of "$before"); pulled release: $(release_of "$after")). Both images need the $revision_label and $created_label labels; pin AGENTCOMMONS_IMAGE or install the release by hand."
+    exit 0
+    ;;
+  esac
 fi
 [ -z "$before" ] || docker tag "$before" "$previous_tag"
 record_state "last_result=updating" "previous_image=$before" "last_image=$after"

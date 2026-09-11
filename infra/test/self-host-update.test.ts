@@ -33,8 +33,14 @@ case "$*" in
   printf 'PATH=/usr/bin\\nAGENTCOMMONS_VERSION=%s\\n' "$FAKE_VERSION" ;;
 "compose config") printf 'services:\\n  api:\\n    image: %s\\n  db:\\n    image: postgres:16\\n' "\${AGENTCOMMONS_IMAGE:-${stable}}" ;;
 "compose pull --quiet api") [ "$FAKE_PULL_FAIL" != 1 ] || exit 1 ;;
-"image inspect --format {{.Id}} ${stable}") echo "$FAKE_PULLED" ;;
 "image inspect --format {{.Id}} agentcommons:previous") echo "$FAKE_RUNNING" ;;
+"image inspect --format {{.Id}} "*) echo "$FAKE_PULLED" ;;
+# The release stamps: the running image id answers with the running stamps, any other
+# reference (the pulled id or tag) with the pulled ones; an empty stamp is a missing label.
+'image inspect --format {{index .Config.Labels "org.opencontainers.image.revision"}} '*)
+  if [ "\${@: -1}" = "$FAKE_RUNNING" ]; then echo "$FAKE_RUNNING_REVISION"; else echo "$FAKE_PULLED_REVISION"; fi ;;
+'image inspect --format {{index .Config.Labels "org.opencontainers.image.created"}} '*)
+  if [ "\${@: -1}" = "$FAKE_RUNNING" ]; then echo "$FAKE_RUNNING_CREATED"; else echo "$FAKE_PULLED_CREATED"; fi ;;
 "tag "*) ;;
 "compose up -d --no-build --remove-orphans") [ "$FAKE_UP_FAIL" != 1 ] || exit 1 ;;
 "compose up -d --no-build --no-deps api")
@@ -55,14 +61,42 @@ printf '%s\\n' "$*" >>"$FAKE_LOG.curl"
 [ "$(cat "$FAKE_READY_FILE")" = 1 ]
 `;
 
+/** An image's release stamp: the OCI revision and created labels; an omitted field is a missing label. */
+interface Release {
+  revision?: string;
+  created?: string;
+}
+/** A fully stamped release, as both build paths produce. */
+interface Stamped {
+  revision: string;
+  created: string;
+}
 interface Scenario {
   env?: Record<string, string>;
   running?: string;
   pulled?: string;
+  /** Stamps of the running image; defaults to the older of the two releases below. */
+  runningRelease?: Release;
+  /** Stamps of the pulled image; defaults to the newer release, so a plain update proceeds. */
+  pulledRelease?: Release;
   ready?: boolean;
   upFails?: boolean;
   pullFails?: boolean;
 }
+// The production incident of 2026-09-11 in miniature: the host ran a hand-built 048d978
+// while the public :stable tag still held the first CI image, 84f9941.
+const olderRelease: Stamped = {
+  revision: "84f9941".padEnd(40, "0"),
+  created: "2026-09-11T04:12:41Z",
+};
+const newerRelease: Stamped = {
+  revision: "048d978".padEnd(40, "0"),
+  created: "2026-09-11T16:30:00Z",
+};
+const newestRelease: Stamped = {
+  revision: "1a2b3c4".padEnd(40, "0"),
+  created: "2026-09-11T19:05:00Z",
+};
 const directories: string[] = [];
 afterEach(() => {
   for (const directory of directories.splice(0))
@@ -111,6 +145,14 @@ function fixture(env = "AUTO_UPDATE=true\nPUBLIC_URL=http://localhost:3000\n") {
         FAKE_READY_FILE: readyFile,
         FAKE_RUNNING: scenario.running ?? "",
         FAKE_PULLED: scenario.pulled ?? "",
+        FAKE_RUNNING_REVISION:
+          (scenario.runningRelease ?? olderRelease).revision ?? "",
+        FAKE_RUNNING_CREATED:
+          (scenario.runningRelease ?? olderRelease).created ?? "",
+        FAKE_PULLED_REVISION:
+          (scenario.pulledRelease ?? newerRelease).revision ?? "",
+        FAKE_PULLED_CREATED:
+          (scenario.pulledRelease ?? newerRelease).created ?? "",
         FAKE_VERSION: "0123456789ab",
         FAKE_UP_FAIL: scenario.upFails ? "1" : "0",
         FAKE_PULL_FAIL: scenario.pullFails ? "1" : "0",
@@ -188,8 +230,14 @@ describe("self-host updater", () => {
     expect(status.status).toBe(0);
     expect(status.stdout).toContain("running version:   0123456789ab");
     expect(status.stdout).toContain("running image:     sha256:aaa");
-    expect(status.stdout).toContain(`configured image:  ${stable}`);
+    expect(status.stdout).toContain(
+      "running release:   84f994100000 created 2026-09-11T04:12:41Z",
+    );
+    expect(status.stdout).toContain(`configured image:  ${stable}\n`);
     expect(status.stdout).toContain("pulled image:      sha256:bbb");
+    expect(status.stdout).toContain(
+      "pulled release:    048d97800000 created 2026-09-11T16:30:00Z",
+    );
     expect(status.stdout).toContain("automatic updates: false");
     expect(status.stdout).toContain("last_result=disabled");
     expect(status.docker.some((line) => line.startsWith("compose up"))).toBe(
@@ -240,6 +288,206 @@ describe("self-host updater", () => {
     expect(state).toContain("previous_image=sha256:aaa");
     expect(state).toContain("last_image=sha256:bbb");
     expect(state).toContain("failed_image=\n");
+    // Both release stamps are recorded for Admin → Status (R-INF-14).
+    expect(state).toContain(`running_revision=${olderRelease.revision}`);
+    expect(state).toContain(`running_created=${olderRelease.created}`);
+    expect(state).toContain(`pulled_revision=${newerRelease.revision}`);
+    expect(state).toContain(`pulled_created=${newerRelease.created}`);
+  });
+  // @req R-INF-14
+  it("holds a floating tag that offers an older release than the one running, and installs the next newer one", () => {
+    const { run } = fixture();
+    // The host runs a hand-built newer commit; :stable still points at the older CI image.
+    const held = run([], {
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: olderRelease,
+    });
+    expect(held.status, held.stderr).toBe(0);
+    expect(held.stdout).toContain("Holding");
+    expect(held.stdout).toContain(
+      "release 84f994100000 created 2026-09-11T04:12:41Z",
+    );
+    expect(held.stdout).toContain(
+      "running release 048d97800000 created 2026-09-11T16:30:00Z",
+    );
+    expect(held.docker).toContain("compose pull --quiet api");
+    expect(held.docker.some((line) => line.startsWith("tag "))).toBe(false);
+    expect(held.docker.some((line) => line.startsWith("compose up"))).toBe(
+      false,
+    );
+    const state = held.state();
+    expect(state).toContain("last_result=held-newer-running");
+    expect(state).toContain("last_image=sha256:bbb");
+    expect(state).toContain(`running_revision=${newerRelease.revision}`);
+    expect(state).toContain(`running_created=${newerRelease.created}`);
+    expect(state).toContain(`pulled_revision=${olderRelease.revision}`);
+    expect(state).toContain(`pulled_created=${olderRelease.created}`);
+    // A held check is a completed one: the updater is healthy, it just has nothing newer.
+    expect(state).toContain("failures=0");
+    expect(state).toMatch(/^last_ok=\d{4}-\d{2}-\d{2}T/m);
+    // The next hour repeats the hold without touching the stack.
+    const again = run([], {
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: olderRelease,
+    });
+    expect(again.state()).toContain("last_result=held-newer-running");
+    expect(again.docker.some((line) => line.startsWith("compose up"))).toBe(
+      false,
+    );
+    // CI publishes a later commit: installed normally.
+    const newer = run([], {
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:ccc",
+      pulledRelease: newestRelease,
+    });
+    expect(newer.status, newer.stderr).toBe(0);
+    expect(newer.docker).toContain("tag sha256:aaa agentcommons:previous");
+    expect(newer.state()).toContain("last_result=updated");
+  });
+  // @req R-INF-14
+  it("treats a build of the same age as not newer, and a rebuild of the running commit as nothing to install", () => {
+    const { run } = fixture();
+    const sameAge = run([], {
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: { ...olderRelease, created: newerRelease.created },
+    });
+    expect(sameAge.status, sameAge.stderr).toBe(0);
+    expect(sameAge.state()).toContain("last_result=held-newer-running");
+    expect(sameAge.docker.some((line) => line.startsWith("compose up"))).toBe(
+      false,
+    );
+    // The same commit built again (a re-run release, a hand build of the CI commit).
+    const rebuilt = run([], {
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: { ...newerRelease, created: "2026-09-11T18:00:00Z" },
+    });
+    expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    expect(rebuilt.stdout).toContain(
+      "rebuild of the running release 048d97800000",
+    );
+    expect(rebuilt.state()).toContain("last_result=same-release");
+    expect(rebuilt.state()).toContain("failures=0");
+    expect(rebuilt.docker.some((line) => line.startsWith("compose up"))).toBe(
+      false,
+    );
+  });
+  // @req R-INF-14
+  it("holds when a release stamp is missing on either side instead of swapping blindly, but still starts a stack with nothing running", () => {
+    const { run } = fixture();
+    const pulledUnstamped = run([], {
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: { revision: newestRelease.revision },
+    });
+    expect(pulledUnstamped.status, pulledUnstamped.stderr).toBe(0);
+    expect(pulledUnstamped.stdout).toContain("cannot tell whether");
+    expect(pulledUnstamped.stdout).toContain("pulled release: unknown");
+    expect(pulledUnstamped.stdout).toContain(
+      "org.opencontainers.image.created",
+    );
+    expect(pulledUnstamped.state()).toContain("last_result=held-unknown-age");
+    expect(pulledUnstamped.state()).toContain(
+      `pulled_revision=${newestRelease.revision}`,
+    );
+    expect(pulledUnstamped.state()).toContain("pulled_created=\n");
+    expect(
+      pulledUnstamped.docker.some((line) => line.startsWith("compose up")),
+    ).toBe(false);
+    // A running image built without the stamp (a plain `docker compose build`) is never
+    // replaced by the timer either; the operator installs the release by hand once.
+    const runningUnstamped = run(["--now"], {
+      running: "sha256:aaa",
+      runningRelease: {},
+      pulled: "sha256:bbb",
+      pulledRelease: newestRelease,
+    });
+    expect(runningUnstamped.status, runningUnstamped.stderr).toBe(0);
+    expect(runningUnstamped.stdout).toContain("running release: unknown");
+    expect(runningUnstamped.state()).toContain("last_result=held-unknown-age");
+    expect(
+      runningUnstamped.docker.some((line) => line.startsWith("compose up")),
+    ).toBe(false);
+    // Nothing running means nothing to protect: the stack starts on the pulled image.
+    const down = run([], {
+      running: "",
+      pulled: "sha256:bbb",
+      pulledRelease: {},
+    });
+    expect(down.status, down.stderr).toBe(0);
+    expect(down.stdout).toContain("No API container is running");
+    expect(down.docker).toContain("compose up -d --no-build --remove-orphans");
+    expect(down.docker.some((line) => line.startsWith("tag "))).toBe(false);
+    expect(down.state()).toContain("last_result=updated");
+  });
+  // @req R-INF-14
+  it("installs a pinned image exactly as configured, older or unstamped, while an explicit floating tag is still compared", () => {
+    const { run } = fixture();
+    const pin = `ghcr.io/agentcommonsdev/agentcommons:sha-${olderRelease.revision.slice(0, 12)}`;
+    const byTag = run([], {
+      env: { AGENTCOMMONS_IMAGE: pin },
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: olderRelease,
+    });
+    expect(byTag.status, byTag.stderr).toBe(0);
+    expect(byTag.stdout).toContain(`${pin} is pinned`);
+    expect(byTag.docker).toContain("tag sha256:aaa agentcommons:previous");
+    expect(byTag.docker).toContain("compose up -d --no-build --remove-orphans");
+    expect(byTag.state()).toContain("last_result=updated");
+    const byDigest = run(["--now"], {
+      env: {
+        AGENTCOMMONS_IMAGE: `ghcr.io/agentcommonsdev/agentcommons@sha256:${"b".repeat(64)}`,
+      },
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: {},
+    });
+    expect(byDigest.status, byDigest.stderr).toBe(0);
+    expect(byDigest.stdout).toContain("is pinned");
+    expect(byDigest.state()).toContain("last_result=updated");
+    // AGENTCOMMONS_IMAGE naming a moving tag is not a pin.
+    const floating = run([], {
+      env: { AGENTCOMMONS_IMAGE: "registry.example.com/agentcommons:stable" },
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: olderRelease,
+    });
+    expect(floating.status, floating.stderr).toBe(0);
+    expect(floating.state()).toContain("last_result=held-newer-running");
+    expect(floating.docker.some((line) => line.startsWith("compose up"))).toBe(
+      false,
+    );
+    // --status names both releases and marks a pin, so an operator sees why nothing moved.
+    const status = run(["--status"], {
+      env: { AGENTCOMMONS_IMAGE: pin },
+      running: "sha256:aaa",
+      runningRelease: newerRelease,
+      pulled: "sha256:bbb",
+      pulledRelease: olderRelease,
+    });
+    expect(status.stdout).toContain(
+      "running release:   048d97800000 created 2026-09-11T16:30:00Z",
+    );
+    expect(status.stdout).toContain(
+      `configured image:  ${pin} (pinned: installed as is)`,
+    );
+    expect(status.stdout).toContain(
+      "pulled release:    84f994100000 created 2026-09-11T04:12:41Z",
+    );
+    expect(status.stdout).toContain("last_result=held-newer-running");
   });
   it("restores the previous image when the release does not become ready, exits non-zero and holds that release", () => {
     const { run } = fixture();

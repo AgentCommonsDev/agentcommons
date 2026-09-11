@@ -77,6 +77,15 @@ function updaterResult(state: UpdaterState): string {
   if (!state.last_result) return copy.app.common.unavailable;
   return text.updaterResults[state.last_result] ?? state.last_result;
 }
+/** One side of a held update: the 12-character commit and build time, or the missing-stamp wording. */
+function updaterRelease(
+  revision: string | null,
+  created: string | null,
+): string {
+  return revision && created
+    ? text.updaterRelease(revision.slice(0, 12), dateTime(created))
+    : text.updaterReleaseUnknown;
+}
 function updaterHint(state: UpdaterState): string {
   if (!state) return text.updaterNoneHint;
   return [
@@ -85,6 +94,13 @@ function updaterHint(state: UpdaterState): string {
     state.failed_image
       ? text.updaterHeld(
           state.failed_image.replace(/^sha256:/, "").slice(0, 12),
+        )
+      : null,
+    // A held update names both releases so the operator sees why nothing moved.
+    state.last_result?.startsWith("held-")
+      ? text.updaterReleases(
+          updaterRelease(state.running_revision, state.running_created),
+          updaterRelease(state.pulled_revision, state.pulled_created),
         )
       : null,
   ]

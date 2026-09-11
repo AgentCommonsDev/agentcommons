@@ -1,5 +1,9 @@
 import { expect, it } from "vitest";
-import { columnWidths, type ColumnSpec } from "../src/lib/column-widths";
+import {
+  columnWidths,
+  trimWidest,
+  type ColumnSpec,
+} from "../src/lib/column-widths";
 
 const sum = (widths: number[]) => widths.reduce((a, b) => a + b, 0);
 const data = (weight: number, floor = 0): ColumnSpec => ({
@@ -86,4 +90,26 @@ it("never lets random weights, floors and action columns add up past the contain
           expect(widths[index]).toBeGreaterThanOrEqual(spec.floor);
       });
   }
+});
+
+// @req R-DASH-21
+it("gives overflow back from the widest column that can spare it above its floor", () => {
+  const specs = [data(240, 58), action(56), data(80, 100), data(170, 54)];
+  const widths = columnWidths(specs, 600);
+  expect(sum(widths)).toBe(600);
+  const trimmed = trimWidest(widths, specs, 2);
+  expect(sum(trimmed)).toBe(598);
+  // The action column and the pinned column keep their pixels; the widest data column gives.
+  expect(trimmed[1]).toBe(56);
+  expect(trimmed[2]).toBe(widths[2]);
+  expect(trimmed[0]).toBe((widths[0] ?? 0) - 2);
+  // A column at its floor is skipped in favor of one with room; with none, the widest still gives.
+  expect(trimWidest([100, 60], [data(1, 100), data(1, 50)], 5)).toEqual([
+    100, 55,
+  ]);
+  expect(trimWidest([100, 60], [data(1, 100), data(1, 60)], 5)).toEqual([
+    95, 60,
+  ]);
+  expect(trimWidest([56], [action(56)], 5)).toEqual([56]);
+  expect(trimWidest([10, 20], [data(1), data(1)], 0)).toEqual([10, 20]);
 });

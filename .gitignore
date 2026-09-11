@@ -17,3 +17,4 @@ test-results/
 playwright-report/
 
 apps/api/public/reference-config.js
+.claude/worktrees/

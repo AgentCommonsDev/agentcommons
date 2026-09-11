@@ -341,6 +341,15 @@ export const updaterStateSchema = z.strictObject({
   failed_at: utcDateTimeSchema.nullable(),
   /** Consecutive runs that ended in a failure (pull, start, rollback); zero after a completed check. */
   failures: nonnegativeIntegerSchema,
+  /**
+   * The release stamps (OCI revision and created labels) of the running image and of the
+   * image the configured tag offered at the last pull; the updater installs the pulled one
+   * only when it is a later build of another commit, and holds otherwise (§13).
+   */
+  running_revision: z.string().max(100).nullable(),
+  running_created: utcDateTimeSchema.nullable(),
+  pulled_revision: z.string().max(100).nullable(),
+  pulled_created: utcDateTimeSchema.nullable(),
 });
 /** The release this server runs and whether its host installs new releases on its own (ADR 0059). */
 export const serverStatusSchema = z.strictObject({
