@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { z } from "zod";
 import {
   hookManifestSchema,
@@ -45,6 +45,18 @@ const exportCsv = async (page: Page, scope = page.locator("body")) => {
   return parseCsv(await readFile(await (await downloaded).path(), "utf8"));
 };
 
+/**
+ * Where a column shows itself: its header on a desktop table, its labeled cell on the
+ * stacked phone rows (which hide the header row). `getByRole` skips the hidden header, so
+ * the first match is the right one on both layouts.
+ */
+function column(table: Locator, label: string) {
+  return table
+    .getByRole("columnheader", { name: label, exact: true })
+    .or(table.locator(`td[data-label="${label}"]`))
+    .first();
+}
+
 test.beforeEach(async ({ context }) => {
   await signInAsOwner(context);
 });
@@ -61,12 +73,7 @@ test("People: an admin adds an email, copies its setup link, changes the role, s
   const ownerRow = tableRow(table, /browser-primary@example.com/);
   await expect(ownerRow).toBeVisible();
   // Last seen is derived from the owner's own dashboard requests, so it is never "Never".
-  await expect(
-    table.getByRole("columnheader", {
-      name: copy.admin.users.lastSeen,
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect(column(table, copy.admin.users.lastSeen)).toBeVisible();
   await expect(ownerRow.locator("time")).toHaveCount(1);
   await expect(ownerRow).not.toContainText(copy.admin.users.neverSeen);
   await expectNoHorizontalOverflow(page);
