@@ -425,7 +425,7 @@ export function install(
       mcpPath === path ? output : (readConfig(format, mcpPath) ?? {});
     const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
     const previous = registry[mcpPath];
-    const expected = definition.mcp(url);
+    const expected = definition.mcp(url, config.key);
     if (uninstall) {
       if (
         previous &&
@@ -449,7 +449,7 @@ export function install(
     }
     mcpConfig[format.mcpKey] = servers;
     saveConfig(format, mcpPath, mcpConfig);
-    const nativeCommand = definition.mcpCommand(url);
+    const nativeCommand = definition.mcpCommand(url, config.key);
     try {
       if (!uninstall && options.configHome === undefined && nativeCommand) {
         const registrationConfig = {
@@ -535,7 +535,7 @@ export async function doctor(
       throw new Error(`The ${harness} MCP configuration file is missing.`);
     const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
     const configured = objectSchema.parse(servers[MCP_NAME] ?? {});
-    const expected = definition.mcp(url);
+    const expected = definition.mcp(url, config.key);
     if (
       expected &&
       Object.entries(expected).some(

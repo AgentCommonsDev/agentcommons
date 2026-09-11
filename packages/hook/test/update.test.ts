@@ -3,12 +3,13 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ingestEnvelopeSchema,
@@ -17,7 +18,8 @@ import {
 import { hash } from "../src/files.js";
 import { recordHook } from "../src/hook.js";
 import { configure } from "../src/install.js";
-import { recordConfigured } from "../src/update.js";
+import { loadState } from "../src/state.js";
+import { recordConfigured, selfUpdate } from "../src/update.js";
 import { upload } from "../src/upload.js";
 
 const OLD_BUNDLE = "process.stdout.write('old bundle');\n";
@@ -70,6 +72,8 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
   };
   const requests: string[] = [];
   const uploaded: string[] = [];
+  /** What the server answers an ingest POST with; a 5xx keeps the batch pending. */
+  let ingestStatus = 202;
   const fetcher: typeof fetch = (input, options) => {
     const url = new URL(String(input instanceof Request ? input.url : input));
     requests.push(`${options?.method ?? "GET"} ${url.pathname}`);
@@ -80,7 +84,7 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
         ) as unknown,
       );
       uploaded.push(body.hook.sha256);
-      return Promise.resolve(new Response(null, { status: 202 }));
+      return Promise.resolve(new Response(null, { status: ingestStatus }));
     }
     if (url.pathname === "/hook/manifest.json")
       return Promise.resolve(Response.json(manifest));
@@ -92,9 +96,13 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
       Response.json({ organization: { id: config.organizationId } }),
     );
   };
-  const run = async () => {
+  /** One hook event of a fresh session (or of `session`) followed by its uploader run. */
+  const run = async (
+    options: Partial<Parameters<typeof upload>[4]> = {},
+    session = randomUUID(),
+  ): Promise<string> => {
     const path = recordHook(directory, executable, config, "claude", {
-      session_id: randomUUID(),
+      session_id: session,
       transcript_path: transcript,
       cwd: directory,
       hook_event_name: "Stop",
@@ -103,7 +111,9 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
     await upload(directory, executable, path, config, {
       fetch: fetcher,
       sweep: false,
+      ...options,
     });
+    return path;
   };
   const log = () => {
     const path = join(directory, "hook.log");
@@ -118,15 +128,34 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
   return {
     directory,
     executable,
+    config,
     configHome,
     fakeCli,
     manifest,
     requests,
     uploaded,
     run,
+    fetcher,
     log,
     installRuns,
+    setIngestStatus: (status: number) => {
+      ingestStatus = status;
+    },
   };
+}
+/** Every regular file under `directory` except the ones named, with its bytes. */
+function filesUnder(directory: string, except: readonly string[]) {
+  const files = new Map<string, string>();
+  const walk = (current: string) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (!except.includes(relative(directory, path)))
+        files.set(relative(directory, path), readFileSync(path, "utf8"));
+    }
+  };
+  walk(directory);
+  return files;
 }
 
 describe("hook self-update", () => {
@@ -237,5 +266,125 @@ describe("hook self-update", () => {
     expect(attempts()).toBe(1);
     await f.run();
     expect(attempts(), "throttled within the hour").toBe(1);
+  });
+  // @req R-CAP-16 @req R-CAP-05 @req R-CAP-21
+  it("swaps the bundle around a pending batch without touching the spool, the pending batch or ackedCursor, which the next run then delivers", async () => {
+    const f = fixture();
+    const session = randomUUID();
+    // The server is down: the batch stays pending and the cursor stays put. No update
+    // check yet, so the swap below is the only change between the two runs.
+    f.setIngestStatus(503);
+    const path = await f.run(
+      { sleep: () => Promise.resolve(), update: false },
+      session,
+    );
+    const interrupted = loadState(path);
+    expect(interrupted.ackedCursor).toEqual({ kind: "jsonl", offset: 0 });
+    if (!interrupted.pending) throw new Error("The batch must stay pending.");
+    const pendingBytes = readFileSync(interrupted.pending.file, "utf8");
+    const before = filesUnder(f.directory, []);
+    // The swap, as the uploader runs it mid-flight (§6.2): it replaces its own files only.
+    expect(
+      await selfUpdate(f.directory, f.executable, f.config, {
+        fetch: f.fetcher,
+      }),
+    ).toBe("updated");
+    expect(readFileSync(f.executable, "utf8")).toBe(NEW_BUNDLE);
+    const after = filesUnder(f.directory, []);
+    const changed = [...new Set([...before.keys(), ...after.keys()])]
+      .filter((file) => before.get(file) !== after.get(file))
+      .sort();
+    expect(changed).toEqual([
+      "hook.js",
+      "hook.log",
+      "pi-extension.mjs",
+      "update.json",
+    ]);
+    // The next run (the machine's next hook) delivers exactly the pending bytes and only
+    // then advances the cursor; the manifest is not asked again within the hour.
+    f.setIngestStatus(202);
+    await f.run({}, session);
+    expect(f.uploaded.at(-1)).toBe(
+      ingestEnvelopeSchema.parse(JSON.parse(pendingBytes) as unknown).hook
+        .sha256,
+    );
+    const delivered = loadState(path);
+    expect(delivered.pending).toBeNull();
+    expect(delivered.ackedCursor).toEqual({
+      kind: "jsonl",
+      offset: readFileSync(join(f.directory, "transcript.jsonl")).length,
+    });
+    expect(
+      f.requests.filter((request) => request === "GET /hook/manifest.json"),
+    ).toHaveLength(1);
+  });
+  // @req R-CAP-16 @req R-CAP-21
+  it("still checks for an update when the drain itself fails, so a broken bundle receives the release that fixes it", async () => {
+    const f = fixture();
+    await expect(
+      f.run({
+        checkpoint: () => Promise.reject(new Error("interrupted")),
+      }),
+    ).rejects.toThrow("interrupted");
+    expect(readFileSync(f.executable, "utf8")).toBe(NEW_BUNDLE);
+    expect(f.log()).toContain("Updated to hook 0.1.0-test");
+    expect(f.installRuns()).toHaveLength(1);
+  });
+  // @req R-CAP-16 @req R-CAP-21
+  it("never fetches in hook mode", () => {
+    const f = fixture();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("hook mode must not reach the network"));
+    try {
+      const path = recordHook(
+        f.directory,
+        f.executable,
+        {
+          ...configure(f.directory, {}),
+        },
+        "claude",
+        {
+          session_id: randomUUID(),
+          transcript_path: join(f.directory, "transcript.jsonl"),
+          cwd: f.directory,
+          hook_event_name: "Stop",
+        },
+      );
+      expect(path).not.toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(existsSync(join(f.directory, "update.lock"))).toBe(false);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+  // @req R-CAP-17 @req R-CAP-21
+  it("keeps fields a newer bundle wrote to update.json through an older bundle's read-modify-write, so the wiring record survives", async () => {
+    const f = fixture();
+    const statePath = join(f.directory, "update.json");
+    const recorded = JSON.parse(readFileSync(statePath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        ...recorded,
+        futureField: { introduced: "by a later bundle" },
+        configured: {
+          ...(recorded.configured as Record<string, unknown>),
+          futureFlag: true,
+        },
+      }),
+    );
+    await f.run();
+    // The swap reconfigured (the record was readable), and the unknown fields are intact.
+    expect(f.installRuns()).toHaveLength(1);
+    const after = JSON.parse(readFileSync(statePath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(after.futureField).toEqual({ introduced: "by a later bundle" });
+    expect(after.configured).toMatchObject({ sha256: hash(NEW_BUNDLE) });
   });
 });

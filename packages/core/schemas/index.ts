@@ -5,6 +5,7 @@ export * from "./sql.js";
 export * from "./ingest-context.js";
 export * from "./ingest.js";
 export * from "./admin.js";
+export * from "./redaction.js";
 export * from "./auth.js";
 export * from "./reuse.js";
 export * from "./rest.js";

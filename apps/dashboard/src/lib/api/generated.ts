@@ -669,6 +669,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/admin/sessions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List every session of the organization for moderation */
+    get: operations["get_admin_sessions"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/sessions/{id}/visibility": {
     parameters: {
       query?: never;
@@ -824,6 +841,58 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/admin/redaction/summary": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read the organization's redaction totals, recent windows, per-policy counts and run tally */
+    get: operations["get_admin_redaction_summary"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/redaction/hits": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List where redactions landed: session, message position, policy, source and time */
+    get: operations["get_admin_redaction_hits"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/redaction/rescan": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List redaction rescan runs with progress and the sessions each changed */
+    get: operations["get_admin_redaction_rescan"];
+    put?: never;
+    /** Rescan existing organization records */
+    post: operations["post_admin_redaction_rescan"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/redaction/rescan/{id}": {
     parameters: {
       query?: never;
@@ -841,17 +910,17 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/admin/redaction/rescan": {
+  "/api/v1/admin/redaction/rescan/{id}/sessions": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    /** List the sessions a redaction rescan run changed, with counts */
+    get: operations["get_admin_redaction_rescan_id_sessions"];
     put?: never;
-    /** Rescan existing organization records */
-    post: operations["post_admin_redaction_rescan"];
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -6433,6 +6502,179 @@ export interface operations {
       };
     };
   };
+  get_admin_sessions: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+        sort?:
+          | "started_at"
+          | "last_activity_at"
+          | "user_email"
+          | "harness"
+          | "status"
+          | "visibility"
+          | "purged_at";
+        order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
+        format?: "json" | "csv";
+        filters?: {
+          /**
+           * Format: email
+           * @description Sessions run by this member (exact email)
+           */
+          user_email?: string;
+          /**
+           * @description Sessions of this coding agent
+           * @enum {string}
+           */
+          harness?: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+          /**
+           * @description ACTIVE, ENDED or INACTIVE
+           * @enum {string}
+           */
+          status?: "ACTIVE" | "ENDED" | "INACTIVE";
+          /**
+           * @description PUBLIC or PRIVATE
+           * @enum {string}
+           */
+          visibility?: "PUBLIC" | "PRIVATE";
+          /** @description True: purged sessions only; false: sessions with content */
+          purged?: boolean;
+          /** @description True: sessions with a published read model; false: sessions still queued, waiting for their transcript or failed */
+          published?: boolean;
+          /**
+           * Format: uuid
+           * @description One session by id
+           */
+          session_id?: string;
+          /**
+           * Format: date-time
+           * @description Sessions started at or after this UTC time (inclusive)
+           */
+          since?: string;
+          /**
+           * Format: date-time
+           * @description Sessions started before this UTC time (exclusive)
+           */
+          until?: string;
+        };
+        roots_only?: boolean;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            items: {
+              /**
+               * Format: uuid
+               * @description Primary key; every other view joins on it
+               */
+              session_id: string;
+              /**
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @enum {string}
+               */
+              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              /** @description Session id assigned by the harness */
+              harness_session_id: string;
+              /** @description Email of the member who ran it */
+              user_email: string | null;
+              /** @description Hostname of the capturing machine */
+              installation_hostname: string | null;
+              /**
+               * Format: date-time
+               * @description When the session started (UTC)
+               */
+              started_at: string;
+              /**
+               * Format: date-time
+               * @description Last captured activity
+               */
+              last_activity_at: string;
+              /** @description When the session ended; NULL while active */
+              ended_at: string | null;
+              /**
+               * @description ACTIVE, ENDED or INACTIVE
+               * @enum {string}
+               */
+              status: "ACTIVE" | "ENDED" | "INACTIVE";
+              /**
+               * @description PUBLIC or PRIVATE
+               * @enum {string}
+               */
+              visibility: "PUBLIC" | "PRIVATE";
+              /** @description When content was purged; NULL otherwise */
+              purged_at: string | null;
+              /** @description True when a read-model revision is published, so the session appears in sessions, search and sql */
+              published: boolean;
+              /**
+               * @description Where the read model stands: queued, waiting_source (the native transcript has not arrived), published or failed
+               * @enum {string}
+               */
+              projection_state:
+                "queued" | "waiting_source" | "published" | "failed";
+              /** @description Parent session of a subagent, fork or spawned session */
+              parent_session_id: string | null;
+              /** @description SUBAGENT, FORK or SPAWNED */
+              parent_relation: ("SUBAGENT" | "FORK" | "SPAWNED") | null;
+              /** @description Published title; null for a purged or not yet published session */
+              title: string | null;
+              /** @description Published repository; null for a purged or not yet published session */
+              repo_name: string | null;
+              /** @description Published message count; null for a not yet published session */
+              message_count: number | null;
+            }[];
+            /** @default null */
+            cursor: string | null;
+            /** @description Total over every matching session, computed with the same filters and roots_only as the page */
+            total: {
+              /** @description Sessions the filters match across every page */
+              sessions: number;
+            };
+          };
+          "text/csv": string;
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
   post_admin_sessions_id_visibility: {
     parameters: {
       query?: never;
@@ -6908,6 +7150,17 @@ export interface operations {
             server: {
               version: string;
               auto_update: boolean;
+              updater: {
+                last_check: string | null;
+                last_ok: string | null;
+                last_result: string | null;
+                last_image: string | null;
+                previous_image: string | null;
+                updated_at: string | null;
+                failed_image: string | null;
+                failed_at: string | null;
+                failures: number;
+              } | null;
             };
             projection: {
               queued_sessions: number;
@@ -7424,13 +7677,11 @@ export interface operations {
       };
     };
   };
-  get_admin_redaction_rescan_id: {
+  get_admin_redaction_summary: {
     parameters: {
       query?: never;
       header?: never;
-      path: {
-        id: string;
-      };
+      path?: never;
       cookie?: never;
     };
     requestBody?: never;
@@ -7442,14 +7693,195 @@ export interface operations {
         };
         content: {
           "application/json": {
-            job_id: string;
-            /** @enum {string} */
-            state: "queued" | "running" | "completed" | "failed";
-            total_sessions: number;
-            processed_sessions: number;
-            redaction_count: number;
-            error: string | null;
+            total: number;
+            sessions: number;
+            last_7_days: {
+              capture: number;
+              rescan: number;
+              total: number;
+            };
+            last_30_days: {
+              capture: number;
+              rescan: number;
+              total: number;
+            };
+            by_policy: {
+              /** Format: uuid */
+              policy_id: string;
+              name: string;
+              /** @enum {string} */
+              kind: "REGEX" | "SECRETLINT_RULE";
+              enabled: boolean;
+              count: number;
+              sessions: number;
+            }[];
+            runs: {
+              total: number;
+              active: number;
+              failed: number;
+            };
           };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_redaction_hits: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+        sort?: "redacted_at" | "count" | "seq";
+        order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
+        format?: "json" | "csv";
+        filters?: {
+          /** Format: uuid */
+          run_id?: string;
+          /** Format: uuid */
+          session_id?: string;
+          /** Format: uuid */
+          policy_id?: string;
+          /** @enum {string} */
+          source?: "capture" | "rescan";
+        };
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            items: {
+              /** Format: uuid */
+              id: string;
+              /** Format: uuid */
+              session_id: string;
+              /** Format: uuid */
+              ingest_batch_id: string;
+              run_id: string | null;
+              /** @enum {string} */
+              source: "capture" | "rescan";
+              /** Format: uuid */
+              policy_id: string;
+              policy_name: string | null;
+              seq: number | null;
+              count: number;
+              /** Format: date-time */
+              redacted_at: string;
+            }[];
+            /** @default null */
+            cursor: string | null;
+          };
+          "text/csv": string;
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_redaction_rescan: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+        sort?: "created_at" | "state" | "redaction_count" | "total_sessions";
+        order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
+        format?: "json" | "csv";
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            items: {
+              /** Format: uuid */
+              id: string;
+              /** @enum {string} */
+              state: "queued" | "running" | "completed" | "failed";
+              /** Format: date-time */
+              created_at: string;
+              /** Format: date-time */
+              updated_at: string;
+              total_sessions: number;
+              processed_sessions: number;
+              changed_sessions: number;
+              redaction_count: number;
+              error: string | null;
+            }[];
+            /** @default null */
+            cursor: string | null;
+          };
+          "text/csv": string;
         };
       };
       /** @description Default Response */
@@ -7509,6 +7941,137 @@ export interface operations {
           "application/json": {
             job_id: string;
           };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_redaction_rescan_id: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            job_id: string;
+            /** @enum {string} */
+            state: "queued" | "running" | "completed" | "failed";
+            total_sessions: number;
+            processed_sessions: number;
+            redaction_count: number;
+            error: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_redaction_rescan_id_sessions: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+        sort?: "processed_at" | "redaction_count";
+        order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
+        format?: "json" | "csv";
+        filters?: {
+          /** @default true */
+          changed?: boolean;
+        };
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            items: {
+              /** Format: uuid */
+              run_id: string;
+              /** Format: uuid */
+              session_id: string;
+              processed_at: string | null;
+              redaction_count: number;
+            }[];
+            /** @default null */
+            cursor: string | null;
+          };
+          "text/csv": string;
         };
       };
       /** @description Default Response */

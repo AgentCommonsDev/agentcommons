@@ -88,9 +88,32 @@ model RedactionEvent {
   policyId       String              @map("policy_id") @db.Uuid
   policy         RedactionPolicy     @relation(fields: [organizationId, policyId], references: [organizationId, id])
   count          Int
+  hits           RedactionHit[]
 
   @@id([ingestBatchId, sessionId, policyId])
   @@map("redaction_event")
+}
+
+/// Where one receipt's redactions landed: a row per (receipt, policy, message) with the
+/// message's projected position, or a null seq for hits on session metadata (git fields,
+/// context, header text). `run_id` names the rescan that applied it, null at capture. Rows
+/// hang off the per-policy counter and go with it (policy deletion, purge). No redacted text.
+model RedactionHit {
+  organizationId String         @map("organization_id")
+  id             String         @id @db.Uuid
+  ingestBatchId  String         @map("ingest_batch_id") @db.Uuid
+  sessionId      String         @map("session_id") @db.Uuid
+  policyId       String         @map("policy_id") @db.Uuid
+  event          RedactionEvent @relation(fields: [ingestBatchId, sessionId, policyId], references: [ingestBatchId, sessionId, policyId], onDelete: Cascade, onUpdate: NoAction)
+  runId          String?        @map("run_id") @db.Uuid
+  seq            Int?
+  count          Int
+  redactedAt     DateTime       @map("redacted_at") @db.Timestamptz
+
+  @@index([organizationId, redactedAt])
+  @@index([organizationId, runId, sessionId])
+  @@index([ingestBatchId, sessionId, policyId])
+  @@map("redaction_hit")
 }
 
 model RedactionPolicy {
@@ -182,6 +205,7 @@ model RedactionRun {
   targets           RedactionRunSession[]
 
   @@id([organizationId, id])
+  @@index([organizationId, createdAt])
   @@map("redaction_run")
 }
 
@@ -190,6 +214,8 @@ model RedactionRunSession {
   runId          String              @map("run_id") @db.Uuid
   sessionId      String              @map("session_id") @db.Uuid
   processedAt    DateTime?           @map("processed_at") @db.Timestamptz
+  /// Redactions this run applied to the session; zero for an unchanged or purged target.
+  redactionCount Int                 @default(0) @map("redaction_count")
   run            RedactionRun        @relation(fields: [organizationId, runId], references: [organizationId, id], onDelete: Cascade, map: "redaction_run_session_run_fkey")
   session        TraceSessionControl @relation(fields: [organizationId, sessionId], references: [organizationId, id], onDelete: NoAction, onUpdate: NoAction, map: "redaction_run_session_session_fkey")
 
@@ -396,6 +422,7 @@ model TraceReceipt {
   @@unique([organizationId, sessionId, id])
   @@index([organizationId, sessionId, sourcePos])
   @@index([organizationId, apiKeyId, receivedAt])
+  @@index([organizationId, receivedAt])
   @@map("trace_receipt")
 }
 

@@ -20,12 +20,16 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const SELF_TEST_TIMEOUT_MS = 10_000;
 /** A bundle that cannot read its own bytes reports this; no manifest ever matches it. */
 const ZERO_DIGEST = "0".repeat(64);
-const configuredSchema = z.strictObject({
+// Loose on purpose: a newer bundle may add fields, and an uploader still running the
+// previous bundle reads this file, changes one field and writes it back. Unknown fields
+// survive that round trip instead of failing the parse, which would drop the wiring
+// record and stop every later reconcile.
+const configuredSchema = z.looseObject({
   sha256: z.string(),
   harnesses: z.array(z.string()),
   at: z.number(),
 });
-const checkSchema = z.strictObject({
+const checkSchema = z.looseObject({
   checkedAt: z.number().default(0),
   /** The bundle digest and harness set the last successful `install` run wired. */
   configured: configuredSchema.optional(),
@@ -304,8 +308,10 @@ export async function reconcileInstall(
         `install exited with ${String(result.status)}: ${result.stderr.trim().slice(0, 200)}`,
       );
     // A success clears the throttle so a newly installed CLI is wired on the next run.
+    const settled = readState(directory);
+    delete settled.attemptedAt;
     writeState(directory, {
-      checkedAt: readState(directory).checkedAt,
+      ...settled,
       configured: { sha256: current, harnesses: [...detected].sort(), at: now },
     });
     note(

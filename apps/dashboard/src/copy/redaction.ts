@@ -1,0 +1,63 @@
+/** Strings for the redaction ledger on Organization → Redaction. Owned by the admin feature. */
+export const redactionActivityCopy = {
+  title: "Redaction activity",
+  description:
+    "How often the policies fired, in which sessions and on which messages. Counts only. Redacted text is never shown.",
+  total: "Redactions",
+  sessionOne: "session",
+  sessionMany: "sessions",
+  last7: "Last 7 days",
+  last30: "Last 30 days",
+  windowHint: (capture: string, rescan: string) =>
+    `${capture} at capture, ${rescan} by rescan`,
+  runs: "Rescans",
+  runsHint: (active: string, failed: string) =>
+    `${active} running, ${failed} failed`,
+  byPolicy: "By policy",
+  byPolicyDescription:
+    "Redactions counted for each policy since it was created. Deleting a policy removes its counts.",
+  policy: "Policy",
+  kind: "Kind",
+  sessions: "Sessions",
+  redactions: "Redactions",
+  noPolicyHits: "No policy has matched yet",
+  noPolicyHitsHint: "Counts appear as captures arrive or after a rescan.",
+  rescans: "Rescans",
+  rescansDescription:
+    "Each rescan of stored sessions with the current policies. Select a run to see the sessions it changed and the messages in them.",
+  started: "Started",
+  state: "State",
+  processed: "Processed",
+  changed: "Sessions changed",
+  error: "Error",
+  noRuns: "No rescans yet",
+  noRunsHint: "Rescan sessions to apply changed policies to stored content.",
+  runDetails: (started: string) =>
+    `Sessions changed by the rescan started ${started}`,
+  runDetailsHint:
+    "Each session links to its page. Open the messages to jump to the redacted ones.",
+  session: "Session",
+  processedAt: "Processed",
+  messages: "Messages",
+  showMessages: "Show messages",
+  hideMessages: "Hide messages",
+  noChanges: "This rescan changed no sessions",
+  noChangesHint: "Every session already matched the current policies.",
+  message: (seq: number) => `Message #${String(seq)}`,
+  metadata: "Session metadata",
+  openSession: "Open session",
+  recent: "Recent redactions",
+  recentDescription:
+    "Every redaction, newest first, with the session and the message it landed on.",
+  time: "Time",
+  messageColumn: "Message",
+  source: "Source",
+  sources: { capture: "Capture", rescan: "Rescan" },
+  allSources: "All sources",
+  count: "Count",
+  noHits: "No redactions recorded yet",
+  noHitsHint: "Rows appear when a capture or rescan matches a policy.",
+  csvRuns: "redaction-rescans.csv",
+  csvRunSessions: "redaction-rescan-sessions.csv",
+  csvHits: "redaction-hits.csv",
+} as const;

@@ -760,6 +760,13 @@ async function drain(
     lock.release();
   }
 }
+/**
+ * One uploader run: drains the session, its children and one swept session, refreshes the
+ * recall hint, then checks for a bundle update and brings harness wiring in step with
+ * the bundle and the CLIs present. The update runs whatever the drain's outcome (a
+ * rejected batch, a corrupt state file, an interrupted checkpoint): a stale bundle whose
+ * drain fails must still receive the release that fixes it on the machine's next hook.
+ */
 export async function upload(
   directory: string,
   executable: string,
@@ -767,6 +774,37 @@ export async function upload(
   config: HookConfig,
   options: UploadOptions = {},
 ): Promise<void> {
+  let retry = false;
+  try {
+    retry = await drainAll(directory, executable, path, config, options);
+  } finally {
+    // The served manifest is checked at most hourly; a differing bundle is replaced
+    // atomically for the next hook run, and harness wiring is brought in step with the
+    // bundle and the CLIs present. Failures never reach the durability path.
+    if (options.update !== false) {
+      const updateOptions = options.fetch ? { fetch: options.fetch } : {};
+      await selfUpdate(directory, executable, config, updateOptions);
+      await reconcileInstall(directory, executable, config, updateOptions);
+    }
+  }
+  // Covers a hook that published while the old owner was exiting. Hooks arriving
+  // after this check see no owner and start their own uploader.
+  const current = loadState(path);
+  if (
+    !retry &&
+    !current.suspended &&
+    journalEntries(path, current.processed).length
+  )
+    spawnUpload(config, executable, path);
+}
+/** Drains every session this run covers; true when a send failed and the next hook retries it. */
+async function drainAll(
+  directory: string,
+  executable: string,
+  path: string,
+  config: HookConfig,
+  options: UploadOptions,
+): Promise<boolean> {
   const visited = new Set<string>();
   const queue = [path];
   const settling: string[] = [];
@@ -823,21 +861,5 @@ export async function upload(
       loadState(path).context.git,
       options.fetch ? { fetch: options.fetch } : {},
     );
-  // The served manifest is checked at most hourly; a differing bundle is replaced
-  // atomically for the next hook run, and harness wiring is brought in step with the
-  // bundle and the CLIs present. Failures never reach the durability path.
-  if (options.update !== false) {
-    const updateOptions = options.fetch ? { fetch: options.fetch } : {};
-    await selfUpdate(directory, executable, config, updateOptions);
-    await reconcileInstall(directory, executable, config, updateOptions);
-  }
-  // Covers a hook that published while the old owner was exiting. Hooks arriving
-  // after this check see no owner and start their own uploader.
-  const current = loadState(path);
-  if (
-    !retry &&
-    !current.suspended &&
-    journalEntries(path, current.processed).length
-  )
-    spawnUpload(config, executable, path);
+  return retry;
 }

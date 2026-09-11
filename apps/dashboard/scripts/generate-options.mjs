@@ -26,8 +26,12 @@ for (const [name, path] of Object.entries({
   sessionSortKeys: "/api/v1/sessions",
   keySortKeys: "/api/v1/me/keys",
   memberSortKeys: "/api/v1/admin/users",
+  moderationSortKeys: "/api/v1/admin/sessions",
   auditSortKeys: "/api/v1/admin/audit",
   policySortKeys: "/api/v1/admin/redaction/policies",
+  redactionRunSortKeys: "/api/v1/admin/redaction/rescan",
+  redactionRunSessionSortKeys: "/api/v1/admin/redaction/rescan/{id}/sessions",
+  redactionHitSortKeys: "/api/v1/admin/redaction/hits",
   metricSortKeys: "/api/v1/admin/metrics/{group}",
 })) {
   options[name] = strings.parse(

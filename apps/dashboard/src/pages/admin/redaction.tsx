@@ -35,6 +35,11 @@ import {
   policyBody,
   usePresetEnabled,
 } from "../../features/admin/redaction";
+import {
+  RecentRedactions,
+  RedactionSummary,
+  RescanRuns,
+} from "../../features/admin/redaction-activity";
 
 type Kind = Policy["kind"];
 type Filters = {
@@ -230,6 +235,8 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
     [],
   );
   const confirmation = describe(action);
+  // While the page watches a rescan, the ledger below refreshes with its progress.
+  const live = jobId !== undefined;
   return (
     <>
       <PageHeader
@@ -270,6 +277,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
           }}
         />
       )}
+      <RedactionSummary live={live} />
       <div data-testid="admin-redaction-table">
         <DataTable
           {...list.table}
@@ -369,6 +377,8 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
           }
         />
       </div>
+      <RescanRuns live={live} />
+      <RecentRedactions live={live} />
       <TestRedactionCard policies={list.items} />
       <PolicyDialog
         open={editor !== null}

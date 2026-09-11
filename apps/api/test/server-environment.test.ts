@@ -18,14 +18,20 @@ it("reports the release baked into the image and the host's update setting, defa
   expect(environment(base).server).toEqual({
     version: "development",
     autoUpdate: true,
+    updateStateFile: "/var/lib/agentcommons/update-state",
   });
   expect(
     environment({
       ...base,
       AGENTCOMMONS_VERSION: "0123456789ab",
       AUTO_UPDATE: "false",
+      UPDATE_STATE_FILE: "/mnt/updater/update-state",
     }).server,
-  ).toEqual({ version: "0123456789ab", autoUpdate: false });
+  ).toEqual({
+    version: "0123456789ab",
+    autoUpdate: false,
+    updateStateFile: "/mnt/updater/update-state",
+  });
   // An empty value from a rendered .env means "unset", not an empty version.
   expect(
     environment({ ...base, AGENTCOMMONS_VERSION: "" }).server.version,

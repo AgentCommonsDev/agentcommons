@@ -52,8 +52,14 @@ export interface HarnessDefinition {
   repositoryInstructionsFile: string;
   mcpConfigPath: readonly string[] | null;
   configFormat: "json" | "toml" | "extension";
-  mcp(url: string): Record<string, unknown> | null;
-  mcpCommand(url: string): string[] | null;
+  /**
+   * The MCP entry the installer writes. `key` is written literally where the client's IDE
+   * host cannot expand `${VAR}` (Claude Code's `~/.claude.json`, Gemini's `settings.json`,
+   * which the Gemini Code Assist extension reads without a shell; both files are 0600).
+   * Codex reads the key from the environment through its own `bearer_token_env_var`.
+   */
+  mcp(url: string, key: string): Record<string, unknown> | null;
+  mcpCommand(url: string, key: string): string[] | null;
   /** Printed once after `install` wires this harness. */
   installNote?: string;
   /** Printed after `install` wires this harness and wrote the shell exports (§8.4). */
@@ -81,7 +87,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
   claude: {
     id: "CLAUDE_CODE",
     mcpConfigPath: [".claude.json"],
-    mcpCommand: (url) => [
+    mcpCommand: (url, key) => [
       "mcp",
       "add",
       "-s",
@@ -91,7 +97,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
       "agentcommons",
       url,
       "--header",
-      "Authorization: Bearer ${AGENTCOMMONS_API_KEY}",
+      `Authorization: Bearer ${key}`,
     ],
     reader: "jsonl-append",
     recordKeyFields: ["uuid"],
@@ -100,10 +106,10 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     // Claude Code 2.1.x defers every MCP tool behind ToolSearch unless the server is
     // marked always-loaded; the budgeted catalog (ADR 0053) makes eager loading cheap.
     // `claude mcp add` has no flag for it, so install merges the field after the CLI writes.
-    mcp: (url) => ({
+    mcp: (url, key) => ({
       type: "http",
       url,
-      headers: { Authorization: "Bearer ${AGENTCOMMONS_API_KEY}" },
+      headers: { Authorization: `Bearer ${key}` },
       alwaysLoad: true,
     }),
     configPath: [".claude", "settings.json"],
@@ -191,9 +197,11 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     recordKeyFields: ["id"],
     binary: "gemini",
     processMarkers: ["gemini", "@google/gemini-cli"],
-    mcp: (url) => ({
+    // Gemini Code Assist (VS Code) reads this file without a shell: an env placeholder
+    // would be sent literally and rejected every few seconds (Appendix A, 2026-09-11).
+    mcp: (url, key) => ({
       httpUrl: url,
-      headers: { Authorization: "Bearer ${AGENTCOMMONS_API_KEY}" },
+      headers: { Authorization: `Bearer ${key}` },
     }),
     configPath: [".gemini", "settings.json"],
     instructionsPath: [".gemini", "GEMINI.md"],

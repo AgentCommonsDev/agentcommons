@@ -14,11 +14,13 @@ import { workspaceOrigin } from "../playwright.shared";
 import {
   accessible,
   collectErrors,
+  confirm,
   expectNoHorizontalOverflow,
   fixture,
   setTheme,
   settled,
   showColumn,
+  signInAsMember,
   signInAsOwner,
   test,
 } from "./browser-test";
@@ -348,6 +350,65 @@ test("the Messages column is on by default and its header sorts by message count
   }
   expect(new Set(seen)).toEqual(new Set(["asc", "desc"]));
   expect(errors).toEqual([]);
+});
+
+// @req R-MOD-05 @req R-DASH-01
+test("an admin makes a session private and purges it from the session header while a member sees no moderation control", async ({
+  page,
+  request,
+  context,
+}) => {
+  const data = await fixture();
+  const moderation = copy.admin.moderation;
+  const title = `Session page moderation ${randomUUID()}`;
+  const id = await ingest(
+    request,
+    data,
+    freshEnvelope(data, [userRecord(0, title)]),
+  );
+  await waitForPublished(page, id);
+  const errors = collectErrors(page);
+  await page.goto(paths.session(id));
+  const header = page.getByTestId("session-header");
+  await expect(header).toContainText(title);
+  await settled(page);
+  const menu = page.getByTestId("session-moderation");
+  const open = async (item: string) => {
+    await menu
+      .getByRole("button", { name: moderation.actions, exact: true })
+      .click();
+    await page
+      .getByRole("menu")
+      .getByRole("menuitem", { name: item, exact: true })
+      .click();
+  };
+  await open(moderation.private);
+  await expect(page.getByRole("dialog")).toContainText(moderation.privateTitle);
+  await accessible(page);
+  await confirm(page, moderation.private, "Hide while the content is reviewed");
+  // The header states the new visibility without a reload.
+  await expect(header).toContainText(copy.app.statuses.PRIVATE);
+  await open(moderation.purge);
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText(moderation.purgeTitle);
+  await expect(dialog.getByRole("alert")).toHaveText(moderation.purgeWarning);
+  await confirm(page, moderation.purge, "Purge disposable browser content");
+  // Purge keeps the identity skeleton: the notice, the badge, no title, no messages.
+  await expect(page.getByTestId("session-purged")).toBeVisible();
+  await expect(header).toContainText(copy.app.statuses.PURGED);
+  await expect(header).not.toContainText(title);
+  await expect(header).toContainText(copy.app.common.untitledSession);
+  await expect(message(page, 0)).toHaveCount(0);
+  await settled(page);
+  await accessible(page);
+  expect(errors).toEqual([]);
+
+  // A member reads the seeded public session and gets no moderation control.
+  await signInAsMember(context);
+  await page.goto(paths.session(data.sessionId));
+  await expect(page.getByTestId("session-header")).toContainText(rootTitle);
+  await expect(page.getByTestId("session-moderation")).toHaveCount(0);
+  await expect(page.getByTestId("session-purged")).toHaveCount(0);
 });
 
 // @req R-DASH-01 @req R-DASH-11

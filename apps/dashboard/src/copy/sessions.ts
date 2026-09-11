@@ -173,6 +173,11 @@ export const sessionsCopy = {
       messages: "Messages failed to load.",
       runs: "Subagent runs failed to load.",
     },
+    /** Notices for moderation state; the admin actions themselves live in copy.admin.moderation. */
+    moderation: {
+      purged:
+        "Content purged. Messages, files and source records are gone; this record and its audit history remain.",
+    },
     transcript: {
       label: "Transcript",
       find: "Find in loaded messages",

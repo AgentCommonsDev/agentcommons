@@ -585,6 +585,28 @@ in another process's 30-second cache until expiry. Transactional writes use thei
 policy rows and ignore that shared cache; only extant policy rows receive per-policy
 counters. Deleting a policy does not undo already-redacted stored text.
 
+**Ledger.** Under the per-receipt counters sits a per-message ledger, `redaction_hit`:
+one row per receipt, policy and message position (`seq`, the anchor the session page
+selects at `/app/sessions/:id#<seq>`), with the count, the time and `run_id` naming the
+rescan that applied it (null at capture). The accept records which raw record each hit
+landed on (`redactions` in the outbox payload, with a null record for hits on the
+envelope, context and native identities); the projection, which alone knows the record's
+messages, lands a record's hits on the first message projected from it and keeps hits
+on metadata or on a record that projects no message at a null position, then writes the
+rows in the publish transaction, for accepts and rescans alike. Rows hang off their
+counter (`ON DELETE CASCADE`): deleting a policy or purging a session removes them with
+the counters, and a hit whose counter is gone by publish time is dropped as the counter
+was. Each rescan target also records the redactions the run applied to it
+(`redaction_run_session.redaction_count`), so a run lists the sessions it changed. No
+redacted text is stored anywhere in the ledger. Admin reads, each one audited and one
+scan per relation (§7.6): `GET /admin/redaction/summary` (totals and distinct sessions
+from the counters, 7- and 30-day windows from receipt arrival and target checkpoint
+times split into capture and rescan, per-policy counts, the run tally), `GET
+/admin/redaction/rescan` (runs with progress and changed-session counts), `GET
+/admin/redaction/rescan/:id/sessions` (a run's targets, changed ones by default) and
+`GET /admin/redaction/hits` (the ledger newest first, filterable by run, session, policy
+and source); the Redaction page shows them (§10).
+
 **Sensitive files.** Tool results whose input path matches `**/.env*`, `**/*.pem`,
 `**/*.key`, `**/id_rsa*`, `**/credentials*`, `**/.npmrc`, `**/.netrc` are replaced
 wholesale, including copies in the raw record (such as `toolUseResult` and
@@ -739,8 +761,13 @@ key: installed hooks update themselves (§6.2, **Self-update**).
    `disabledPaths`. Existing values preserved.
 4. `node hook.js install`: for each harness present, merge hooks into its config keyed by
    an exact marker (`agentcommons-hook` in the command); register the MCP server (`claude
-mcp add -s user -t http …`, `codex mcp add … --bearer-token-env-var
-AGENTCOMMONS_API_KEY`, Gemini `mcpServers` entry); write the marker-delimited
+mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add …
+--bearer-token-env-var AGENTCOMMONS_API_KEY`, Gemini `mcpServers` entry with
+   `headers.Authorization: Bearer <key>`); the Claude and Gemini entries carry the key
+   literally, never an env placeholder, because IDE extension hosts read these 0600 files
+   without a shell (Appendix A, Gemini Code Assist); Codex reads the variable by design
+   through its own flag; a reconcile run (§6.2 **Reconfiguration**) rewrites an existing
+   entry, so installed machines heal on their next hook run after a bundle swap; write the marker-delimited
    `AGENTCOMMONS_SERVER`/`AGENTCOMMONS_API_KEY` exports into `~/.bashrc`, `~/.zshrc` and,
    when fish is installed or configured, `~/.config/fish/config.fish` unless
    `--no-shell-rc` (Codex reads the key from the environment, so every login shell needs
@@ -922,9 +949,11 @@ can compare each machine with the manifest (§10). Hash identity needs no versio
 registry: an installation is current when its digests equal the manifest's.
 
 Only upload mode updates; hook mode never touches the network and never updates. At the
-end of an uploader run, at most once per hour per installation (`update.json` in the
-data directory records the last check), the detached uploader GETs `/hook/manifest.json`
-from the configured server. If the manifest digests differ from the installed files it:
+end of an uploader run, whatever the drain's outcome (a failed send, a rejected
+credential, a corrupt state file or an interrupted checkpoint all still reach this step,
+so a bundle whose drain fails still receives the release that fixes it), at most once per
+hour per installation (`update.json` in the data directory records the last check), the
+detached uploader GETs `/hook/manifest.json` from the configured server. If the manifest digests differ from the installed files it:
 
 1. downloads the artifacts from the manifest URLs resolved against the configured
    server origin (same origin only; any other origin is refused), with an 8 MB cap per
@@ -939,8 +968,12 @@ prevents concurrent updaters. Harness settings keep pointing at the stable path,
 next hook invocation runs the new version; running processes are unaffected. Any failure
 (network, size, timeout, digest mismatch, failed self-test, rename) is written to
 `hook.log` and ignored; pending batches and `ackedCursor` are untouched, and the next
-hourly check retries. `install.sh` is unchanged and remains a manual reinstall;
-`hook.js doctor` is unchanged.
+hourly check retries. The swap writes only `hook.js`, `pi-extension.mjs`, `update.json`
+and `hook.log`: a batch left pending by the failed run before it is delivered by the next
+run, byte for byte, from the same state file. `update.json` is read loosely, so a field a
+newer bundle adds survives an older uploader's read-modify-write instead of failing the
+parse and dropping the wiring record. `install.sh` is unchanged and remains a manual
+reinstall; `hook.js doctor` is unchanged.
 
 **Reconfiguration.** Wiring follows the bundle and the machine automatically. `hook.js
 install` records its flags (`--config-home`, `--no-shell-rc`) in `config.json` and the
@@ -1401,9 +1434,12 @@ longer exists. `user_id` remains the stable identity binding and filter; the das
 shows the email/name as the owner label.
 
 Admin (`/api/v1/admin`; current organization owner/admin + key `admin:*`, or organization admin cookie session):
-`/users` (list, add emails, role, suspend/remove), `/keys` (list, revoke), `/sessions/:id/visibility`,
+`/users` (list, add emails, role, suspend/remove), `/keys` (list, revoke), `/sessions` (the
+moderation list of every control session, §9.5), `/sessions/:id/visibility`,
 `/sessions/:id/purge`, `/audit`, `/redaction/policies` (CRUD), `/redaction/test`,
-`/redaction/rescan`, `/redaction/rescan/:id` (GET progress), `/installations/:id/tools`
+`/redaction/rescan` (POST start, GET list runs), `/redaction/rescan/:id` (GET progress),
+`/redaction/rescan/:id/sessions` (GET a run's changed targets), `/redaction/summary`,
+`/redaction/hits` (GET the per-message ledger, §5.3), `/installations/:id/tools`
 (`POST`, `{ enabled, reason }`, returning `{ installation_id, tools_enabled }`),
 `/status` (current organization queue/backlog/spend snapshots), and `/metrics/:group`
 (historical §10 metric groups with the shared `filters: {date_from, date_to, repo_name?, metric?}`
@@ -1564,7 +1600,13 @@ the capture hook, stating how many indexed sessions touch the repository.
 
 `claude mcp add -s user -t http agentcommons <URL>/mcp -H "Authorization: Bearer ac_…"`;
 `codex mcp add agentcommons --url <URL>/mcp --bearer-token-env-var AGENTCOMMONS_API_KEY`;
-Gemini `mcpServers` entry. Claude user MCP entries live in `~/.claude.json`, separately
+Gemini `mcpServers` entry `{ httpUrl: <URL>/mcp, headers: { Authorization: "Bearer ac_…" } }`.
+The key is literal in the Claude and Gemini entries: `${AGENTCOMMONS_API_KEY}` is expanded
+by the Gemini CLI from the shell but not by the Gemini Code Assist extension host, which
+sent the placeholder verbatim and was refused every few seconds (Appendix A); Codex alone
+reads the variable, through its own `bearer_token_env_var`. A key that reaches the server
+as an unexpanded `${…}` placeholder is refused with a 401 that says so (§9.2). Claude user
+MCP entries live in `~/.claude.json`, separately
 from the hooks in `~/.claude/settings.json`; Codex and Gemini use their hook config files.
 The Claude entry carries `alwaysLoad: true` (§6.1 step 4): without it Claude Code loads
 the tools only through `ToolSearch`, so the model never sees the governing sentence
@@ -1773,6 +1815,32 @@ retries with the original manifest; repeated purge requests retain its counts. C
 identity, admission/usage ledgers, receipts and redacted audit survive. PostgreSQL
 redaction-event rows are deleted in the initial transaction. Backups are outside the
 manifest and documented as such.
+
+**Moderation list.** `GET /admin/sessions` lists every session the organization holds in
+`trace_session_control`, whatever its publication, visibility or purge state, so an admin
+sees exactly the set `/admin/sessions/:id/visibility` and `/admin/sessions/:id/purge` act
+on. The reader views (`api_ro.sessions` and everything built on it) admit only sessions
+with a published revision, so a capture whose projection is `queued`, `waiting_source`
+(the native transcript never arrived) or `failed` is absent from every list a member
+endpoint serves; here it appears with that state. Each row carries identity from control
+(harness, harness session id, user email, hostname, start, last activity, status),
+`visibility`, `purged_at`, `published` (a published revision exists), `projection_state`
+and the parent link, plus the published title, repository and message count of the page's
+published rows from one id-bounded read of `api_ro.sessions` inside the same publication
+fence. Filters are user email, harness, status, visibility, purged, published, one session
+id, a `started_at` window and `roots_only`; sorting is by start, last activity, user,
+harness, status, visibility or purge time; paging uses offset cursors to the end;
+`total.sessions` is the window count of the page's own control scan (§7.5 item 4). The
+route requires effective admin authority and audits `sessions.moderation`. The dashboard's
+Moderation page reads only this route: visibility, purge and publication are columns and
+filters, and the matching count is shown beside them.
+
+**Where the actions live.** The session page offers organization owners and admins (the
+membership role the admin routes enforce) the same visibility and purge actions from its
+header, through the same admin routes and the same confirmation dialog as the Moderation
+page, so the audit rows do not change. Members see no control. The page shows the result
+at once: a Private badge in the header, a purge notice, the purged skeleton's empty
+transcript.
 
 ---
 
@@ -2051,7 +2119,10 @@ header carries with human labels and copyable ids; a Details panel with token to
 models used, installation, cwd, entrypoint, start and end commits, end reason, and links;
 a bounded virtualized transcript whose rows show role, kind, tool name, timestamp, and the
 model when it changes, with token counts and raw record id on hover; collapsible tool
-blocks and thinking toggle. The transcript reads `get` with `page_bytes` at the 256 KB
+blocks and thinking toggle. Organization owners and admins get a Moderate menu in the
+header with the Moderation page's visibility and purge actions (§9.5); a private session
+shows a Private badge and a purged one a purge notice; members see neither control. The
+transcript reads `get` with `page_bytes` at the 256 KB
 page cap: a head page from the start (or two messages above a deep link), which is the
 only request that computes the session header, then the remaining seq ranges up to
 `message_count` with `header=false`, sized from the head page's bytes per message so one
@@ -2127,7 +2198,13 @@ remain usable at 320/390 px without horizontal document expansion.
 
 **Admin.** Users (adding people by email, password setup links, role changes,
 organization membership suspension/removal), Keys, Audit (filters, CSV), Moderation
-(visibility, purge with reason), Redaction (policies, test, rescan progress), Status and
+(every control session from `GET /admin/sessions` with visibility, purge and publication
+state as columns and filters, the matching count and paging to the end; visibility and
+purge with reason, §9.5), Redaction (policies, test, rescan progress, and the
+ledger of §5.3: totals with 7- and 30-day windows split into capture and rescan, counts
+per policy, each rescan run expanding to the sessions it changed with their counts and
+the messages redacted in each, and the recent redactions, every session and message a
+link to `/app/sessions/:id#<seq>`; counts and positions only, never redacted text), Status and
 Settings. **Status** covers operational health only: ingest per day, capture failures,
 redaction hits, queue depth, embedding backlog and spend, as charts and tables, with
 date/repository filters for historical health; current queue/spend snapshots remain
@@ -2550,14 +2627,26 @@ the running API container, otherwise tags the running image `agentcommons:previo
 starts the stack (migration before API), waits for `/ready`, and on failure restores the
 previous image with `--no-deps`, exits non-zero and holds that release until a newer one
 is published. `--now` forces a check regardless of `AUTO_UPDATE`; `--status` prints the
-running version, the configured and pulled images and the last result. The single-node
+running version, the configured and pulled images and the last result. Every run
+records its outcome in `/var/lib/agentcommons/update-state`: `last_check` on every timer
+run (updates enabled or not, so the file proves the timer is alive), `last_result`,
+`last_ok` when a check completed (up to date, updated, disabled or a held release
+skipped), `failures` (consecutive failed runs, reset by a completed check), the images
+involved and the held release. The updater reads `.env` as the last release left it and
+never renders or edits it, so it changes the image and nothing else: the database the
+stack runs on (ADR 0063), the Compose file list and every other setting stay as applied.
+The single-node
 apply pulls the image, writes `COMPOSE_FILE` into `.env` so both paths run the same files,
 installs the updater and enables the timer; stack setting `autoUpdate` (default `true`)
 renders `AUTO_UPDATE`. The updater replaces the image only; checkout changes (Compose
 files, mounted configuration) still arrive through the release script or `git pull`.
 `GET /admin/status` and the MCP `status` tool report `server.version`
-(`AGENTCOMMONS_VERSION`, default `development`) and `server.auto_update`; Admin → Status
-shows both.
+(`AGENTCOMMONS_VERSION`, default `development`), `server.auto_update` and
+`server.updater`, the state file read from `UPDATE_STATE_FILE` when
+`docker-compose.updater.yml` (part of `COMPOSE_FILE` on a host that runs the timer)
+mounts its directory read-only into the API container, null otherwise; Admin → Status
+shows the version, the automatic-update setting and the updater's last result, last
+check, failure streak and held release.
 Development runs both databases on loopback with `docker-compose.dev.yml`, plus `pnpm dev`.
 `pnpm db:migrate` applies the PostgreSQL control schema before the native ClickHouse schema.
 
@@ -2938,6 +3027,16 @@ to `harness_version`/`entrypoint`. A 2026-09-08 live run (SDK driver with fork/r
 git observations, or the end observation, and that the detached uploads acknowledged the
 final `session_shutdown` bytes within seconds of process exit.
 
+**Gemini Code Assist and env placeholders, 2026-09-11 (production).** The VS Code Gemini
+Code Assist extension reads `~/.gemini/settings.json` `mcpServers` in the extension host,
+which has neither the shell's `AGENTCOMMONS_API_KEY` export nor the CLI's `${VAR}`
+expansion: an entry written as `"Authorization": "Bearer ${AGENTCOMMONS_API_KEY}"` was sent
+verbatim, and the server logged `POST /mcp` 401 `INVALID_API_KEY` about every 4 s (3,207
+rows in two hours on one installation). The Claude Code user entry had the same shape and
+only worked because the CLI expands it from a login shell. Both entries now carry the key
+literally (the files are 0600); Codex keeps `bearer_token_env_var`, which is how its
+`codex mcp add` works, and the shell exports remain for it.
+
 **Prompt-time context from hooks, 2026-09-11.** Claude Code 2.1.266
 (`fixtures/hooks/claude-code-2.1.266-prompt-context-events.jsonl`): a `-p` session in an
 isolated `CLAUDE_CONFIG_DIR` with `--settings` registering one `UserPromptSubmit` hook
@@ -3007,6 +3106,7 @@ ADR 0036 for live methods, successful/rejected captures, and projection rules.
 | `LOG_LEVEL` | `info` | |
 | `AGENTCOMMONS_VERSION` | `development` | the release baked into the image by `release.yml` (12-hex commit); reported as `server.version` by `/admin/status` (ADR 0059) |
 | `AUTO_UPDATE` | `true` | read from the stack `.env` by the host's hourly updater and reported as `server.auto_update`; `false` keeps the timer idle |
+| `UPDATE_STATE_FILE` | `/var/lib/agentcommons/update-state` | the host updater's state file, reported as `server.updater` by `/admin/status` when `docker-compose.updater.yml` mounts its directory into the container; absent file reads as null |
 | Compose `AGENTCOMMONS_IMAGE` | empty, meaning `ghcr.io/agentcommonsdev/agentcommons:stable` | image for `api` and `migrate` in `docker-compose.yml`; a `sha-<12 hex>` tag pins one release |
 | client `config.json`: `realtime`, `syncIntervalSeconds`, `syncBytesThreshold`, `disabledPaths`, `installationId` | `true`, `10`, `65536`, `[]`, generated | §6 |
 

@@ -2,8 +2,8 @@ import { z } from "zod";
 import { v7 as uuidv7 } from "uuid";
 import type { TraceReaders } from "@agentcommons/traces";
 import { MetricsService } from "./metrics.js";
-import type { Prisma } from "@agentcommons/db";
 import {
+  Prisma,
   lockTracePublication,
   lockTraceSessionControl,
   type PrismaClient,
@@ -17,6 +17,8 @@ import {
   purgeOutputSchema,
   auditListInputSchema,
   auditOutputSchema,
+  moderationInputSchema,
+  moderationOutputSchema,
   statusOutputSchema,
   redactionRescanInputSchema,
   jobOutputSchema,
@@ -25,9 +27,10 @@ import type { AuditService } from "./audit.js";
 import type { CursorCodec } from "./cursor.js";
 import type { TraceQueue } from "./trace-outbox.js";
 import { lockOrganization } from "./auth.js";
+import { readUpdaterState } from "./health.js";
 import { mutationOperation } from "./mutation.js";
 import { readOperation } from "./read-operation.js";
-import { wireValue } from "./read-budget.js";
+import { offsetPage, wireValue } from "./read-budget.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 
 /** The job service as admin operations see it: the trace queue plus rescans and status. */
@@ -69,6 +72,36 @@ const auditCursorSchema = z.strictObject({
   id: z.uuid(),
   cutoff: z.iso.datetime(),
 });
+/** Sort keys of the moderation list as control columns; the request enum admits only these. */
+const moderationSort = {
+  started_at: "s.started_at",
+  last_activity_at: "s.last_activity_at",
+  user_email: "u.email",
+  harness: "s.harness::text",
+  status: "s.status::text",
+  visibility: "s.visibility::text",
+  purged_at: "s.purged_at",
+} as const;
+/** One control row of the moderation list as PostgreSQL returns it, with the window total. */
+const moderationRowSchema = z.object({
+  session_id: z.string(),
+  harness: z.string(),
+  harness_session_id: z.string(),
+  user_email: z.string().nullable(),
+  installation_hostname: z.string().nullable(),
+  started_at: z.date(),
+  last_activity_at: z.date(),
+  ended_at: z.date().nullable(),
+  status: z.string(),
+  visibility: z.string(),
+  purged_at: z.date().nullable(),
+  published: z.boolean(),
+  projection_state: z.string(),
+  parent_session_id: z.string().nullable(),
+  parent_relation: z.string().nullable(),
+  total: z.bigint(),
+});
+const countRowSchema = z.object({ count: z.bigint() });
 /** Derived session fields a purge resets; the manifest and the audit detail list the same set. */
 const purgeResetFields = [
   "normalizer_context",
@@ -88,8 +121,15 @@ export class AdminService {
       audit: AuditService;
       cursors: CursorCodec;
       jobs: AdminJobs;
-      /** The release this process runs and whether its host installs new ones (env.server). */
-      server: { version: string; autoUpdate: boolean };
+      /**
+       * The release this process runs, whether its host installs new ones and where the
+       * host updater's state file is when mounted (env.server).
+       */
+      server: {
+        version: string;
+        autoUpdate: boolean;
+        updateStateFile?: string;
+      };
     },
   ) {
     this.metricsService = new MetricsService(dependencies);
@@ -285,6 +325,173 @@ export class AdminService {
       },
     );
   }
+  /**
+   * Every session the organization holds in control, whatever its publication, visibility
+   * or purge state, so an admin lists the same set the visibility and purge routes act on
+   * (§9.5). One control scan per page carries the rows and the total as a window count; the
+   * published title, repository and message count of the page's rows come from one
+   * id-bounded read of `api_ro.sessions` under the same publication fence.
+   */
+  sessions(context: ServiceContext, input: unknown) {
+    return readOperation(
+      this.dependencies.audit,
+      context,
+      {
+        action: "sessions.moderation",
+        resourceType: "session",
+        detail: input ?? null,
+      },
+      async (caller) => {
+        const request = moderationInputSchema.parse(input);
+        const binding = wireValue({
+          operation: "sessions.moderation",
+          organization: caller.organizationId,
+          ...request,
+          cursor: null,
+        });
+        let total: number | undefined;
+        const page = await offsetPage(
+          this.dependencies.cursors,
+          binding,
+          request.cursor,
+          request.limit,
+          (offset, take) =>
+            this.dependencies.readers.read(caller, async (client) => {
+              const f = request.filters;
+              const conditions = [
+                Prisma.sql`s.organization_id=${caller.organizationId}`,
+                ...(f.user_email === undefined
+                  ? []
+                  : [Prisma.sql`u.email=${f.user_email}`]),
+                ...(f.harness === undefined
+                  ? []
+                  : [Prisma.sql`s.harness::text=${f.harness}`]),
+                ...(f.status === undefined
+                  ? []
+                  : [Prisma.sql`s.status::text=${f.status}`]),
+                ...(f.visibility === undefined
+                  ? []
+                  : [Prisma.sql`s.visibility::text=${f.visibility}`]),
+                ...(f.purged === undefined
+                  ? []
+                  : [
+                      f.purged
+                        ? Prisma.sql`s.purged_at IS NOT NULL`
+                        : Prisma.sql`s.purged_at IS NULL`,
+                    ]),
+                ...(f.published === undefined
+                  ? []
+                  : [
+                      f.published
+                        ? Prisma.sql`s.published_revision>0`
+                        : Prisma.sql`s.published_revision=0`,
+                    ]),
+                ...(f.session_id === undefined
+                  ? []
+                  : [Prisma.sql`s.id=${f.session_id}::uuid`]),
+                ...(f.since === undefined
+                  ? []
+                  : [Prisma.sql`s.started_at>=${new Date(f.since)}`]),
+                ...(f.until === undefined
+                  ? []
+                  : [Prisma.sql`s.started_at<${new Date(f.until)}`]),
+                ...(request.roots_only
+                  ? [Prisma.sql`s.parent_session_id IS NULL`]
+                  : []),
+              ];
+              const from = Prisma.sql`FROM trace_session_control s LEFT JOIN "user" u ON u.id=s.user_id LEFT JOIN installation i ON i.organization_id=s.organization_id AND i.id=s.installation_id WHERE ${Prisma.join(conditions, " AND ")}`;
+              const order = Prisma.raw(
+                `${moderationSort[request.sort ?? "started_at"]} ${request.order === "asc" ? "ASC" : "DESC"} NULLS LAST`,
+              );
+              const rows = moderationRowSchema
+                .array()
+                .parse(
+                  await client.control.$queryRaw(
+                    Prisma.sql`SELECT s.id::text AS session_id,s.harness::text AS harness,s.harness_session_id,u.email AS user_email,i.hostname AS installation_hostname,s.started_at,s.last_activity_at,s.ended_at,s.status::text AS status,s.visibility::text AS visibility,s.purged_at,s.published_revision>0 AS published,s.projection_state,s.parent_session_id::text AS parent_session_id,s.parent_relation::text AS parent_relation,count(*) OVER () AS total ${from} ORDER BY ${order},s.id LIMIT ${take} OFFSET ${offset}`,
+                  ),
+                );
+              // A window past the last row carries no aggregate; only then is a count of
+              // the predicate (with no window) needed to state the total.
+              const first = rows[0];
+              total = first
+                ? Number(first.total)
+                : offset === 0
+                  ? 0
+                  : Number(
+                      countRowSchema
+                        .array()
+                        .parse(
+                          await client.control.$queryRaw(
+                            Prisma.sql`SELECT count(*) AS count ${from}`,
+                          ),
+                        )[0]?.count ?? 0,
+                    );
+              // Only published rows have a read model; one id-bounded read serves the page.
+              const published = rows
+                .filter((row) => row.published)
+                .map((row) => row.session_id);
+              const details = new Map<
+                string,
+                {
+                  title: string | null;
+                  repo_name: string | null;
+                  message_count: number;
+                }
+              >();
+              if (published.length) {
+                const result = await client.query(
+                  "SELECT session_id,title,repo_name,message_count FROM api_ro.sessions WHERE session_id IN {ids:Array(UUID)}",
+                  { ids: published },
+                );
+                for (const row of result.rows)
+                  details.set(String(row.session_id), {
+                    title: typeof row.title === "string" ? row.title : null,
+                    repo_name:
+                      typeof row.repo_name === "string" ? row.repo_name : null,
+                    message_count: Number(row.message_count),
+                  });
+              }
+              return rows.map((row) => {
+                const detail = details.get(row.session_id);
+                return {
+                  session_id: row.session_id,
+                  harness: row.harness,
+                  harness_session_id: row.harness_session_id,
+                  user_email: row.user_email,
+                  installation_hostname: row.installation_hostname,
+                  started_at: row.started_at.toISOString(),
+                  last_activity_at: row.last_activity_at.toISOString(),
+                  ended_at: row.ended_at?.toISOString() ?? null,
+                  status: row.status,
+                  visibility: row.visibility,
+                  purged_at: row.purged_at?.toISOString() ?? null,
+                  published: row.published,
+                  projection_state: row.projection_state,
+                  parent_session_id: row.parent_session_id,
+                  parent_relation: row.parent_relation,
+                  title: detail?.title ?? null,
+                  repo_name: detail?.repo_name ?? null,
+                  message_count: detail?.message_count ?? null,
+                };
+              });
+            }),
+        );
+        if (total === undefined)
+          throw new Error("The moderation total is unavailable.");
+        return moderationOutputSchema.parse({
+          ...page,
+          total: { sessions: total },
+        });
+      },
+      {
+        permission: "admin",
+        describeResult: (result) => ({
+          row_count: result.items.length,
+          total: result.total,
+        }),
+      },
+    );
+  }
   auditLog(context: ServiceContext, input: unknown) {
     return readOperation(
       this.dependencies.audit,
@@ -397,7 +604,7 @@ export class AdminService {
       context,
       { action: "status", resourceType: "organization" },
       async (caller) => {
-        const [ingest, failures, redactions, jobs, projection] =
+        const [ingest, failures, redactions, jobs, projection, updater] =
           await Promise.all([
             this.dependencies.prisma.$queryRaw<
               { date: string; count: number }[]
@@ -429,6 +636,9 @@ export class AdminService {
               (SELECT count(*)::int FROM trace_session_control WHERE organization_id=${caller.organizationId} AND projection_state='failed') AS failed_sessions,
               (SELECT count(*)::int FROM trace_session_control WHERE organization_id=${caller.organizationId} AND projection_state='waiting_source') AS waiting_source_sessions,
               (SELECT count(*)::int FROM trace_audit_outbox o JOIN audit_event a ON a.id=o.audit_id WHERE a.organization_id=${caller.organizationId}) AS pending_audit_events`,
+            this.dependencies.server.updateStateFile
+              ? readUpdaterState(this.dependencies.server.updateStateFile)
+              : null,
           ]);
         const state = projection[0];
         if (!state) throw new Error("The projection status is unavailable.");
@@ -436,6 +646,7 @@ export class AdminService {
           server: {
             version: this.dependencies.server.version,
             auto_update: this.dependencies.server.autoUpdate,
+            updater,
           },
           ingest_per_day: ingest,
           failures,

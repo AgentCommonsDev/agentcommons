@@ -1,14 +1,17 @@
 import {
+  attributeRedactionHits,
   completeRunSession,
   redactTraceSnapshot,
   snapshotUnchanged,
   traceRescanPayloadSchema,
+  type RecordedRedaction,
+  type RedactionHitInput,
 } from "./trace-rescan.js";
 import { createPolicyCache } from "./policy-cache.js";
 import { reauthorizeJob } from "../auth/jobs.js";
 import type { IdentityPolicy } from "../auth/config.js";
 import { requirePermission, ServiceError } from "./context.js";
-import { persistRedactionCounts } from "./policies.js";
+import { persistRedactionCounts, persistRedactionHits } from "./policies.js";
 import { posix } from "node:path";
 import { v7 as uuidv7 } from "uuid";
 import type { z } from "zod";
@@ -68,6 +71,8 @@ interface Build {
   projection: ReturnType<typeof projectTrace>;
   messages: TraceMessageDelta[];
   files: TraceFileDelta[];
+  /** Where this plan's redactions landed, per message (§5.3); written with the control row. */
+  hits: RedactionHitInput[];
 }
 /** Rows written to the sink per statement. */
 const SINK_BATCH = 500;
@@ -392,8 +397,17 @@ export class TraceProjectionService {
         : null;
     let context = normalizerContextSchema.parse(plan.control.normalizerContext);
     let lifecycle = false;
+    // Every hit the accepts (by record) and this rescan (below) applied, attributed to
+    // messages once the projection exists.
+    const recorded: RecordedRedaction[] = [];
     for (const outbox of plan.outboxes.filter((row) => row.kind === "ingest")) {
       const payload = traceOutboxPayloadSchema.parse(outbox.payload);
+      for (const hit of payload.redactions)
+        recorded.push({
+          ...hit,
+          ingestBatchId: payload.envelope.batchId,
+          redactedAt: outbox.createdAt,
+        });
       const incoming = payload.records.map(sourceFromOutbox);
       const raw = incoming.map((record) => ({
         ...record,
@@ -480,6 +494,18 @@ export class TraceProjectionService {
           ...(rewritten.counts.get(lastReceipt.id) ?? []),
           ...rewritten.metadataCounts,
         ]);
+      const rescannedAt = new Date();
+      for (const hit of rewritten.hits)
+        recorded.push({ ...hit, redactedAt: rescannedAt });
+      if (lastReceipt)
+        for (const hit of rewritten.metadataCounts)
+          recorded.push({
+            recordId: null,
+            ingestBatchId: lastReceipt.id,
+            policyId: hit.policyId,
+            count: hit.count,
+            redactedAt: rescannedAt,
+          });
     }
     const projection = projectTrace(
       {
@@ -597,12 +623,21 @@ export class TraceProjectionService {
       ))
     )
       return null;
-    return { target, snapshot, rewritten, projection, messages, files };
+    return {
+      target,
+      snapshot,
+      rewritten,
+      projection,
+      messages,
+      files,
+      hits: attributeRedactionHits(recorded, projection?.messages ?? []),
+    };
   }
   /** Commit the built generation on the control row, if the lease still holds. */
   private async publish(plan: Plan, build: Build): Promise<void> {
     const { organizationId, sessionId } = plan;
-    const { target, snapshot, rewritten, projection, messages, files } = build;
+    const { target, snapshot, rewritten, projection, messages, files, hits } =
+      build;
     await this.dependencies.prisma.$transaction(async (tx) => {
       await lockSession(tx, organizationId, sessionId);
       const current = await tx.traceSessionControl.findUniqueOrThrow({
@@ -629,6 +664,13 @@ export class TraceProjectionService {
             sessionId,
             counts,
           );
+      await persistRedactionHits(
+        tx,
+        organizationId,
+        sessionId,
+        plan.rescan?.runId ?? null,
+        hits,
+      );
       await tx.traceSessionControl.update({
         where: { organizationId_id: { organizationId, id: sessionId } },
         data: {

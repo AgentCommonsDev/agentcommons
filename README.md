@@ -154,6 +154,8 @@ sudo install -m 0644 scripts/self-host/systemd/agentcommons-update.* /etc/system
 sudo systemctl enable --now agentcommons-update.timer
 ```
 
+Add `docker-compose.updater.yml` to `COMPOSE_FILE` so Admin → Status shows the updater's
+last check and result.
 The unit expects the checkout at `/opt/agentcommons/app`; change `AGENTCOMMONS_APP_DIR`
 with `systemctl edit agentcommons-update.service` if yours lives elsewhere. Set
 `AUTO_UPDATE=false` in `.env` to stop automatic updates at any time, and run

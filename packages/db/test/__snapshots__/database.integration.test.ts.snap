@@ -35,6 +35,9 @@ ALTER TABLE "organization_settings" DROP CONSTRAINT "organization_settings_organ
 ALTER TABLE "redaction_event" DROP CONSTRAINT "redaction_event_organization";
 
 -- DropForeignKey
+ALTER TABLE "redaction_hit" DROP CONSTRAINT "redaction_hit_organization";
+
+-- DropForeignKey
 ALTER TABLE "redaction_policy" DROP CONSTRAINT "redaction_policy_organization";
 
 -- DropForeignKey

@@ -2,6 +2,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -93,6 +94,10 @@ function fixture(env = "AUTO_UPDATE=true\nPUBLIC_URL=http://localhost:3000\n") {
   function run(args: string[], scenario: Scenario = {}) {
     writeFileSync(readyFile, scenario.ready === false ? "0\n" : "1\n");
     writeFileSync(log, "");
+    const envFile = join(stack, ".env");
+    const envBefore = existsSync(envFile)
+      ? readFileSync(envFile, "utf8")
+      : null;
     const result = spawnSync("bash", [updater, ...args], {
       encoding: "utf8",
       env: {
@@ -112,6 +117,11 @@ function fixture(env = "AUTO_UPDATE=true\nPUBLIC_URL=http://localhost:3000\n") {
         ...scenario.env,
       },
     });
+    // The updater changes the image and nothing else: .env is read as the last release
+    // left it and never rendered or edited, so it cannot switch databases (ADR 0063).
+    expect(existsSync(envFile) ? readFileSync(envFile, "utf8") : null).toBe(
+      envBefore,
+    );
     return {
       status: result.status,
       stdout: result.stdout,
@@ -282,6 +292,42 @@ describe("self-host updater", () => {
       false,
     );
     expect(pull.state()).toContain("last_result=pull-failed");
+  });
+  it("records last_check on every run, counts consecutive failures and records last_ok when a check completes, for Admin → Status", () => {
+    const { run } = fixture();
+    const first = run(["--now"], { running: "sha256:aaa", pullFails: true });
+    expect(first.state()).toMatch(
+      /^last_check=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m,
+    );
+    expect(first.state()).toContain("failures=1");
+    expect(first.state()).not.toContain("last_ok=");
+    const second = run(["--now"], { running: "sha256:aaa", pullFails: true });
+    expect(second.state()).toContain("failures=2");
+    // A completed check (nothing to install) resets the count and stamps last_ok.
+    const current = run(["--now"], {
+      running: "sha256:aaa",
+      pulled: "sha256:aaa",
+    });
+    expect(current.state()).toContain("last_result=unchanged");
+    expect(current.state()).toContain("failures=0");
+    expect(current.state()).toMatch(/^last_ok=\d{4}-\d{2}-\d{2}T/m);
+    // A rolled-back release counts as a failure; the hold that follows completes a check.
+    const failed = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:fff",
+      ready: false,
+    });
+    expect(failed.state()).toContain("last_result=rolled-back");
+    expect(failed.state()).toContain("failures=1");
+    const held = run([], { running: "sha256:aaa", pulled: "sha256:fff" });
+    expect(held.state()).toContain("last_result=skipped");
+    expect(held.state()).toContain("failures=0");
+    // The timer with updates off still proves the updater is alive.
+    const { run: disabled } = fixture("AUTO_UPDATE=false\n");
+    const off = disabled([], { running: "sha256:aaa" });
+    expect(off.state()).toContain("last_result=disabled");
+    expect(off.state()).toMatch(/^last_check=/m);
+    expect(off.state()).toContain("failures=0");
   });
   it("refuses to run outside a checkout with docker-compose.yml and .env", () => {
     const { run, stack } = fixture();

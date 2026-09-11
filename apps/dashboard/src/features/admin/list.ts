@@ -14,12 +14,14 @@ interface ListRequest<Sort extends string, Filters extends object> {
 /**
  * One server-paginated list: applied filters, cursor stack, sort state, the current page
  * query and the props the DataTable needs, including a CSV exporter that walks every page.
- * Changing the filters starts the cursor stack over.
+ * Changing the filters starts the cursor stack over. `Result` is the page the server
+ * returns, so a list whose pages carry totals keeps them typed on `query.data`.
  */
 export function useListPage<
   T,
   Sort extends string,
   Filters extends object = Record<string, never>,
+  Result extends Page<T> = Page<T>,
 >({
   queryKey,
   initialSort,
@@ -36,7 +38,7 @@ export function useListPage<
   fetchPage: (
     request: ListRequest<Sort, Filters>,
     signal: AbortSignal,
-  ) => Promise<Page<T>>;
+  ) => Promise<Result>;
   csvName: string;
   initialFilters?: Filters;
   enabled?: boolean;

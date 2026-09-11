@@ -23,6 +23,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "../components/ui/tabs";
+import { ModerationMenu } from "../features/admin/moderation";
 import { FilesTab } from "../features/sessions/files";
 import { RawTab } from "../features/sessions/raw";
 import { ReuseCard } from "../features/sessions/reuse";
@@ -51,7 +52,8 @@ export function SessionPage({
   seq: number | null;
   child?: string;
 }) {
-  const { organization } = useWorkspace();
+  // Owner and admin memberships moderate from here; the admin routes enforce the same.
+  const { organization, admin } = useWorkspace();
   // With `child`, the hash names a message inside that nested run, not this transcript.
   const selected = child === undefined ? seq : null;
   const focus: RunFocus | null =
@@ -208,7 +210,17 @@ export function SessionPage({
           </span>
         </Alert>
       )}
-      <SessionHeaderView header={header} stream={stream} related={nodes} />
+      {header.purged_at !== null && (
+        <div data-testid="session-purged">
+          <Alert variant="warning">{labels.moderation.purged}</Alert>
+        </div>
+      )}
+      <SessionHeaderView
+        header={header}
+        stream={stream}
+        related={nodes}
+        actions={admin ? <ModerationMenu session={header} /> : undefined}
+      />
       <ReuseCard sessionId={id} />
       <Tabs
         value={tab}

@@ -25,12 +25,24 @@ const recordSchema = z.strictObject({
   receivedAt: z.iso.datetime(),
   redactionContext: redactionContextSchema,
 });
+/**
+ * One policy's hits on one accepted record, or on the batch's metadata (envelope, context,
+ * keys) when `recordId` is null. The projection turns them into per-message rows once it
+ * knows which message each record became (§5.3).
+ */
+export const outboxRedactionSchema = z.strictObject({
+  recordId: z.uuid().nullable(),
+  policyId: z.uuid(),
+  count: z.number().int().positive(),
+});
 export const traceOutboxPayloadSchema = z.strictObject({
   envelope: ingestEnvelopeSchema,
   records: z.array(recordSchema),
   normalizerContext: normalizerContextSchema,
   lifecycleApplied: z.boolean(),
   contextApplied: z.boolean(),
+  // Default for rows queued before the field existed.
+  redactions: z.array(outboxRedactionSchema).default([]),
 });
 export function outboxRecord(record: SourceRecord) {
   return recordSchema.parse({

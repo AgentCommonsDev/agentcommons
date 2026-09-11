@@ -4,18 +4,23 @@ import {
 } from "../redaction/policy.js";
 import { z } from "zod";
 import {
+  catalogDescription,
   createListInputSchema,
   decimalIntegerSchema,
   emailSchema,
+  harnessSchema,
   identityIdSchema,
   jsonValueSchema,
   keyPermissionsSchema,
   nonnegativeIntegerSchema,
+  nullableTextSchema,
   paginatedOutput,
   paginationSchema,
+  parentRelationSchema,
   organizationRoleSchema,
   reasonSchema,
   sessionIdSchema,
+  sessionStatusSchema,
   transportSchema,
   utcDateTimeSchema,
   visibilitySchema,
@@ -70,6 +75,110 @@ export const purgeOutputSchema = mutationOutputSchema.extend({
     reset_fields: z.array(z.string()),
     retained: z.array(z.string()),
   }),
+});
+/** Where a session's read model stands in `trace_session_control.projection_state` (§5.2, §9.5). */
+export const projectionStateSchema = z.enum([
+  "queued",
+  "waiting_source",
+  "published",
+  "failed",
+]);
+const session = (column: string) => catalogDescription("sessions", column);
+/**
+ * `GET /admin/sessions`: every session the organization holds in control, whatever its
+ * publication, visibility or purge state. Each key narrows; every key given must hold.
+ */
+export const moderationFiltersSchema = z.strictObject({
+  user_email: emailSchema
+    .optional()
+    .describe("Sessions run by this member (exact email)"),
+  harness: harnessSchema.optional().describe("Sessions of this coding agent"),
+  status: sessionStatusSchema.optional().describe(session("status")),
+  visibility: visibilitySchema.optional().describe(session("visibility")),
+  purged: z
+    .boolean()
+    .optional()
+    .describe("True: purged sessions only; false: sessions with content"),
+  published: z
+    .boolean()
+    .optional()
+    .describe(
+      "True: sessions with a published read model; false: sessions still queued, waiting for their transcript or failed",
+    ),
+  session_id: sessionIdSchema.optional().describe("One session by id"),
+  since: utcDateTimeSchema
+    .optional()
+    .describe("Sessions started at or after this UTC time (inclusive)"),
+  until: utcDateTimeSchema
+    .optional()
+    .describe("Sessions started before this UTC time (exclusive)"),
+});
+export const moderationInputSchema = createListInputSchema([
+  "started_at",
+  "last_activity_at",
+  "user_email",
+  "harness",
+  "status",
+  "visibility",
+  "purged_at",
+]).extend({
+  filters: moderationFiltersSchema.default({}),
+  /** Only sessions without a parent: subagent, fork and spawned runs stay inside their parent. */
+  roots_only: z.boolean().default(false),
+});
+/** One control row with the published title, repository and count when the read model has them. */
+export const moderationSessionSchema = z.strictObject({
+  session_id: sessionIdSchema.describe(session("session_id")),
+  harness: harnessSchema.describe(session("harness")),
+  harness_session_id: z.string().describe(session("harness_session_id")),
+  /** Null once the member's account no longer exists. */
+  user_email: emailSchema.nullable().describe(session("user_email")),
+  installation_hostname: z
+    .string()
+    .nullable()
+    .describe(session("installation_hostname")),
+  started_at: utcDateTimeSchema.describe(session("started_at")),
+  last_activity_at: utcDateTimeSchema.describe(session("last_activity_at")),
+  ended_at: utcDateTimeSchema.nullable().describe(session("ended_at")),
+  status: sessionStatusSchema.describe(session("status")),
+  visibility: visibilitySchema.describe(session("visibility")),
+  purged_at: utcDateTimeSchema.nullable().describe(session("purged_at")),
+  published: z
+    .boolean()
+    .describe(
+      "True when a read-model revision is published, so the session appears in sessions, search and sql",
+    ),
+  projection_state: projectionStateSchema.describe(
+    "Where the read model stands: queued, waiting_source (the native transcript has not arrived), published or failed",
+  ),
+  parent_session_id: sessionIdSchema
+    .nullable()
+    .describe(session("parent_session_id")),
+  parent_relation: parentRelationSchema
+    .nullable()
+    .describe(session("parent_relation")),
+  title: nullableTextSchema.describe(
+    "Published title; null for a purged or not yet published session",
+  ),
+  repo_name: nullableTextSchema.describe(
+    "Published repository; null for a purged or not yet published session",
+  ),
+  message_count: nonnegativeIntegerSchema
+    .nullable()
+    .describe("Published message count; null for a not yet published session"),
+});
+/** Counts over the whole filtered set of control rows; the page window never changes them. */
+export const moderationTotalSchema = z.strictObject({
+  sessions: nonnegativeIntegerSchema.describe(
+    "Sessions the filters match across every page",
+  ),
+});
+export const moderationOutputSchema = paginatedOutput(
+  moderationSessionSchema,
+).extend({
+  total: moderationTotalSchema.describe(
+    "Total over every matching session, computed with the same filters and roots_only as the page",
+  ),
 });
 export const auditFiltersSchema = z.strictObject({
   user_id: identityIdSchema.optional(),
@@ -213,10 +322,31 @@ export const keyCreateOutputSchema = z.strictObject({
 export const apiKeyRevealOutputSchema = z.strictObject({
   key: apiKeySecretSchema,
 });
+/**
+ * What the host's hourly updater last recorded (`/var/lib/agentcommons/update-state`,
+ * ADR 0059), read by the API when the file is mounted; null when it is not. Empty values
+ * in the file read as null.
+ */
+export const updaterStateSchema = z.strictObject({
+  /** Every timer run records one, whether or not updates are enabled: the updater is alive. */
+  last_check: utcDateTimeSchema.nullable(),
+  /** The last run that completed its check (up to date, updated, or a held release skipped). */
+  last_ok: utcDateTimeSchema.nullable(),
+  last_result: z.string().max(100).nullable(),
+  last_image: z.string().max(200).nullable(),
+  previous_image: z.string().max(200).nullable(),
+  updated_at: utcDateTimeSchema.nullable(),
+  /** A release that did not come up; held until a newer one is published. */
+  failed_image: z.string().max(200).nullable(),
+  failed_at: utcDateTimeSchema.nullable(),
+  /** Consecutive runs that ended in a failure (pull, start, rollback); zero after a completed check. */
+  failures: nonnegativeIntegerSchema,
+});
 /** The release this server runs and whether its host installs new releases on its own (ADR 0059). */
 export const serverStatusSchema = z.strictObject({
   version: z.string().min(1).max(100),
   auto_update: z.boolean(),
+  updater: updaterStateSchema.nullable(),
 });
 export const statusOutputSchema = z.strictObject({
   server: serverStatusSchema,

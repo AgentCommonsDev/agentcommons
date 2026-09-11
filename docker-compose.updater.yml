@@ -1,0 +1,10 @@
+# Lets the API report the host updater's last check and result on Admin -> Status (ADR
+# 0059). agentcommons-update.sh records its outcome in /var/lib/agentcommons/update-state
+# on the host; this overlay mounts that directory read-only into the API container, where
+# UPDATE_STATE_FILE (default /var/lib/agentcommons/update-state) names the file. Add it to
+# COMPOSE_FILE beside docker-compose.yml on a host that runs the updater timer; a stack
+# without it reports no updater state and behaves as before.
+services:
+  api:
+    volumes:
+      - ${AGENTCOMMONS_STATE_DIR:-/var/lib/agentcommons}:/var/lib/agentcommons:ro

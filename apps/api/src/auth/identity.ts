@@ -179,6 +179,14 @@ export async function identityFromHeaders(
         "INVALID_API_KEY",
         "Provide a valid organization API key.",
       );
+    // A client that sent the installer's `${AGENTCOMMONS_API_KEY}` placeholder verbatim
+    // (an IDE extension host without the shell export) gets told so instead of a lookup.
+    if (secret.includes("${"))
+      throw new ServiceError(
+        401,
+        "INVALID_API_KEY",
+        "The API key placeholder was sent unexpanded. Re-run the AgentCommons installer so the key is written into the client configuration.",
+      );
     const key = await verifyKey(db, auth, secret);
     const owner = await db.apiKeyOwner.findUnique({ where: { keyId: key.id } });
     if (!owner || owner.organizationId !== key.referenceId)

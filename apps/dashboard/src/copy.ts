@@ -9,6 +9,7 @@ import { keysCopy } from "./copy/keys";
 import { apiReferenceCopy } from "./copy/api-reference";
 import { sqlCopy } from "./copy/sql";
 import { adminCopy } from "./copy/admin";
+import { redactionActivityCopy } from "./copy/redaction";
 import { settingsCopy } from "./copy/settings";
 import { legalCopy } from "./copy/legal";
 export { links } from "./copy/public";
@@ -29,7 +30,7 @@ export const copy = {
   keys: keysCopy,
   apiReference: apiReferenceCopy,
   sql: sqlCopy,
-  admin: adminCopy,
+  admin: { ...adminCopy, redactionActivity: redactionActivityCopy },
   settings: settingsCopy,
   legal: legalCopy,
 } as const;

@@ -926,6 +926,20 @@ it("answers 503 AUTH_UNAVAILABLE when a credential cannot be verified and 401 on
       operatorContext(),
     ),
   ).rejects.toMatchObject({ statusCode: 401, code: "INVALID_API_KEY" });
+  // An IDE host that sent the installer's env placeholder verbatim is told so (§8.4).
+  const unexpanded: unknown = expect.stringContaining(
+    "placeholder was sent unexpanded",
+  );
+  await expect(
+    auth.authenticate(
+      new Headers({ authorization: "Bearer ${AGENTCOMMONS_API_KEY}" }),
+      operatorContext(),
+    ),
+  ).rejects.toMatchObject({
+    statusCode: 401,
+    code: "INVALID_API_KEY",
+    message: unexpanded,
+  });
   await auth.revokeKey(
     ownerA,
     minted.result.metadata.id,
@@ -954,7 +968,7 @@ it("answers 503 AUTH_UNAVAILABLE when a credential cannot be verified and 401 on
     skip: failuresBefore,
   });
   expect(failures.map((row) => row.statusCode)).toEqual([
-    503, 503, 503, 503, 401, 401, 401,
+    503, 503, 503, 503, 401, 401, 401, 401,
   ]);
   expect(failures.every((row) => row.organizationId === null)).toBe(true);
 });

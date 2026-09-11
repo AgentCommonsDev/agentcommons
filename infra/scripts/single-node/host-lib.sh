@@ -130,7 +130,9 @@ keep_bundled_database() {
 # always, the ClickHouse Cloud file for TRACE_STORE=clickhouse-cloud and, last so its
 # resets win, the external-database file for AGENTCOMMONS_DATABASE=external (ADR 0063).
 compose_files() {
-  local files=docker-compose.yml:docker-compose.caddy.yml
+  # The single-node host always runs the updater timer; the overlay lets Admin -> Status
+  # show its last check and result (ADR 0059).
+  local files=docker-compose.yml:docker-compose.caddy.yml:docker-compose.updater.yml
   [ "$(setting TRACE_STORE "$1")" != clickhouse-cloud ] || files=$files:docker-compose.clickhouse-cloud.yml
   [ "$(setting AGENTCOMMONS_DATABASE "$1")" != external ] || files=$files:docker-compose.external-database.yml
   printf '%s' "$files"

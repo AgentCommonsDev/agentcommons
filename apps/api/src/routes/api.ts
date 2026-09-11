@@ -683,6 +683,18 @@ export function registerApiRoutes(
       runtime().auth.revokeKey(ctx, input.params.id, input.body, false),
   );
   route(
+    "GET",
+    "/admin/sessions",
+    "List every session of the organization for moderation",
+    {
+      ...read,
+      query: schema.moderationInputSchema,
+      output: schema.moderationOutputSchema,
+      csv: true,
+    },
+    (ctx, input) => runtime().admin.sessions(ctx, input.query),
+  );
+  route(
     "POST",
     "/admin/sessions/:id/visibility",
     "Change session visibility",
@@ -820,6 +832,37 @@ export function registerApiRoutes(
   );
   route(
     "GET",
+    "/admin/redaction/summary",
+    "Read the organization's redaction totals, recent windows, per-policy counts and run tally",
+    { ...read, output: schema.redactionSummaryOutputSchema },
+    (ctx) => runtime().policies.summary(ctx),
+  );
+  route(
+    "GET",
+    "/admin/redaction/hits",
+    "List where redactions landed: session, message position, policy, source and time",
+    {
+      ...read,
+      query: schema.redactionHitsInputSchema,
+      output: schema.redactionHitsOutputSchema,
+      csv: true,
+    },
+    (ctx, input) => runtime().policies.hits(ctx, input.query),
+  );
+  route(
+    "GET",
+    "/admin/redaction/rescan",
+    "List redaction rescan runs with progress and the sessions each changed",
+    {
+      ...read,
+      query: schema.redactionRunsInputSchema,
+      output: schema.redactionRunsOutputSchema,
+      csv: true,
+    },
+    (ctx, input) => runtime().policies.runs(ctx, input.query),
+  );
+  route(
+    "GET",
     "/admin/redaction/rescan/:id",
     "Read redaction rescan progress",
     {
@@ -828,6 +871,20 @@ export function registerApiRoutes(
       output: schema.jobProgressSchema,
     },
     (ctx, input) => runtime().jobs.progress(ctx, input.params.id),
+  );
+  route(
+    "GET",
+    "/admin/redaction/rescan/:id/sessions",
+    "List the sessions a redaction rescan run changed, with counts",
+    {
+      ...read,
+      params: schema.identityParamsSchema,
+      query: schema.redactionRunSessionsInputSchema,
+      output: schema.redactionRunSessionsOutputSchema,
+      csv: true,
+    },
+    (ctx, input) =>
+      runtime().policies.runSessions(ctx, input.params.id, input.query),
   );
   route(
     "POST",

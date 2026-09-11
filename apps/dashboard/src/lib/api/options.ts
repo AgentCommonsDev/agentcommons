@@ -74,6 +74,15 @@ export const memberSortKeys = [
   "suspended",
   "created_at",
 ] as const;
+export const moderationSortKeys = [
+  "started_at",
+  "last_activity_at",
+  "user_email",
+  "harness",
+  "status",
+  "visibility",
+  "purged_at",
+] as const;
 export const auditSortKeys = [
   "ts",
   "action",
@@ -91,6 +100,17 @@ export const policySortKeys = [
   "created_at",
   "updated_at",
 ] as const;
+export const redactionRunSortKeys = [
+  "created_at",
+  "state",
+  "redaction_count",
+  "total_sessions",
+] as const;
+export const redactionRunSessionSortKeys = [
+  "processed_at",
+  "redaction_count",
+] as const;
+export const redactionHitSortKeys = ["redacted_at", "count", "seq"] as const;
 export const metricSortKeys = [
   "date",
   "metric",

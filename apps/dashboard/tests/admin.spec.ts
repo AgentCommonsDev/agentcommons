@@ -339,14 +339,26 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
   await waitForSession(request, sessionId, state.ingestKey);
   await page.goto(paths.admin.moderation);
   const table = page.getByTestId("admin-moderation-table");
+  // The list is the organization's control rows: the count states how many match, and
+  // publication, visibility and purge are columns and filters (R-MOD-04).
+  const total = page.getByTestId("moderation-total");
+  await expect(total).toHaveText(/^\d[\d,]* sessions?$/);
+  const text = copy.admin.moderation;
   await applyFilters(page, copy.app.common.filters, async (scope) => {
     await scope
-      .getByRole("textbox", { name: copy.admin.moderation.user, exact: true })
+      .getByRole("textbox", { name: text.user, exact: true })
       .fill(state.ownerEmail);
+    await scope
+      .getByRole("combobox", { name: text.published.label, exact: true })
+      .selectOption({ label: text.published.on });
   });
   const row = tableRow(table, textLine);
   await expect(row).toBeVisible();
+  await expect(total).toHaveText(/^\d[\d,]* sessions?$/);
   await expect(row).toContainText(copy.app.statuses.PUBLIC);
+  await expect(row).toContainText(text.publication.published);
+  await expect(row).toContainText(text.root);
+  await accessible(page);
   await expect(
     await rowAction(row, copy.admin.moderation.visible),
   ).toHaveAttribute("aria-disabled", "true");
@@ -364,6 +376,26 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
     "Hide browser verification content",
   );
   await expect(row).toContainText(copy.app.statuses.PRIVATE);
+  // The state is a filter too: only private sessions, still counted.
+  await applyFilters(page, copy.app.common.filters, async (scope) => {
+    await scope
+      .getByRole("combobox", { name: text.visibility, exact: true })
+      .selectOption("PRIVATE");
+  });
+  await expect(row).toBeVisible();
+  await expect(total).toHaveText(/^\d[\d,]* sessions?$/);
+  // Once the filtered page lands, no row on it is visible to members.
+  await expect(
+    table
+      .locator(`td[data-label="${fields.visibility}"]`)
+      .filter({ hasNotText: copy.app.statuses.PRIVATE }),
+  ).toHaveCount(0);
+  await applyFilters(page, copy.app.common.filters, async (scope) => {
+    await scope
+      .getByRole("combobox", { name: text.visibility, exact: true })
+      .selectOption("");
+  });
+  await expect(row).toBeVisible();
   await expect(
     await rowAction(row, copy.admin.moderation.private),
   ).toHaveAttribute("aria-disabled", "true");
@@ -391,10 +423,21 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
     "Purge disposable browser verification content",
   );
   await expect(row).toHaveCount(0);
-  // Purge keeps the identity skeleton (spec §9.5): the row stays, its content is gone.
+  // Purge keeps the identity skeleton (spec §9.5): the row stays, its content is gone,
+  // and the purge is a column and a filter rather than a hidden state.
   const tombstone = tableRow(table, sessionId);
   await expect(tombstone).toContainText(copy.app.common.untitledSession);
+  await expect(tombstone).toContainText(copy.app.statuses.PURGED);
   await expect(tombstone).not.toContainText(textLine);
+  await applyFilters(page, copy.app.common.filters, async (scope) => {
+    await scope
+      .getByRole("combobox", { name: text.purged.label, exact: true })
+      .selectOption({ label: text.purged.on });
+  });
+  await expect(tombstone).toBeVisible();
+  await expect(
+    tombstone.locator(`td[data-label="${fields.purged_at}"]`),
+  ).not.toHaveText(copy.app.common.unavailable);
   const raw = await request.get(`/api/v1/sessions/${sessionId}/raw`, {
     headers: { authorization: `Bearer ${state.ingestKey}` },
   });

@@ -409,7 +409,7 @@ describe("single-node resource contract", () => {
       "/root/agentcommons",
       "get-parameters-by-path",
       "--with-decryption",
-      "files=docker-compose.yml:docker-compose.caddy.yml",
+      "files=docker-compose.yml:docker-compose.caddy.yml:docker-compose.updater.yml",
       "files=$files:docker-compose.clickhouse-cloud.yml",
       "files=$files:docker-compose.external-database.yml",
       "dictGet(",

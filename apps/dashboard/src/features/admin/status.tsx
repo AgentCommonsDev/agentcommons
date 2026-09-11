@@ -14,6 +14,7 @@ import {
   metricGroups,
   type MetricRow,
 } from "@agentcommons/core/schemas/metrics";
+import type * as schemas from "@agentcommons/core/schemas";
 import {
   installationSortKeys,
   type installationSchema,
@@ -69,6 +70,27 @@ export interface MetricFilters {
   repo_name?: string;
 }
 type HealthMetric = (typeof metricGroups.health)[number];
+type UpdaterState = z.infer<typeof schemas.serverStatusSchema>["updater"];
+/** The host updater's last result as a label; the raw word when the API reports one this build does not know. */
+function updaterResult(state: UpdaterState): string {
+  if (!state) return text.updaterNone;
+  if (!state.last_result) return copy.app.common.unavailable;
+  return text.updaterResults[state.last_result] ?? state.last_result;
+}
+function updaterHint(state: UpdaterState): string {
+  if (!state) return text.updaterNoneHint;
+  return [
+    state.last_check ? text.updaterChecked(dateTime(state.last_check)) : null,
+    state.failures > 0 ? text.updaterFailures(number(state.failures)) : null,
+    state.failed_image
+      ? text.updaterHeld(
+          state.failed_image.replace(/^sha256:/, "").slice(0, 12),
+        )
+      : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(copy.app.common.separator);
+}
 const healthMetrics = metricGroups.health;
 const text = copy.admin.status;
 const dimension = (key: keyof MetricRow) => metricColumnLabel(key);
@@ -417,7 +439,7 @@ export function SnapshotCards({ embeddings }: { embeddings: boolean }) {
           <StatGrid
             data-testid="admin-status-snapshot"
             className={
-              embeddings ? "sm:grid-cols-3 lg:grid-cols-6" : "sm:grid-cols-3"
+              embeddings ? "sm:grid-cols-4 lg:grid-cols-7" : "sm:grid-cols-4"
             }
           >
             <Stat
@@ -430,6 +452,15 @@ export function SnapshotCards({ embeddings }: { embeddings: boolean }) {
               hint={
                 data.server.auto_update ? text.autoUpdateOn : text.autoUpdateOff
               }
+            />
+            <Stat
+              label={text.updater}
+              value={
+                <span className="text-lg">
+                  {updaterResult(data.server.updater)}
+                </span>
+              }
+              hint={updaterHint(data.server.updater)}
             />
             <Stat label={text.queue} value={number(data.queue_depth)} />
             <Stat

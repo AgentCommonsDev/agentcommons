@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "../../components/ui/menu";
 
-interface RowMenuItem {
+export interface RowMenuItem {
   label: string;
   icon?: LucideIcon;
   onSelect?: () => void;
@@ -20,13 +20,18 @@ interface RowMenuItem {
   destructive?: boolean;
   disabled?: boolean;
 }
-/** Overflow menu for a table row. Destructive items sit below a separator. */
+/**
+ * Overflow menu for a table row, or with `showLabel` a labelled button for a page header.
+ * Destructive items sit below a separator.
+ */
 export function RowMenu({
   label,
   items,
+  showLabel = false,
 }: {
   label: string;
   items: RowMenuItem[];
+  showLabel?: boolean;
 }) {
   const safe = items.filter((item) => !item.destructive);
   const destructive = items.filter((item) => item.destructive);
@@ -59,14 +64,21 @@ export function RowMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          className="text-muted"
-        >
-          <MoreHorizontal aria-hidden />
-        </Button>
+        {showLabel ? (
+          <Button variant="secondary" size="sm">
+            <MoreHorizontal aria-hidden />
+            {label}
+          </Button>
+        ) : (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={label}
+            className="text-muted"
+          >
+            <MoreHorizontal aria-hidden />
+          </Button>
+        )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {safe.map(render)}

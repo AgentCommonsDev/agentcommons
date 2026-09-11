@@ -90,11 +90,14 @@ export const adminCopy = {
   },
   moderation: {
     title: "Moderation",
-    description: "Hide sessions from members or remove their stored content.",
+    description:
+      "Every session captured for this organization, including sessions members cannot see. Hide a session from members or remove its stored content.",
     visible: "Make visible",
     private: "Make private",
     purge: "Purge content",
     open: "Open session",
+    /** The session page's menu of these actions, shown to organization admins. */
+    actions: "Moderate",
     visibleTitle: "Make this session visible?",
     visibleDescription: "Every member of the organization can read it again.",
     privateTitle: "Make this session private?",
@@ -104,10 +107,42 @@ export const adminCopy = {
     purgeDescription:
       "Messages, files and source records are deleted, and later uploads for this session are rejected. The session record and its audit history stay.",
     purgeWarning: "Purged content cannot be recovered.",
-    repo: "Repository",
     user: "User",
+    harness: "Coding tool",
+    allHarnesses: "All coding tools",
+    visibility: "Visibility",
+    allVisibility: "Visible and private",
+    purged: {
+      label: "Purged",
+      all: "Purged and kept",
+      on: "Purged",
+      off: "Content kept",
+    },
+    published: {
+      label: "Published",
+      all: "Published and pending",
+      on: "Published",
+      off: "Not published",
+    },
+    scope: {
+      label: "Sessions",
+      all: "Roots and subagent runs",
+      roots: "Root sessions only",
+    },
     since: "Started after",
     until: "Started before",
+    parent: "Run",
+    root: "Root",
+    /** Title placeholder for a session whose read model has not been published. */
+    notPublished: "Not yet published",
+    publication: {
+      published: "Published",
+      queued: "Publishing",
+      waiting_source: "Waiting for transcript",
+      failed: "Publishing failed",
+    },
+    /** "128 sessions": every session the filters match, not only this page. */
+    total: { one: "session", many: "sessions" },
     csvName: "sessions-moderation.csv",
     empty: "No sessions match",
     emptyHint: "Change the filters or check back after new captures arrive.",
@@ -241,6 +276,24 @@ export const adminCopy = {
     server: "Server",
     autoUpdateOn: "Automatic updates on",
     autoUpdateOff: "Automatic updates off",
+    updater: "Host updater",
+    updaterNone: "No report",
+    updaterNoneHint:
+      "The updater's state is not mounted into the API. Add docker-compose.updater.yml to COMPOSE_FILE on the host.",
+    updaterChecked: (when: string) => `Checked ${when}`,
+    updaterFailures: (count: string) => `${count} failed runs in a row`,
+    updaterHeld: (image: string) => `Release ${image} held`,
+    updaterResults: {
+      unchanged: "Up to date",
+      updated: "Updated",
+      updating: "Updating",
+      disabled: "Updates off",
+      skipped: "Release held",
+      "pull-failed": "Pull failed",
+      failed: "Start failed",
+      "rolled-back": "Rolled back",
+      "rollback-failed": "Rollback failed",
+    } as Record<string, string>,
     /** Metric column headings that differ from the shared field labels. */
     dimensions: {
       policy_id: "Policy ID",

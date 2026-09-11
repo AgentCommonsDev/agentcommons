@@ -15,6 +15,7 @@ export default defineConfig({
     "sessions-tree.spec.ts",
     "keys-sql.spec.ts",
     "admin.spec.ts",
+    "redaction.spec.ts",
     "embeddings.spec.ts",
     "account.spec.ts",
     "visual.spec.ts",

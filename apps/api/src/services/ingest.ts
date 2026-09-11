@@ -46,8 +46,10 @@ import { mutationOperation } from "./mutation.js";
 import {
   outboxRecord,
   traceOutboxPayloadSchema,
+  type outboxRedactionSchema,
   type TraceQueue,
 } from "./trace-outbox.js";
+import type { z } from "zod";
 
 /**
  * A batch's publication as the response reports it: everything the session accepted up
@@ -338,9 +340,18 @@ export class IngestService {
           );
         }
         const sanitized: SourceRecord[] = [];
+        // Which record each hit landed on, for the per-message ledger the projection
+        // writes once it knows the record's message (§5.3); the totals above stay the counters.
+        const recorded: z.infer<typeof outboxRedactionSchema>[] = [];
         for (const record of masked) {
           const redacted = await redactSourceRecord(adapter, record, redactor);
           count(redacted.counts);
+          for (const hit of redacted.counts)
+            recorded.push({
+              recordId: record.id,
+              policyId: hit.policyId,
+              count: hit.count,
+            });
           sanitized.push(sanitizeSourceRecord(redacted.value));
         }
         // Spawn evidence is read before redaction so the child reference canonicalizes
@@ -667,6 +678,19 @@ export class IngestService {
           spawns,
         );
         await receipt(revision, newerLifecycle);
+        // Hits outside any record (envelope git fields, context, native identities) are
+        // the batch's metadata hits: the counters' remainder per policy.
+        const attributed = new Map<string, number>();
+        for (const hit of recorded)
+          attributed.set(
+            hit.policyId,
+            (attributed.get(hit.policyId) ?? 0) + hit.count,
+          );
+        for (const [policyId, total] of counts) {
+          const rest = total.count - (attributed.get(policyId) ?? 0);
+          if (rest > 0)
+            recorded.push({ recordId: null, policyId, count: rest });
+        }
         const outbox = await tx.traceOutbox.create({
           data: {
             id: uuidv7(),
@@ -680,6 +704,7 @@ export class IngestService {
               normalizerContext: contextData,
               lifecycleApplied: newerLifecycle,
               contextApplied: contextObserved,
+              redactions: recorded,
             }),
           },
         });

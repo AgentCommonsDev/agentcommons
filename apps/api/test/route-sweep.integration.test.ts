@@ -125,6 +125,7 @@ it("serves the core read routes to the organization admin", async () => {
     "/api/v1/dashboards",
     "/api/v1/admin/status",
     "/api/v1/admin/audit",
+    "/api/v1/admin/sessions",
     "/api/v1/admin/users",
     "/api/v1/admin/keys",
     "/api/v1/admin/redaction/policies",

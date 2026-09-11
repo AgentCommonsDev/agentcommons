@@ -318,12 +318,15 @@ export function SessionHeaderView({
   header,
   stream,
   related = [],
+  actions,
 }: {
   header: SessionHeader;
   /** Event stream state while the session is live; the page owns the connection. */
   stream?: StreamState | undefined;
   /** Tree nodes already loaded by the page, used to show counts on related sessions. */
   related?: readonly TreeNode[] | undefined;
+  /** Controls the page adds beside the header's own, such as moderation for admins. */
+  actions?: ReactNode | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const live = header.status === "ACTIVE" && header.ended_at === null;
@@ -357,6 +360,9 @@ export function SessionHeaderView({
               status={header.status}
               purged={header.purged_at !== null}
             />
+            {header.visibility === "PRIVATE" && (
+              <StatusBadge value={header.visibility} />
+            )}
             {header.parent_relation && (
               <StatusBadge value={header.parent_relation} />
             )}
@@ -470,6 +476,7 @@ export function SessionHeaderView({
               {labels.downloadCsv}
             </a>
           </Button>
+          {actions}
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">

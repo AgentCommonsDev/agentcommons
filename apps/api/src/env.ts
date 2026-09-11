@@ -104,6 +104,12 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
       // updater reads AUTO_UPDATE from the same .env, and Admin → Status reports both.
       AGENTCOMMONS_VERSION: z.string().min(1).max(100).default("development"),
       AUTO_UPDATE: boolean.default(true),
+      // The host updater's state file, visible inside the container only when
+      // docker-compose.updater.yml mounts its directory; Admin → Status reports it.
+      UPDATE_STATE_FILE: z
+        .string()
+        .min(1)
+        .default("/var/lib/agentcommons/update-state"),
     },
     runtimeEnv,
     emptyStringAsUndefined: true,
@@ -116,7 +122,11 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
   return {
     ...env,
     saas: env.INSTANCE_MODE === "saas",
-    server: { version: env.AGENTCOMMONS_VERSION, autoUpdate: env.AUTO_UPDATE },
+    server: {
+      version: env.AGENTCOMMONS_VERSION,
+      autoUpdate: env.AUTO_UPDATE,
+      updateStateFile: env.UPDATE_STATE_FILE,
+    },
     embeddingProvider,
     auth: authEnvironment(runtimeEnv).auth,
     clickhouse: clickHouseEnvironment(runtimeEnv),

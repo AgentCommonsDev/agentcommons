@@ -102,7 +102,7 @@ export async function completeRunSession(
     where: {
       organizationId_runId_sessionId: { organizationId, runId, sessionId },
     },
-    data: { processedAt: new Date() },
+    data: { processedAt: new Date(), redactionCount },
   });
   const run = await tx.redactionRun.update({
     where,
@@ -168,6 +168,58 @@ export function snapshotUnchanged(
   );
 }
 
+/** One policy's hits on one stored record, or on session metadata when `recordId` is null. */
+export interface RecordedRedaction {
+  recordId: string | null;
+  ingestBatchId: string;
+  policyId: string;
+  count: number;
+  redactedAt: Date;
+}
+/** A `redaction_hit` row before it is written: the message position is resolved. */
+export interface RedactionHitInput {
+  ingestBatchId: string;
+  policyId: string;
+  seq: number | null;
+  count: number;
+  redactedAt: Date;
+}
+/**
+ * Folds per-record hits into the per-message ledger (§5.3): a record's hits land on the
+ * first message projected from it (`/app/sessions/:id#<seq>`); hits on metadata, and on a
+ * record that projects no message, keep a null position. Rows of one receipt, policy and
+ * position merge.
+ */
+export function attributeRedactionHits(
+  recorded: readonly RecordedRedaction[],
+  messages: readonly { raw_record_id: string | null; seq: number }[],
+): RedactionHitInput[] {
+  const firstSeq = new Map<string, number>();
+  for (const message of messages) {
+    if (message.raw_record_id === null) continue;
+    const current = firstSeq.get(message.raw_record_id);
+    if (current === undefined || message.seq < current)
+      firstSeq.set(message.raw_record_id, message.seq);
+  }
+  const merged = new Map<string, RedactionHitInput>();
+  for (const hit of recorded) {
+    const seq =
+      hit.recordId === null ? null : (firstSeq.get(hit.recordId) ?? null);
+    const key = `${hit.ingestBatchId}\0${hit.policyId}\0${String(seq)}`;
+    const current = merged.get(key);
+    if (current) current.count += hit.count;
+    else
+      merged.set(key, {
+        ingestBatchId: hit.ingestBatchId,
+        policyId: hit.policyId,
+        seq,
+        count: hit.count,
+        redactedAt: hit.redactedAt,
+      });
+  }
+  return [...merged.values()];
+}
+
 /** Reuses native record classification and schema-aware redaction for each storage generation. */
 export async function redactTraceSnapshot(
   redactor: Redactor,
@@ -177,6 +229,8 @@ export async function redactTraceSnapshot(
 ) {
   const counts = new Map<string, RedactionCount[]>();
   const metadataCounts: RedactionCount[] = [];
+  /** Every record hit with the record and receipt it landed on; `counts` holds the same hits by receipt. */
+  const hits: Omit<RecordedRedaction, "redactedAt">[] = [];
   const collect = <T>(result: RedactionResult<T>): T => {
     metadataCounts.push(...result.counts);
     return result.value;
@@ -207,9 +261,16 @@ export async function redactTraceSnapshot(
       ...original,
       ...sanitizeSourceRecord({ ...redacted.value, key: key?.value ?? null }),
     });
-    const hits = counts.get(original.ingestBatchId) ?? [];
-    hits.push(...redacted.counts, ...(key?.counts ?? []));
-    counts.set(original.ingestBatchId, hits);
+    const receiptHits = counts.get(original.ingestBatchId) ?? [];
+    receiptHits.push(...redacted.counts, ...(key?.counts ?? []));
+    counts.set(original.ingestBatchId, receiptHits);
+    for (const hit of [...redacted.counts, ...(key?.counts ?? [])])
+      hits.push({
+        recordId: original.id,
+        ingestBatchId: original.ingestBatchId,
+        policyId: hit.policyId,
+        count: hit.count,
+      });
   }
   const normalizerContext = await context(control.normalizerContext);
   const projectedContext = await context(control.projectedContext);
@@ -256,6 +317,7 @@ export async function redactTraceSnapshot(
     header,
     counts,
     metadataCounts,
+    hits,
     control: {
       normalizerContext,
       projectedContext,
