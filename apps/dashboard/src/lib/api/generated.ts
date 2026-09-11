@@ -7797,6 +7797,7 @@ export interface operations {
           policy_id?: string;
           /** @enum {string} */
           source?: "capture" | "rescan";
+          q?: string;
         };
       };
       header?: never;

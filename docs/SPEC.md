@@ -604,8 +604,11 @@ from the counters, 7- and 30-day windows from receipt arrival and target checkpo
 times split into capture and rescan, per-policy counts, the run tally), `GET
 /admin/redaction/rescan` (runs with progress and changed-session counts), `GET
 /admin/redaction/rescan/:id/sessions` (a run's targets, changed ones by default) and
-`GET /admin/redaction/hits` (the ledger newest first, filterable by run, session, policy
-and source); the Redaction page shows them (§10).
+`GET /admin/redaction/hits` (the ledger newest first, filterable by run, session, policy,
+source and `q`, a case-insensitive match of 1 to 200 characters on the applying policy's
+name, resolved as a semi-join in the same statement; sorts on `redacted_at`, `count` and
+`seq`; offset cursors with `LIMIT n+1` for the next-page flag; CSV); the Redaction page
+shows them (§10).
 
 **Sensitive files.** Tool results whose input path matches `**/.env*`, `**/*.pem`,
 `**/*.key`, `**/id_rsa*`, `**/credentials*`, `**/.npmrc`, `**/.netrc` are replaced
@@ -2325,7 +2328,9 @@ state as columns and filters, the matching count and paging to the end; visibili
 purge with reason, §9.5), Redaction (policies, test, rescan progress, and the
 ledger of §5.3: totals with 7- and 30-day windows split into capture and rescan, counts
 per policy, each rescan run expanding to the sessions it changed with their counts and
-the messages redacted in each, and the recent redactions, every session and message a
+the messages redacted in each, and the recent redactions as a server-paginated list sorted
+by time, count or position, filtered by policy, source, session, run and policy-name search
+with the filters kept in the URL and exported as CSV, every session and message a
 link to `/app/sessions/:id#<seq>`; counts and positions only, never redacted text), Status and
 Settings. **Status** covers operational health only: ingest per day, capture failures,
 redaction hits, queue depth, embedding backlog and spend, as charts and tables, with

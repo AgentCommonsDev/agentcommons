@@ -14,8 +14,11 @@ interface ListRequest<Sort extends string, Filters extends object> {
 /**
  * One server-paginated list: applied filters, cursor stack, sort state, the current page
  * query and the props the DataTable needs, including a CSV exporter that walks every page.
- * Changing the filters starts the cursor stack over. `Result` is the page the server
- * returns, so a list whose pages carry totals keeps them typed on `query.data`.
+ * Changing the filters starts the cursor stack over. Filters live in component state
+ * unless the caller passes `filters` with `onFiltersChange`, which keeps them wherever the
+ * caller does (the URL, for a list whose filtered view is a shareable link). `Result` is
+ * the page the server returns, so a list whose pages carry totals keeps them typed on
+ * `query.data`.
  */
 export function useListPage<
   T,
@@ -29,6 +32,8 @@ export function useListPage<
   fetchPage,
   csvName,
   initialFilters,
+  filters: controlledFilters,
+  onFiltersChange,
   enabled = true,
   refetchInterval,
 }: {
@@ -41,15 +46,20 @@ export function useListPage<
   ) => Promise<Result>;
   csvName: string;
   initialFilters?: Filters;
+  /** The applied filters, when the caller owns them; pair with `onFiltersChange`. */
+  filters?: Filters;
+  onFiltersChange?: (next: Filters) => void;
   enabled?: boolean;
   refetchInterval?: number;
 }) {
   const pagination = usePagination(initialSort, sortKeys);
-  const [filters, setFilterState] = useState<Filters>(
+  const [ownFilters, setOwnFilters] = useState<Filters>(
     () => initialFilters ?? ({} as Filters),
   );
+  const filters = controlledFilters ?? ownFilters;
   const setFilters = (next: Filters) => {
-    setFilterState(next);
+    if (onFiltersChange) onFiltersChange(next);
+    else setOwnFilters(next);
     pagination.reset();
   };
   const query = useQuery({

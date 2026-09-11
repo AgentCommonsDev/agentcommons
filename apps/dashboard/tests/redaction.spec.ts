@@ -7,6 +7,7 @@ import { paths } from "../src/lib/routes";
 import { workspaceOrigin } from "../playwright.shared";
 import {
   accessible,
+  applyFilters,
   expectNoHorizontalOverflow,
   fixture,
   signInAsOwner,
@@ -22,31 +23,30 @@ const created = z.object({ id: z.uuid() });
 const job = z.object({ job_id: z.string() });
 const progress = z.object({ state: z.string() });
 
-/** One captured session whose only message carries `line`; returns its id once it is readable. */
+/** One captured session with one user message per line, in order; returns its id once it is readable. */
 async function capture(
   request: APIRequestContext,
   state: Awaited<ReturnType<typeof fixture>>,
-  line: string,
+  lines: readonly string[],
 ) {
   const envelope = ingestEnvelopeSchema.parse({
     ...state.liveEnvelope,
     harnessSessionId: randomUUID(),
     batchId: randomUUID(),
     sentAt: new Date().toISOString(),
-    sourcePos: 0,
-    records: [
-      {
-        pos: 0,
-        sourceVersion: 0,
-        key: randomUUID(),
-        line: JSON.stringify({
-          type: "user",
-          uuid: randomUUID(),
-          timestamp: new Date().toISOString(),
-          message: { content: [{ type: "text", text: line }] },
-        }),
-      },
-    ],
+    // The observed position covers the last record of the batch.
+    sourcePos: lines.length - 1,
+    records: lines.map((line, pos) => ({
+      pos,
+      sourceVersion: 0,
+      key: randomUUID(),
+      line: JSON.stringify({
+        type: "user",
+        uuid: randomUUID(),
+        timestamp: new Date().toISOString(),
+        message: { content: [{ type: "text", text: line }] },
+      }),
+    })),
     cursor: "1:0",
   });
   const response = await request.post("/api/v1/ingest", {
@@ -95,11 +95,9 @@ test("Redaction activity: counts, rescan runs with the sessions they changed, an
   );
   const name = `canary-${stamp}`.slice(0, 64);
   // A session stored before the policy exists: only a rescan can redact it.
-  const before = await capture(
-    request,
-    state,
+  const before = await capture(request, state, [
     `Stored earlier with CANARY_${stamp}_ONE inside.`,
-  );
+  ]);
   const policy = await page.request.post("/api/v1/admin/redaction/policies", {
     headers: admin,
     data: {
@@ -132,11 +130,9 @@ test("Redaction activity: counts, rescan runs with the sessions they changed, an
       .toBe("completed");
     await messageRedacted(page, before, name);
     // A session captured after the policy exists is redacted at capture.
-    const after = await capture(
-      request,
-      state,
+    const after = await capture(request, state, [
       `Captured later with CANARY_${stamp}_TWO inside.`,
-    );
+    ]);
     await messageRedacted(page, after, name);
 
     await page.goto(paths.admin.redaction);
@@ -213,6 +209,95 @@ test("Redaction activity: counts, rescan runs with the sessions they changed, an
     const removed = await page.request.delete(
       `/api/v1/admin/redaction/policies/${policyId}`,
       { headers: admin, data: { reason: "Browser redaction ledger cleanup" } },
+    );
+    expect(removed.status(), await removed.text()).toBe(200);
+  }
+});
+
+// @req R-RED-11 @req R-DASH-05 @req R-WEB-02
+test("Recent redactions: the policy chip and name search narrow the ledger, the URL carries the filters and the list pages", async ({
+  page,
+  request,
+}, info) => {
+  test.setTimeout(240_000);
+  const state = await fixture();
+  const stamp = `${info.project.name}${String(Date.now())}`.replace(
+    /[^a-z0-9]/gi,
+    "",
+  );
+  const name = `pager-${stamp}`.slice(0, 64);
+  const policy = await page.request.post("/api/v1/admin/redaction/policies", {
+    headers: admin,
+    data: {
+      name,
+      kind: "REGEX",
+      pattern: `PAGER_${stamp}_[0-9]+`,
+      flags: "g",
+      enabled: true,
+    },
+  });
+  expect(policy.status(), await policy.text()).toBe(200);
+  const policyId = created.parse(await policy.json()).id;
+  try {
+    // One session with 51 redacted messages: one ledger row each, one more than a page.
+    const sessionId = await capture(
+      request,
+      state,
+      Array.from(
+        { length: 51 },
+        (_, seq) =>
+          `Message ${String(seq)} carries PAGER_${stamp}_${String(seq)}.`,
+      ),
+    );
+    await messageRedacted(page, sessionId, name);
+
+    await page.goto(paths.admin.redaction);
+    const hits = page.getByTestId("admin-redaction-hits");
+    const rows = hits.locator("tbody tr");
+    await applyFilters(page, text.filterLabel, async (scope) => {
+      await scope
+        .getByRole("combobox", { name: text.policy, exact: true })
+        .selectOption({ label: name });
+      await scope
+        .getByRole("searchbox", { name: text.filterQuery, exact: true })
+        .fill("PAGER");
+    });
+    // The filters are the URL, so the filtered ledger is a link.
+    await expect(page).toHaveURL(new RegExp(`policy_id=${policyId}`));
+    await expect(page).toHaveURL(/q=PAGER/);
+    await expect(rows).toHaveCount(50);
+    await expect(rows.first()).toContainText(name);
+    await expect(rows.first()).toContainText(sessionId);
+    const next = hits.getByRole("button", {
+      name: copy.app.common.next,
+      exact: true,
+    });
+    const previous = hits.getByRole("button", {
+      name: copy.app.common.previous,
+      exact: true,
+    });
+    await expect(next).toBeEnabled();
+    await next.click();
+    await expect(rows).toHaveCount(1);
+    await expect(next).toBeDisabled();
+    await expect(previous).toBeEnabled();
+    await previous.click();
+    await expect(rows).toHaveCount(50);
+    // Reopening the link restores the filtered view.
+    await page.reload();
+    await expect(rows).toHaveCount(50);
+    await expect(rows.first()).toContainText(name);
+    await expectNoHorizontalOverflow(page);
+    // Clearing the filters takes them out of the URL.
+    await hits
+      .getByRole("button", { name: copy.app.common.clear, exact: true })
+      .first()
+      .click();
+    await expect(page).not.toHaveURL(/policy_id=/);
+  } finally {
+    const removed = await page.request.delete(
+      `/api/v1/admin/redaction/policies/${policyId}`,
+      { headers: admin, data: { reason: "Browser redaction paging cleanup" } },
     );
     expect(removed.status(), await removed.text()).toBe(200);
   }

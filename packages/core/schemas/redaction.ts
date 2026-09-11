@@ -2,6 +2,7 @@ import { z } from "zod";
 import { policyKindSchema } from "../redaction/policy.js";
 import {
   createListInputSchema,
+  filterTextMaxLength,
   nonnegativeIntegerSchema,
   paginatedOutput,
   sessionIdSchema,
@@ -44,6 +45,8 @@ export const redactionHitsInputSchema = createListInputSchema(
       session_id: sessionIdSchema.optional(),
       policy_id: sessionIdSchema.optional(),
       source: redactionSourceSchema.optional(),
+      /** Case-insensitive match on the applying policy's name. */
+      q: z.string().trim().min(1).max(filterTextMaxLength).optional(),
     })
     .default({}),
 });

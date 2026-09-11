@@ -39,6 +39,7 @@ import {
   RecentRedactions,
   RedactionSummary,
   RescanRuns,
+  type HitSearch,
 } from "../../features/admin/redaction-activity";
 
 type Kind = Policy["kind"];
@@ -100,7 +101,14 @@ function describe(action: Action | null) {
       };
   }
 }
-export function RedactionPage({ jobId }: { jobId: string | undefined }) {
+export function RedactionPage({
+  jobId,
+  hitSearch,
+}: {
+  jobId: string | undefined;
+  /** The recent-redactions filters the URL carries. */
+  hitSearch: HitSearch;
+}) {
   const { organization } = useWorkspace();
   const client = useQueryClient();
   const navigate = useNavigate();
@@ -272,7 +280,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
           onDismiss={() => {
             void navigate({
               to: paths.admin.redaction,
-              search: { job: undefined },
+              search: (previous) => ({ ...previous, job: undefined }),
             });
           }}
         />
@@ -378,7 +386,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
         />
       </div>
       <RescanRuns live={live} />
-      <RecentRedactions live={live} />
+      <RecentRedactions live={live} search={hitSearch} policies={list.items} />
       <TestRedactionCard policies={list.items} />
       <PolicyDialog
         open={editor !== null}
@@ -430,7 +438,7 @@ export function RedactionPage({ jobId }: { jobId: string | undefined }) {
               );
               await navigate({
                 to: paths.admin.redaction,
-                search: { job: result.job_id },
+                search: (previous) => ({ ...previous, job: result.job_id }),
               });
             }
           }

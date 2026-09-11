@@ -620,6 +620,17 @@ export class PolicyService {
                   : filters.source === "rescan"
                     ? { runId: { not: null } }
                     : {}),
+                // The name lives on the policy the hit's counter points at; a semi-join in
+                // the same statement keeps this one scan of the ledger.
+                ...(filters.q
+                  ? {
+                      event: {
+                        policy: {
+                          name: { contains: filters.q, mode: "insensitive" },
+                        },
+                      },
+                    }
+                  : {}),
               },
               orderBy: [{ [hitSortFields[sort]]: query.order }, { id: "desc" }],
               skip,

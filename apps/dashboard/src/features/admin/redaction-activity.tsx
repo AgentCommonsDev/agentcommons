@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { z } from "zod";
 import type * as schemas from "@agentcommons/core/schemas";
+import { filterTextMaxLength } from "@agentcommons/core/schemas/common";
 import { X } from "lucide-react";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
@@ -13,6 +14,8 @@ import {
   redactionRunSortKeys,
 } from "../../lib/api/options";
 import { counted, dateTime, number } from "../../lib/display";
+import { paths } from "../../lib/routes";
+import type { Policy } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
 import { Disclosure, Stat, StatGrid } from "../../components/app/display";
@@ -26,7 +29,8 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
-import { EnumFilterSelect, FilterBar, countActive } from "./filters";
+import { Input } from "../../components/ui/input";
+import { EnumFilterSelect, FilterBar, compact, countActive } from "./filters";
 import { useListPage } from "./list";
 
 type Run = z.infer<typeof schemas.redactionRunSchema>;
@@ -429,10 +433,64 @@ export function RescanRuns({ live }: { live: boolean }) {
   );
 }
 
-type HitFilters = { source?: Source };
-/** Every redaction newest first, with the session and message it landed on. */
-export function RecentRedactions({ live }: { live: boolean }) {
+/** The `filters` of `redactionHitsInputSchema`, as the generated client types them (no explicit undefined). */
+type HitFilters = {
+  run_id?: string;
+  session_id?: string;
+  policy_id?: string;
+  source?: Source;
+  q?: string;
+};
+/** The search keys of `/app/admin/redaction` that carry the ledger's filters. */
+export type HitSearch = Partial<
+  Record<
+    "policy_id" | "source" | "session_id" | "run_id" | "q",
+    string | undefined
+  >
+>;
+/** The ids the API accepts (RFC 4122 text); the same check gates the URL and the form. */
+const idPattern =
+  "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+const idExpression = new RegExp(`^${idPattern}$`);
+const isId = (value: string | undefined): value is string =>
+  value !== undefined && idExpression.test(value);
+/** The filters a URL names. Malformed values are dropped, so a bad link shows the whole ledger, not an error. */
+function filtersFromSearch(search: HitSearch): HitFilters {
+  const source = sources.find((candidate) => candidate === search.source);
+  const q = search.q?.trim() ?? "";
+  return {
+    ...(isId(search.policy_id) ? { policy_id: search.policy_id } : {}),
+    ...(isId(search.session_id) ? { session_id: search.session_id } : {}),
+    ...(isId(search.run_id) ? { run_id: search.run_id } : {}),
+    ...(source ? { source } : {}),
+    ...(q && q.length <= filterTextMaxLength ? { q } : {}),
+  };
+}
+/** The typed filters; the selects apply on change, these on Apply. */
+type HitDraft = Record<"q" | "session_id" | "run_id", string>;
+const draftOf = (filters: HitFilters): HitDraft => ({
+  q: filters.q ?? "",
+  session_id: filters.session_id ?? "",
+  run_id: filters.run_id ?? "",
+});
+/**
+ * Every redaction newest first, with the session and message it landed on. The filters
+ * live in the URL, so a filtered ledger is a link; `policies` is the page's policy list,
+ * which names the policy chip's choices.
+ */
+export function RecentRedactions({
+  live,
+  search,
+  policies,
+}: {
+  live: boolean;
+  search: HitSearch;
+  policies: readonly Policy[];
+}) {
   const { organization } = useWorkspace();
+  const navigate = useNavigate();
+  const filters = filtersFromSearch(search);
+  const [draft, setDraft] = useState<HitDraft>(() => draftOf(filters));
   const list = useListPage<
     Hit,
     (typeof redactionHitSortKeys)[number],
@@ -442,6 +500,21 @@ export function RecentRedactions({ live }: { live: boolean }) {
     initialSort: "redacted_at",
     sortKeys: redactionHitSortKeys,
     csvName: text.csvHits,
+    filters,
+    onFiltersChange: (next) => {
+      void navigate({
+        to: paths.admin.redaction,
+        search: (previous) => ({
+          ...previous,
+          policy_id: next.policy_id,
+          source: next.source,
+          session_id: next.session_id,
+          run_id: next.run_id,
+          q: next.q,
+        }),
+        replace: true,
+      });
+    },
     fetchPage: async (request, signal) =>
       unwrap(
         await api.GET("/api/v1/admin/redaction/hits", {
@@ -451,6 +524,18 @@ export function RecentRedactions({ live }: { live: boolean }) {
       ),
     ...(live ? { refetchInterval: LIVE_INTERVAL_MS } : {}),
   });
+  const set = (key: keyof HitDraft) => (value: string) => {
+    setDraft((prior) => ({ ...prior, [key]: value }));
+  };
+  // A policy filtered from a link may sit beyond the page's policy list; keep it selectable.
+  const policyIds = policies.map((policy) => policy.id);
+  const policyOptions =
+    filters.policy_id !== undefined && !policyIds.includes(filters.policy_id)
+      ? [filters.policy_id, ...policyIds]
+      : policyIds;
+  const policyName = (id: string) =>
+    policies.find((policy) => policy.id === id)?.name ?? id;
+  const filtered = countActive(filters) > 0;
   const columns: ColumnDef<Hit>[] = [
     {
       accessorKey: "redacted_at",
@@ -508,32 +593,114 @@ export function RecentRedactions({ live }: { live: boolean }) {
             columns={columns}
             label={text.recent}
             rowId={(row) => row.id}
-            emptyTitle={text.noHits}
-            emptyDescription={text.noHitsHint}
+            emptyTitle={filtered ? text.noMatch : text.noHits}
+            emptyDescription={filtered ? text.noMatchHint : text.noHitsHint}
             toolbar={
               <FilterBar
-                label={copy.app.common.filters}
-                activeCount={countActive(list.filters)}
+                label={text.filterLabel}
+                activeCount={countActive(filters)}
                 onApply={() => {
-                  list.setFilters(list.filters);
+                  const { policy_id, source } = filters;
+                  list.setFilters({
+                    ...(policy_id === undefined ? {} : { policy_id }),
+                    ...(source === undefined ? {} : { source }),
+                    ...compact({
+                      q: draft.q.trim(),
+                      session_id: draft.session_id.trim(),
+                      run_id: draft.run_id.trim(),
+                    }),
+                  });
                 }}
                 onClear={() => {
+                  setDraft(draftOf({}));
                   list.setFilters({});
                 }}
                 controls={[
                   {
-                    id: "source",
-                    label: text.source,
-                    width: "sm:w-40",
+                    id: "q",
+                    label: text.filterQuery,
+                    width: "sm:w-48",
+                    render: (props) => (
+                      <Input
+                        {...props}
+                        type="search"
+                        placeholder={text.filterQuery}
+                        maxLength={filterTextMaxLength}
+                        value={draft.q}
+                        onChange={(event) => {
+                          set("q")(event.target.value);
+                        }}
+                      />
+                    ),
+                  },
+                  {
+                    id: "policy",
+                    label: text.policy,
+                    width: "sm:w-44",
                     render: (props) => (
                       <EnumFilterSelect
                         {...props}
-                        value={list.filters.source}
+                        value={filters.policy_id}
+                        options={policyOptions}
+                        optionLabel={policyName}
+                        allLabel={text.allPolicies}
+                        onChange={(next) => {
+                          list.setFilter("policy_id", next);
+                        }}
+                      />
+                    ),
+                  },
+                  {
+                    id: "source",
+                    label: text.source,
+                    width: "sm:w-36",
+                    render: (props) => (
+                      <EnumFilterSelect
+                        {...props}
+                        value={filters.source}
                         options={sources}
                         optionLabel={(value) => text.sources[value]}
                         allLabel={text.allSources}
                         onChange={(next) => {
                           list.setFilter("source", next);
+                        }}
+                      />
+                    ),
+                  },
+                  {
+                    id: "session",
+                    label: text.filterSession,
+                    width: "sm:w-64",
+                    render: (props) => (
+                      <Input
+                        {...props}
+                        type="search"
+                        className={`${props.className} font-mono text-xs`}
+                        placeholder={text.filterSession}
+                        pattern={idPattern}
+                        title={text.idHint}
+                        value={draft.session_id}
+                        onChange={(event) => {
+                          set("session_id")(event.target.value);
+                        }}
+                      />
+                    ),
+                  },
+                  {
+                    id: "run",
+                    label: text.filterRun,
+                    width: "sm:w-64",
+                    render: (props) => (
+                      <Input
+                        {...props}
+                        type="search"
+                        className={`${props.className} font-mono text-xs`}
+                        placeholder={text.filterRun}
+                        pattern={idPattern}
+                        title={text.idHint}
+                        value={draft.run_id}
+                        onChange={(event) => {
+                          set("run_id")(event.target.value);
                         }}
                       />
                     ),

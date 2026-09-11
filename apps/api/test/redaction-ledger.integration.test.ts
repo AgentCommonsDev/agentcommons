@@ -69,7 +69,7 @@ const hitsOf = (sessionId: string, runId: string | null = null) =>
     orderBy: [{ seq: "asc" }],
   });
 
-// @req R-RED-09 @req R-RED-10
+// @req R-RED-09 @req R-RED-10 @req R-RED-11
 it("records where each capture-time redaction landed, per message, and reports totals, windows and per-policy counts to admins only", async () => {
   const saved = await policies.save(organization.owner, null, {
     name: "ledger",
@@ -152,6 +152,49 @@ it("records where each capture-time redaction landed, per message, and reports t
     (await policies.hits(organization.owner, { filters: { source: "rescan" } }))
       .result.items,
   ).toEqual([]);
+  // The policy-name search is case-insensitive and lands on the same rows as the id filter.
+  const byName = (
+    await policies.hits(organization.owner, {
+      filters: { q: "LEDG", session_id: sessionId },
+    })
+  ).result;
+  expect(byName.items.map((hit) => hit.id).sort()).toEqual(
+    listed.items.map((hit) => hit.id).sort(),
+  );
+  expect(
+    (
+      await policies.hits(organization.owner, {
+        filters: { q: "no-such-policy", session_id: sessionId },
+      })
+    ).result.items,
+  ).toEqual([]);
+  // Blank or over-long searches are refused before any query runs.
+  for (const q of ["   ", "x".repeat(201)])
+    await expect(
+      policies.hits(organization.owner, { filters: { q } }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  // Paging: the next-page flag comes from the page's own scan, and the cursor walks on.
+  const first = (
+    await policies.hits(organization.owner, {
+      filters: { session_id: sessionId, q: "ledger" },
+      sort: "seq",
+      order: "asc",
+      limit: 1,
+    })
+  ).result;
+  expect(first.items.map((hit) => hit.seq)).toEqual([0]);
+  expect(first.cursor).not.toBeNull();
+  const second = (
+    await policies.hits(organization.owner, {
+      filters: { session_id: sessionId, q: "ledger" },
+      sort: "seq",
+      order: "asc",
+      limit: 1,
+      cursor: first.cursor,
+    })
+  ).result;
+  expect(second.items.map((hit) => hit.seq)).toEqual([2]);
+  expect(second.cursor).toBeNull();
 
   // Members hold no admin right: every ledger read is refused and audited as such.
   for (const read of [

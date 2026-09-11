@@ -176,6 +176,8 @@ export const responseFormatSchema = /* @__PURE__ */ z
   .enum(["json", "csv"])
   .default("json")
   .describe("Response format: json, or csv for a text/csv export");
+/** Longest free-text list filter accepted (the redaction ledger's policy-name search). */
+export const filterTextMaxLength = 200;
 export function createListInputSchema<
   const T extends readonly [string, ...string[]],
 >(sortKeys: T) {

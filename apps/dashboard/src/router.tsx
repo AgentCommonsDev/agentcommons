@@ -65,17 +65,20 @@ const RedactionPage = lazyRouteComponent(
   () => import("./pages/admin/redaction"),
   "RedactionPage",
 );
-/** Optional string search parameters; anything but a string reads as absent. */
+/**
+ * Optional string search parameters; anything but a string reads as absent. The keys are
+ * optional, so a search reducer can spread the previous search and set only its own.
+ */
 function optionalStrings<Key extends string>(...keys: Key[]) {
   return (
     search: Record<string, unknown>,
-  ): { [Name in Key]: string | undefined } =>
+  ): { [Name in Key]?: string | undefined } =>
     Object.fromEntries(
       keys.map((key) => {
         const value = search[key];
         return [key, typeof value === "string" ? value : undefined];
       }),
-    ) as { [Name in Key]: string | undefined };
+    ) as { [Name in Key]?: string | undefined };
 }
 /** The message sequence a URL hash names, or null for anything else. */
 function hashSequence(hash: string): number | null {
@@ -347,9 +350,19 @@ const adminModerationRoute = createRoute({
 const adminRedactionRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/redaction",
-  validateSearch: optionalStrings("job"),
+  // `job` is the rescan the page watches; the rest are the recent-redactions filters, so a
+  // filtered ledger is a shareable link.
+  validateSearch: optionalStrings(
+    "job",
+    "policy_id",
+    "source",
+    "session_id",
+    "run_id",
+    "q",
+  ),
   component: () => {
-    return <RedactionPage jobId={adminRedactionRoute.useSearch().job} />;
+    const { job, ...hitSearch } = adminRedactionRoute.useSearch();
+    return <RedactionPage jobId={job} hitSearch={hitSearch} />;
   },
 });
 const adminStatusRoute = createRoute({
