@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { manifestStamp } from "./manifest-stamp.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
 await mkdir(resolve(root, "dist"), { recursive: true });
@@ -62,6 +63,10 @@ await writeFile(
     url: `/hook/${version}/hook.js`,
     extensionSha256: createHash("sha256").update(extension).digest("hex"),
     extensionUrl: `/hook/${version}/pi-extension.mjs`,
+    // Gated OFF by default (ADR 0075 rollout): today's five-field manifest unless
+    // AGENTCOMMONS_MANIFEST_STAMP=1, so strict clients keep parsing until they heal onto
+    // the loose schema.
+    ...manifestStamp(process.env, root),
   }),
 );
 

@@ -431,3 +431,128 @@ describe("hook self-update", () => {
     expect(after.configured).toMatchObject({ sha256: hash(NEW_BUNDLE) });
   });
 });
+
+const OLDER = "2026-09-10T00:00:00.000Z";
+const INSTALLED_AT = "2026-09-11T00:00:00.000Z";
+const NEWER = "2026-09-12T00:00:00.000Z";
+/** As after a self-update recorded which bundle it installed, and when it was built. */
+function seedInstalled(
+  directory: string,
+  sha256: string,
+  builtAt?: string,
+): void {
+  const path = join(directory, "update.json");
+  const state = JSON.parse(readFileSync(path, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ...state,
+      checkedAt: 0,
+      installed: { sha256, ...(builtAt ? { builtAt } : {}) },
+    }),
+  );
+}
+const staged = (directory: string): string[] =>
+  readdirSync(directory).filter((name) => name.includes(".update."));
+
+describe("hook self-update never moves to an older build", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  // @req R-CAP-27
+  it("takes a newer build and records its stamp beside the digest", async () => {
+    const f = fixture({ builtAt: NEWER });
+    seedInstalled(f.directory, hash(OLD_BUNDLE), INSTALLED_AT);
+    expect(
+      await selfUpdate(f.directory, f.executable, f.config, {
+        fetch: f.fetcher,
+      }),
+    ).toBe("updated");
+    expect(readFileSync(f.executable, "utf8")).toBe(NEW_BUNDLE);
+    const state = JSON.parse(
+      readFileSync(join(f.directory, "update.json"), "utf8"),
+    ) as { installed?: unknown };
+    expect(state.installed).toEqual({
+      sha256: hash(NEW_BUNDLE),
+      builtAt: NEWER,
+    });
+  });
+  // @req R-CAP-27
+  it("keeps the current bundle when the server offers a strictly older build", async () => {
+    const f = fixture({ builtAt: OLDER });
+    seedInstalled(f.directory, hash(OLD_BUNDLE), INSTALLED_AT);
+    expect(
+      await selfUpdate(f.directory, f.executable, f.config, {
+        fetch: f.fetcher,
+      }),
+    ).toBe("skipped");
+    expect(readFileSync(f.executable, "utf8")).toBe(OLD_BUNDLE);
+    expect(readFileSync(join(f.directory, "pi-extension.mjs"), "utf8")).toBe(
+      OLD_EXTENSION,
+    );
+    expect(f.log()).toContain("offers an older hook build");
+    expect(f.log()).toContain("keeping the current one");
+    // Held before any download, so nothing was fetched or staged.
+    expect(f.requests).not.toContain("GET /hook/0.1.0-test/hook.js");
+    expect(staged(f.directory)).toEqual([]);
+    // The recorded stamp is unchanged: a hold touches no state but `checkedAt`.
+    const state = JSON.parse(
+      readFileSync(join(f.directory, "update.json"), "utf8"),
+    ) as { installed?: unknown };
+    expect(state.installed).toEqual({
+      sha256: hash(OLD_BUNDLE),
+      builtAt: INSTALLED_AT,
+    });
+  });
+  // @req R-CAP-27
+  it("refuses an older build even when the manifest lies about its digest", async () => {
+    const f = fixture({ builtAt: OLDER, sha256: hash("a different bundle") });
+    seedInstalled(f.directory, hash(OLD_BUNDLE), INSTALLED_AT);
+    expect(
+      await selfUpdate(f.directory, f.executable, f.config, {
+        fetch: f.fetcher,
+      }),
+    ).toBe("skipped");
+    expect(readFileSync(f.executable, "utf8")).toBe(OLD_BUNDLE);
+    expect(f.requests).not.toContain("GET /hook/0.1.0-test/hook.js");
+    expect(staged(f.directory)).toEqual([]);
+  });
+  // @req R-CAP-27
+  it("does nothing when the stamp and the digests already match", async () => {
+    const f = fixture({
+      builtAt: INSTALLED_AT,
+      sha256: hash(OLD_BUNDLE),
+      extensionSha256: hash(OLD_EXTENSION),
+    });
+    seedInstalled(f.directory, hash(OLD_BUNDLE), INSTALLED_AT);
+    expect(
+      await selfUpdate(f.directory, f.executable, f.config, {
+        fetch: f.fetcher,
+      }),
+    ).toBe("current");
+    expect(readFileSync(f.executable, "utf8")).toBe(OLD_BUNDLE);
+  });
+  // @req R-CAP-27
+  it("falls back to the digest path when either stamp is unknown", async () => {
+    // Offered stamp present but no stamp recorded yet (a first upgrade): the digest decides.
+    const first = fixture({ builtAt: OLDER });
+    expect(
+      await selfUpdate(first.directory, first.executable, first.config, {
+        fetch: first.fetcher,
+      }),
+    ).toBe("updated");
+    expect(readFileSync(first.executable, "utf8")).toBe(NEW_BUNDLE);
+    // A legacy field-less manifest against a recorded stamp: still the digest path.
+    const legacy = fixture();
+    seedInstalled(legacy.directory, hash(OLD_BUNDLE), INSTALLED_AT);
+    expect(
+      await selfUpdate(legacy.directory, legacy.executable, legacy.config, {
+        fetch: legacy.fetcher,
+      }),
+    ).toBe("updated");
+    expect(readFileSync(legacy.executable, "utf8")).toBe(NEW_BUNDLE);
+  });
+});

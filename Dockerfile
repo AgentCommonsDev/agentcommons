@@ -13,7 +13,17 @@ COPY packages ./packages
 COPY scripts ./scripts
 COPY tsconfig.base.json README.md ./
 RUN pnpm install --frozen-lockfile
-RUN pnpm build
+# The hook manifest can carry the same release stamp as the image labels (ADR 0059/0075) so
+# a client can compare the served bundle's age. Emission is gated OFF by default
+# (AGENTCOMMONS_MANIFEST_STAMP, ADR 0075 rollout): phase 1 ships without the fields so
+# strict clients keep parsing; phase 2 passes AGENTCOMMONS_MANIFEST_STAMP=1 once installs
+# have healed onto the loose schema. Declared here, after the cached install layer, the
+# build args reach `pnpm build` (the manifest producer) only for the build step; with the
+# gate on and no revision/created passed, `pnpm build` falls back to git HEAD or omits it.
+ARG AGENTCOMMONS_REVISION=
+ARG AGENTCOMMONS_CREATED=
+ARG AGENTCOMMONS_MANIFEST_STAMP=
+RUN AGENTCOMMONS_MANIFEST_STAMP="$AGENTCOMMONS_MANIFEST_STAMP" AGENTCOMMONS_REVISION="$AGENTCOMMONS_REVISION" AGENTCOMMONS_CREATED="$AGENTCOMMONS_CREATED" pnpm build
 
 FROM base AS runtime
 # The release workflow passes the 12-character commit; local builds report "development".

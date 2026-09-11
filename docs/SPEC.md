@@ -1045,7 +1045,18 @@ end of an uploader run, whatever the drain's outcome (a failed send, a rejected
 credential, a corrupt state file or an interrupted checkpoint all still reach this step,
 so a bundle whose drain fails still receives the release that fixes it), at most once per
 hour per installation (`update.json` in the data directory records the last check), the
-detached uploader GETs `/hook/manifest.json` from the configured server. If the manifest digests differ from the installed files it:
+detached uploader GETs `/hook/manifest.json` from the configured server. Once stamp emission
+is enabled (`AGENTCOMMONS_MANIFEST_STAMP=1`, a phased rollout, ADR 0075) the manifest also
+carries the bundle's build stamp — `builtAt` (the image's RFC 3339
+`org.opencontainers.image.created`) and `revision` (its commit), the same stamp the host
+updater compares between images (ADR 0059, ADR 0075). Forward-only: when the installed
+bundle's recorded stamp and the manifest's `builtAt` are both present and the manifest's is
+strictly older, the update is refused before any download and logged ("offers an older hook
+build …; keeping the current one"), so a server that regresses to an older bundle cannot pull
+an installation backwards, even one whose manifest lies about its digest. Equal, newer, or
+either stamp unknown (a first upgrade, a legacy field-less manifest, or emission still off)
+falls back to the digest comparison below. If the manifest digests differ from the installed
+files it:
 
 1. downloads the artifacts from the manifest URLs resolved against the configured
    server origin (same origin only; any other origin is refused), with an 8 MB cap per
@@ -1069,9 +1080,11 @@ accumulates partial artifacts beside `hook.js`; when one rename succeeded and a 
 failed, the log names the files that were replaced and the next hourly check fetches only
 what still differs. The swap writes only `hook.js`, `pi-extension.mjs`, `update.json`
 and `hook.log`: a batch left pending by the failed run before it is delivered by the next
-run, byte for byte, from the same state file. `update.json` is read loosely, so a field a
-newer bundle adds survives an older uploader's read-modify-write instead of failing the
-parse and dropping the wiring record. `install.sh` is unchanged and remains a manual
+run, byte for byte, from the same state file. A successful swap also records the new
+bundle's build stamp in `update.json` beside its digest, so the next check can refuse a
+later regression. `update.json` and the served manifest are both read loosely, so a field a
+newer bundle or server adds survives an older uploader's read-modify-write (or parse)
+instead of failing it and dropping the wiring record or stopping every self-update. `install.sh` is unchanged and remains a manual
 reinstall; `hook.js doctor` is unchanged.
 
 **Reconfiguration.** Wiring follows the bundle and the machine automatically. `hook.js

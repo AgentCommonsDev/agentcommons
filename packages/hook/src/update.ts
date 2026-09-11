@@ -30,12 +30,20 @@ const configuredSchema = z.looseObject({
   harnesses: z.array(z.string()),
   at: z.number(),
 });
+// The build stamp of the bundle a self-update last swapped in, paired with its digest so a
+// bundle replaced out of band (a manual reinstall) is not compared against a stale stamp.
+const installedSchema = z.looseObject({
+  sha256: z.string(),
+  builtAt: z.string().optional(),
+});
 const checkSchema = z.looseObject({
   checkedAt: z.number().default(0),
   /** The bundle digest and harness set the last successful `install` run wired. */
   configured: configuredSchema.optional(),
   /** Last `install` attempt; failures are retried at most hourly. */
   attemptedAt: z.number().optional(),
+  /** The digest and build stamp of the bundle self-update last installed (§6.2). */
+  installed: installedSchema.optional(),
 });
 type UpdateState = z.infer<typeof checkSchema>;
 function readState(directory: string): UpdateState {
@@ -99,6 +107,33 @@ export function hookIdentity(
     sha256: fileDigest(executable) ?? ZERO_DIGEST,
     extensionSha256: fileDigest(extensionPath(directory)),
   };
+}
+/** The build stamp recorded for the installed bundle, only when it still names this file. */
+function installedBuiltAt(
+  state: UpdateState,
+  installedSha: string,
+): string | undefined {
+  return state.installed && state.installed.sha256 === installedSha
+    ? state.installed.builtAt
+    : undefined;
+}
+/**
+ * Forward-only guard: true only when both bundles carry a stamp and the offered one is
+ * strictly older. It is the same never-downgrade rule the host updater applies to images
+ * (ADR 0059), here at the client so a server that regresses to an older bundle (the
+ * 2026-09-11 incident) cannot pull an installation backwards, even one whose manifest lies
+ * about its digest. Either stamp missing or unparseable is unknown and the caller updates
+ * on the digest as before, so a first upgrade and a legacy field-less manifest still work.
+ */
+function offersOlderBuild(
+  installed: string | undefined,
+  offered: string | undefined,
+): boolean {
+  if (installed === undefined || offered === undefined) return false;
+  const here = Date.parse(installed);
+  const there = Date.parse(offered);
+  if (Number.isNaN(here) || Number.isNaN(there)) return false;
+  return there < here;
 }
 function sameOrigin(server: string, path: string): URL {
   const url = new URL(path, server);
@@ -264,6 +299,22 @@ export async function selfUpdate(
       installed.extensionSha256 === manifest.extensionSha256
     )
       return "current";
+    // Defense in depth against a regressed server: a bundle whose build stamp is strictly
+    // older than the installed one is never taken, whatever its digest. The download and
+    // self-test never run, so a lying digest cannot get past this.
+    const recordedBuiltAt = installedBuiltAt(
+      readState(directory),
+      installed.sha256,
+    );
+    if (offersOlderBuild(recordedBuiltAt, manifest.builtAt)) {
+      note(
+        directory,
+        `Hook update skipped: the server offers an older hook build (${String(
+          manifest.builtAt,
+        )}, installed ${String(recordedBuiltAt)}); keeping the current one.`,
+      );
+      return "skipped";
+    }
     if (installed.sha256 !== manifest.sha256) {
       const bundle = stage(
         executable,
@@ -284,6 +335,16 @@ export async function selfUpdate(
       renameSync(temporary, target);
       renamed.push(basename(target));
     }
+    // Record the new bundle's build stamp beside its digest so the next check can refuse a
+    // later regression to an older build. A field-less manifest records the digest alone,
+    // which reads back as unknown and keeps the digest-only path.
+    writeState(directory, {
+      ...readState(directory),
+      installed: {
+        sha256: manifest.sha256,
+        ...(manifest.builtAt ? { builtAt: manifest.builtAt } : {}),
+      },
+    });
     note(directory, `Updated to hook ${manifest.version}.`);
     return "updated";
   } catch (error) {
