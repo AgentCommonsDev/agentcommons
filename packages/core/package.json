@@ -22,6 +22,7 @@
     "./schemas/metrics": "./schemas/metrics.ts",
     "./schemas/billing": "./schemas/billing.ts",
     "./format/install": "./format/install.ts",
+    "./format/mcp-registration": "./format/mcp-registration.ts",
     "./schemas/auth": "./schemas/auth.ts",
     "./schemas/dashboards": "./schemas/dashboards.ts",
     "./sql": "./sql.ts",

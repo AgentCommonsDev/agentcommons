@@ -785,6 +785,7 @@ export class AuthService {
       WHERE o.organization_id=${caller.organizationId} AND k."referenceId"=o.organization_id
       ${own ? Prisma.sql`AND o.user_id=${caller.userId}` : parsed.filters.user_id ? Prisma.sql`AND o.user_id=${parsed.filters.user_id}` : Prisma.empty}
       ${parsed.filters.enabled === undefined ? Prisma.empty : Prisma.sql`AND k.enabled=${parsed.filters.enabled}`}
+      ${parsed.filters.tool_group === undefined ? Prisma.empty : Prisma.sql`AND k.permissions::jsonb->'tools' @> to_jsonb(${parsed.filters.tool_group}::text)`}
       ORDER BY ${Prisma.raw(sort[parsed.sort ?? "created_at"])} ${Prisma.raw(parsed.order.toUpperCase())}, k.id ASC
       OFFSET ${offset} LIMIT ${take}`);
             const keys = new Map(

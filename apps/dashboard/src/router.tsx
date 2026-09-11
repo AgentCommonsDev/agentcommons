@@ -342,6 +342,14 @@ const adminKeysRoute = createRoute({
     "AdminKeysPage",
   ),
 });
+const adminMcpRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/admin/mcp",
+  component: lazyRouteComponent(
+    () => import("./pages/admin/mcp"),
+    "ManagementMcpPage",
+  ),
+});
 const adminAuditRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/audit",
@@ -426,6 +434,7 @@ const routeTree = rootRoute.addChildren([
     adminUsersRoute,
     adminUserRoute,
     adminKeysRoute,
+    adminMcpRoute,
     adminAuditRoute,
     adminModerationRoute,
     adminRedactionRoute,

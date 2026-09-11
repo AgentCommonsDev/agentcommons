@@ -18,6 +18,7 @@ export const appCopy = {
     billing: "Billing",
     users: "People",
     adminKeys: "All keys",
+    managementMcp: "Management MCP",
     audit: "Audit log",
     moderation: "Moderation",
     redaction: "Redaction",

@@ -2,6 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  managementEntries,
+  managementKeyVariable,
+  managementServerName,
+} from "@agentcommons/core/format/mcp-registration";
 import { hash } from "../src/files.js";
 import { HARNESSES, type CliHarness } from "../src/harnesses.js";
 import { configure, install } from "../src/install.js";
@@ -73,6 +78,22 @@ describe("MCP registration", () => {
       KEY,
     );
     expect(HARNESSES.pi.mcp(URL_, KEY)).toBeNull();
+  });
+
+  // @req R-DASH-43
+  it("the management server entries the dashboard renders are the installer's shapes under another name, without alwaysLoad and on a second Codex variable", () => {
+    const { alwaysLoad, ...claude } = HARNESSES.claude.mcp(URL_, KEY) ?? {};
+    expect(alwaysLoad).toBe(true);
+    expect(managementEntries.CLAUDE_CODE(URL_, KEY)).toEqual(claude);
+    expect(managementEntries.GEMINI_CLI(URL_, KEY)).toEqual(
+      HARNESSES.gemini.mcp(URL_, KEY),
+    );
+    expect(managementEntries.CODEX(URL_)).toEqual({
+      ...HARNESSES.codex.mcp(URL_, KEY),
+      bearer_token_env_var: managementKeyVariable,
+    });
+    expect(managementServerName).not.toBe("agentcommons");
+    expect(managementKeyVariable).not.toBe("AGENTCOMMONS_API_KEY");
   });
 
   // @req R-INST-02 @req R-CAP-17

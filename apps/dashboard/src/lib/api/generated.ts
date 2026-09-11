@@ -5605,6 +5605,11 @@ export interface operations {
         filters?: {
           user_id?: string;
           enabled?: boolean;
+          /**
+           * @description Only keys whose permissions grant this MCP tool group (dashboards, administration)
+           * @enum {string}
+           */
+          tool_group?: "dashboards" | "administration";
         };
       };
       header?: never;
@@ -6466,6 +6471,11 @@ export interface operations {
         filters?: {
           user_id?: string;
           enabled?: boolean;
+          /**
+           * @description Only keys whose permissions grant this MCP tool group (dashboards, administration)
+           * @enum {string}
+           */
+          tool_group?: "dashboards" | "administration";
         };
       };
       header?: never;

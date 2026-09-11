@@ -1,8 +1,10 @@
 # ADR 0072: The administration tool group is derived from the admin route table
 
 Date: 2026-09-11
-Status: Accepted. Refines ADR 0068 (tool groups, catalog budgets) and §8.2, §9.2, §10; ADR
-0053's default-catalog budget stands.
+Status: Accepted, amended the same day (below: the management server is a second
+registration set up from an admin page; the Install page mints only the standard key).
+Refines ADR 0068 (tool groups, catalog budgets) and §8.2, §8.4, §9.2, §10; ADR 0053's
+default-catalog budget stands.
 
 ## Context
 
@@ -84,3 +86,33 @@ administration]` and `admin: ["*"]`, puts it in the step 3 command and states th
   `administration` catalog.
 - `openapi.json` lists the two `/admin/domains` operations after `/me/keys/{id}/reveal`
   because the admin routes register from one loop; paths and operation ids are unchanged.
+
+## Amendment (2026-09-11)
+
+Decision 4 and the first consequence are replaced. The user rejected the "Administrator
+install" card: the Install page should only create the standard key, and the management
+server belongs on its own admin page.
+
+- **The management server is a separate registration.** `agentcommons-admin` is a second
+  MCP server next to the everyday `agentcommons` entry, never a replacement for it. Its key
+  carries `sessions: [read]`, `tools: [dashboards, administration]` and `admin: ["*"]`
+  (no `ingest`: it manages, it does not capture). The everyday server keeps `search`, `get`
+  and `sql` with the default catalog; the management server carries the 36 tools.
+- **Set up from the Management MCP page** (`/app/admin/mcp`, Organization section, owners
+  and admins). The page says what the server is, creates the key through the same
+  `POST /me/keys` service and audit as Keys, shows the secret once with the registration
+  for each MCP-capable harness, and lists the organization's keys granting `administration`
+  (`GET /admin/keys` with the new `filters.tool_group`) in the All keys table with the
+  audited admin revoke. The Install page mints only the standard ingest/read key, as it did
+  before the card; the key dialog still offers `administration` once Admin is checked.
+- **One formatter, the installer's shapes.** `packages/core/format/mcp-registration.ts`
+  renders the Claude Code `claude mcp add` command, the Codex `[mcp_servers.agentcommons-admin]`
+  block plus the `export AGENTCOMMONS_ADMIN_API_KEY=…` line (a second variable, so the
+  standard key's `AGENTCOMMONS_API_KEY` is untouched) and the Gemini `mcpServers` entry. The
+  key is literal in the Claude Code and Gemini entries, as §8.4 requires; a hook unit test
+  pins the entries to `HARNESSES[*].mcp` so the two cannot drift.
+- **Not always-loaded.** The management entry never carries `alwaysLoad`; Claude Code loads
+  it behind tool search, so the 36 tools cost context only when the agent looks for them.
+  The installer's `agentcommons` entry keeps `alwaysLoad: true` for the default catalog
+  (§6.1 step 4). The budgets of decision 5 are unchanged; the "administrator install's key"
+  measurement is a management key's.

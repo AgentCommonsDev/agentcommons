@@ -22,6 +22,8 @@ export const paths = {
     /** One member: their details, activity and sessions. `id` is the membership id. */
     user: (id: string) => `/app/admin/users/${id}`,
     keys: "/app/admin/keys",
+    /** The management MCP server: create a management key and register `agentcommons-admin`. */
+    mcp: "/app/admin/mcp",
     audit: "/app/admin/audit",
     moderation: "/app/admin/moderation",
     redaction: "/app/admin/redaction",

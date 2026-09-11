@@ -93,6 +93,7 @@ test("the shell shows the workspace and organization groups to an admin and hide
     navigation.keys,
     navigation.users,
     navigation.adminKeys,
+    navigation.managementMcp,
     navigation.audit,
     navigation.moderation,
     navigation.redaction,
@@ -381,6 +382,16 @@ for (const theme of ["dark", "light"] as const)
       {
         path: paths.admin.keys,
         ready: () => expect(heading).toHaveText(copy.admin.keys.title),
+      },
+      {
+        path: paths.admin.mcp,
+        ready: async () => {
+          await expect(heading).toHaveText(copy.admin.mcp.title);
+          await expect(page.getByTestId("management-key")).toBeVisible();
+          await expect(
+            page.getByTestId("management-keys-table").getByRole("table"),
+          ).toBeVisible();
+        },
       },
       {
         path: paths.admin.audit,

@@ -19502,6 +19502,14 @@
                 },
                 "enabled": {
                   "type": "boolean"
+                },
+                "tool_group": {
+                  "description": "Only keys whose permissions grant this MCP tool group (dashboards, administration)",
+                  "type": "string",
+                  "enum": [
+                    "dashboards",
+                    "administration"
+                  ]
                 }
               },
               "additionalProperties": false
@@ -22065,6 +22073,14 @@
                 },
                 "enabled": {
                   "type": "boolean"
+                },
+                "tool_group": {
+                  "description": "Only keys whose permissions grant this MCP tool group (dashboards, administration)",
+                  "type": "string",
+                  "enum": [
+                    "dashboards",
+                    "administration"
+                  ]
                 }
               },
               "additionalProperties": false

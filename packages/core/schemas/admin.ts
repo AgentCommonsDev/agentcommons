@@ -12,6 +12,7 @@ import {
   identityIdSchema,
   jsonValueSchema,
   keyPermissionsSchema,
+  keyToolGroupSchema,
   nonnegativeIntegerSchema,
   nullableTextSchema,
   paginatedOutput,
@@ -407,6 +408,11 @@ export const keysInputSchema = createListInputSchema([
     .strictObject({
       user_id: identityIdSchema.optional(),
       enabled: z.boolean().optional(),
+      tool_group: keyToolGroupSchema
+        .optional()
+        .describe(
+          "Only keys whose permissions grant this MCP tool group (dashboards, administration)",
+        ),
     })
     .default({}),
 });

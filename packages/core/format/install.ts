@@ -1,7 +1,9 @@
-/** Quote each value as one POSIX shell argument; no interpolated value becomes code. */
+/** One POSIX shell argument, single-quoted, so no interpolated value becomes code. */
+export const shellQuote = (value: string) =>
+  `'${value.replaceAll("'", "'\\''")}'`;
+/** The served installer command with the key as one literal argument. */
 export function formatInstallCommand(origin: string, key: string): string {
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  return `curl -fsSL ${quote(new URL("/install.sh", origin).href)} | sh -s -- --key ${quote(key)}`;
+  return `curl -fsSL ${shellQuote(new URL("/install.sh", origin).href)} | sh -s -- --key ${shellQuote(key)}`;
 }
 
 /** Where a guidance block lives: a machine's global instructions file, or a repository's. */

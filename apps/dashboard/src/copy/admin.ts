@@ -85,6 +85,38 @@ export const adminCopy = {
     empty: "No keys match",
     emptyHint: "Change the filters or check back after someone creates a key.",
   },
+  mcp: {
+    title: "Management MCP",
+    description:
+      "A second MCP server, agentcommons-admin, lets an agent manage this organization: members, keys, redaction, moderation, dashboards and installations. Its key carries Read, Admin and the dashboard and administration tool groups; the everyday agentcommons server keeps search, get and sql.",
+    create: {
+      title: "Create management key",
+      description:
+        "Name the machine or purpose. The key is shown once, with the registration for each coding tool.",
+      name: "Name",
+      namePlaceholder: "Admin laptop",
+      submit: "Create management key",
+      created: "Management key created.",
+    },
+    register: {
+      title: "Register the server",
+      description:
+        "Add the entry to each coding tool you administer from. Claude Code loads this server behind tool search, so the 36 tools cost context only when the agent looks for them.",
+      file: (path: string) => `Add to ${path}`,
+      codexShell:
+        "Codex reads the key from the environment. Add this line to your shell startup file and open a new terminal.",
+      copy: (harness: string) => `Copy ${harness} registration`,
+      copyShell: "Copy export line",
+    },
+    keys: {
+      title: "Management keys",
+      description:
+        "Every key in this organization that grants the administration tools. Revoke a key when the machine or person no longer administers the organization.",
+      empty: "No management keys yet",
+      emptyHint: "Create one above to register the management server.",
+      csvName: "management-keys.csv",
+    },
+  },
   audit: {
     title: "Audit log",
     description: "Every read, change and admin action in this organization.",

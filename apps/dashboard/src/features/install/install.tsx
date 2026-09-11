@@ -12,7 +12,6 @@ import {
   Plug,
   Radio,
   RefreshCw,
-  ShieldCheck,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { CodeBlock } from "../../components/app/markdown";
@@ -36,7 +35,6 @@ import { api, unwrap } from "../../lib/api/client";
 import { harnessLabel, relativeTime } from "../../lib/display";
 import { paths } from "../../lib/routes";
 import { KeySecretPanel } from "../keys/key-secret";
-import { administratorPermissions } from "../keys/permissions";
 import { createPersonalKey, useRefreshKeys } from "../keys/queries";
 import { InstallKeyPicker } from "../keys/reveal";
 
@@ -145,107 +143,9 @@ function Step({
   );
 }
 
-/**
- * The administrator install (§10, ADR 0072): owners and admins create a key that also holds
- * admin and both tool groups, so the same installer gives their agent the whole admin
- * catalog. The key it creates becomes the step 3 key; the secret shows once, here.
- */
-function AdministratorInstall({
-  onCreated,
-}: {
-  onCreated: (key: { id: string; key: string }) => Promise<unknown>;
-}) {
-  const [machine, setMachine] = useState("");
-  const [secret, setSecret] = useState<string | null>(null);
-  const create = useMutation({
-    mutationFn: () =>
-      createPersonalKey({
-        name: machine.trim(),
-        permissions: administratorPermissions,
-      }),
-    onSuccess: async (result) => {
-      setSecret(result.key);
-      setMachine("");
-      await onCreated({ id: result.metadata.id, key: result.key });
-    },
-  });
-  return (
-    <Card data-testid="install-admin">
-      <CardHeader className="flex-nowrap">
-        <ShieldCheck
-          size={20}
-          aria-hidden
-          className="mt-0.5 shrink-0 text-accent"
-        />
-        <div className="min-w-0 flex-1">
-          <CardTitle>{copy.install.admin.title}</CardTitle>
-          <CardDescription>{copy.install.admin.description}</CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <p className="text-xs leading-relaxed text-muted">
-          {copy.install.admin.catalog}
-        </p>
-        {secret !== null ? (
-          <>
-            <Alert variant="success">{copy.install.admin.created}</Alert>
-            <KeySecretPanel
-              secret={secret}
-              showCommand={false}
-              onDismiss={() => {
-                setSecret(null);
-                create.reset();
-              }}
-            />
-          </>
-        ) : (
-          <form
-            className="flex flex-col gap-3 sm:flex-row sm:items-end"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (machine.trim()) create.mutate();
-            }}
-          >
-            <Field
-              label={copy.install.admin.machine}
-              className="sm:max-w-sm sm:flex-1"
-            >
-              {(props) => (
-                <Input
-                  {...props}
-                  required
-                  maxLength={128}
-                  placeholder={copy.install.admin.machinePlaceholder}
-                  value={machine}
-                  disabled={create.isPending}
-                  onChange={(event) => {
-                    setMachine(event.target.value);
-                  }}
-                />
-              )}
-            </Field>
-            <Button
-              type="submit"
-              disabled={create.isPending || machine.trim() === ""}
-            >
-              {create.isPending
-                ? copy.app.common.pending
-                : copy.install.admin.submit}
-            </Button>
-          </form>
-        )}
-        {create.error !== null && <RequestError error={create.error} />}
-        <p className="text-xs leading-relaxed text-muted">
-          {copy.install.admin.upgrade}
-        </p>
-      </CardContent>
-    </Card>
-  );
-}
-
 /** Four steps: create or pick a key, read what the installer does, run the command it unlocks, watch the first session arrive. */
 export function Install() {
-  const { organization, me, admin } = useWorkspace();
+  const { organization, me } = useWorkspace();
   const refresh = useRefreshKeys(organization.id);
   const [machine, setMachine] = useState("");
   // The key created on this page: its value fills the command, its id preselects the picker.
@@ -591,20 +491,6 @@ export function Install() {
           </div>
         </Step>
       </ol>
-      {admin && (
-        <AdministratorInstall
-          onCreated={async (key) => {
-            // The administrator key is the key for this machine: step 1 shows it picked
-            // and step 3 carries it, the same way a key created in step 1 does.
-            setCreated(key);
-            setPicked(key);
-            setPanelOpen(false);
-            setMode("existing");
-            create.reset();
-            await refresh();
-          }}
-        />
-      )}
     </div>
   );
 }

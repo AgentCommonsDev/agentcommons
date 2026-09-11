@@ -16,6 +16,7 @@ const langs = {
   python: () => import("@shikijs/langs/python"),
   diff: () => import("@shikijs/langs/diff"),
   yaml: () => import("@shikijs/langs/yaml"),
+  toml: () => import("@shikijs/langs/toml"),
   markdown: () => import("@shikijs/langs/markdown"),
 };
 const plain = "text";

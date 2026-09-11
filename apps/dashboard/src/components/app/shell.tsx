@@ -11,6 +11,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Plug,
   Plus,
   ScrollText,
   Search,
@@ -84,6 +85,11 @@ const organizationNavigation: NavItem[] = [
     to: paths.admin.keys,
     label: copy.app.navigation.adminKeys,
     icon: KeyRound,
+  },
+  {
+    to: paths.admin.mcp,
+    label: copy.app.navigation.managementMcp,
+    icon: Plug,
   },
   {
     to: paths.admin.audit,

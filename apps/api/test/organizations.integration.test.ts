@@ -271,7 +271,7 @@ it("requires verified native cookies and leaves customer/public creation operato
   ).toBe(0);
 });
 
-// @req R-SAAS-01 @req R-SAAS-03 @req R-ORG-04
+// @req R-SAAS-01 @req R-SAAS-03 @req R-ORG-04 @req R-DASH-43
 it("keeps keys, capture data and monthly billing isolated and returns human-readable owner identity only for current-org keys", async () => {
   const user = await identity("key-display");
   const first = onboardingOutputSchema.parse(
@@ -319,6 +319,58 @@ it("keeps keys, capture data and monthly billing isolated and returns human-read
     user_email: user.email,
     user_name: "key-display owner",
   });
+  // `filters.tool_group` narrows both key lists to the keys granting one MCP tool group:
+  // the Management MCP page lists the organization's `administration` keys with it.
+  const management = await app.inject({
+    method: "POST",
+    url: "/api/v1/me/keys",
+    headers: user.headers,
+    payload: {
+      name: "Management key",
+      permissions: {
+        sessions: ["read"],
+        tools: ["dashboards", "administration"],
+        admin: ["*"],
+      },
+    },
+  });
+  expect(management.statusCode, management.body).toBe(200);
+  const managementId = keyCreateOutputSchema.parse(management.json<unknown>())
+    .metadata.id;
+  for (const [path, group] of [
+    ["/api/v1/admin/keys", "administration"],
+    ["/api/v1/me/keys", "dashboards"],
+  ] as const) {
+    const filtered = keysOutputSchema.parse(
+      (
+        await app.inject({
+          method: "GET",
+          url: `${path}?filters[tool_group]=${group}`,
+          headers: user.headers,
+        })
+      ).json<unknown>(),
+    );
+    expect(
+      filtered.items.map((row) => row.id),
+      path,
+    ).toEqual([managementId]);
+  }
+  expect(
+    (
+      await app.inject({
+        method: "GET",
+        url: "/api/v1/admin/keys?filters[tool_group]=search",
+        headers: user.headers,
+      })
+    ).statusCode,
+  ).toBe(400);
+  const revoked = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/me/keys/${managementId}`,
+    headers: user.headers,
+    payload: { reason: "Filter fixture done" },
+  });
+  expect(revoked.statusCode, revoked.body).toBe(200);
   const sessions = await app.inject({
     method: "GET",
     url: "/api/v1/sessions",

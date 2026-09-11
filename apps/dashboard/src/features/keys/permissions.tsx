@@ -65,12 +65,6 @@ export function buildPermissions(
     ...(selection.admin ? { admin: ["*" as const] } : {}),
   };
 }
-/** What the administrator install grants (§10): capture, reads, both tool groups and admin. */
-export const administratorPermissions: PermissionInput = {
-  sessions: ["ingest", "read"],
-  tools: ["dashboards", "administration"],
-  admin: ["*"],
-};
 /** The granted permissions as one line of labels, for CSV cells and sorting. */
 export function permissionSummary(permissions: KeyPermissions): string {
   return grantedPermissions(permissions)

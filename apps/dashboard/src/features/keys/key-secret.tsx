@@ -1,5 +1,6 @@
 import { formatInstallCommand } from "@agentcommons/core/format/install";
 import { KeyRound } from "lucide-react";
+import type { ReactNode } from "react";
 import { CopyButton } from "../../components/app/states";
 import { Button } from "../../components/ui/button";
 import {
@@ -11,15 +12,21 @@ import {
 } from "../../components/ui/card";
 import { copy } from "../../copy";
 
-/** The one-time reveal of a freshly created key, with the installer command that embeds it. */
+/**
+ * The one-time reveal of a freshly created key, with the installer command that embeds it.
+ * `children` render between the key and the dismiss button: what else the caller wants
+ * copied while the secret is still on screen (the management server registrations).
+ */
 export function KeySecretPanel({
   secret,
   onDismiss,
   showCommand = true,
+  children,
 }: {
   secret: string;
   onDismiss: () => void;
   showCommand?: boolean | undefined;
+  children?: ReactNode;
 }) {
   const command = formatInstallCommand(window.location.origin, secret);
   return (
@@ -81,6 +88,7 @@ export function KeySecretPanel({
             </div>
           </div>
         )}
+        {children}
         <div>
           <Button variant="secondary" size="sm" onClick={onDismiss}>
             {copy.keys.secret.done}

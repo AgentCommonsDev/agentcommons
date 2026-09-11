@@ -13,6 +13,11 @@ import {
   dashboardSchema,
 } from "@agentcommons/core/schemas/dashboards";
 import { standardDashboardVariables } from "@agentcommons/core/dashboards";
+import {
+  managementKeyVariable,
+  managementRegistrations,
+  managementServerName,
+} from "@agentcommons/core/format/mcp-registration";
 import { copy } from "../src/copy";
 import { metricColumnLabel } from "../src/lib/display";
 import { paths } from "../src/lib/routes";
@@ -183,6 +188,129 @@ test("People: an admin adds an email, copies its setup link, changes the role, s
   await expect(
     page.getByText(copy.admin.users.empty, { exact: true }),
   ).toBeVisible();
+});
+
+// @req R-DASH-43 @req R-DASH-07
+test("Management MCP: an owner creates a management key, sees the three registrations with the literal key, finds it in the list and revokes it; a member has no entry", async ({
+  page,
+  context,
+}, info) => {
+  const name = `Admin agent ${info.project.name} ${String(Date.now())}`;
+  const mcp = copy.admin.mcp;
+  await page.goto(paths.admin.mcp);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(mcp.title);
+  await expect(page.getByText(mcp.description, { exact: true })).toBeVisible();
+  const card = page.getByTestId("management-key");
+  await card.getByLabel(mcp.create.name, { exact: true }).fill(name);
+  await card
+    .getByRole("button", { name: mcp.create.submit, exact: true })
+    .click();
+  await expect(
+    card.getByText(mcp.create.created, { exact: true }),
+  ).toBeVisible();
+  const secret = (
+    await card.getByTestId("keys-secret").locator("code").first().innerText()
+  ).trim();
+  expect(secret.startsWith("ac_")).toBe(true);
+  // One block per MCP harness, rendered from the shared formatter with this key.
+  const expected = managementRegistrations(workspaceOrigin, secret);
+  expect(expected.map((entry) => entry.harness)).toEqual([
+    "CLAUDE_CODE",
+    "CODEX",
+    "GEMINI_CLI",
+  ]);
+  const registrations = card.getByTestId("management-registrations");
+  for (const entry of expected) {
+    const block = registrations.getByTestId(
+      `management-registration-${entry.harness}`,
+    );
+    await expect(block).toContainText(entry.file);
+    await expect(
+      block.getByTestId(`management-registration-${entry.harness}-content`),
+    ).toHaveText(entry.content);
+    await expect(
+      block.getByRole("button", {
+        name: mcp.register.copy(copy.app.harnesses[entry.harness]),
+        exact: true,
+      }),
+    ).toBeVisible();
+    if (entry.shell !== null)
+      await expect(
+        block.getByTestId(`management-registration-${entry.harness}-shell`),
+      ).toHaveText(entry.shell);
+  }
+  const text = await registrations.innerText();
+  expect(text).toContain(managementServerName);
+  expect(text).toContain(`Bearer ${secret}`);
+  expect(text).toContain(`${managementKeyVariable}='${secret}'`);
+  expect(text).not.toContain("alwaysLoad");
+  expect(text).not.toContain("${");
+  // The key carries reads, both tool groups and admin, and the list shows it.
+  const listed = z
+    .object({
+      items: z.array(
+        z.object({
+          name: z.string().nullable(),
+          permissions: z.object({
+            sessions: z.array(z.string()).optional(),
+            tools: z.array(z.string()).optional(),
+            admin: z.array(z.string()).optional(),
+          }),
+        }),
+      ),
+    })
+    .parse(
+      await (
+        await page.request.get(
+          "/api/v1/admin/keys?limit=100&filters[tool_group]=administration",
+        )
+      ).json(),
+    );
+  expect(listed.items.find((key) => key.name === name)?.permissions).toEqual({
+    sessions: ["read"],
+    tools: ["dashboards", "administration"],
+    admin: ["*"],
+  });
+  expect(
+    listed.items.every((key) =>
+      (key.permissions.tools ?? []).includes("administration"),
+    ),
+  ).toBe(true);
+  const table = page.getByTestId("management-keys-table");
+  const row = tableRow(table, name);
+  await expect(row).toBeVisible();
+  await expect(row).toContainText(copy.keys.permissions.administration);
+  await expect(row).toContainText(copy.keys.list.active);
+  await accessible(page);
+  await expectNoHorizontalOverflow(page);
+  // Dismissing the reveal hides the key and the registrations; the list keeps the key.
+  await card
+    .getByRole("button", { name: copy.keys.secret.done, exact: true })
+    .click();
+  await expect(card.getByTestId("keys-secret")).toHaveCount(0);
+  await expect(registrations).toHaveCount(0);
+  await expect(row).toBeVisible();
+  // Revoke through the same admin flow as All keys.
+  await (await rowAction(row, copy.admin.keys.revoke)).click();
+  await expect(page.getByRole("dialog")).toContainText(
+    copy.admin.keys.revokeTitle,
+  );
+  await confirm(page, copy.admin.keys.revoke, "Management key retired");
+  await expect(row).toContainText(copy.keys.list.revoked);
+  // Members get no entry, and the route shows the access message.
+  await signInAsMember(context);
+  await page.goto(paths.home);
+  await expect(
+    page.getByRole("link", {
+      name: copy.app.navigation.managementMcp,
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await page.goto(paths.admin.mcp);
+  await expect(
+    page.getByText(copy.app.navigation.adminRequired, { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("management-key")).toHaveCount(0);
 });
 
 // @req R-DASH-05 @req R-ORG-04 @req R-DASH-21
