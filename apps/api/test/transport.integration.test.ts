@@ -1215,6 +1215,101 @@ it("folds identical MCP handshakes from one key and client into one audit row pe
   ).toEqual([undefined, undefined, 3]);
 });
 
+// @req R-SEC-08
+it("refuses a client program that exhausts its MCP handshake budget while another program on the same key completes initialize, tools/list and search", async () => {
+  // A fresh organization and key: the storm spends nothing another test's key relies on.
+  const stormed = await provisionOrganization(database, "transport-storm");
+  const created = await database.auth.createKey(stormed.owner, {
+    name: "storm",
+    permissions: { sessions: ["read"] },
+  });
+  const key = created.result.key;
+  // The crash-restart loop of Appendix A: every restart is a new process whose first
+  // message is `initialize`. Eight at a time exhaust that program's 600 handshakes per
+  // minute within seconds; once refused, each keeps trying at a tenth of a second.
+  const storm = { sent: 0, refused: 0, stop: false };
+  let firstRefusal: (response: Response) => void = () => undefined;
+  const refusal = new Promise<Response>((resolve) => {
+    firstRefusal = resolve;
+  });
+  const initialize = () =>
+    fetch(`${address}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${key}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "user-agent": "crash-loop/1.0",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "crash-loop", version: "1" },
+        },
+      }),
+    });
+  const workers = Array.from({ length: 8 }, async () => {
+    while (!storm.stop) {
+      const response = await initialize();
+      storm.sent += 1;
+      if (response.status === 429) {
+        storm.refused += 1;
+        firstRefusal(response.clone());
+        await response.text();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } else {
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+    }
+  });
+  try {
+    // The storming program is refused alone, with the body and header every route answers.
+    const refused = await refusal;
+    expect(refused.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(
+      z
+        .object({
+          code: z.string(),
+          detail: z.object({ retry_after: z.number() }),
+        })
+        .parse(await refused.json()).code,
+    ).toBe("RATE_LIMITED");
+    expect(storm.sent - storm.refused).toBeGreaterThanOrEqual(600);
+    // While the storm continues, a session starting on the same key from another program
+    // (Claude Code loads MCP servers once and drops one whose initialize fails) completes
+    // its handshake, lists the catalog and runs a tool.
+    const fresh = new Client({ name: "fresh-session", version: "1" });
+    await fresh.connect(
+      new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
+        requestInit: {
+          headers: {
+            authorization: `Bearer ${key}`,
+            "user-agent": "other-harness/1.0",
+          },
+        },
+      }) as Transport,
+    );
+    defer(() => fresh.close());
+    expect((await fresh.listTools()).tools.map((tool) => tool.name)).toEqual([
+      ...readToolNames,
+    ]);
+    const searched = await fresh.callTool({
+      name: "search",
+      arguments: { query: "handshake storm" },
+    });
+    expect(searched.isError).toBeFalsy();
+    expect(storm.refused).toBeGreaterThan(0);
+  } finally {
+    storm.stop = true;
+    await Promise.all(workers);
+  }
+});
+
 // @req R-RED-08
 it("omits request bodies, credentials and source record lines from captured API logs", async () => {
   const marker = "log-capture-sensitive-request-marker";

@@ -1,26 +1,45 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
-import { ServiceError } from "../services/context.js";
+import {
+  identities,
+  ServiceError,
+  type Identity,
+} from "../services/context.js";
 import { requestContext } from "./context.js";
 
-/** Requests per minute for each category; the category names are the table's keys. */
-const maxima = { ingest: 600, read: 300, sql: 60, mcp: 120, auth: 20 } as const;
-export type RateCategory = keyof typeof maxima;
-const categories = Object.keys(maxima) as RateCategory[];
+/**
+ * Requests per minute for each category and whose budget it is (`identities`, §9.4). A
+ * `caller` budget protects a shared resource from one installation; a `client` budget
+ * belongs to one program on that installation, so the program that exhausts it is refused
+ * alone; an `address` budget covers requests before a credential is known.
+ */
+const budgets = {
+  ingest: { max: 600, identity: "caller" },
+  read: { max: 300, identity: "caller" },
+  sql: { max: 60, identity: "caller" },
+  /** MCP `tools/call`: the installation's budget in front of the readers (§8.1). */
+  mcp: { max: 120, identity: "caller" },
+  /** MCP messages that invoke no tool, and protocol rejections (§8.1, ADR 0073). */
+  handshake: { max: 600, identity: "client" },
+  auth: { max: 20, identity: "address" },
+} as const satisfies Record<string, { max: number; identity: Identity }>;
+export type RateCategory = keyof typeof budgets;
+const categories = Object.keys(budgets) as RateCategory[];
 
 export async function createRateLimiter(app: FastifyInstance) {
   await app.register(rateLimit, { global: false });
-  const create = (category: RateCategory) =>
-    app.createRateLimit({
-      max: maxima[category],
+  const create = (category: RateCategory) => {
+    const budget = budgets[category];
+    return app.createRateLimit({
+      max: budget.max,
       timeWindow: 60_000,
-      keyGenerator: (request) => {
-        const caller = requestContext(request).caller;
-        return category === "auth"
-          ? `${category}:${request.ip}`
-          : `${category}:${caller?.organizationId ?? "anonymous"}:${caller?.apiKeyId ?? caller?.userId ?? request.ip}`;
-      },
+      keyGenerator: (request) =>
+        [
+          category,
+          ...identities[budget.identity](requestContext(request)),
+        ].join("\u0000"),
     });
+  };
   const limits = new Map(
     categories.map((category) => [category, create(category)] as const),
   );

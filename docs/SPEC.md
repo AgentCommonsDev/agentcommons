@@ -1617,6 +1617,21 @@ Gemini Code Assist agent's crash-restart loop, Appendix A): 125 handshakes wrote
 and 3 rows (36 per hour) with the default window, and process CPU per handshake fell from
 125 ms to 100 ms.
 
+Budgets follow the same identity (§9.4). A handshake costs the server almost nothing and
+spends only the calling program's own `handshake` budget, 600 per minute per key and
+`User-Agent`: a client that re-handshakes in a loop is refused alone, with the
+`429 RATE_LIMITED` body and `Retry-After` header every route answers, and can never cost
+another program on the same key its `initialize` (Claude Code loads MCP servers once per
+session and drops one whose `initialize` fails, so that session would have no tools for
+its whole life). `tools/call` runs a bounded read and spends the key's `mcp` budget,
+120 per minute, in front of the reader limits of §7.5. One limiter reads a table of
+categories (maximum and identity: `address`, `caller`, `client`) and the adapter spends
+the category the parsed message names, after the envelope is parsed and before the SDK
+handles it, so a body the protocol rejects spends the handshake budget too. Observed on
+the hosted instance (2026-09-11): the crash loop above sent about 114 handshakes per
+minute from one key and exhausted the former shared 120-per-key budget in the last
+seconds of most minutes, refusing the `initialize` of any session starting then.
+
 A tool failure is an `isError` result whose text is the same
 `{ code, message, detail }` the REST route would answer, so an agent sees the §7.5 read
 codes (`READ_TIME_LIMIT`, `READ_BUSY`, …) with their hint and `retry_after`, the
@@ -1974,7 +1989,7 @@ organization, so agent reads can be attributed to the session active on that mac
 for reads; authentication failures audited (rejections and `503 AUTH_UNAVAILABLE` alike,
 as `auth.failure` with the status and code, §9.2); health and static assets not. Retention
 `AUDIT_RETENTION_DAYS` (default 365). Append-only otherwise. MCP handshake rows fold per
-window (§8.1, ADR 0072); operation rows never do.
+window (§8.1, ADR 0073); operation rows never do.
 Failures before an organization can be authenticated have a null organization and are
 visible only to instance operations, never through organization audit queries. All
 identified operations, including membership and invitation changes, carry their scope.
@@ -1991,7 +2006,8 @@ audit history retained when the table is introduced and records completion.
 ### 9.4 Public exposure
 
 helmet, CORS to `PUBLIC_URL`, rate limits (ingest 600/min per key; read 300; `sql` 60;
-MCP 120; auth 20/min per IP), secure cookies, CSRF origin checks, body limits, versioned
+MCP `tools/call` 120 per key; MCP handshakes 600/min per key and client `User-Agent`,
+§8.1; auth 20/min per IP), secure cookies, CSRF origin checks, body limits, versioned
 immutable client artifacts, optional AWS WAF in prod. `ac_` prefix for secret scanners. The exact
 `POST /auth/stripe/webhook` endpoint accepts server-to-server delivery without a browser
 Origin; the official Stripe signature over the untouched raw body remains mandatory.

@@ -7,7 +7,7 @@ import { setRequestContext } from "../src/routes/context.js";
 import { ServiceError } from "../src/services/context.js";
 
 // @req R-SEC-06
-it("enforces native per-minute category quotas and isolates organizations, keys and authentication IPs", async () => {
+it("enforces native per-minute quotas per installation, per client program for handshakes and per address for authentication", async () => {
   const app = Fastify();
   const limit = await createRateLimiter(app);
   app.setErrorHandler((error, _request, reply) =>
@@ -17,7 +17,7 @@ it("enforces native per-minute category quotas and isolates organizations, keys 
   );
   app.post("/:category", async (request, reply) => {
     const category = z
-      .enum(["ingest", "read", "sql", "mcp", "auth"])
+      .enum(["ingest", "read", "sql", "mcp", "handshake", "auth"])
       .parse(z.object({ category: z.string() }).parse(request.params).category);
     const caller = callerContextSchema.parse({
       organizationId: request.headers["x-org"] ?? "organization",
@@ -32,67 +32,51 @@ it("enforces native per-minute category quotas and isolates organizations, keys 
       requestId: request.id,
       transport: "rest",
       ip: request.ip,
-      userAgent: null,
+      userAgent: request.headers["user-agent"] ?? null,
       startedAt: Date.now(),
       headers: new Headers(),
     });
     await limit(request, category);
     return reply.code(204).send();
   });
+  const post = (
+    category: string,
+    headers: Record<string, string> = {},
+    remoteAddress?: string,
+  ) =>
+    app.inject({
+      method: "POST",
+      url: `/${category}`,
+      headers: { "user-agent": "harness-a/1.0", ...headers },
+      ...(remoteAddress ? { remoteAddress } : {}),
+    });
   try {
     for (const [category, maximum] of Object.entries({
       ingest: 600,
       read: 300,
       sql: 60,
       mcp: 120,
+      handshake: 600,
       auth: 20,
     })) {
       for (let count = 0; count < maximum; count++)
-        expect(
-          (await app.inject({ method: "POST", url: `/${category}` }))
-            .statusCode,
-        ).toBe(204);
+        expect((await post(category)).statusCode).toBe(204);
+      expect((await post(category)).statusCode).toBe(429);
+      // Another client program on the same key has its own budget for handshakes only;
+      // every other category is the installation's (or the address's) shared budget.
       expect(
-        (await app.inject({ method: "POST", url: `/${category}` })).statusCode,
-      ).toBe(429);
+        (await post(category, { "user-agent": "harness-b/1.0" })).statusCode,
+      ).toBe(category === "handshake" ? 204 : 429);
       if (category === "auth") {
-        expect(
-          (
-            await app.inject({
-              method: "POST",
-              url: "/auth",
-              headers: { "x-key": "other" },
-            })
-          ).statusCode,
-        ).toBe(429);
-        expect(
-          (
-            await app.inject({
-              method: "POST",
-              url: "/auth",
-              remoteAddress: "192.0.2.2",
-            })
-          ).statusCode,
-        ).toBe(204);
+        expect((await post("auth", { "x-key": "other" })).statusCode).toBe(429);
+        expect((await post("auth", {}, "192.0.2.2")).statusCode).toBe(204);
       } else {
-        expect(
-          (
-            await app.inject({
-              method: "POST",
-              url: `/${category}`,
-              headers: { "x-key": "other" },
-            })
-          ).statusCode,
-        ).toBe(204);
-        expect(
-          (
-            await app.inject({
-              method: "POST",
-              url: `/${category}`,
-              headers: { "x-org": "other" },
-            })
-          ).statusCode,
-        ).toBe(204);
+        expect((await post(category, { "x-key": "other" })).statusCode).toBe(
+          204,
+        );
+        expect((await post(category, { "x-org": "other" })).statusCode).toBe(
+          204,
+        );
       }
     }
   } finally {

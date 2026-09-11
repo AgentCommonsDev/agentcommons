@@ -20,6 +20,28 @@ export interface ServiceContext {
   headers: Headers;
 }
 
+/**
+ * Whose budget a request spends and whose audit rows fold (§8.1, §9.4, ADR 0073). `address`
+ * is the network peer, for requests before any credential is known. `caller` is one
+ * installation: the organization and its key (a signed-in user, or the address before
+ * either is known). `client` is one program on that installation: the caller and its
+ * `User-Agent`, so two harnesses sharing a key are told apart and one cannot spend the
+ * other's budget.
+ */
+const callerIdentity = (context: ServiceContext): string[] => [
+  context.caller?.organizationId ?? "anonymous",
+  context.caller?.apiKeyId ?? context.caller?.userId ?? context.ip ?? "",
+];
+export const identities = {
+  address: (context: ServiceContext): string[] => [context.ip ?? ""],
+  caller: callerIdentity,
+  client: (context: ServiceContext): string[] => [
+    ...callerIdentity(context),
+    context.userAgent ?? "",
+  ],
+} as const;
+export type Identity = keyof typeof identities;
+
 export interface ServiceResult<T> {
   result: T;
   audit: AuditEvent;

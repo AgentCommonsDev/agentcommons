@@ -29,6 +29,7 @@ import {
 } from "../routes/admin-routes.js";
 import { auditedOperation } from "./audit.js";
 import {
+  identities,
   requireCaller,
   requirePermission,
   ServiceError,
@@ -234,6 +235,16 @@ interface HandshakeWindow {
 }
 /** Bound on remembered windows before expired ones are pruned. */
 const HANDSHAKE_WINDOWS_LIMIT = 4096;
+/**
+ * The budget an MCP message spends before it is handled (§8.1, §9.4, ADR 0073).
+ * `tools/call` is an operation and spends the installation's `mcp` budget in front of the
+ * readers; every other message (a handshake, or a body the protocol rejects) spends only
+ * the calling program's own `handshake` budget, so one client's storm never costs another
+ * client on the same key its `initialize`.
+ */
+export function messageRate(method: string | undefined): "mcp" | "handshake" {
+  return method === "tools/call" ? "mcp" : "handshake";
+}
 
 export class McpService {
   /** The static catalog: each definition with the `Tool` it is listed as, built once. */
@@ -536,8 +547,7 @@ export class McpService {
   ): Partial<{ repeats: number; repeats_since: string }> | null {
     if (this.options.handshakeWindowMs <= 0) return {};
     const identity = [
-      context.caller?.apiKeyId ?? context.ip ?? "",
-      context.userAgent ?? "",
+      ...identities.client(context),
       action,
       method,
       String(statusCode),

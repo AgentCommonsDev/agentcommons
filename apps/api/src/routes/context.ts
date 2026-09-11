@@ -7,8 +7,12 @@ declare module "fastify" {
   interface FastifyContextConfig {
     /** Whether the onRequest hook authenticates the caller; unmatched `/api/v1` paths default to true. */
     protected?: boolean;
-    /** Rate-limit category applied after authentication; reads by default. */
-    rate?: RateCategory;
+    /**
+     * Rate-limit category applied after authentication; reads by default. `"message"`
+     * leaves the budget to the handler, which spends the category the parsed message
+     * names (MCP: an operation or a handshake, §8.1).
+     */
+    rate?: RateCategory | "message";
   }
 }
 

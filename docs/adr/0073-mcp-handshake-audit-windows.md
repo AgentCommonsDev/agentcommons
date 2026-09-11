@@ -94,3 +94,38 @@ proportion, and those rows are protocol plumbing, not operations anyone reads ba
   Code Assist extension in code-oss, or remove the `agentcommons` entry from
   `~/.gemini/settings.json` if the extension must stay; the Gemini CLI hook and its own
   registration are unaffected.
+
+## Amendment 2026-09-11: budgets follow the same identity
+
+Option 3 was rejected as a _per-installation_ handshake limit. One already existed:
+`POST /mcp` spent 120 requests per minute per key for every message, handshake or tool
+call alike. Between 18:51 and 19:19 UTC the same crash loop (about 114 handshakes per
+minute from one workstation's key) exhausted that budget in the last seconds of most
+minutes and was answered `429 RATE_LIMITED`. Every Claude Code and Gemini CLI session on
+the machine shares the key, Claude Code loads MCP servers once at session start and drops
+one whose `initialize` fails, so a session starting in those seconds would have had no
+`agentcommons` tools for its whole life. Not observed yet; arithmetically likely within a
+working day.
+
+Rate limits protect resources. A handshake costs the server almost nothing; a `tools/call`
+runs a bounded read. The MCP budget is therefore split along the identity of decision 2:
+
+1. Handshakes (`initialize`, `notifications/initialized`, `ping`, `tools/list` and every
+   protocol rejection) spend a `handshake` budget of 600 per minute per key **and** client
+   `User-Agent`. The program that exhausts it is refused alone, with the `429 RATE_LIMITED`
+   body and `Retry-After` header every route answers, and can never cost another program
+   on the same key its `initialize`. The budget is generous because the identity already
+   confines the damage: a loop restarting once a second (three handshakes) spends under a
+   third of it.
+2. `tools/call` keeps the `mcp` budget of 120 per minute per key in front of the readers,
+   then the `read` or `sql` budget of the tool as before.
+3. One limiter reads a table of categories (maximum and identity: `address`, `caller`,
+   `client`) through the same `identities` helper the folding uses. The `/mcp` route
+   declares its budget as `"message"`: the adapter spends the category the parsed message
+   names (`messageRate`, a function of the method in the MCP service), so no adapter
+   branches on the method and a body the protocol rejects spends the handshake budget too.
+
+Verified by an integration test that storms `initialize` from one `User-Agent` past its
+budget while a fresh client with another `User-Agent` completes `initialize`, `tools/list`
+and `search` on the same key, and by the limiter unit test for every category's identity.
+No setting was added; the maxima are constants like the other categories.

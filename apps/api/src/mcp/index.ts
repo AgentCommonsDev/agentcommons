@@ -9,7 +9,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { errorSchema } from "@agentcommons/core/schemas";
-import { serverInstructions, type McpService } from "../services/mcp.js";
+import {
+  messageRate,
+  serverInstructions,
+  type McpService,
+} from "../services/mcp.js";
 import { auditUnavailableError } from "../services/audit.js";
 import { ServiceError } from "../services/context.js";
 import { hijackRaw, requestContext } from "../routes/context.js";
@@ -42,10 +46,18 @@ export function registerMcpRoutes(
   });
   app.post(
     "/mcp",
-    { config: { protected: true, rate: "mcp" } },
+    { config: { protected: true, rate: "message" } },
     async (request, reply) => {
       const context = requestContext(request);
-      const envelope = envelopeSchema.parse(request.body);
+      const parsed = envelopeSchema.safeParse(request.body);
+      // Spent before the SDK sees the message: an operation from the installation's
+      // budget, a handshake or rejection from the calling program's own (§8.1).
+      await limit(
+        request,
+        messageRate(parsed.success ? parsed.data.method : undefined),
+      );
+      if (!parsed.success) throw parsed.error;
+      const envelope = parsed.data;
       let operationAudited = false;
       let auditUnavailable = false;
       const invoke = async <T>(operation: () => Promise<T>): Promise<T> => {

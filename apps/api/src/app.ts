@@ -125,7 +125,8 @@ export async function createApp(options: {
         caller: identity.caller,
         principal: identity,
       });
-      await limit(request, request.routeOptions.config.rate ?? "read");
+      const rate = request.routeOptions.config.rate ?? "read";
+      if (rate !== "message") await limit(request, rate);
     }
     if (
       !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
