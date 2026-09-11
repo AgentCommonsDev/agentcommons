@@ -19,7 +19,10 @@ import {
   type ReuseSort,
   type ReusePagePosition,
 } from "@agentcommons/core";
-import { traceViewCatalog } from "@agentcommons/core/sql";
+import {
+  sessionReadAggregateColumns,
+  traceViewCatalog,
+} from "@agentcommons/core/sql";
 import { ServiceError } from "../services/context.js";
 import {
   wireRow,
@@ -171,7 +174,12 @@ export async function filterSql(
     }
     conditions.push(`s.repo_name IN ${params.add(names)}`);
   }
-  for (const key of ["branch", "user_email", "session_id"] as const) {
+  for (const key of [
+    "branch",
+    "user_email",
+    "session_id",
+    "ingest_api_key_id",
+  ] as const) {
     const value = filters[key];
     if (value !== undefined)
       conditions.push(
@@ -276,12 +284,22 @@ export async function sessionLinks(
     ]),
   );
 }
-/** The `sessions` columns in catalog order; the relatives query pads `reuse_count` per branch. */
+/** The `sessions` columns in catalog order; the relatives query pads the read aggregates per branch. */
+const AGGREGATE_COLUMNS: readonly string[] = sessionReadAggregateColumns;
 const RELATIVE_COLUMNS = Object.keys(traceViewCatalog.sessions.columns).filter(
-  (name) => name !== "reuse_count",
+  (name) => !AGGREGATE_COLUMNS.includes(name),
 );
-function relativeSelect(reuseCount: string): string {
-  return `${RELATIVE_COLUMNS.map((name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")},${reuseCount} AS reuse_count`;
+/** Every `sessions` column from alias `s`; branches over `session_details` pad the aggregates with zero. */
+function relativeSelect(aggregated: boolean): string {
+  return [
+    ...RELATIVE_COLUMNS.map(
+      (name) => `s.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`,
+    ),
+    ...AGGREGATE_COLUMNS.map(
+      (name) =>
+        `${aggregated ? `s.${sqlIdentifier(name)}` : "toUInt64(0)"} AS ${sqlIdentifier(name)}`,
+    ),
+  ].join(",");
 }
 /**
  * One ClickHouse query for a batch of sessions: the `sessions` rows of `self` (a get reads
@@ -299,15 +317,15 @@ async function sessionRelatives(
   const branches = [
     ...(scope.self.length
       ? [
-          `SELECT 'self' AS relation,${relativeSelect("s.reuse_count")} FROM api_ro.sessions s WHERE s.session_id IN {self:Array(UUID)}`,
+          `SELECT 'self' AS relation,${relativeSelect(true)} FROM api_ro.sessions s WHERE s.session_id IN {self:Array(UUID)}`,
         ]
       : []),
     ...(scope.parents.length
       ? [
-          `SELECT 'parent' AS relation,${relativeSelect("toUInt64(0)")} FROM api_ro.session_details s WHERE s.session_id IN {parents:Array(UUID)}`,
+          `SELECT 'parent' AS relation,${relativeSelect(false)} FROM api_ro.session_details s WHERE s.session_id IN {parents:Array(UUID)}`,
         ]
       : []),
-    `SELECT 'child' AS relation,${relativeSelect("toUInt64(0)")} FROM (SELECT * FROM api_ro.session_details WHERE parent_session_id IN {ids:Array(UUID)} ORDER BY started_at,session_id LIMIT 10 BY parent_session_id) s`,
+    `SELECT 'child' AS relation,${relativeSelect(false)} FROM (SELECT * FROM api_ro.session_details WHERE parent_session_id IN {ids:Array(UUID)} ORDER BY started_at,session_id LIMIT 10 BY parent_session_id) s`,
   ];
   const result = await client.query(branches.join(" UNION ALL "), {
     self: [...scope.self],
@@ -350,7 +368,7 @@ function assembleHeader(
   for (const key of [
     "file_count",
     "observed_commit_count",
-    "reuse_count",
+    ...AGGREGATE_COLUMNS,
     "child_count",
   ])
     header[key] = Number(row[key]);

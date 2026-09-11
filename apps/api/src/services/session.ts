@@ -513,6 +513,19 @@ export class SessionService {
   }
 
   list(context: ServiceContext, input: unknown) {
+    /** `searched` and `used_prior_work` as predicates over the `sessions` row: any, at least one, or none. */
+    const usagePredicates = (request: {
+      searched?: boolean | undefined;
+      used_prior_work?: boolean | undefined;
+    }) =>
+      (
+        [
+          ["agentcommons_search_calls", request.searched],
+          ["reuses_made", request.used_prior_work],
+        ] as const
+      ).flatMap(([column, wanted]) =>
+        wanted === undefined ? [] : [`s.${column}${wanted ? ">" : "="}0`],
+      );
     return readOperation(
       this.dependencies.audit,
       context,
@@ -553,6 +566,8 @@ export class SessionService {
                     ]
                   : []),
                 ...(request.roots_only ? ["s.parent_session_id IS NULL"] : []),
+                // The usage filters test the read aggregates of the same row.
+                ...usagePredicates(request),
               ]);
               // The totals are window aggregates of the page's own scan: the same
               // predicate, fence and row policies, evaluated before the window is cut.

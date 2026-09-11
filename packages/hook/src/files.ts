@@ -42,12 +42,12 @@ function publishExclusive(path: string, text: string): boolean {
   const temp = `${path}.${randomUUID()}.claim`;
   const fd = openSync(temp, "wx", 0o600);
   try {
-    writeFileSync(fd, text);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  try {
+    try {
+      writeFileSync(fd, text);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     try {
       linkSync(temp, path);
     } catch (error) {
@@ -57,6 +57,7 @@ function publishExclusive(path: string, text: string): boolean {
     syncDirectory(dirname(path));
     return true;
   } finally {
+    // Also after a write that failed half-way (a full disk): the claim never stays behind.
     unlinkSync(temp);
   }
 }

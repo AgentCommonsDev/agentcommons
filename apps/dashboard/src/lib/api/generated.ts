@@ -3526,6 +3526,8 @@ export interface operations {
             branch?: string | string[];
             /** @description Sessions run by these members (exact email) */
             user_email?: string | string[];
+            /** @description Sessions uploaded with these ingest API keys (key id, exact); the Install page uses it to show one machine's sessions */
+            ingest_api_key_id?: string | string[];
             /** @description Messages calling or answering these tools, such as Read or Bash */
             tool_name?: string | string[];
             /** @description Sessions that touched a file whose path starts with this text, such as src/auth/ */
@@ -3952,6 +3954,8 @@ export interface operations {
           | "tool_call_count"
           | "observed_commit_count"
           | "reuse_count"
+          | "agentcommons_search_calls"
+          | "reuses_made"
           | "status"
           | "last_activity_at";
         order?: "asc" | "desc";
@@ -3965,6 +3969,8 @@ export interface operations {
           branch?: string | string[];
           /** @description Sessions run by these members (exact email) */
           user_email?: string | string[];
+          /** @description Sessions uploaded with these ingest API keys (key id, exact); the Install page uses it to show one machine's sessions */
+          ingest_api_key_id?: string | string[];
           /** @description Messages calling or answering these tools, such as Read or Bash */
           tool_name?: string | string[];
           /** @description Sessions that touched a file whose path starts with this text, such as src/auth/ */
@@ -4087,6 +4093,10 @@ export interface operations {
           )[];
         };
         roots_only?: boolean;
+        /** @description true: only sessions whose agent made a search or sql call while active; false: only sessions that made none */
+        searched?: boolean;
+        /** @description true: only sessions whose agent read an earlier session through get while active; false: only sessions that read none */
+        used_prior_work?: boolean;
       };
       header?: never;
       path?: never;
@@ -4185,6 +4195,10 @@ export interface operations {
               observed_commit_count: number;
               /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
+              /** @description search and sql calls credited to the session while active */
+              agentcommons_search_calls: number;
+              /** @description Distinct earlier sessions this one read through get; see reuse_edges */
+              reuses_made: number;
               /** @description Subagent type when the session is a subagent */
               agent_type: string | null;
               /** @description Parent session of a subagent, fork or spawned session */
@@ -4390,6 +4404,10 @@ export interface operations {
               observed_commit_count: number;
               /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
+              /** @description search and sql calls credited to the session while active */
+              agentcommons_search_calls: number;
+              /** @description Distinct earlier sessions this one read through get; see reuse_edges */
+              reuses_made: number;
               /** @description Subagent type when the session is a subagent */
               agent_type: string | null;
               /** @description Parent session of a subagent, fork or spawned session */
@@ -4601,6 +4619,10 @@ export interface operations {
               observed_commit_count: number;
               /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
+              /** @description search and sql calls credited to the session while active */
+              agentcommons_search_calls: number;
+              /** @description Distinct earlier sessions this one read through get; see reuse_edges */
+              reuses_made: number;
               /** @description Subagent type when the session is a subagent */
               agent_type: string | null;
               /** @description Parent session of a subagent, fork or spawned session */

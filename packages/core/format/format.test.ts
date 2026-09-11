@@ -44,6 +44,8 @@ const header: SessionHeader = {
   file_count: 1,
   observed_commit_count: 2,
   reuse_count: 2,
+  agentcommons_search_calls: 3,
+  reuses_made: 1,
   agent_type: null,
   parent_session_id: null,
   parent_relation: null,
@@ -204,6 +206,8 @@ describe("shared text and structured formatters", () => {
       else expect(formatted.text).toContain(`${key}:`);
     expect(formatted.text).toContain("input_tokens: 9007199254740993");
     expect(formatted.text).toContain("reuse_count: 2");
+    expect(formatted.text).toContain("agentcommons_search_calls: 3");
+    expect(formatted.text).toContain("reuses_made: 1");
     expect(formatted.text).toContain("output_tokens: null");
     expect(formatted.text).toContain("seq 2 ASSISTANT THINKING");
     expect(formatted.text).toContain('content_cursor: {"seq":2,"offset":4096}');

@@ -1,4 +1,7 @@
-import { traceViewCatalog } from "@agentcommons/core/sql";
+import {
+  sessionReadAggregateColumns,
+  traceViewCatalog,
+} from "@agentcommons/core/sql";
 import { sqlIdentifier, sqlString } from "../client.js";
 import { controlTableSql, traceScopeSql } from "../control.js";
 import { emptyTraceRow } from "../rows.js";
@@ -45,10 +48,11 @@ export function latestRowsSql(
   // organization predicate only narrows the scan to the caller's primary-key range.
   return `SELECT ${selected} FROM ${sqlIdentifier(database)}.${sqlIdentifier(table)} r FINAL WHERE r.organization_id=${traceScopeSql.organization} GROUP BY r.organization_id,r.session_id,r.${sqlIdentifier(identity)} HAVING argMax(r.deleted,r.revision)=0`;
 }
-/** The `sessions` columns in catalog order, before analytics appends `reuse_count`. */
+/** The `sessions` columns in catalog order, before analytics appends the read aggregates. */
+const aggregated: readonly string[] = sessionReadAggregateColumns;
 export const sessionDetailColumns = Object.keys(
   traceViewCatalog.sessions.columns,
-).filter((name) => name !== "reuse_count");
+).filter((name) => !aggregated.includes(name));
 
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
 const headerNames = Object.keys(sessionColumns);

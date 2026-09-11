@@ -19,7 +19,7 @@ const sql = (name: string) => {
   return definition;
 };
 
-// @req R-SEC-02
+// @req R-SEC-02 @req R-DASH-42
 describe("session relations read control once per query and scan each base table once", () => {
   it("looks nothing up per row through a dictionary on the session, message and reuse paths", () => {
     for (const name of [
@@ -47,6 +47,16 @@ describe("session relations read control once per query and scan each base table
     expect(scansOf(sql("sessions"), "sessions")).toBe(2);
     expect(scansOf(sql("sessions"), "session_files")).toBe(1);
     expect(sql("sessions").split("`session_reads` FINAL").length - 1).toBe(1);
+    // The three read aggregates of `sessions` come from that one pass, credited to the
+    // reading session and, for edges, to the read session (R-DASH-42).
+    expect(
+      sql("sessions").split(
+        "ARRAY JOIN [('in',r.target_session_id),('out',r.session_id)] AS credit",
+      ).length - 1,
+    ).toBe(1);
+    expect(sql("sessions")).toMatch(
+      /coalesce\(r\.reuse_count,toUInt64\(0\)\) AS reuse_count,coalesce\(r\.agentcommons_search_calls,toUInt64\(0\)\) AS agentcommons_search_calls,coalesce\(r\.reuses_made,toUInt64\(0\)\) AS reuses_made FROM/,
+    );
     expect(scansOf(sql("messages"), "messages")).toBe(1);
     expect(scansOf(sql("messages"), "sessions")).toBe(1);
     expect(scansOf(sql("reuse_edges"), "sessions")).toBe(0);

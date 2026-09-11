@@ -12950,6 +12950,23 @@
                           }
                         ]
                       },
+                      "ingest_api_key_id": {
+                        "description": "Sessions uploaded with these ingest API keys (key id, exact); the Install page uses it to show one machine's sessions",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          {
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          }
+                        ]
+                      },
                       "tool_name": {
                         "description": "Messages calling or answering these tools, such as Read or Bash",
                         "anyOf": [
@@ -14167,6 +14184,8 @@
                 "tool_call_count",
                 "observed_commit_count",
                 "reuse_count",
+                "agentcommons_search_calls",
+                "reuses_made",
                 "status",
                 "last_activity_at"
               ]
@@ -14256,6 +14275,23 @@
                         "type": "string",
                         "format": "email",
                         "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+                      }
+                    }
+                  ]
+                },
+                "ingest_api_key_id": {
+                  "description": "Sessions uploaded with these ingest API keys (key id, exact); the Install page uses it to show one machine's sessions",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
                       }
                     }
                   ]
@@ -14643,6 +14679,24 @@
             "in": "query",
             "name": "roots_only",
             "required": false
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "name": "searched",
+            "required": false,
+            "description": "true: only sessions whose agent made a search or sql call while active; false: only sessions that made none"
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "name": "used_prior_work",
+            "required": false,
+            "description": "true: only sessions whose agent read an earlier session through get while active; false: only sessions that read none"
           }
         ],
         "security": [
@@ -14897,6 +14951,18 @@
                             "maximum": 9007199254740991,
                             "description": "Later sessions that read this one; see session_reuse"
                           },
+                          "agentcommons_search_calls": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "search and sql calls credited to the session while active"
+                          },
+                          "reuses_made": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Distinct earlier sessions this one read through get; see reuse_edges"
+                          },
                           "agent_type": {
                             "description": "Subagent type when the session is a subagent",
                             "type": [
@@ -15132,6 +15198,8 @@
                           "file_count",
                           "observed_commit_count",
                           "reuse_count",
+                          "agentcommons_search_calls",
+                          "reuses_made",
                           "agent_type",
                           "parent_session_id",
                           "parent_relation",
@@ -15557,6 +15625,18 @@
                             "maximum": 9007199254740991,
                             "description": "Later sessions that read this one; see session_reuse"
                           },
+                          "agentcommons_search_calls": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "search and sql calls credited to the session while active"
+                          },
+                          "reuses_made": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Distinct earlier sessions this one read through get; see reuse_edges"
+                          },
                           "agent_type": {
                             "description": "Subagent type when the session is a subagent",
                             "type": [
@@ -15781,6 +15861,8 @@
                           "file_count",
                           "observed_commit_count",
                           "reuse_count",
+                          "agentcommons_search_calls",
+                          "reuses_made",
                           "agent_type",
                           "parent_session_id",
                           "parent_relation",
@@ -16265,6 +16347,18 @@
                               "maximum": 9007199254740991,
                               "description": "Later sessions that read this one; see session_reuse"
                             },
+                            "agentcommons_search_calls": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "search and sql calls credited to the session while active"
+                            },
+                            "reuses_made": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Distinct earlier sessions this one read through get; see reuse_edges"
+                            },
                             "agent_type": {
                               "description": "Subagent type when the session is a subagent",
                               "type": [
@@ -16489,6 +16583,8 @@
                             "file_count",
                             "observed_commit_count",
                             "reuse_count",
+                            "agentcommons_search_calls",
+                            "reuses_made",
                             "agent_type",
                             "parent_session_id",
                             "parent_relation",

@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import { Client } from "pg";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
-import { ClickHouseError, TraceReaders } from "@agentcommons/traces";
+import {
+  ClickHouseError,
+  NO_TARGET_SESSION_ID,
+  TraceReaders,
+} from "@agentcommons/traces";
 import {
   messageRowSchema,
   responseBytes,
@@ -1141,6 +1145,120 @@ describe("read services on ClickHouse", () => {
         cursor: first.result.cursor,
       }),
     ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
+  });
+  // @req R-DASH-42
+  it("lists and sorts sessions by their attributed searches and reads of earlier sessions from the page's own scan", async () => {
+    const at = Date.now();
+    const read = (
+      sessionId: string,
+      action: string,
+      targetId: string,
+      offset: number,
+    ) => ({
+      organization_id: "org-a",
+      session_id: sessionId,
+      audit_id: randomUUID(),
+      read_at: new Date(at + offset * 60_000),
+      action,
+      target_session_id: targetId,
+      reader_user_id: "owner",
+      reader_email: "owner@example.com",
+      reader_harness: "CLAUDE_CODE",
+    });
+    // The public root searched twice; the wide session read the public root twice, the
+    // private session once and itself once; every other session did neither.
+    await db.traces.appendSessionReads([
+      read(ids.public, "search", NO_TARGET_SESSION_ID, 0),
+      read(ids.public, "sql", NO_TARGET_SESSION_ID, 1),
+      read(ids.wide, "get", ids.public, 2),
+      read(ids.wide, "get", ids.public, 3),
+      read(ids.wide, "get", ids.private, 4),
+      read(ids.wide, "get", ids.wide, 5),
+    ]);
+    type Item = {
+      session_id: string;
+      agentcommons_search_calls: number;
+      reuses_made: number;
+      reuse_count: number;
+    };
+    type Listed = { result: { items: Item[]; total: { sessions: number } } };
+    const listed = (page: Listed) =>
+      page.result.items.map((item) => item.session_id);
+    const list = (input: Record<string, unknown>, ctx = context()) =>
+      sessions.list(ctx, { limit: 100, ...input }) as Promise<Listed>;
+    const byId = (page: Listed) =>
+      new Map(page.result.items.map((item) => [item.session_id, item]));
+    const everything = byId(await list({}));
+    expect(everything.get(ids.public)).toMatchObject({
+      agentcommons_search_calls: 2,
+      reuses_made: 0,
+      reuse_count: 1,
+    });
+    // Distinct sessions read: the self read is none, and a member cannot see the private target.
+    expect(everything.get(ids.wide)).toMatchObject({
+      agentcommons_search_calls: 0,
+      reuses_made: 1,
+    });
+    expect(everything.get(ids.empty)).toMatchObject({
+      agentcommons_search_calls: 0,
+      reuses_made: 0,
+    });
+    const admin = context("org-a", { admin: true });
+    expect(byId(await list({}, admin)).get(ids.wide)?.reuses_made).toBe(2);
+    // Each filter keeps only the sessions with, or only those without, the usage; the
+    // totals follow the same predicate and the two filters compose with the others.
+    const searched = await list({ searched: true });
+    expect(listed(searched)).toEqual([ids.public]);
+    expect(searched.result.total.sessions).toBe(1);
+    const unsearched = await list({ searched: false });
+    expect(listed(unsearched)).not.toContain(ids.public);
+    expect(listed(unsearched)).toEqual(
+      expect.arrayContaining([ids.wide, ids.empty]),
+    );
+    expect(unsearched.result.total.sessions).toBe(
+      everything.size - searched.result.total.sessions,
+    );
+    const used = await list({ used_prior_work: true });
+    expect(listed(used)).toEqual([ids.wide]);
+    expect(listed(await list({ used_prior_work: false }))).toEqual(
+      expect.arrayContaining([ids.public, ids.empty]),
+    );
+    expect(
+      listed(await list({ searched: true, used_prior_work: true })),
+    ).toEqual([]);
+    expect(
+      listed(
+        await list({
+          searched: false,
+          used_prior_work: false,
+          filters: { repo_name: "host/team/repo" },
+          roots_only: true,
+        }),
+      ),
+    ).not.toContain(ids.public);
+    // Both aggregates sort on the server; the first page of a filtered list is one scan.
+    const bySearch = await list({ sort: "agentcommons_search_calls" });
+    expect(listed(bySearch)[0]).toBe(ids.public);
+    const byReuse = await list({ sort: "reuses_made", order: "desc" });
+    expect(listed(byReuse)[0]).toBe(ids.wide);
+    const ascending = await list({ sort: "reuses_made", order: "asc" });
+    expect(listed(ascending).at(-1)).toBe(ids.wide);
+    counter.drain();
+    await list({ searched: true, limit: 1 });
+    expect(scansPerRelation(counter.drain())).toEqual({
+      sessions: 1,
+      session_details: 1,
+    });
+    // The header carries both counts, in JSON and in the text form agents read.
+    const got = await sessions.get(context(), { session_id: ids.public });
+    expect(got.result.header).toMatchObject({
+      agentcommons_search_calls: 2,
+      reuses_made: 0,
+    });
+    expect(formatGet(got.result).text).toContain(
+      "agentcommons_search_calls: 2",
+    );
+    expect(formatGet(got.result).text).toContain("reuses_made: 0");
   });
   // @req R-DASH-37
   it("reports session, message and hit totals over the whole visible set beside every page", async () => {

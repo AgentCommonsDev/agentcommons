@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
+import { Check } from "lucide-react";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import { sessionSortKeys } from "../../lib/api/options";
@@ -21,12 +22,23 @@ import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
 import { Button } from "../../components/ui/button";
 import { Skeleton } from "../../components/ui/feedback";
-import type { ApiFilters } from "./search-state";
+import { usageQuery, type ApiFilters, type UsageFilters } from "./search-state";
 import { SessionStatusBadge } from "./session-header";
 
 const fields = copy.app.fields;
 /** Counts and durations sit flush right so their digits line up down the column. */
 const numeric = { meta: { align: "end" } } as const;
+/** A usage count: a check mark with the count when the session did it, a dash when it did not. */
+function UsageCount({ value }: { value: number }) {
+  if (value === 0)
+    return <span className="text-muted">{copy.app.common.unavailable}</span>;
+  return (
+    <span className="inline-flex items-center gap-1 tabular-nums">
+      <Check size={14} aria-hidden className="text-success" />
+      {number(value)}
+    </span>
+  );
+}
 /** Every R-DASH-11 column plus the subagent count; ids double as server sort keys. */
 function sessionColumns(): ColumnDef<SessionItem>[] {
   return [
@@ -169,6 +181,20 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
       ),
     },
     {
+      accessorKey: "agentcommons_search_calls",
+      header: copy.sessions.list.searched,
+      size: 90,
+      ...numeric,
+      cell: ({ getValue }) => <UsageCount value={getValue<number>()} />,
+    },
+    {
+      accessorKey: "reuses_made",
+      header: copy.sessions.list.usedPriorWork,
+      size: 110,
+      ...numeric,
+      cell: ({ getValue }) => <UsageCount value={getValue<number>()} />,
+    },
+    {
       accessorKey: "status",
       header: fields.status,
       size: 130,
@@ -194,7 +220,9 @@ function sessionColumns(): ColumnDef<SessionItem>[] {
 /**
  * The six-column default (title, repository, user, started, messages, status) fits a
  * 1024 px desktop beside the sidebar; the chooser adds the rest. Messages holds the
- * default slot over the reuse count because it is the size of the session at a glance.
+ * default slot over the reuse count because it is the size of the session at a glance;
+ * the two usage counts wait in the chooser too, since the usage filters above the table
+ * already answer who searched and who used prior work.
  */
 const hiddenColumns = [
   "harness",
@@ -204,6 +232,8 @@ const hiddenColumns = [
   "tool_call_count",
   "observed_commit_count",
   "reuse_count",
+  "agentcommons_search_calls",
+  "reuses_made",
   "child_count",
 ] as const;
 
@@ -234,9 +264,12 @@ function ListTotal({
 /** Root sessions only: subagent, fork and spawned runs appear inside their parent's page. */
 export function SessionsTable({
   filters,
+  usage,
   filtered,
 }: {
   filters: ApiFilters;
+  /** The searched / used-prior-work selects; list parameters beside `filters`. */
+  usage: UsageFilters;
   /** Whether the reader narrowed the list; picks the empty state wording. */
   filtered: boolean;
 }) {
@@ -244,6 +277,7 @@ export function SessionsTable({
   const navigate = useNavigate();
   const pagination = usePagination("started_at", sessionSortKeys);
   const columns = useMemo(sessionColumns, []);
+  const usageParams = usageQuery(usage);
   const fetchPage = async (
     cursor: string | null,
     limit: number,
@@ -254,6 +288,7 @@ export function SessionsTable({
         params: {
           query: {
             filters,
+            ...usageParams,
             roots_only: true,
             cursor,
             sort: pagination.sort,
@@ -270,6 +305,7 @@ export function SessionsTable({
       organization.id,
       "sessions",
       filters,
+      usageParams,
       pagination.cursor,
       pagination.sort,
       pagination.direction,

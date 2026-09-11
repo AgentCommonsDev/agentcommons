@@ -130,6 +130,8 @@ export const appCopy = {
     installation_hostname: "Hostname",
     last_seen_at: "Last seen",
     reuse_count: "Reused by (sessions)",
+    agentcommons_search_calls: "AgentCommons searches",
+    reuses_made: "Reused from (sessions)",
     os_user: "OS user",
     platform: "Platform",
     arch: "Architecture",

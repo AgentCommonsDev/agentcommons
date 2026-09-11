@@ -83,6 +83,10 @@ export const traceViewCatalog: Readonly<
       duration_seconds: "Seconds from start to end or last activity",
       observed_commit_count: "Commits observed during the session",
       reuse_count: "Later sessions that read this one; see session_reuse",
+      agentcommons_search_calls:
+        "search and sql calls credited to the session while active",
+      reuses_made:
+        "Distinct earlier sessions this one read through get; see reuse_edges",
     },
   },
   messages: {
@@ -455,6 +459,17 @@ export const traceViewCatalog: Readonly<
     },
   },
 };
+
+/**
+ * The `sessions` columns aggregated from stored API reads (`session_reads`), appended after
+ * the `session_details` columns; the relatives query pads them for branches read from
+ * `session_details`, and the view definition appends them in this order.
+ */
+export const sessionReadAggregateColumns = [
+  "reuse_count",
+  "agentcommons_search_calls",
+  "reuses_made",
+] as const;
 
 /** `view.column` keys with their descriptions, in catalog order, for SQL lookups and tests. */
 export function traceColumnDescriptions(): readonly {

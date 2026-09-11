@@ -4,6 +4,7 @@ import { copy } from "../../copy";
 import { dateOnly } from "../../lib/display";
 import { Button } from "../../components/ui/button";
 import {
+  clearedFilters,
   fieldTitle,
   hasFilters,
   valueFilterKeys,
@@ -119,13 +120,7 @@ export function FilterChips({
         size="sm"
         className="text-xs"
         onClick={() => {
-          onChange({
-            ...state,
-            values: {},
-            since: null,
-            until: null,
-            where: [],
-          });
+          onChange(clearedFilters(state));
         }}
       >
         {labels.clearAll}

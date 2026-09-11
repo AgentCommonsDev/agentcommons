@@ -37,7 +37,17 @@ export const valueFilterKeys = [
 export type ValueFilterKey = (typeof valueFilterKeys)[number];
 export type ResultView = "sessions" | "messages";
 
-export interface SearchState {
+/**
+ * The two usage filters of the session list (`GET /sessions` parameters `searched` and
+ * `used_prior_work`): true lists sessions with the usage, false those without, null either.
+ */
+export interface UsageFilters {
+  searched: boolean | null;
+  usedPriorWork: boolean | null;
+}
+export const usageFilterKeys = ["searched", "usedPriorWork"] as const;
+type UsageFilterKey = (typeof usageFilterKeys)[number];
+export interface SearchState extends UsageFilters {
   query: string;
   view: ResultView | null;
   values: Partial<Record<ValueFilterKey, string[]>>;
@@ -52,10 +62,20 @@ const emptySearchState: SearchState = {
   since: null,
   until: null,
   where: [],
+  searched: null,
+  usedPriorWork: null,
+};
+/** URL parameter of each usage filter; the API parameter has the same name. */
+const usageParams: Readonly<Record<UsageFilterKey, string>> = {
+  searched: "searched",
+  usedPriorWork: "used_prior_work",
 };
 
 // The router parses JSON-looking values, so a typed "123" may arrive as a number.
 const text = z.union([z.string(), z.number(), z.boolean()]).transform(String);
+const flag = z
+  .union([z.boolean(), z.enum(["true", "false"])])
+  .transform((value) => value === true || value === "true");
 const textList = z
   .union([text, z.array(text)])
   .transform((value) => (Array.isArray(value) ? value : [value]))
@@ -88,7 +108,15 @@ const urlSchema = z.looseObject({
   ...Object.fromEntries(
     valueFilterKeys.map((key) => [key, textList.optional().catch(undefined)]),
   ),
+  ...Object.fromEntries(
+    Object.values(usageParams).map((name) => [
+      name,
+      flag.optional().catch(undefined),
+    ]),
+  ),
 });
+const flagOf = (value: unknown): boolean | null =>
+  flag.optional().catch(undefined).parse(value) ?? null;
 /** URL search params are the only source of truth for the page, so results are shareable. */
 export function parseSearchState(search: unknown): SearchState {
   const parsed = urlSchema.safeParse(search);
@@ -106,6 +134,8 @@ export function parseSearchState(search: unknown): SearchState {
     since: data.since ?? null,
     until: data.until ?? null,
     where: data.where ?? [],
+    searched: flagOf(data[usageParams.searched]),
+    usedPriorWork: flagOf(data[usageParams.usedPriorWork]),
   };
 }
 export function serializeSearchState(
@@ -121,6 +151,8 @@ export function serializeSearchState(
   if (state.since) search.since = state.since;
   if (state.until) search.until = state.until;
   if (state.where.length > 0) search.where = state.where;
+  for (const key of usageFilterKeys)
+    if (state[key] !== null) search[usageParams[key]] = state[key];
   return search;
 }
 export function hasFilters(state: SearchState): boolean {
@@ -128,8 +160,32 @@ export function hasFilters(state: SearchState): boolean {
     Object.keys(state.values).length > 0 ||
     state.since !== null ||
     state.until !== null ||
-    state.where.length > 0
+    state.where.length > 0 ||
+    usageFilterKeys.some((key) => state[key] !== null)
   );
+}
+/** The usage filters as `GET /sessions` query parameters; absent keys mean either. */
+export function usageQuery(
+  state: UsageFilters,
+): Partial<Record<"searched" | "used_prior_work", boolean>> {
+  return {
+    ...(state.searched === null ? {} : { searched: state.searched }),
+    ...(state.usedPriorWork === null
+      ? {}
+      : { used_prior_work: state.usedPriorWork }),
+  };
+}
+/** Every filter cleared: the quick filters, dates, conditions and usage filters. */
+export function clearedFilters(state: SearchState): SearchState {
+  return {
+    ...state,
+    values: {},
+    since: null,
+    until: null,
+    where: [],
+    searched: null,
+    usedPriorWork: null,
+  };
 }
 /** The view a shared link opens without an explicit choice: words search messages. */
 export function effectiveView(state: SearchState): ResultView {

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -7,7 +7,11 @@ import {
   type IngestEnvelope,
 } from "@agentcommons/core/schemas/ingest";
 import { hash } from "../src/files.js";
-import type { CliHarness, NativeHook } from "../src/harnesses.js";
+import {
+  HARNESSES,
+  type CliHarness,
+  type NativeHook,
+} from "../src/harnesses.js";
 import { recordHook } from "../src/hook.js";
 import { configure } from "../src/install.js";
 
@@ -20,6 +24,43 @@ interface FixtureOptions {
   initial?: string;
   /** Extra `configure` input. The default carries a verified organization, so drains skip `/api/v1/me`. */
   config?: Record<string, unknown>;
+}
+/**
+ * An isolated config home whose harness MCP files carry the installer's `agentcommons`
+ * entry (`ok`), one with an unexpanded env placeholder, or none at all, as `configure`
+ * input (`installOptions.configHome`). Hint tests pass it so the shim's registration check
+ * (§6.2 repair notice) never reads the real home of the machine running the tests.
+ */
+export function wiredConfigHome(
+  directory: string,
+  status: "ok" | "placeholder" | "missing" = "ok",
+  server = "http://127.0.0.1:3000",
+): { installOptions: { configHome: string } } {
+  const configHome = join(directory, `home-${status}`);
+  mkdirSync(configHome, { recursive: true });
+  if (status !== "missing") {
+    const key = status === "ok" ? "test" : "${AGENTCOMMONS_API_KEY}";
+    const url = `${server}/mcp`;
+    writeFileSync(
+      join(configHome, ".claude.json"),
+      JSON.stringify({
+        mcpServers: { agentcommons: HARNESSES.claude.mcp(url, key) },
+      }),
+    );
+    mkdirSync(join(configHome, ".gemini"), { recursive: true });
+    writeFileSync(
+      join(configHome, ".gemini", "settings.json"),
+      JSON.stringify({
+        mcpServers: { agentcommons: HARNESSES.gemini.mcp(url, key) },
+      }),
+    );
+    mkdirSync(join(configHome, ".codex"), { recursive: true });
+    writeFileSync(
+      join(configHome, ".codex", "config.toml"),
+      `[mcp_servers.agentcommons]\nurl = "${url}"\nbearer_token_env_var = "AGENTCOMMONS_API_KEY"\n`,
+    );
+  }
+  return { installOptions: { configHome } };
 }
 /** A data directory, a configured installation, one seeded transcript and an accepting server. */
 export function fixture(options: FixtureOptions = {}) {

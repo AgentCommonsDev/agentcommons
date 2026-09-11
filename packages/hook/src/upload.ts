@@ -322,7 +322,20 @@ async function drain(
   if (!lock) return IDLE;
   const deadline = setTimeout(() => process.exit(0), MAX_UPLOADER_MS);
   deadline.unref();
-  const state = loadState(path);
+  let state: HookState;
+  try {
+    state = loadState(path);
+  } catch (error) {
+    // A state file this bundle cannot read: release the owner so the next uploader is
+    // not left recovering a dead one, log why the session stays silent, serve the rest.
+    clearTimeout(deadline);
+    lock.release();
+    note(
+      directory,
+      `Session state unreadable, skipped: ${path}: ${error instanceof Error ? (error.message.split("\n")[0] ?? "") : "unknown error"}`,
+    );
+    return IDLE;
+  }
   const definition = HARNESSES[state.harness];
   const wait = options.sleep ?? sleep;
   let retry = false;
@@ -789,7 +802,12 @@ export async function upload(
   }
   // Covers a hook that published while the old owner was exiting. Hooks arriving
   // after this check see no owner and start their own uploader.
-  const current = loadState(path);
+  let current: HookState;
+  try {
+    current = loadState(path);
+  } catch {
+    return; // Unreadable state: the drain logged it; nothing to respawn for.
+  }
   if (
     !retry &&
     !current.suspended &&
@@ -833,7 +851,14 @@ async function drainAll(
   if (options.sweep !== false) {
     const candidate = jsonFiles(join(directory, "state"))
       .filter((file) => !visited.has(file))
-      .map((file) => ({ file, state: loadState(file) }))
+      // An unreadable state file never blocks the other sessions' sweep; its own uploader logs it.
+      .flatMap((file) => {
+        try {
+          return [{ file, state: loadState(file) }];
+        } catch {
+          return [];
+        }
+      })
       .filter(
         ({ file, state }) =>
           !state.suspended &&

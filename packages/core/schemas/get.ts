@@ -202,6 +202,10 @@ export const sessionHeaderSchema = z.strictObject({
     session("observed_commit_count"),
   ),
   reuse_count: nonnegativeIntegerSchema.describe(session("reuse_count")),
+  agentcommons_search_calls: nonnegativeIntegerSchema.describe(
+    session("agentcommons_search_calls"),
+  ),
+  reuses_made: nonnegativeIntegerSchema.describe(session("reuses_made")),
   agent_type: nullableTextSchema.describe(session("agent_type")),
   parent_session_id: sessionIdSchema
     .nullable()

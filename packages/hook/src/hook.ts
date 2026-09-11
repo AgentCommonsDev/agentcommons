@@ -32,6 +32,28 @@ export function spawnUpload(
   });
   child.unref();
 }
+/**
+ * A hook that could not record its event (a state file this bundle cannot read, a fault
+ * in this release) still starts the session's uploader when none is live. The uploader
+ * runs the update check whatever its drain does (§6.2), so the release that fixes the
+ * fault reaches the machine instead of every later hook failing the same way in silence.
+ */
+export function recoverUpload(
+  directory: string,
+  executable: string,
+  config: HookConfig,
+  harness: CliHarness,
+  input: unknown,
+): string | null {
+  const event = z
+    .looseObject({ session_id: z.string().min(1) })
+    .safeParse(input);
+  if (!event.success) return null;
+  const path = statePath(directory, harness, event.data.session_id);
+  if (liveOwner(ownerPath(path))) return null;
+  spawnUpload(config, executable, path);
+  return path;
+}
 export function recordHook(
   directory: string,
   executable: string,

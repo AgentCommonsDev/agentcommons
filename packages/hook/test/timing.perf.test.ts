@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { expect, it } from "vitest";
 import { configure } from "../src/install.js";
+import { wiredConfigHome } from "./fixture.js";
 import { HARNESSES } from "../src/harnesses.js";
 import { hash, writeAtomic } from "../src/files.js";
 import { recallCachePath } from "../src/recall.js";
@@ -25,6 +26,9 @@ it("all hook events exit zero within 150 ms with a blackholed server and no hook
     key: "test-credential",
     organizationId: "native-better-auth-org-id",
     credentialHash: hash("test-credential"),
+    // The hint's registration check reads the harness MCP files of this config home,
+    // never the real home of the machine running the test (§6.2).
+    ...wiredConfigHome(directory, "ok", "http://127.0.0.1:1"),
   });
   const preloader = join(directory, "deny-network.cjs");
   writeFileSync(
@@ -78,16 +82,28 @@ it("all hook events exit zero within 150 ms with a blackholed server and no hook
     head: null,
   };
   writeAtomic(path, { ...state, context: { ...state.context, git } });
+  // The cache the uploader keeps: the count and the newest sessions (§6.2).
   writeAtomic(recallCachePath(directory, "github.com/acme/widgets"), {
-    v: 1,
+    v: 2,
     repoName: "github.com/acme/widgets",
     sessions: 12,
     fetchedAt: Date.now(),
+    recent: Array.from({ length: 10 }, (_, index) => ({
+      id: `01a08fd7-9907-72a3-9135-80162670d9${String(index).padStart(2, "0")}`,
+      title: `Session ${String(index)} about the widgets ${"x".repeat(60)}`,
+      startedAt: "2026-09-10T12:00:00Z",
+      branch: "main",
+    })),
   });
   await delay(200);
   const started = performance.now();
   const stdout = execFileSync(process.execPath, [executable, "claude"], {
-    input: hintedInput("UserPromptSubmit"),
+    input: JSON.stringify({
+      session_id: hinted,
+      cwd: directory,
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Please tidy the README wording of this project.",
+    }),
     env: { ...env, NODE_OPTIONS: `--require=${preloader}` },
     timeout: 150,
   }).toString();

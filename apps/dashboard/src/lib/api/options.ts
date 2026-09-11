@@ -33,6 +33,7 @@ export const searchFilterKeys = [
   "repo_name",
   "branch",
   "user_email",
+  "ingest_api_key_id",
   "tool_name",
   "file_prefix",
   "file_operation",
@@ -56,6 +57,8 @@ export const sessionSortKeys = [
   "tool_call_count",
   "observed_commit_count",
   "reuse_count",
+  "agentcommons_search_calls",
+  "reuses_made",
   "status",
   "last_activity_at",
 ] as const;

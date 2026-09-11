@@ -837,18 +837,45 @@ pending); `SubagentStart` → add a child source using the event mapping's captu
 path semantics; `end` → persist the end reason and set `intent = "end"`.
 Then, if no live owner holds the lock, spawn `hook.js upload <state>` detached
 (`detached: true, stdio: 'ignore'`, `.unref()`) and exit 0. Never any network I/O.
-On an event flagged `hint` in `HARNESSES` (Claude Code and Codex `UserPromptSubmit`,
-Gemini `BeforeAgent`; pi has no shell hook and gets none) hook mode also reads the
-repository's cached recall count (**Recall hint**, below) and, when it is positive, prints
-the harness's documented context output and nothing else:
-`{"hookSpecificOutput":{"hookEventName":"<event>","additionalContext":"<N> prior
-AgentCommons sessions touch <repo_name>; search them before changing code (search, get,
-sql over MCP)."}}`. It does so on the first hinted prompt that finds a count and then
-every 25 prompts (counter in `<state>.hint`, written by hook mode; the uploader owns the
-state file), so the line is a nudge and not noise. Reading two small JSON files and
-writing one keeps the 150 ms budget (R-CAP-20). This is the only stdout a hook ever
+A hook that cannot record its event (a state file this bundle cannot read, a fault in the
+release) still exits 0 and, when no uploader is live for the session, spawns one anyway:
+the uploader's update check runs whatever its drain does (**Self-update**, below), so the
+release that fixes the fault reaches the machine instead of every later hook of the
+session failing the same way in silence.
+On an event flagged `hint` in `HARNESSES` hook mode also reads the repository's cached
+recall data (**Recall hint**, below) and prints the harness's documented context output,
+`{"hookSpecificOutput":{"hookEventName":"<event>","additionalContext":"…"}}`, and
+nothing else (ADR 0069, ADR 0070). The repository is the state's git context or, before
+the uploader has recorded one, `remote.origin.url` read from the working tree's `.git`
+(directory, or a worktree's `gitdir:` pointer and its `commondir`), so the first event of
+a session and a fresh clone of an indexed repository are hinted too. Before any hint the
+shim reads the harness's own MCP configuration (`mcpConfigPath`, in the installer's
+`--config-home` or the home directory, at most on the start event and the first prompt,
+files over 1 MB skipped): when the `agentcommons` entry is missing or still carries an
+unexpanded `${…}` placeholder the harness has dropped the server (Appendix A), so the only
+context that session receives is one repair notice naming the file, the cause and `node
+<data directory>/hook.js install`, and no instruction to search (R-CAP-24). Otherwise:
+
+- `hint: "start"` (Claude Code and Gemini `SessionStart`; Codex documents no such output):
+  once per session state, the **session overview**: "AgentCommons has N indexed sessions
+  on <repo_name>; newest: "<title>" (<age>, get <session_id>); …" for up to three newest
+  root sessions, then the search-first instruction. A resume's `SessionStart` is silent
+  (R-CAP-23).
+- `hint: "prompt"` (Claude Code and Codex `UserPromptSubmit`, Gemini `BeforeAgent`): when
+  cached sessions match the prompt (title or branch shares two words, or one identifier
+  or path, with the prompt; stopwords ignored; prompt bounded to 4 KB), the **matched
+  hint** names them with title, age and `get <session_id>`, each session once per
+  session; otherwise the count-and-repository nudge "<N> prior AgentCommons sessions
+  touch <repo_name>; search them before changing code (search, get, sql over MCP)." on
+  the first prompt of a session that had no overview and then every 25 prompts
+  (R-CAP-20).
+
+The per-session state is `<state>.hint`, written by hook mode (the uploader owns the state
+file): prompts seen, the prompt of the last hint, whether the overview and the repair
+notice were given, the sessions already named and the registration verdict. Reading a few
+small files and writing one keeps the 150 ms budget. This is the only stdout a hook ever
 writes: Claude Code adds plain stdout on these events as context too, and Gemini parses
-stdout as JSON (Appendix A).
+stdout as JSON (Appendix A). pi has no shell hook and gets no hint.
 
 **Upload mode** (`hook.js upload <state>`, always a detached child):
 Git context and end observations are collected here with 500 ms per-command timeouts,
@@ -923,21 +950,22 @@ for its next hook or another session's sweep; after the post-turn settle there i
 timer. Nothing is lost while the disk survives: `ackedCursor` only advances on `202`,
 and the server dedupes.
 
-**Recall hint.** After its drain, the uploader refreshes the count of indexed sessions
-for the session's repository, so the next prompt hook can hint from the cache without a
-request. The repository name is `repositoryIdentity(remote)`, the same `repo_name` the
-server derives, so the cache key and the list filter agree. One request, `GET
-/api/v1/sessions?limit=1&filters={"repo_name":"<repo_name>"}` with the installation key
-(10 s timeout), whose `total.sessions` comes from the page's own scan (§7.6); at most
-every 15 minutes per repository. The cache is `recall/<sha256(repo_name)>.json` in the
-data directory, `{ v, repoName, sessions, fetchedAt }`; the attempt is recorded before the
-request so a failing server is asked again only after the interval. Failures are logged
-to `hook.log` and ignored; nothing here touches `pending` or `ackedCursor`. No request is
-made for a session outside a repository with a remote, and the first hook of a session
-has no git context yet, so a hint appears from the second prompt at the earliest and lags
-a newly indexed session by at most one refresh. The count is the caller's visibility
-(row policies); the hint carries only that number and the repository name the hook
-already knows (ADR 0069).
+**Recall hint.** After its drain, the uploader refreshes the recall data of the session's
+repository, so the hook can hint from the cache without a request. The repository name is
+`repositoryIdentity(remote)`, the same `repo_name` the server derives, so the cache key and
+the list filter agree. One request, `GET /api/v1/sessions?limit=10&roots_only=true&filters={"repo_name":"<repo_name>"}`
+with the installation key (10 s timeout), whose `total.sessions` comes from the page's own
+scan (§7.6) and whose ten newest root sessions become the recent list; at most every 15
+minutes per repository. The cache is `recall/<sha256(repo_name)>.json` in the data
+directory, `{ v: 2, repoName, sessions, fetchedAt, recent: [{ id, title, startedAt, branch }] }`
+(titles bounded to 100 characters; a v1 count-only cache stays readable until its
+refresh); the attempt is recorded before the request so a failing server is asked again
+only after the interval. Failures are logged to `hook.log` and ignored; nothing here
+touches `pending` or `ackedCursor`. No request is made for a session outside a repository
+with a remote, and a newly indexed session reaches the cache after at most one refresh.
+The data is the caller's visibility (row policies): the hint carries only what the same
+key already reads through the list endpoint, and the file paths a session touched are not
+in it (the list endpoint does not return them; ADR 0070 follow-up).
 
 **Self-update.** A shim's identity is the sha256 of its own `hook.js` bundle (and of
 `pi-extension.mjs`), the same digests the server publishes in `/hook/manifest.json`
@@ -960,7 +988,10 @@ detached uploader GETs `/hook/manifest.json` from the configured server. If the 
    file and a 30 s timeout;
 2. verifies each sha256 against the manifest;
 3. runs the new bundle once as `node <tmp> version` and requires it to print its own
-   digest (self-test);
+   digest, then once in hook mode (`node <tmp> <harness>` with a synthetic event on stdin
+   and `AGENTCOMMONS_DISABLE=1`, so nothing is recorded) and requires exit 0 with no
+   output (self-test). A release that starts but cannot run as a hook is refused here:
+   once installed it would never start the uploader that fetches the release fixing it;
 4. atomically renames the files over `~/.agentcommons/hook.js` and `pi-extension.mjs`.
 
 An update lock with liveness (the same lock module as the uploader, upload mode step 1)
@@ -968,7 +999,11 @@ prevents concurrent updaters. Harness settings keep pointing at the stable path,
 next hook invocation runs the new version; running processes are unaffected. Any failure
 (network, size, timeout, digest mismatch, failed self-test, rename) is written to
 `hook.log` and ignored; pending batches and `ackedCursor` are untouched, and the next
-hourly check retries. The swap writes only `hook.js`, `pi-extension.mjs`, `update.json`
+hourly check retries. A staged file whose write fails (a full disk) is removed at once,
+and an exclusive publish that fails half-way leaves no claim file, so a full disk never
+accumulates partial artifacts beside `hook.js`; when one rename succeeded and a later one
+failed, the log names the files that were replaced and the next hourly check fetches only
+what still differs. The swap writes only `hook.js`, `pi-extension.mjs`, `update.json`
 and `hook.log`: a batch left pending by the failed run before it is delivered by the next
 run, byte for byte, from the same state file. `update.json` is read loosely, so a field a
 newer bundle adds survives an older uploader's read-modify-write instead of failing the
@@ -977,11 +1012,13 @@ reinstall; `hook.js doctor` is unchanged.
 
 **Reconfiguration.** Wiring follows the bundle and the machine automatically. `hook.js
 install` records its flags (`--config-home`, `--no-shell-rc`) in `config.json` and the
-digest plus harness set it wired in `update.json`. On every uploader run, and only when both records exist (a directory the installer never
-set up is left alone), the shim compares that record with the installed digest and the
-supported CLIs present on `PATH`; after a
-swap, or when a newly supported or newly installed harness appears, it runs the installed
-bundle's own `install` with the recorded flags (always with `--no-shell-rc`, since the shell
+digest plus harness set it wired in `update.json`. On every uploader run, and only when
+`config.json` carries the install flags (a directory the installer never set up is left
+alone), the shim compares that record with the installed digest and the supported CLIs
+present on `PATH`; after a swap, when a newly supported or newly installed harness
+appears, or when the wiring record is missing (an older uploader's strict read of
+`update.json` dropped it), it runs the installed bundle's own `install` with the recorded
+flags (always with `--no-shell-rc`, since the shell
 exports only change with the key). The installer adds or replaces only entries carrying
 the `agentcommons-hook` marker, backs up each config file once, and restores the MCP entry
 if a native registration fails, so a background run cannot remove or overwrite what the
@@ -997,7 +1034,7 @@ machine that has that CLI within an hour of its next session.
 | `sync`                                                                                                 | `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStop` | same                 | `BeforeAgent`, `AfterTool`, `AfterAgent` | `input`, `tool_result`, `agent_end`, `session_tree` |
 | child source                                                                                           | `SubagentStart` (+ `SubagentStop` confirms)               | `SubagentStart/Stop` | —                                        | —                                                   |
 | `end`                                                                                                  | `SessionEnd`                                              | `SessionEnd`         | `SessionEnd`                             | `session_shutdown`                                  |
-| `hint` (prompt context)                                                                                | `UserPromptSubmit`                                        | `UserPromptSubmit`   | `BeforeAgent`                            | —                                                   |
+| `hint` (model context)                                                                                 | `SessionStart` (start), `UserPromptSubmit` (prompt)       | `UserPromptSubmit`   | `SessionStart` (start), `BeforeAgent`    | —                                                   |
 | Readers: `jsonl-append` (byte offset) and `json-document` (per-index content hashes and                |
 | source versions; acknowledged only with the pending batch). Each entry also carries config path, hooks |
 | key, timeout unit (Gemini: ms), and MCP registration shape.                                            |
@@ -1086,7 +1123,8 @@ Input (`packages/core/schemas/search.ts`):
 - Filters: scalar or array (OR within, AND across); enums on scalars and array items;
   unknown key or empty array → 400 listing valid keys. `repo_name` accepts the canonical
   `host/org/repo` or a short name when unambiguous (400 otherwise). `user_email` exact.
-  `tool_name` matches tool-use/result messages themselves. `file_prefix` selects
+  `ingest_api_key_id` exact (the key that uploaded the session; the Install page uses it
+  to list one machine's sessions, §10). `tool_name` matches tool-use/result messages themselves. `file_prefix` selects
   _sessions_ that touched the path. `file_operation` (`read`, `edit`, `write` or
   `delete`, the values normalizers record in `session_files.ops`) selects sessions where
   a file carried that operation; given together with `file_prefix`, both must hold on the
@@ -1179,7 +1217,7 @@ sit and `message_count` in the header still counts them. Returns a header with e
 `user_email`, `installation_id`, `installation_hostname`, `repo_name`, `repo_url`, `branch`, `cwd_relative`,
 `start_commit`, `end_commit`, `started_at`, `ended_at`, `status`, `visibility` (`PUBLIC`/`PRIVATE`), `end_reason`,
 `message_count`, `tool_call_count`, `input_tokens`, `output_tokens`, `tools_used`,
-`file_count`, `observed_commit_count`, `reuse_count`, `agent_type`, `parent_tool_use_id`, `parent` ref and `children` refs
+`file_count`, `observed_commit_count`, `reuse_count`, `agentcommons_search_calls`, `reuses_made`, `agent_type`, `parent_tool_use_id`, `parent` ref and `children` refs
 that the caller may see (each ref carries `parent_tool_use_id`), `root_session_id`; then the selected messages in order, thinking and tool results included, each
 `content` bounded to a quarter of the page budget (META records to one thirty-second)
 with `content_cursor` for the rest, total page budget `page_bytes` (default 32 KB, so
@@ -1354,7 +1392,7 @@ cells for null values. Table exports retain duplicate SQL column labels and thei
 | GET             | `/sessions/:id`                                                                                            | read              | = `get`; `?from=&to=&cursor=&page_bytes=` (32 KB default, at most 256 KB); `?header=false` answers messages only for a caller that holds the header; `?format=csv` streams the whole range as one CSV file (§10)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | POST            | `/query`                                                                                                   | read              | = `sql`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET             | `/schema`                                                                                                  | read              | `schema_columns`, `schema_functions` as JSON                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| GET             | `/sessions`                                                                                                | read              | list with the §7.2 filters, no text; `total: { sessions, messages }` counts the sessions the filters and `roots_only` match under the caller's visibility and sums their `message_count`, over the whole set rather than the page, computed as window aggregates of the page's own scan (one query) in the same read callback                                                                                                                                                                                                                                                                                                                                                                                         |
+| GET             | `/sessions`                                                                                                | read              | list with the §7.2 filters, no text; `total: { sessions, messages }` counts the sessions the filters, `roots_only`, `searched` and `used_prior_work` match under the caller's visibility and sums their `message_count`, over the whole set rather than the page, computed as window aggregates of the page's own scan (one query) in the same read callback. `searched` (optional boolean) keeps only sessions with `agentcommons_search_calls > 0` (true) or `= 0` (false); `used_prior_work` does the same over `reuses_made`; both are predicates on that scan                                                                                                                                                    |
 | GET             | `/sessions/:id/events`                                                                                     | read              | SSE `event: session`, data `{session_id,status,message_count,last_received_at}`; `last_received_at` is the server receipt timestamp exposed in SQL as `last_activity_at`; initial snapshot then changed snapshots, checked every 5 seconds. IDs are connection-local counters; reconnect sends a fresh snapshot, not a replay. Each tick reauthenticates current membership/key and reads through tenant visibility views; loss of access closes the stream. One read audit records the subscription. A `: keepalive` comment every 30 seconds keeps idle-timeout proxies (Cloudflare closes idle responses after 100 s) from cutting a quiet stream. Dashboard falls back to polling every 5 seconds while `ACTIVE`. |
 | GET             | `/sessions/:id/raw`                                                                                        | read              | paginated redacted raw records; oversized payloads are canonical JSON string fragments with `payload_fragment: { offset, next_offset }`; concatenate UTF-8 fragments before parsing. Raw pages order observations by `(pos, sourceVersion, id)`; the opaque cursor includes this complete identity and binds a fragment's redacted payload digest, rejecting continuation if a rescan changes it. Ordinary complete payloads have `payload_fragment: null`.                                                                                                                                                                                                                                                           |
 | GET             | `/sessions/:id/tree`                                                                                       | read              | paginated visible tree containing the session, `{ nodes, cursor }`, limit default 50/max 100: ancestors to the root and all descendants, each node `{ session_id, title, harness, agent_type, parent_relation, parent_session_id, parent_tool_use_id, user_email, started_at, status, message_count, gap }`, via a recursive CTE over `parent_session_id`; hidden nodes are omitted and their visible children attach to the nearest visible ancestor with `gap: true`                                                                                                                                                                                                                                                |
@@ -1412,11 +1450,22 @@ through lists or counts; the requested session must also be visible.
 `GET /sessions` sorts by any list column of `api_ro.sessions`: `title`, `harness`,
 `harness_version`, `model`, `repo_name`, `branch`, `user_email`, `installation_hostname`,
 `started_at` (the default), `duration_seconds`, `message_count`, `tool_call_count`,
-`observed_commit_count`, `reuse_count`, `status` or `last_activity_at`, ascending or
+`observed_commit_count`, `reuse_count`, `agentcommons_search_calls`, `reuses_made`, `status`
+or `last_activity_at`, ascending or
 descending with nulls last and ties broken by `session_id` (ClickHouse's UUID order, stable
-but not the text order), as one `ORDER BY` on the page's own scan. Its cursor is an offset bound to the sort, order, filters and `roots_only`, so a
+but not the text order), as one `ORDER BY` on the page's own scan. Its cursor is an offset bound to the sort, order, filters, `roots_only`, `searched` and `used_prior_work`, so a
 page continues the same order without repeating or skipping a row, and a cursor issued for
 one sort or order is refused (`INVALID_CURSOR`) under another.
+
+`agentcommons_search_calls` and `reuses_made` are the reading side of the stored reads
+(§10, ADR 0060): per session, the `search` and `sql` calls credited to it while it was
+active, and the distinct earlier sessions it read through `get` (a self read is none).
+`reuse_count` remains the read side (later sessions that read this one). The `sessions`
+view computes all three in one pass over `session_reads`, crediting every stored read to
+the session that made it and every edge also to the session it read, so the list, the
+header and the tiles pay one small aggregate and no per-row lookup. Members see only reads
+whose source and target they may see, so a member's `reuses_made` excludes private targets
+that an admin's includes.
 
 `GET /installations` and `GET /repos` use the shared list envelope with server-side
 sort/order, limit/cursor, and filters. Installations sort by hostname, OS user, platform,
@@ -1518,6 +1567,18 @@ latest installation; this is not an immutable per-device key binding. Replaying 
 batch does not replace the latest receipt. Every list and call refreshes this decision,
 so cached tool catalogs cannot bypass a disabled installation.
 
+The read tools' descriptions are data in `packages/core/format/tool-descriptions.ts`,
+action-first, and each ends with one worked example that a core unit test parses with the
+schema the call is validated against (R-MCP-12, ADR 0070): `search` opens with the
+questions it answers ("has anyone…", "why does…", "how did we…"), tells the agent to put 2
+to 4 specific words from its task in `query` because every word must match, names the
+accepted `repo_name` forms and points at `get`; `get` opens the best hit; `sql` answers
+what search cannot. Each description with the governing sentence stays under 1,200 bytes
+(measured 2026-09-11: 1,051, 871 and 1,160; the default catalog is 9,319 bytes). Claude Code 2.1.266 hands the model a tool
+result's `structuredContent` JSON, not its text rendering (Appendix A), so the text form
+serves other clients and people; guidance for the agent belongs in the descriptions and
+the hint, not in result text.
+
 Search, get, SQL and administrative history descriptions open with this governing sentence:
 _"Use this to check prior work before changing code, and whenever the user asks about
 earlier sessions; run long investigations in a subagent that returns only findings with
@@ -1593,8 +1654,11 @@ and session ids. If this machine has no `agentcommons` MCP server, tell the user
 that the AgentCommons install is missing and continue without it.
 ```
 
-The prompt-time recall hint (§6.2) is the fourth surface: one line per 25 prompts, from
-the capture hook, stating how many indexed sessions touch the repository.
+The recall hint (§6.2) is the fourth surface, from the capture hook: a session overview
+naming the newest indexed sessions of the repository at session start, the sessions
+matching a prompt when there are any, the count nudge every 25 prompts otherwise, and a
+repair notice instead of all of these when the harness has no usable `agentcommons`
+registration.
 
 ### 8.4 Client configuration
 
@@ -1978,19 +2042,19 @@ compatibility routes anywhere in the application, and server-generated return UR
 
 **Information architecture.**
 
-| route                                                                                                                                                  | purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/app`                                                                                                                                                 | Home: the organization's default dashboard (the shipped Team overview until an admin picks another) with the dashboard switcher, variable controls and New/Duplicate/Edit actions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `/app/dashboards/new`, `/app/dashboards/:id`, `/app/dashboards/:id/edit`                                                                               | create, view and edit a dashboard (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `/app/sessions`                                                                                                                                        | search box and filter chips mirroring §7.2, result blocks exactly as `search` returns them, and the list view of root sessions only (`roots_only`); a root's subagent runs are shown inline inside it, never as separate top-level rows. A hit inside a child run links to its root, `/app/sessions/<root_session_id>?child=<child_session_id>#<seq>`, using the hit's `root_session_id`; the root page opens that run and scrolls to the message. Above the rows the page states how many sessions and messages match the current filters (`total.sessions`, `total.messages` of the list response) and, in the Messages view, how many hits in how many sessions match the words and filters (`total.hits`, `total.sessions` of the search response); the counts come from the same response as the rows, so they always belong to the current query, and a pending query shows a placeholder rather than the previous query's numbers |
-| `/app/sessions/:id` (`#<seq>` deep link)                                                                                                               | session detail (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `/app/sql`                                                                                                                                             | IDE-style SQL editor (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `/app/install`                                                                                                                                         | Install, the first page a developer is sent to, as four steps: create an ingest/read key for the machine (secret shown once; dismissing the reveal keeps that key selected and the page offers no second key until it reloads) or pick an existing recoverable key, one path at a time; read what the installer needs and does (Node 20+, curl, capture hook, MCP registration, per-tool notes); run the served installer command, which appears with its Copy button only once a key is created or picked and is disabled with a hint before that (no placeholder is ever offered to copy), with the note that the key is exported from the shell startup files and Codex needs a new terminal; start a coding agent and watch actual captured sessions arrive. The prepare step says the installer writes the §8.3 guidance into each tool's global instructions file, so nothing is added to repositories                             |
-| `/app/keys`                                                                                                                                            | Keys: the caller's keys only (create shows the plaintext once with the install command inlined; sort, CSV export, revoke with a reason; keys show their bound organization)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `/app/api`                                                                                                                                             | API reference: the live Scalar reference from `/api/docs` embedded inside the application shell with an "Open in a new tab" action; its CSP allows same-origin framing only. Linked from the bottom of the navigation, not from Keys                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `/app/billing`                                                                                                                                         | SaaS only: plan, usage, checkout and portal (§9.6). Customer and public instances have no billing route in the router, the API or navigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `/app/organizations/new`                                                                                                                               | SaaS only: create another organization from a name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `/app/admin/users`, `/app/admin/keys`, `/app/admin/audit`, `/app/admin/moderation`, `/app/admin/redaction`, `/app/admin/status`, `/app/admin/settings` | organization administration (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| route                                                                                                                                                  | purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/app`                                                                                                                                                 | Home: the organization's default dashboard (the shipped Team overview until an admin picks another) with the dashboard switcher, variable controls and New/Duplicate/Edit actions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `/app/dashboards/new`, `/app/dashboards/:id`, `/app/dashboards/:id/edit`                                                                               | create, view and edit a dashboard (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `/app/sessions`                                                                                                                                        | search box and filter chips mirroring §7.2, two usage selects while the Sessions view is showing (Searched, Used prior work: either, only with, only without) that set the list's `searched` and `used_prior_work`, result blocks exactly as `search` returns them, and the list view of root sessions only (`roots_only`); a root's subagent runs are shown inline inside it, never as separate top-level rows. A hit inside a child run links to its root, `/app/sessions/<root_session_id>?child=<child_session_id>#<seq>`, using the hit's `root_session_id`; the root page opens that run and scrolls to the message. Above the rows the page states how many sessions and messages match the current filters (`total.sessions`, `total.messages` of the list response) and, in the Messages view, how many hits in how many sessions match the words and filters (`total.hits`, `total.sessions` of the search response); the counts come from the same response as the rows, so they always belong to the current query, and a pending query shows a placeholder rather than the previous query's numbers                                                                                                                                                                                                                                                                          |
+| `/app/sessions/:id` (`#<seq>` deep link)                                                                                                               | session detail (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `/app/sql`                                                                                                                                             | IDE-style SQL editor (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `/app/install`                                                                                                                                         | Install, the first page a developer is sent to, as four steps: create an ingest/read key for the machine (secret shown once; dismissing the reveal keeps that key selected and the page offers no second key until it reloads) or pick an existing recoverable key, one path at a time; read what the installer needs and does (Node 20+, curl, capture hook, MCP registration, per-tool notes); run the served installer command, which appears with its Copy button only once a key is created or picked and is disabled with a hint before that (no placeholder is ever offered to copy), with the note that the key is exported from the shell startup files and Codex needs a new terminal; start a coding agent and watch this machine's sessions arrive: only sessions uploaded with the step 1 key (`filters.ingest_api_key_id` with `user_email`, one scan), each with its installation hostname, and a prompt to choose a key before any polling, since a shared key attributes every machine's sessions to one member. The prepare step says the installer writes the §8.3 guidance into each tool's global instructions file and offers the repository block for teams to commit: the `hook.js guidance --repo .` command first with its copy button, the block's text behind a native details/summary disclosure ("Show the text") with its own copy button (§8.3, ADR 0069) |
+| `/app/keys`                                                                                                                                            | Keys: the caller's keys only (create shows the plaintext once with the install command inlined; sort, CSV export, revoke with a reason; keys show their bound organization)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `/app/api`                                                                                                                                             | API reference: the live Scalar reference from `/api/docs` embedded inside the application shell with an "Open in a new tab" action; its CSP allows same-origin framing only. Linked from the bottom of the navigation, not from Keys                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `/app/billing`                                                                                                                                         | SaaS only: plan, usage, checkout and portal (§9.6). Customer and public instances have no billing route in the router, the API or navigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `/app/organizations/new`                                                                                                                               | SaaS only: create another organization from a name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `/app/admin/users`, `/app/admin/keys`, `/app/admin/audit`, `/app/admin/moderation`, `/app/admin/redaction`, `/app/admin/status`, `/app/admin/settings` | organization administration (below)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 **Organizations.** After login the application lists only the user's memberships. When no
 organization is active the first membership is selected automatically, so nobody lands on
@@ -2153,9 +2217,16 @@ list sends `roots_only`
 and offers an "Include subagent runs" toggle; its Subagents column shows `child_count`.
 Its six default columns are title, repository/branch, user, started, messages
 (`message_count`) and status, the set that reads at 1024 px beside the sidebar; coding
-tool, model, hostname, duration, tool calls, commits, reused by and subagents wait in the
-column chooser. Counts and durations are right-aligned, and every column header except
+tool, model, hostname, duration, tool calls, commits, reused by, searched
+(`agentcommons_search_calls`), used prior work (`reuses_made`) and subagents wait in the
+column chooser. The two usage columns show a check mark with the count, or a dash for
+zero, and the CSV export carries the counts. Counts and durations are right-aligned, and
+every column header except
 Subagents sorts on the server in both directions through the list's `sort` and `order`.
+The two usage selects beside the filters (either, only with, only without) drive
+`searched` and `used_prior_work` on the list, live in the URL like every other filter, are
+cleared with the filters, and are shown only while the Sessions view is active because the
+Messages view's `search` has no such parameter.
 Beside the list controls it shows the response's `total.sessions` and `total.messages`
 ("128 sessions · 4,210 messages"), and the Messages view heads its results with
 `total.hits` in `total.sessions` ("12 hits in 4 sessions"); both are server counts over
@@ -2234,7 +2305,9 @@ exposed to `sql` so an agent or a spreadsheet can read it.
 The same concept exists at two finer grains, from the same audit data: per session,
 `api_ro.session_reuse (session_id, reuse_count, unique_readers, cross_user_reuse_count,
 last_reused_at)`, surfaced as the "Reused by" panel and list column and as `reuse_count`
-in the `sessions` view and the `get` header; per member, `api_ro.member_impact (user_id,
+in the `sessions` view and the `get` header, whose `reuses_made` (distinct earlier sessions
+this one read) and `agentcommons_search_calls` are the reading side of the same rows and
+back the list's Used prior work and Searched columns and filters (§7.6); per member, `api_ro.member_impact (user_id,
 sessions_reused_by_others, distinct_readers, reuses_made)`, available through SQL and
 dashboard tiles. Reuse is
 recorded only from `get` reads made through MCP or REST by a key whose installation had
@@ -2272,7 +2345,9 @@ the search-adoption count for the selected window. The authorized Usage metric A
 the full measures over its selected date/repo window, including sortable rows and CSV. The
 common source is the caller-visible, nonpurged `api_ro.metrics_search_sessions` relation,
 one row per captured session: `session_id`, `started_at`, `repo_name`, `harness`,
-`user_id`, `agentcommons_search_calls` and `repeat_agentcommons_search_calls`. A call is a
+`user_id`, `agentcommons_search_calls` and `repeat_agentcommons_search_calls`; the
+`sessions` view and the `get` header carry the same `agentcommons_search_calls` per
+session, and the Sessions page filters and sorts on it (§7.6). A call is a
 `search` or `sql` row of `session_reads` credited to the session (ADR 0060, ADR 0067): a
 successful key-authenticated MCP/REST call made while the session was active on the
 calling installation, the same attribution that defines reuse. `get` reads are reuse, not
@@ -3057,6 +3132,29 @@ contexts with blank lines, and exit 0 stdout must be JSON; not yet exercised liv
 (canary-pending). pi has no shell hook output; the extension's `before_agent_start`
 `systemPrompt` is the documented place for a later hint.
 
+**Session-start context and structured results, 2026-09-11 (recall bench, ADR 0070).**
+Claude Code 2.1.266 (`fixtures/hooks/claude-code-2.1.266-session-start-context-events.jsonl`):
+a `-p` session in an isolated `CLAUDE_CONFIG_DIR` with a `SessionStart` hook that printed
+`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":…}}` received
+the documented stdin (`session_id, transcript_path, cwd, hook_event_name, source`), the
+model's only reply was the injected sentinel, the transcript stored a `hook_success`
+attachment with the stdout and a `hook_additional_context` attachment rendered as
+`<system-reminder>SessionStart hook additional context: …</system-reminder>`, and the
+user's configuration was untouched; the shim's session overview rides on this. Gemini CLI
+0.35.3's bundled `docs/hooks/reference.md` documents `hookSpecificOutput.additionalContext`
+on `SessionStart` ("Interactive: injected as the first turn in history. Non-interactive:
+prepended to the user's prompt"); implemented against the documented contract,
+canary-pending. Codex 0.153.4's binary carries no SessionStart hook output type, so Codex
+gets the prompt hint only. In the same bench, Claude Code handed the model each MCP tool
+result's `structuredContent` JSON (`{"blocks":[…],"total":{…}}`, `{"header":…}`), not
+the text rendering the server also returns; the formatted text is what other clients and
+people read, so agent guidance belongs in descriptions and hints rather than result text.
+With the installer's guidance block and the prompt hint present, 24 of 24 ordinary tasks
+searched before their first edit (both with and without git history); with the hint off,
+12 of 12 (ADR 0057 had measured 0 of 6 with history under the old text); with a
+placeholder registration, 0 of 6, and the model stopped, guessed or ignored the hint it
+could not act on, which is what the repair notice replaces (§6.2).
+
 **Native search tool identities, 2026-09-08.** Seven sanitized native transcripts in
 `fixtures/transcripts/tool-identities/` capture Claude `mcp__agentcommons__search`,
 `Grep`, `Glob`, `WebSearch`; Gemini `mcp_agentcommons_search`, `grep_search`, `glob`,
@@ -3150,7 +3248,7 @@ the byte budgets of §8.2.
 [
   {
     "name": "search",
-    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Search previous coding-agent sessions with words and structured filters. Start with the test name, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {\"query\":\"\",\"filters\":{\"file_prefix\":\"src/auth/\",\"file_operation\":\"edit\"}}.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Find the earlier sessions about a test, file, error, library or value: the first call for \"has anyone…\", \"why does…\" and \"how did we…\" questions and before any change. Put 2 to 4 specific words from your task in query (a test name, file path, identifier, error text or component); every word must appear (English inflections share a stem), so a whole sentence finds nothing while its key words do. Results are message excerpts grouped by session with each session_id; open the best one with get. Filters take one value or a list (any of), all must hold: repo_name is host/org/repo as git names the remote or the bare repository name; file_prefix with file_operation selects sessions that touched a file. Example, \"why does the payments client retry the way it does?\": {\"query\":\"payments retry\",\"filters\":{\"file_prefix\":\"src/payments\",\"file_operation\":\"edit\"}}.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3210,6 +3308,23 @@ the byte budgets of §8.2.
                   "items": {
                     "type": "string",
                     "format": "email"
+                  }
+                }
+              ]
+            },
+            "ingest_api_key_id": {
+              "description": "Sessions uploaded with these ingest API keys (key id, exact); the Install page uses it to show one machine's sessions",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "minItems": 1,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 }
               ]
@@ -3437,7 +3552,7 @@ the byte budgets of §8.2.
   },
   {
     "name": "get",
-    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Read one session by session_id: a header (who ran it, harness, model, repository, branch, start, end, status, message, tool call, token, file, commit and reuse counts, tools_used, root_session_id, parent and child sessions) and its messages in seq order with role, kind, tool_name, tool_use_id and content. Each child ref carries parent_tool_use_id, the tool_use_id of the TOOL_USE message here that spawned it (null when unrecorded), so a subagent run reads in place under its call. Bound a range with from/to; when next is not null, pass it as cursor. Example: {\"session_id\":\"<uuid>\",\"from\":0,\"to\":40}.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Open one session by session_id, usually the best search hit: a header (who ran it, harness, model, repository, branch, start, end, status, message, tool call, token, file, commit and reuse counts, tools_used, root_session_id, parent and child sessions) and its messages in seq order with role, kind, tool_name, tool_use_id and content. Each child ref carries parent_tool_use_id, the tool_use_id of the TOOL_USE message here that spawned it (null when unrecorded), so a subagent run reads in place under its call. Bound a range with from/to; when next is not null, pass it as cursor. Example, the first 40 messages: {\"session_id\":\"01a08fd7-9907-72a3-9135-80162670d93a\",\"from\":0,\"to\":40}.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3507,7 +3622,7 @@ the byte budgets of §8.2.
   },
   {
     "name": "sql",
-    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Answer questions search cannot, with one read-only ClickHouse SELECT over api_ro: who worked on a repository, which sessions touched a file, counts over time. Views: sessions (session metadata); messages (normalized messages); session_files (observed files: path, ops); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds. Example, the newest sessions of one repository: {\"sql\":\"SELECT session_id,title,started_at FROM sessions WHERE repo_name = 'github.com/acme/orders-api' ORDER BY started_at DESC LIMIT 20\"}.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3910,10 +4025,11 @@ started_at: 2026-09-07T01:00:00.000Z | ended_at: null | status: ACTIVE
 visibility: PUBLIC | purged_at: null | end_reason: null
 message_count: 1 | tool_call_count: 0 | input_tokens: 0
 output_tokens: 0 | tools_used: [] | file_count: 0
-observed_commit_count: 0 | reuse_count: 0 | agent_type: null
-parent_session_id: null | parent_relation: null | parent_tool_use_id: null
-parent: null | children: [] | child_count: 0
-children_truncated: false | truncated_fields: [] | root_session_id: 00000000-0000-4000-8000-000000000001
+observed_commit_count: 0 | reuse_count: 0 | agentcommons_search_calls: 0
+reuses_made: 0 | agent_type: null | parent_session_id: null
+parent_relation: null | parent_tool_use_id: null | parent: null
+children: [] | child_count: 0 | children_truncated: false
+truncated_fields: [] | root_session_id: 00000000-0000-4000-8000-000000000001
 
 seq 0 USER TEXT timestamp=2026-09-07T01:00:00.000Z model=null
 Investigate the transport session index

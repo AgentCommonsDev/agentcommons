@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Search, X } from "lucide-react";
 import { copy } from "../copy";
 import { Button } from "../components/ui/button";
@@ -10,6 +10,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "../components/ui/tabs";
+import { BooleanFilterSelect } from "../features/admin/filters";
 import { FilterChips } from "../features/sessions/filter-chips";
 import { FilterPopover } from "../features/sessions/filter-popover";
 import { MessageResults } from "../features/sessions/search-results";
@@ -17,7 +18,9 @@ import {
   apiFilters,
   effectiveView,
   hasFilters,
+  usageFilterKeys,
   type ResultView,
+  type SearchState,
 } from "../features/sessions/search-state";
 import { SessionsTable } from "../features/sessions/sessions-table";
 import { useSearchState } from "../features/sessions/use-search-state";
@@ -80,6 +83,38 @@ function SearchForm({
     </form>
   );
 }
+/**
+ * The two usage selects of the session list: sessions whose agent searched AgentCommons and
+ * sessions whose agent read an earlier session, either, only or none. They are `GET /sessions`
+ * parameters, so they sit with the filters while the Sessions view is showing.
+ */
+function UsageFilterSelects({
+  state,
+  onChange,
+}: {
+  state: SearchState;
+  onChange: (patch: Partial<SearchState>) => void;
+}) {
+  const id = useId();
+  const labels = copy.sessions.filters.usage;
+  return (
+    <>
+      {usageFilterKeys.map((key) => (
+        <BooleanFilterSelect
+          key={key}
+          id={`${id}-${key}`}
+          aria-label={labels[key].label}
+          className="w-auto"
+          value={state[key] ?? undefined}
+          labels={labels[key]}
+          onChange={(next) => {
+            onChange({ [key]: next ?? null });
+          }}
+        />
+      ))}
+    </>
+  );
+}
 /** One search experience: words plus filters in the URL, results as sessions or messages. */
 export function SessionsPage() {
   const { state, update } = useSearchState();
@@ -108,6 +143,9 @@ export function SessionsPage() {
         />
         <div className="flex flex-wrap items-center gap-2">
           <FilterPopover state={state} onChange={update} />
+          {view === "sessions" && (
+            <UsageFilterSelects state={state} onChange={update} />
+          )}
           <FilterChips state={state} onChange={update} />
         </div>
       </section>
@@ -174,7 +212,11 @@ export function SessionsPage() {
                   {copy.sessions.views.wordsHint}
                 </Alert>
               )}
-              <SessionsTable filters={filters.filters} filtered={filtered} />
+              <SessionsTable
+                filters={filters.filters}
+                usage={state}
+                filtered={filtered}
+              />
             </TabsContent>
           </>
         )}

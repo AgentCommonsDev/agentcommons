@@ -88,7 +88,7 @@ describe("shared search contract", () => {
     expect(result.success).toBe(false);
     if (!result.success)
       expect(result.error.issues[0]?.message).toContain(
-        "repo_name, branch, user_email, tool_name, file_prefix, file_operation, role, session_id, since, until",
+        "repo_name, branch, user_email, ingest_api_key_id, tool_name, file_prefix, file_operation, role, session_id, since, until",
       );
   });
   // @req R-SRCH-14

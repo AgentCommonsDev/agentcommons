@@ -5,7 +5,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +17,7 @@ import {
 import { hash } from "../src/files.js";
 import { recordHook } from "../src/hook.js";
 import { configure } from "../src/install.js";
-import { loadState } from "../src/state.js";
+import { loadState, statePath } from "../src/state.js";
 import { recordConfigured, selfUpdate } from "../src/update.js";
 import { upload } from "../src/upload.js";
 
@@ -100,15 +99,16 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
   const run = async (
     options: Partial<Parameters<typeof upload>[4]> = {},
     session = randomUUID(),
+    effective: typeof config = config,
   ): Promise<string> => {
-    const path = recordHook(directory, executable, config, "claude", {
+    const path = recordHook(directory, executable, effective, "claude", {
       session_id: session,
       transcript_path: transcript,
       cwd: directory,
       hook_event_name: "Stop",
     });
     if (!path) throw new Error("Missing state.");
-    await upload(directory, executable, path, config, {
+    await upload(directory, executable, path, effective, {
       fetch: fetcher,
       sweep: false,
       ...options,
@@ -243,11 +243,54 @@ describe("hook self-update", () => {
   // @req R-CAP-17
   it("never runs install for a directory that hook.js install did not set up", async () => {
     const f = fixture();
-    rmSync(join(f.directory, "update.json"));
-    await f.run();
+    // No recorded install flags: the installer never ran here.
+    await f.run({}, randomUUID(), { ...f.config, installOptions: undefined });
     expect(readFileSync(f.executable, "utf8")).toBe(NEW_BUNDLE);
     expect(f.installRuns()).toEqual([]);
     expect(f.log()).not.toContain("Configured harnesses");
+  });
+  // @req R-CAP-17
+  it("rebuilds a missing wiring record when the install flags are recorded", async () => {
+    const f = fixture();
+    // The installed bundle is current and the hourly check is not due: only the record is
+    // missing, as left behind by an older uploader whose strict read of update.json fell
+    // back to `{ checkedAt }`. The flags in config.json prove the installer set this
+    // directory up, so one install run rebuilds the record.
+    writeFileSync(f.executable, NEW_BUNDLE);
+    writeFileSync(join(f.directory, "pi-extension.mjs"), NEW_EXTENSION);
+    writeFileSync(
+      join(f.directory, "update.json"),
+      JSON.stringify({ checkedAt: Date.now() }),
+    );
+    await f.run();
+    expect(f.requests).not.toContain("GET /hook/manifest.json");
+    expect(f.installRuns()).toEqual([
+      `--config-home ${f.configHome} --no-shell-rc`,
+    ]);
+    expect(
+      JSON.parse(readFileSync(join(f.directory, "update.json"), "utf8")),
+    ).toMatchObject({
+      configured: { sha256: hash(NEW_BUNDLE), harnesses: ["claude"] },
+    });
+    await f.run();
+    expect(f.installRuns(), "recorded again, nothing to do").toHaveLength(1);
+  });
+  // @req R-CAP-16 @req R-CAP-22
+  it("refuses a bundle that passes `version` but fails in hook mode, so a release that could never start its uploader again does not replace a working one", async () => {
+    const crashy = `${NEW_BUNDLE}if (!["version", "install"].includes(process.argv[2])) { process.stderr.write("crashy"); process.exit(2); }\n`;
+    const f = fixture({ sha256: hash(crashy) }, crashy);
+    await f.run();
+    expect(readFileSync(f.executable, "utf8")).toBe(OLD_BUNDLE);
+    expect(f.log()).toContain(
+      "failed its hook-mode self-test (exit 2: crashy)",
+    );
+    expect(
+      readdirSync(f.directory).filter((name) => name.includes(".update.")),
+    ).toEqual([]);
+    // The probe must not have recorded anything for its synthetic session.
+    expect(
+      existsSync(statePath(f.directory, "claude", "agentcommons-self-test")),
+    ).toBe(false);
   });
   // @req R-CAP-17
   it("logs a failed reconfiguration and retries it at most hourly", async () => {

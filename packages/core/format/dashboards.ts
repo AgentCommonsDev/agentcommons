@@ -8,6 +8,7 @@ import type {
   dashboardResolvedVariableSchema,
 } from "../schemas/dashboards.js";
 import { jsonByteLength } from "../schemas/common.js";
+import { ageInWords } from "./age.js";
 import { formatSql, type Formatted } from "./index.js";
 
 /**
@@ -123,19 +124,7 @@ export function formatDashboard(result: Dashboard): Formatted<Dashboard> {
   return { text, structuredContent: result };
 }
 
-/** "13 minutes", "2 hours", "3 days": the distance between two instants, coarsely. */
-export function ageInWords(from: string, now: Date): string {
-  const seconds = Math.max(
-    0,
-    (now.getTime() - new Date(from).getTime()) / 1000,
-  );
-  if (seconds < 45) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${plural(Math.max(1, minutes), "minute")} ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${plural(hours, "hour")} ago`;
-  return `${plural(Math.round(hours / 24), "day")} ago`;
-}
+export { ageInWords };
 function resolvedVariable(value: ResolvedVariable): string {
   if (typeof value === "string") return value || "(empty)";
   if (Array.isArray(value)) return value.length ? value.join(",") : "all";

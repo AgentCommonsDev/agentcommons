@@ -143,6 +143,11 @@ const filterShape = {
   user_email: filter(emailSchema)
     .optional()
     .describe("Sessions run by these members (exact email)"),
+  ingest_api_key_id: filter(z.string().min(1))
+    .optional()
+    .describe(
+      "Sessions uploaded with these ingest API keys (key id, exact); the Install page uses it to show one machine's sessions",
+    ),
   tool_name: filter(z.string().min(1))
     .optional()
     .describe(

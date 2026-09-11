@@ -39,12 +39,28 @@ export const sessionsInputSchema = createListInputSchema([
   "tool_call_count",
   "observed_commit_count",
   "reuse_count",
+  "agentcommons_search_calls",
+  "reuses_made",
   "status",
   "last_activity_at",
 ]).extend({
   filters: searchFiltersSchema.default({}),
   /** Only sessions without a caller-visible parent: subagent, fork and spawned runs stay inside their parent. */
   roots_only: z.boolean().default(false),
+  /** Sessions whose agent searched AgentCommons (`agentcommons_search_calls > 0`), or only those that did not; absent means either. */
+  searched: z
+    .boolean()
+    .optional()
+    .describe(
+      "true: only sessions whose agent made a search or sql call while active; false: only sessions that made none",
+    ),
+  /** Sessions whose agent read an earlier session (`reuses_made > 0`), or only those that did not; absent means either. */
+  used_prior_work: z
+    .boolean()
+    .optional()
+    .describe(
+      "true: only sessions whose agent read an earlier session through get while active; false: only sessions that read none",
+    ),
 });
 export const sessionReuseInputSchema = reuseListInputSchema.extend({
   direction: z.enum(["by", "from"]).default("by"),

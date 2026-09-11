@@ -2772,13 +2772,9 @@ async function capture({ hero }) {
         await install
           .getByTestId("install-command")
           .waitFor({ timeout: 30_000 });
-        await install
-          .getByTestId("install-arrivals")
-          .locator("li")
-          .first()
-          .waitFor({ timeout: 30_000 });
         // Step 1 opens on the create form; the link under it swaps in the picker of existing
-        // keys. Pick the member's key so the command fills in; the capture masks it.
+        // keys. Pick the member's key so the command fills in; the capture masks it. Step 4
+        // lists only the sessions that key uploaded, so it fills once the key is chosen.
         await install
           .getByRole("button", { name: /a key you already have/i })
           .click();
@@ -2788,6 +2784,11 @@ async function capture({ hero }) {
         await install
           .getByTestId("install-command")
           .getByText(/ac_/)
+          .waitFor({ timeout: 30_000 });
+        await install
+          .getByTestId("install-arrivals")
+          .locator("li")
+          .first()
           .waitFor({ timeout: 30_000 });
         await settle(install);
         const steps = [];

@@ -213,3 +213,10 @@ export {
   formatDashboardRender,
   type DashboardListOutput,
 } from "./dashboards.js";
+export {
+  governingSentence,
+  serverInstructions,
+  toolDescriptions,
+  toolExamples,
+  toolExampleSchemas,
+} from "./tool-descriptions.js";

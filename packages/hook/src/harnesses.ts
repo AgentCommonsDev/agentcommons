@@ -36,8 +36,12 @@ export interface EventDefinition {
   parentPath?: boolean;
   /** The harness may append its final record after this hook fires; the uploader briefly waits for growth (§6.2). */
   settle?: boolean;
-  /** The harness adds this hook's stdout JSON (`hookSpecificOutput.additionalContext`) to the model's context; the recall hint rides on it (§6.2). */
-  hint?: boolean;
+  /**
+   * The harness adds this hook's stdout JSON (`hookSpecificOutput.additionalContext`) to
+   * the model's context; the recall hint rides on it (§6.2): `start` for the session
+   * overview once per session, `prompt` for the per-prompt hint.
+   */
+  hint?: "start" | "prompt";
 }
 export interface HarnessDefinition {
   id: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
@@ -69,8 +73,10 @@ export interface HarnessDefinition {
   child(event: NativeHook, parentPath: string | null): ChildSource | null;
 }
 const shellEvents: Readonly<Record<string, EventDefinition>> = {
-  SessionStart: { behavior: "start", always: true },
-  UserPromptSubmit: { behavior: "sync", always: true, hint: true },
+  // Claude Code delivers SessionStart additionalContext to the model (Appendix A,
+  // 2026-09-11); Codex documents no such output and overrides this entry below.
+  SessionStart: { behavior: "start", always: true, hint: "start" },
+  UserPromptSubmit: { behavior: "sync", always: true, hint: "prompt" },
   PostToolUse: { behavior: "sync" },
   Stop: { behavior: "sync", always: true, settle: true },
   SubagentStart: { behavior: "sync", child: true, childBehavior: "start" },
@@ -167,6 +173,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     timeout: 3,
     events: {
       ...shellEvents,
+      SessionStart: { behavior: "start", always: true },
       SubagentStart: {
         behavior: "sync",
         child: true,
@@ -209,8 +216,10 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     configFormat: "json",
     timeout: 3000,
     events: {
-      SessionStart: { behavior: "start", always: true },
-      BeforeAgent: { behavior: "sync", always: true, hint: true },
+      // Gemini CLI 0.35.3 documents SessionStart additionalContext (first turn in
+      // history, or prepended to the prompt when non-interactive); canary-pending.
+      SessionStart: { behavior: "start", always: true, hint: "start" },
+      BeforeAgent: { behavior: "sync", always: true, hint: "prompt" },
       AfterTool: { behavior: "sync" },
       AfterAgent: { behavior: "sync", always: true, settle: true },
       SessionEnd: { behavior: "end", always: true },

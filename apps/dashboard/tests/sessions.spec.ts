@@ -251,6 +251,8 @@ test("the list shows root sessions only, toggles subagent runs, sorts on the ser
     fields.tool_call_count,
     fields.observed_commit_count,
     fields.reuse_count,
+    labels.list.searched,
+    labels.list.usedPriorWork,
     fields.status,
     labels.list.subagentCount,
   ]);
@@ -349,6 +351,140 @@ test("the Messages column is on by default and its header sorts by message count
     expect(values).toEqual(ordered(values, order));
   }
   expect(new Set(seen)).toEqual(new Set(["asc", "desc"]));
+  expect(errors).toEqual([]);
+});
+
+// @req R-DASH-42
+test("the usage selects list sessions that searched or used prior work and the columns show the counts", async ({
+  page,
+}) => {
+  const data = await fixture();
+  const errors = collectErrors(page);
+  const usage = copy.sessions.filters.usage;
+  const itemSchema = z.looseObject({
+    session_id: z.string(),
+    title: z.string().nullable(),
+    agentcommons_search_calls: z.number(),
+    reuses_made: z.number(),
+  });
+  /** The visible root sessions under one usage filter, as the API answers it. */
+  const listed = async (query: string) => {
+    const response = await page.request.get(
+      `/api/v1/sessions?roots_only=true&limit=100&${query}`,
+    );
+    expect(response.ok(), await response.text()).toBe(true);
+    return z
+      .object({
+        items: z.array(itemSchema),
+        total: z.object({ sessions: z.number() }),
+      })
+      .parse(await response.json());
+  };
+  await page.goto(paths.sessions);
+  const list = page.getByRole("table", { name: labels.list.label });
+  await expect(list).toBeVisible();
+  await settled(page);
+  const searched = page.getByRole("combobox", {
+    name: usage.searched.label,
+    exact: true,
+  });
+  const used = page.getByRole("combobox", {
+    name: usage.usedPriorWork.label,
+    exact: true,
+  });
+  await expect(searched).toHaveValue("");
+  await expect(used).toHaveValue("");
+  await expectNoHorizontalOverflow(page);
+  // The seeded reader session searched twice and read the root session while active.
+  const withUsage = await listed("used_prior_work=true");
+  expect(withUsage.items.map((item) => item.session_id)).toContain(
+    data.reuse.sourceSessionId,
+  );
+  const withoutUsage = await listed("used_prior_work=false");
+  expect(withoutUsage.items.map((item) => item.session_id)).not.toContain(
+    data.reuse.sourceSessionId,
+  );
+  const everything = await listed("");
+  expect(withUsage.total.sessions + withoutUsage.total.sessions).toBe(
+    everything.total.sessions,
+  );
+  const response = (parameter: string, value: string) =>
+    page.waitForResponse((candidate) => {
+      const url = new URL(candidate.url());
+      return (
+        url.pathname === "/api/v1/sessions" &&
+        url.searchParams.get(parameter) === value
+      );
+    });
+  // Only with: the rows and the total follow the server's answer, and the URL carries it.
+  let pending = response("used_prior_work", "true");
+  await used.selectOption("on");
+  expect((await pending).ok()).toBe(true);
+  await settled(page);
+  await expect(page).toHaveURL(/used_prior_work=true/);
+  await expect(rows(page)).toHaveCount(withUsage.items.length);
+  await expect(page.getByTestId("sessions-total")).toContainText(
+    String(withUsage.total.sessions),
+  );
+  const reader = rows(page).filter({
+    has: page.locator(`a[href="${paths.session(data.reuse.sourceSessionId)}"]`),
+  });
+  await expect(reader).toHaveCount(1);
+  // The two columns wait in the chooser; turned on, they show the counts behind a check.
+  await showColumn(page, labels.list.usedPriorWork);
+  await showColumn(page, labels.list.searched);
+  const readerItem = withUsage.items.find(
+    (item) => item.session_id === data.reuse.sourceSessionId,
+  );
+  expect(readerItem).toBeDefined();
+  await expect(
+    reader.locator(`td[data-label="${labels.list.usedPriorWork}"]`),
+  ).toHaveText(String(readerItem?.reuses_made));
+  await expect(
+    reader.locator(`td[data-label="${labels.list.searched}"]`),
+  ).toHaveText(String(readerItem?.agentcommons_search_calls));
+  expect(readerItem?.reuses_made).toBeGreaterThan(0);
+  expect(readerItem?.agentcommons_search_calls).toBeGreaterThan(0);
+  // Only without: the reader session leaves the list and a zero shows as a dash.
+  pending = response("used_prior_work", "false");
+  await used.selectOption("off");
+  expect((await pending).ok()).toBe(true);
+  await settled(page);
+  await expect(reader).toHaveCount(0);
+  await expect(rows(page)).toHaveCount(Math.min(50, withoutUsage.items.length));
+  await expect(
+    rows(page).first().locator(`td[data-label="${labels.list.usedPriorWork}"]`),
+  ).toHaveText(copy.app.common.unavailable);
+  // The searched select works the same way and composes with the first one.
+  pending = response("searched", "true");
+  await searched.selectOption("on");
+  expect((await pending).ok()).toBe(true);
+  await settled(page);
+  await expect(page).toHaveURL(/searched=true/);
+  const both = await listed("searched=true&used_prior_work=false");
+  await expect(rows(page)).toHaveCount(Math.min(50, both.items.length));
+  // Clear filters resets both selects and their URL parameters.
+  await page
+    .getByRole("button", { name: labels.filters.clearAll, exact: true })
+    .click();
+  await settled(page);
+  await expect(page).not.toHaveURL(/searched=|used_prior_work=/);
+  await expect(searched).toHaveValue("");
+  await expect(used).toHaveValue("");
+  // The Messages view has no such parameter, so the selects step aside there.
+  await page.getByTestId("sessions-view-messages").click();
+  await expect(searched).toHaveCount(0);
+  await page.getByTestId("sessions-view-sessions").click();
+  await expect(searched).toBeVisible();
+  if (wideLayout(page)) {
+    // The default set and the filter bar with the two selects fit a 1024 px desktop.
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await page.goto(paths.sessions);
+    await expect(list).toBeVisible();
+    await settled(page);
+    await expectNoHorizontalOverflow(page);
+    await accessible(page);
+  }
   expect(errors).toEqual([]);
 });
 
@@ -1385,6 +1521,8 @@ for (const theme of ["dark", "light"] as const)
       fields.tool_call_count,
       fields.observed_commit_count,
       fields.reuse_count,
+      labels.list.searched,
+      labels.list.usedPriorWork,
       labels.list.subagentCount,
     ])
       await showColumn(page, column);

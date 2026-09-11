@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import * as z from "zod";
 import {
   hookManifestSchema,
@@ -10,6 +10,7 @@ import {
 } from "@agentcommons/core/schemas/ingest";
 import type { HookConfig } from "./config.js";
 import { hash, readJson, removeFile, writeAtomic } from "./files.js";
+import type { CliHarness } from "./harnesses.js";
 import { acquireLock } from "./lock.js";
 import { note } from "./paths.js";
 
@@ -145,27 +146,59 @@ interface Staged {
 function stage(target: string, bytes: Buffer): Staged {
   // Keeps the target's extension so Node loads the staged file the way it loads the installed one.
   const temporary = `${target}.${randomUUID()}.update${extname(target)}`;
-  writeFileSync(temporary, bytes, { mode: modeOf(target), flag: "wx" });
+  try {
+    writeFileSync(temporary, bytes, { mode: modeOf(target), flag: "wx" });
+  } catch (error) {
+    // A write that fails half-way (a full disk) must not leave a partial artifact beside the target.
+    removeFile(temporary);
+    throw error;
+  }
   return { temporary, target };
 }
 function discard(staged: Staged[]): void {
   for (const { temporary } of staged) removeFile(temporary);
 }
-/** The new bundle must run and print its own digest before it replaces the installed one. */
+/** Any supported harness name serves the hook-mode probe: its synthetic event maps to no behavior. */
+const PROBE_HARNESS: CliHarness = "claude";
+const failure = (result: SpawnSyncReturns<string>): string =>
+  `exit ${String(result.status)}${result.stderr.trim() ? `: ${result.stderr.trim().slice(0, 200)}` : ""}`;
+/**
+ * The new bundle must run and print its own digest, then survive one hook-mode invocation,
+ * before it replaces the installed one. The hook-mode probe feeds a synthetic event with
+ * capture disabled, so it loads the bundle, the configuration and the event schema without
+ * writing state or starting an uploader: a release that starts but cannot run as a hook is
+ * refused here, because once installed such a bundle would never run the uploader that
+ * fetches the release fixing it.
+ */
 function selfTest(
   config: HookConfig,
   directory: string,
   bundle: string,
   expected: string,
 ): void {
-  const result = spawnSync(config.node, [bundle, "version"], {
+  const env = { ...process.env, AGENTCOMMONS_DIR: directory };
+  const version = spawnSync(config.node, [bundle, "version"], {
     encoding: "utf8",
     timeout: SELF_TEST_TIMEOUT_MS,
-    env: { ...process.env, AGENTCOMMONS_DIR: directory },
+    env,
   });
-  if (result.status !== 0 || result.stdout.trim() !== expected)
+  if (version.status !== 0 || version.stdout.trim() !== expected)
     throw new Error(
-      `The downloaded hook.js failed its self-test (exit ${String(result.status)}${result.stderr.trim() ? `: ${result.stderr.trim().slice(0, 200)}` : ""}).`,
+      `The downloaded hook.js failed its self-test (${failure(version)}).`,
+    );
+  const hook = spawnSync(config.node, [bundle, PROBE_HARNESS], {
+    encoding: "utf8",
+    timeout: SELF_TEST_TIMEOUT_MS,
+    input: JSON.stringify({
+      session_id: "agentcommons-self-test",
+      cwd: directory,
+      hook_event_name: "AgentCommonsSelfTest",
+    }),
+    env: { ...env, AGENTCOMMONS_DISABLE: "1" },
+  });
+  if (hook.status !== 0 || hook.stdout !== "")
+    throw new Error(
+      `The downloaded hook.js failed its hook-mode self-test (${failure(hook)}).`,
     );
 }
 function syntaxCheck(config: HookConfig, path: string): void {
@@ -199,7 +232,12 @@ export async function selfUpdate(
   const lock = await acquireLock(join(directory, "update.lock"));
   if (!lock) return "skipped";
   const staged: Staged[] = [];
+  const renamed: string[] = [];
   try {
+    // Re-read under the lock: an uploader that passed the hourly check while another one
+    // was already fetching the manifest does not ask the server a second time.
+    if (now - readState(directory).checkedAt < UPDATE_CHECK_INTERVAL_MS)
+      return "skipped";
     writeState(directory, { ...readState(directory), checkedAt: now });
     const fetcher = options.fetch ?? fetch;
     const response = await fetcher(
@@ -242,25 +280,34 @@ export async function selfUpdate(
       staged.push(extension);
       syntaxCheck(config, extension.temporary);
     }
-    for (const { temporary, target } of staged) renameSync(temporary, target);
+    for (const { temporary, target } of staged) {
+      renameSync(temporary, target);
+      renamed.push(basename(target));
+    }
     note(directory, `Updated to hook ${manifest.version}.`);
     return "updated";
   } catch (error) {
     discard(staged);
+    const reason = error instanceof Error ? error.message : "unknown error";
+    // A rename that fails after another succeeded leaves a partial swap; the next hourly
+    // check fetches only what still differs. The log says which files changed.
     note(
       directory,
-      `Hook update skipped: ${error instanceof Error ? error.message : "unknown error"}`,
+      renamed.length
+        ? `Hook update partial: replaced ${renamed.join(", ")}; the rest failed: ${reason}`
+        : `Hook update skipped: ${reason}`,
     );
-    return "skipped";
+    return renamed.length ? "updated" : "skipped";
   } finally {
     lock.release();
   }
 }
 
 /**
- * Keeps harness wiring in step with the bundle and the machine. After a swap, or when
- * a supported CLI appears that the last install run did not see, the installed bundle's
- * own `install` runs with the recorded flags. The installer only adds or replaces
+ * Keeps harness wiring in step with the bundle and the machine. After a swap, when a
+ * supported CLI appears that the last install run did not see, or when the wiring record
+ * is missing (an older uploader's strict read of `update.json` dropped it), the installed
+ * bundle's own `install` runs with the recorded flags. The installer only adds or replaces
  * entries carrying the agentcommons marker, backs up each config file once and restores
  * the MCP entry if a native registration fails, so a background run cannot remove or
  * overwrite anything the user configured. Failures are logged and retried at most hourly.
@@ -274,13 +321,14 @@ export async function reconcileInstall(
   const now = options.now?.() ?? Date.now();
   const state = readState(directory);
   // Only a data directory that `hook.js install` set up is ever reconfigured: the
-  // installer records its flags and the wiring it produced. Anything else (a test or a
+  // installer records its flags in config.json. Anything else (a test or a
   // hand-configured directory) has no wiring to keep in step and is left alone.
-  if (!config.installOptions || !state.configured) return "skipped";
+  if (!config.installOptions) return "skipped";
   const current = hookIdentity(directory, executable).sha256;
   const { detectHarnesses } = await import("./install.js");
   const detected = detectHarnesses();
   if (
+    state.configured &&
     state.configured.sha256 === current &&
     sameSet(state.configured.harnesses, detected)
   )

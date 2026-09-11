@@ -44,6 +44,21 @@ export const sessionsCopy = {
     dateRange: "Active",
     dateSeparator: " – ",
     open: "Open filter",
+    /** Tri-state selects over the session list: either, only with the usage, only without. */
+    usage: {
+      searched: {
+        label: "Searched",
+        all: "Searched or not",
+        on: "Searched AgentCommons",
+        off: "Did not search",
+      },
+      usedPriorWork: {
+        label: "Used prior work",
+        all: "Used prior work or not",
+        on: "Used prior work",
+        off: "Did not use prior work",
+      },
+    },
     /** Filter headings that differ from the shared field labels. */
     fields: {
       date: "Active between",
@@ -98,6 +113,9 @@ export const sessionsCopy = {
     repoBranch: "Repository / branch",
     subagentCount: "Subagents",
     duration: "Duration",
+    /** Column headers for the read aggregates; the cell shows the count behind a check mark. */
+    searched: "Searched",
+    usedPriorWork: "Used prior work",
     /** "128 sessions · 4,210 messages": every root session the filters match, not only this page. */
     total: {
       sessions: "sessions",

@@ -84,7 +84,8 @@ export function CopyKeyButton({
 
 /**
  * Pick one of the caller's active ingest+read keys for the installer. The chosen key is
- * revealed and handed to `onKey`; clearing the choice or a failed reveal hands back null.
+ * revealed and handed to `onKey` with its id (the Install page lists the sessions that
+ * key uploads); clearing the choice or a failed reveal hands back null.
  * With no eligible key the picker only points at the create form above it, so nothing on
  * the Install page sends a first-time developer elsewhere.
  */
@@ -92,7 +93,7 @@ export function InstallKeyPicker({
   onKey,
   initialKeyId,
 }: {
-  onKey: (key: string | null) => void;
+  onKey: (key: { id: string; key: string } | null) => void;
   /** A key the page already holds (just created here) starts selected; no reveal needed. */
   initialKeyId?: string | undefined;
 }) {
@@ -129,7 +130,9 @@ export function InstallKeyPicker({
                 return;
               }
               reveal.mutate(id, {
-                onSuccess: onKey,
+                onSuccess: (key) => {
+                  onKey({ id, key });
+                },
                 onError: () => {
                   onKey(null);
                 },

@@ -221,6 +221,53 @@ test("the Install page unlocks the installer command once a machine key exists a
   await expect(page.locator("body")).not.toContainText("install.sh");
   // Step 1 offers one path at a time: the create form first, the picker behind a link.
   await expect(page.getByTestId("install-key-picker")).toHaveCount(0);
+  // Step 4 polls nothing until a key exists: a shared key would list other machines.
+  await expect(page.getByTestId("install-arrivals-pending")).toHaveText(
+    install.arrivals.pending,
+  );
+  await expect(page.getByTestId("install-arrivals")).not.toContainText(
+    install.arrivals.polling,
+  );
+  // The repository guidance leads with the command; the text sits behind a disclosure.
+  const guidance = page.getByTestId("repository-guidance");
+  await expect(guidance.getByTestId("repository-guidance-command")).toHaveText(
+    "node ~/.agentcommons/hook.js guidance --repo .",
+  );
+  await expect(
+    guidance.getByRole("button", {
+      name: install.prepare.repository.copyCommand,
+      exact: true,
+    }),
+  ).toBeVisible();
+  const details = guidance.getByTestId("repository-guidance-details");
+  await expect(details).toHaveJSProperty("open", false);
+  await expect(page.getByTestId("repository-guidance-block")).toBeHidden();
+  await expect(
+    guidance.getByRole("button", {
+      name: install.prepare.repository.copy,
+      exact: true,
+    }),
+  ).toBeHidden();
+  await details.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(details).toHaveJSProperty("open", true);
+  await expect(details.locator("summary")).toHaveText(
+    install.prepare.repository.hide,
+  );
+  await expect(page.getByTestId("repository-guidance-block")).toBeVisible();
+  await expect(page.getByTestId("repository-guidance-block")).toContainText(
+    "<!-- agentcommons-hook begin -->",
+  );
+  await expect(
+    guidance.getByRole("button", {
+      name: install.prepare.repository.copy,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await accessible(page);
+  await expectNoHorizontalOverflow(page);
+  await page.keyboard.press("Enter");
+  await expect(details).toHaveJSProperty("open", false);
   await expect(
     page.getByRole("button", { name: install.key.useExisting, exact: true }),
   ).toBeVisible();
@@ -267,46 +314,58 @@ test("the Install page unlocks the installer command once a machine key exists a
 
   const arrivals = page.getByTestId("install-arrivals");
   await expect(arrivals).toContainText(install.arrivals.polling);
-  const title = `Install arrival ${info.project.name} ${String(Date.now())}`;
-  const response = await request.post("/api/v1/ingest", {
-    headers: { authorization: `Bearer ${secret}` },
-    data: ingestEnvelopeSchema.parse({
-      ...data.liveEnvelope,
-      harnessSessionId: randomUUID(),
-      installationId: randomUUID(),
-      batchId: randomUUID(),
-      sentAt: new Date().toISOString(),
-      sourcePos: 0,
-      cursor: "1:0",
-      records: [
-        {
-          pos: 0,
-          sourceVersion: 0,
-          key: randomUUID(),
-          line: JSON.stringify({
-            type: "user",
-            uuid: randomUUID(),
-            timestamp: new Date().toISOString(),
-            message: { content: [{ type: "text", text: title }] },
-          }),
+  await expect(page.getByTestId("install-arrivals-pending")).toHaveCount(0);
+  const stamp = String(Date.now());
+  const title = `Install arrival ${info.project.name} ${stamp}`;
+  const otherTitle = `Other machine ${info.project.name} ${stamp}`;
+  const ingest = (key: string, text: string, hostname: string) =>
+    request.post("/api/v1/ingest", {
+      headers: { authorization: `Bearer ${key}` },
+      data: ingestEnvelopeSchema.parse({
+        ...data.liveEnvelope,
+        harnessSessionId: randomUUID(),
+        installationId: randomUUID(),
+        batchId: randomUUID(),
+        sentAt: new Date().toISOString(),
+        sourcePos: 0,
+        cursor: "1:0",
+        records: [
+          {
+            pos: 0,
+            sourceVersion: 0,
+            key: randomUUID(),
+            line: JSON.stringify({
+              type: "user",
+              uuid: randomUUID(),
+              timestamp: new Date().toISOString(),
+              message: { content: [{ type: "text", text }] },
+            }),
+          },
+        ],
+        context: {
+          ...data.liveEnvelope.context,
+          installation: {
+            ...data.liveEnvelope.context.installation,
+            hostname,
+          },
         },
-      ],
-      context: {
-        ...data.liveEnvelope.context,
-        installation: {
-          ...data.liveEnvelope.context.installation,
-          hostname: machine,
-        },
-      },
-    }),
-  });
+      }),
+    });
+  // The same member's seeded key stands for another machine: its session is newer than
+  // nothing else on the page, yet step 4 must not list it.
+  const other = await ingest(data.ingestKey, otherTitle, "other-machine");
+  expect(other.status(), await other.text()).toBe(202);
+  const response = await ingest(secret, title, machine);
   expect(response.status(), await response.text()).toBe(202);
   const sessionId = ingestOutputSchema.parse(await response.json()).sessionId;
   const arrival = arrivals.getByRole("link").filter({ hasText: title });
   await expect(arrival).toBeVisible({ timeout: 45_000 });
   await expect(arrival).toHaveAttribute("href", paths.session(sessionId));
   await expect(arrival).toContainText(copy.app.harnesses.CLAUDE_CODE);
+  await expect(arrival).toContainText(machine);
   await expect(arrivals.getByRole("link").first()).toContainText(title);
+  await expect(arrivals).not.toContainText(otherTitle);
+  await expect(arrivals).not.toContainText("other-machine");
 
   // "I saved the key" closes only the one-time panel: the new key stays selected for step 3.
   await panel

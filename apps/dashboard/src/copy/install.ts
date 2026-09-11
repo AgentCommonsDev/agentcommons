@@ -51,9 +51,12 @@ export const installCopy = {
     repository: {
       title: "Guidance for a repository",
       description:
-        "The same guidance, framed for a project. Add it to AGENTS.md at the repository root, with CLAUDE.md and GEMINI.md as symlinks or copies, and commit it. Every teammate's agent then reads it, on machines with or without the install.",
-      command:
-        "On a machine with the install, this command writes and links the files for you:",
+        "Run this in a checkout after installing, then commit the AGENTS.md, CLAUDE.md and GEMINI.md it writes. Every teammate's agent then reads the guidance, on machines with or without the install.",
+      copyCommand: "Copy command",
+      show: "Show the text",
+      hide: "Hide the text",
+      manual:
+        "Without the install, paste this block into AGENTS.md at the repository root, with CLAUDE.md and GEMINI.md as symlinks or copies.",
       copy: "Copy repository guidance",
     },
     notesTitle: "Good to know",
@@ -73,11 +76,12 @@ export const installCopy = {
   arrivals: {
     title: "Start a coding agent",
     description:
-      "Open Claude Code, Codex, Gemini CLI or pi on that machine and send a prompt. The session appears below within seconds and stays under Sessions.",
-    polling: "Checking for new sessions every 5 seconds",
-    empty: "No sessions from you yet",
+      "Open Claude Code, Codex, Gemini CLI or pi on that machine and send a prompt. Sessions uploaded with the key from step 1 appear here within seconds and stay under Sessions.",
+    pending: "Create or choose a key in step 1 to see the sessions it uploads.",
+    polling: "Checking for this machine's sessions every 5 seconds",
+    empty: "No sessions from this machine yet",
     emptyHint:
-      "Start Claude Code, Codex, Gemini CLI or pi on the connected machine and send at least one prompt.",
+      "Start Claude Code, Codex, Gemini CLI or pi on the connected machine and send at least one prompt. Only sessions uploaded with the key from step 1 are listed.",
     allSessions: "All sessions",
   },
 } as const;

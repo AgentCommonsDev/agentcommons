@@ -1385,7 +1385,7 @@ it("completes five concurrent full session reads and a fifteen-reader burst with
   }
 });
 
-// @req R-AUD-05 @req R-GET-04 @req R-SEC-01
+// @req R-AUD-05 @req R-GET-04 @req R-SEC-01 @req R-DASH-42
 it("serves the reuse relations from stored session reads under organization, visibility, purge and retention fences", async () => {
   const source = await seed(owner);
   const target = await seed(owner);
@@ -1439,6 +1439,15 @@ it("serves the reuse relations from stored session reads under organization, vis
         { id },
       )
     ).rows;
+  // The reading side of the same rows: search/sql calls and distinct sessions read.
+  const usage = async (authority: ReadAuthority, id: string) =>
+    (
+      await select(
+        authority,
+        "SELECT agentcommons_search_calls,reuses_made FROM sessions WHERE session_id={id:UUID}",
+        { id },
+      )
+    ).rows;
   const flags = async (authority: ReadAuthority, id: string) =>
     (
       await select(
@@ -1482,6 +1491,20 @@ it("serves the reuse relations from stored session reads under organization, vis
   expect(await reuseCount(owner, hidden)).toEqual([{ reuse_count: "1" }]);
   expect(await reuseCount(owner, source)).toEqual([{ reuse_count: "0" }]);
   expect(await reuseCount(member, hidden)).toEqual([]);
+  // One search and three distinct targets, of which the self read is no reuse and the
+  // hidden target counts for admins only; the read sessions themselves did neither.
+  expect(await usage(owner, source)).toEqual([
+    { agentcommons_search_calls: "1", reuses_made: "2" },
+  ]);
+  expect(await usage(member, source)).toEqual([
+    { agentcommons_search_calls: "1", reuses_made: "1" },
+  ]);
+  expect(await usage(owner, target)).toEqual([
+    { agentcommons_search_calls: "0", reuses_made: "0" },
+  ]);
+  expect(await usage(other, foreignSource)).toEqual([
+    { agentcommons_search_calls: "0", reuses_made: "1" },
+  ]);
   expect(await flags(owner, source)).toEqual([
     { reused: 1, memory_assisted: 1 },
   ]);
@@ -1500,6 +1523,9 @@ it("serves the reuse relations from stored session reads under organization, vis
   });
   expect(await edges(owner)).toEqual([edge(source, hidden)]);
   expect(await reuseCount(owner, target)).toEqual([{ reuse_count: "0" }]);
+  expect(await usage(owner, source)).toEqual([
+    { agentcommons_search_calls: "1", reuses_made: "1" },
+  ]);
   expect(
     (
       await select(
@@ -1521,6 +1547,9 @@ it("serves the reuse relations from stored session reads under organization, vis
     expect(await edges(owner)).toEqual([]);
     expect(await flags(owner, source)).toEqual([
       { reused: 0, memory_assisted: 0 },
+    ]);
+    expect(await usage(owner, source)).toEqual([
+      { agentcommons_search_calls: "0", reuses_made: "0" },
     ]);
   } finally {
     await db.prisma.traceAnalyticsRetention.update({

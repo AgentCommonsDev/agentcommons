@@ -51,6 +51,8 @@ const numberKeys = new Set([
   "file_count",
   "observed_commit_count",
   "reuse_count",
+  "agentcommons_search_calls",
+  "reuses_made",
   "child_count",
 ]);
 const badgeKeys = new Set(["visibility", "parent_relation"]);

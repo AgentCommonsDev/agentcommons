@@ -14,6 +14,9 @@ import {
   formatDashboard,
   formatDashboardList,
   formatDashboardRender,
+  governingSentence,
+  serverInstructions,
+  toolDescriptions,
   type Formatted,
 } from "@agentcommons/core/format";
 import type { Services } from "../routes/services.js";
@@ -29,14 +32,12 @@ import { hasAdminAuthority } from "@agentcommons/db";
 
 const dashboardInstruction =
   "Use this when the user asks to view, build or change dashboards.";
-const governingSentence =
-  "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids.";
 /**
- * Server `instructions` returned by `initialize` (§8.2). Claude Code places them in its
- * system prompt, so this is where an agent learns to look before it edits.
+ * The read tools' text and the server `instructions` returned by `initialize` (§8.2) live
+ * in core, where a unit test parses each description's worked example with the call
+ * schema and measures its bytes (ADR 0070).
  */
-export const serverInstructions =
-  "AgentCommons indexes this organization's past coding-agent sessions (search, get, sql). Before changing code, search for the test, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value; read a hit with get and cite its session_id. Also use it whenever the user asks about prior work. Keep long investigations in a subagent that returns only findings and session ids.";
+export { serverInstructions };
 /**
  * The default catalog: what every `sessions:read` key lists, in `tools/list` order. Nothing
  * else is exposed unless the key opts in (§8.2); the constructor checks the registry agrees.
@@ -117,8 +118,7 @@ export class McpService {
     const definitions: Definition[] = [
       define({
         name: "search",
-        description:
-          'Search previous coding-agent sessions with words and structured filters. Start with the test name, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {"query":"","filters":{"file_prefix":"src/auth/","file_operation":"edit"}}.',
+        description: toolDescriptions.search,
         permission: "read",
         readOnly: true,
         destructive: false,
@@ -130,8 +130,7 @@ export class McpService {
       }),
       define({
         name: "get",
-        description:
-          'Read one session by session_id: a header (who ran it, harness, model, repository, branch, start, end, status, message, tool call, token, file, commit and reuse counts, tools_used, root_session_id, parent and child sessions) and its messages in seq order with role, kind, tool_name, tool_use_id and content. Each child ref carries parent_tool_use_id, the tool_use_id of the TOOL_USE message here that spawned it (null when unrecorded), so a subagent run reads in place under its call. Bound a range with from/to; when next is not null, pass it as cursor. Example: {"session_id":"<uuid>","from":0,"to":40}.',
+        description: toolDescriptions.get,
         permission: "read",
         readOnly: true,
         destructive: false,
@@ -146,8 +145,7 @@ export class McpService {
       }),
       define({
         name: "sql",
-        description:
-          "Run one read-only ClickHouse SELECT over api_ro. Views: sessions (session metadata); messages (normalized messages); session_files (observed files); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds.",
+        description: toolDescriptions.sql,
         permission: "read",
         readOnly: true,
         destructive: false,

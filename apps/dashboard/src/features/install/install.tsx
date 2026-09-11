@@ -154,10 +154,15 @@ export function Install() {
   );
   // The one-time secret panel stays open from creation until "I saved the key".
   const [panelOpen, setPanelOpen] = useState(false);
-  // The key the step-3 command carries: created here or picked from existing keys (ADR 0051).
-  const [picked, setPicked] = useState<string | null>(null);
+  // The key the step-3 command carries, created here or picked from existing keys (ADR 0051);
+  // its id scopes step 4 to the sessions that machine uploads.
+  const [picked, setPicked] = useState<{ id: string; key: string } | null>(
+    null,
+  );
   // Step 1 shows one path at a time: the create form or the picker.
   const [mode, setMode] = useState<"create" | "existing">("create");
+  // The repository block's text is behind a native disclosure; the label follows its state.
+  const [guidanceOpen, setGuidanceOpen] = useState(false);
   const choosing = !panelOpen && mode === "existing";
   const create = useMutation({
     mutationFn: () =>
@@ -167,27 +172,33 @@ export function Install() {
       }),
     onSuccess: async (result) => {
       setCreated({ id: result.metadata.id, key: result.key });
-      setPicked(result.key);
+      setPicked({ id: result.metadata.id, key: result.key });
       setPanelOpen(true);
       await refresh();
     },
   });
+  // Step 4 shows this machine's sessions: those uploaded with the step 1 key (a shared
+  // key attributes every machine's sessions to one member, so the email alone is not enough).
+  const keyId = picked?.id ?? null;
   const arrivals = useQuery({
-    queryKey: [organization.id, "install-arrivals", me.user.email],
-    queryFn: async ({ signal }) =>
-      unwrap(
+    queryKey: [organization.id, "install-arrivals", me.user.email, keyId],
+    enabled: keyId !== null,
+    queryFn: async ({ signal }) => {
+      if (keyId === null) throw new Error("Choose a key first.");
+      return unwrap(
         await api.GET("/api/v1/sessions", {
           params: {
             query: {
               limit: 5,
               sort: "last_activity_at",
               order: "desc",
-              filters: { user_email: me.user.email },
+              filters: { user_email: me.user.email, ingest_api_key_id: keyId },
             },
           },
           signal,
         }),
-      ),
+      );
+    },
     refetchInterval: 5_000,
   });
   return (
@@ -327,23 +338,42 @@ export function Install() {
               {copy.install.prepare.repository.description}
             </p>
             <CodeBlock
-              content={guidanceBlock(repositoryInstructions)}
-              language="markdown"
-              copyLabel={copy.install.prepare.repository.copy}
-              showCopyLabel
-              testId="repository-guidance-block"
-              className="my-0"
-            />
-            <p className="text-xs text-muted">
-              {copy.install.prepare.repository.command}
-            </p>
-            <CodeBlock
               content="node ~/.agentcommons/hook.js guidance --repo ."
               language="bash"
               wrap
+              copyLabel={copy.install.prepare.repository.copyCommand}
+              showCopyLabel
               testId="repository-guidance-command"
               className="my-0"
             />
+            {/* The block itself stays behind a native disclosure so the step reads as a step. */}
+            <details
+              className="text-xs"
+              data-testid="repository-guidance-details"
+              open={guidanceOpen}
+              onToggle={(event) => {
+                setGuidanceOpen(event.currentTarget.open);
+              }}
+            >
+              <summary className="w-fit cursor-pointer list-none rounded font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden">
+                {guidanceOpen
+                  ? copy.install.prepare.repository.hide
+                  : copy.install.prepare.repository.show}
+              </summary>
+              <div className="mt-2 flex flex-col gap-2">
+                <p className="text-xs leading-relaxed text-muted">
+                  {copy.install.prepare.repository.manual}
+                </p>
+                <CodeBlock
+                  content={guidanceBlock(repositoryInstructions)}
+                  language="markdown"
+                  copyLabel={copy.install.prepare.repository.copy}
+                  showCopyLabel
+                  testId="repository-guidance-block"
+                  className="my-0"
+                />
+              </div>
+            </details>
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted">
             <span className="font-medium">
@@ -367,7 +397,7 @@ export function Install() {
           title={copy.install.run.title}
           description={copy.install.run.description}
         >
-          <InstallCommand apiKey={picked} />
+          <InstallCommand apiKey={picked?.key ?? null} />
         </Step>
         <Step
           index={4}
@@ -383,54 +413,71 @@ export function Install() {
           }
         >
           <div data-testid="install-arrivals" className="flex flex-col gap-3">
-            <p
-              className="flex items-center gap-2 text-xs text-muted"
-              role="status"
-            >
-              {arrivals.isFetching ? (
-                <Spinner size={13} />
-              ) : (
-                <Radio size={13} aria-hidden />
-              )}
-              {copy.install.arrivals.polling}
-            </p>
-            <QueryState query={arrivals} rows={2}>
-              {(data) =>
-                data.items.length === 0 ? (
-                  <EmptyState
-                    compact
-                    title={copy.install.arrivals.empty}
-                    description={copy.install.arrivals.emptyHint}
-                  />
-                ) : (
-                  <ul className="divide-y divide-line-soft rounded-lg border border-line">
-                    {data.items.map((session) => (
-                      <li key={session.session_id}>
-                        <a
-                          href={paths.session(session.session_id)}
-                          className="flex flex-col gap-1 px-4 py-3 transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent sm:flex-row sm:items-center sm:gap-3"
-                        >
-                          <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                            {session.title ?? copy.app.common.untitledSession}
-                          </span>
-                          <span className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                            <Badge>{harnessLabel(session.harness)}</Badge>
-                            {session.repo_name !== null && (
-                              <span className="truncate font-mono">
-                                {session.repo_name}
+            {keyId === null ? (
+              <p
+                className="text-sm text-muted"
+                data-testid="install-arrivals-pending"
+              >
+                {copy.install.arrivals.pending}
+              </p>
+            ) : (
+              <>
+                <p
+                  className="flex items-center gap-2 text-xs text-muted"
+                  role="status"
+                >
+                  {arrivals.isFetching ? (
+                    <Spinner size={13} />
+                  ) : (
+                    <Radio size={13} aria-hidden />
+                  )}
+                  {copy.install.arrivals.polling}
+                </p>
+                <QueryState query={arrivals} rows={2}>
+                  {(data) =>
+                    data.items.length === 0 ? (
+                      <EmptyState
+                        compact
+                        title={copy.install.arrivals.empty}
+                        description={copy.install.arrivals.emptyHint}
+                      />
+                    ) : (
+                      <ul className="divide-y divide-line-soft rounded-lg border border-line">
+                        {data.items.map((session) => (
+                          <li key={session.session_id}>
+                            <a
+                              href={paths.session(session.session_id)}
+                              className="flex flex-col gap-1 px-4 py-3 transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent sm:flex-row sm:items-center sm:gap-3"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                                {session.title ??
+                                  copy.app.common.untitledSession}
                               </span>
-                            )}
-                            <span>
-                              {relativeTime(session.last_activity_at)}
-                            </span>
-                          </span>
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                )
-              }
-            </QueryState>
+                              <span className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                                <Badge>{harnessLabel(session.harness)}</Badge>
+                                {session.installation_hostname !== "" && (
+                                  <Badge variant="outline">
+                                    {session.installation_hostname}
+                                  </Badge>
+                                )}
+                                {session.repo_name !== null && (
+                                  <span className="truncate font-mono">
+                                    {session.repo_name}
+                                  </span>
+                                )}
+                                <span>
+                                  {relativeTime(session.last_activity_at)}
+                                </span>
+                              </span>
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    )
+                  }
+                </QueryState>
+              </>
+            )}
           </div>
         </Step>
       </ol>

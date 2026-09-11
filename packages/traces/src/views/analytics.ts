@@ -6,6 +6,7 @@ import {
   searchReadActions,
   SESSION_READS_TABLE,
 } from "../reads.js";
+import { sessionReadAggregateColumns } from "@agentcommons/core/sql";
 import { sessionColumns, sessionReadColumns } from "../schema.js";
 import {
   latestRowsSql,
@@ -97,14 +98,12 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
     "reuse_edges",
     `SELECT source_session_id,target_session_id,read_at,reader_user_id,reader_email,reader_harness,audit_id FROM (${edgeRows(false)})`,
   );
-  // The single aggregate behind `session_reuse` and `sessions.reuse_count`: distinct reading
-  // sessions per target, plus the reader columns when a consumer needs them (they cost the
-  // owner lookup, which `sessions` does not pay for its count alone).
-  const reuseByTarget = (readers: boolean) =>
-    `SELECT target_session_id AS session_id,uniqExact(source_session_id) AS reuse_count${readers ? ",uniqExact(reader_user_id) AS unique_readers,uniqExactIf(source_session_id,reader_user_id!=target_user_id) AS cross_user_reuse_count,max(read_at) AS last_reused_at" : ""} FROM (${edgeRows(readers)}) GROUP BY target_session_id`;
+  // The aggregate behind `session_reuse`: distinct reading sessions per target plus the
+  // reader columns, which cost the target-owner lookup (`sessions` counts without it).
+  const reuseByTarget = `SELECT target_session_id AS session_id,uniqExact(source_session_id) AS reuse_count,uniqExact(reader_user_id) AS unique_readers,uniqExactIf(source_session_id,reader_user_id!=target_user_id) AS cross_user_reuse_count,max(read_at) AS last_reused_at FROM (${edgeRows(true)}) GROUP BY target_session_id`;
   add(
     "session_reuse",
-    `SELECT s.session_id AS session_id,coalesce(r.reuse_count,toUInt64(0)) AS reuse_count,coalesce(r.unique_readers,toUInt64(0)) AS unique_readers,coalesce(r.cross_user_reuse_count,toUInt64(0)) AS cross_user_reuse_count,r.last_reused_at AS last_reused_at FROM ${projection} s LEFT ANY JOIN (${reuseByTarget(true)}) r ON r.session_id=s.session_id WHERE s.purged_at IS NULL`,
+    `SELECT s.session_id AS session_id,coalesce(r.reuse_count,toUInt64(0)) AS reuse_count,coalesce(r.unique_readers,toUInt64(0)) AS unique_readers,coalesce(r.cross_user_reuse_count,toUInt64(0)) AS cross_user_reuse_count,r.last_reused_at AS last_reused_at FROM ${projection} s LEFT ANY JOIN (${reuseByTarget}) r ON r.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
   // One pass over the edges: each edge is credited to its target as incoming and to its
   // source as outgoing, then aggregated per member.
@@ -195,11 +194,17 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
     "metrics_search_sessions",
     `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,s.harness AS harness,s.user_id AS user_id,coalesce(t.calls,toUInt64(0)) AS agentcommons_search_calls,greatest(toInt64(coalesce(t.calls,0))-1,0) AS repeat_agentcommons_search_calls FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,count() AS calls FROM (${reads}) r WHERE r.action IN (${searchReadActions.map(sqlString).join(",")}) GROUP BY r.session_id) t ON t.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
-  // One query context: session details, the file and child aggregates and the reuse
+  // One pass over the stored reads for the `sessions` columns they feed: every read is
+  // credited to the session that made it ('out': its search/sql calls and the distinct
+  // sessions it read) and every edge also to the session it read ('in': `reuse_count`),
+  // then aggregated per session. Column order follows `sessionReadAggregateColumns`.
+  const side = `tupleElement(credit,1)`;
+  const readsBySession = `SELECT tupleElement(credit,2) AS session_id,uniqExactIf(r.session_id,${side}='in') AS reuse_count,countIf(${side}='out' AND r.action IN (${searchReadActions.map(sqlString).join(",")})) AS agentcommons_search_calls,uniqExactIf(r.target_session_id,${side}='out' AND ${edgeCondition("r")}) AS reuses_made FROM (${reads}) r ARRAY JOIN [('in',r.target_session_id),('out',r.session_id)] AS credit WHERE ${side}='out' OR ${edgeCondition("r")} GROUP BY session_id`;
+  // One query context: session details, the file and child aggregates and the read
   // aggregate all read the caller's control once through the shared policy scalar.
   add(
     "sessions",
-    `SELECT ${sessionDetailColumns.map((name) => `d.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")},coalesce(r.reuse_count,toUInt64(0)) AS reuse_count FROM (${sessionDetailsSql(database)}) d LEFT ANY JOIN (${reuseByTarget(false)}) r ON r.session_id=d.session_id`,
+    `SELECT ${sessionDetailColumns.map((name) => `d.${sqlIdentifier(name)} AS ${sqlIdentifier(name)}`).join(",")},${sessionReadAggregateColumns.map((name) => `coalesce(r.${name},toUInt64(0)) AS ${name}`).join(",")} FROM (${sessionDetailsSql(database)}) d LEFT ANY JOIN (${readsBySession}) r ON r.session_id=d.session_id`,
   );
   return definitions;
 }

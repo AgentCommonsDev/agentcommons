@@ -52,6 +52,7 @@ export const embeddingsRequiredMessage = (capability: string) =>
 export {
   traceViewCatalog,
   traceColumnDescriptions,
+  sessionReadAggregateColumns,
   type TraceViewName,
   type TraceViewDescription,
 } from "./schema-catalog.js";

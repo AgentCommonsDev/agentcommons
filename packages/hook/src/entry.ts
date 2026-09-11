@@ -3,9 +3,9 @@ z.config({ jitless: true });
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { loadConfig } from "./config.js";
+import { loadConfig, type HookConfig } from "./config.js";
 import { HARNESSES, cliHarnessSchema } from "./harnesses.js";
-import { recordHook } from "./hook.js";
+import { recordHook, recoverUpload } from "./hook.js";
 import type { InstallOptions } from "./install.js";
 import { dataDirectory } from "./paths.js";
 import { promptHint } from "./recall.js";
@@ -17,12 +17,15 @@ async function main(): Promise<void> {
   if (!executable) throw new Error("The hook executable path is missing.");
   const harness = cliHarnessSchema.safeParse(mode);
   if (harness.success) {
+    let input: unknown;
+    let config: HookConfig | undefined;
     try {
-      const input = JSON.parse(readFileSync(0, "utf8")) as unknown;
+      input = JSON.parse(readFileSync(0, "utf8")) as unknown;
+      config = loadConfig(directory);
       const path = recordHook(
         directory,
         executable,
-        loadConfig(directory),
+        config,
         harness.data,
         input,
       );
@@ -31,7 +34,14 @@ async function main(): Promise<void> {
       const hint = path && promptHint(directory, harness.data, input, path);
       if (hint) process.stdout.write(hint);
     } catch {
-      /* Fail open: native agent work must continue. */
+      // Fail open: native agent work must continue. The uploader still starts, so a
+      // release that fixes whatever failed here can arrive (§6.2 self-update).
+      try {
+        if (config)
+          recoverUpload(directory, executable, config, harness.data, input);
+      } catch {
+        /* Best effort. */
+      }
     }
     return;
   }
