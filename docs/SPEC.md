@@ -1601,8 +1601,16 @@ unaffected. Admin tools, listed only when the caller has effective admin authori
 and each authorized again on invocation: `set_visibility (session_id, visibility, reason)`,
 `purge(session_id, reason)` (`destructiveHint`), `audit(filters, limit, cursor)` (exact
 ids, UTC bounds) and `status()`; `dashboard_set_default(id)` needs admin authority and the
-`dashboards` group together. Catalog order is read tools, dashboard tools, admin tools,
-`dashboard_set_default`. No data-derived schema content. The `sql` description lists the
+`dashboards` group together. The `administration` tool group (ADR 0072) needs admin
+authority and `admin:*` on the key: it lists one `admin_<resource>_<verb>` tool per active
+`/admin` route (§7.5, §9), derived at boot from the route table
+(`apps/api/src/routes/admin-routes.ts`) by one helper, `toolFromRoute`: the route summary
+is the description after one shared instruction sentence, params, query and body merge into
+one strict input without the REST `format` switch, and a call re-parses the parts with the
+route's schemas and runs the service the REST route runs. Routes a standing admin tool
+already covers (`set_visibility`, `purge`, `audit`, `status`) derive nothing. Catalog order
+is read tools, dashboard tools, admin tools, `dashboard_set_default`, administration tools.
+No data-derived schema content. The `sql` description lists the
 views by name with one line each and the discovery query; it does not enumerate every
 column. Every `search` filter carries its one-line meaning in the advertised input schema,
 and the `search` description says how filters combine and gives one example call using the
@@ -1664,7 +1672,11 @@ keys and pointing at `dashboard_list`, whose `structuredContent.definition_schem
 the complete schema and whose text names the templates)
 instead of inlining the style allowlist once per series. Every call is still parsed with the
 strict shared schema, so validation is unchanged. No advertised schema contains `$ref` or
-recursion, which the Gemini API rejects. The contract test measures all three catalogs.
+recursion, which the Gemini API rejects. The `administration` group is the exception to the
+small catalog and is never granted by default: an admin key with it lists under 40 KB, and
+the administrator install's key (both groups) under 48 KB (measured 2026-09-11: 32,132 and
+40,305 bytes, ADR 0072), about 10,000 tokens that the `alwaysLoad` entry of §8.4 keeps in
+Claude Code's context on every turn. The contract test measures all five catalogs.
 
 ### 8.3 Global agent instructions
 
@@ -1841,10 +1853,13 @@ tokens for established identities.
 `x-api-key`). `requirePermission`. Visibility lives in the `api_ro` views and the
 repository layer, never in handlers. Read scopes cannot mutate; keys cannot mint keys.
 Key permissions are three groups: `sessions` (`ingest`, `read`) authorizes REST and MCP
-reads and uploads; `tools` (`dashboards`) exposes an opt-in MCP tool group on top of
-`sessions:read` and is grantable by any member; `admin` (`*`) is grantable only by owners
-and admins and effective only while the issuing user keeps that membership (§7.5). Cookie
-sessions hold every group their membership allows. A group absent from a stored key is
+reads and uploads; `tools` (`dashboards`, `administration`) exposes an opt-in MCP tool group
+on top of `sessions:read`; `dashboards` is grantable by any member, while `administration`
+(ADR 0072) is valid only with `admin: ["*"]` on the same key, which the shared permissions
+schema enforces, so only owners and admins can mint it and it is effective only while they
+keep that membership; `admin` (`*`) is grantable only by owners and admins and effective
+only while the issuing user keeps that membership (§7.5). Cookie sessions hold every group
+their membership allows. A group absent from a stored key is
 absent from its parsed permissions, so keys created before a group existed simply lack it.
 Key names contain 1–128 characters; optional `expires_in` is 1–31,536,000 seconds.
 Omitting expiration creates a non-expiring key. Native Better Auth settings enforce
@@ -3315,7 +3330,9 @@ Every `sessions:read` key lists `search`, `get` and `sql`, and nothing else by d
 that grants the `dashboards` tool group also lists `dashboard_list`, `dashboard_get`,
 `dashboard_render`, `dashboard_save` and `dashboard_delete`; effective admin keys add
 `set_visibility`, `purge`, `audit` and `status`, and `dashboard_set_default` when they hold
-both (§8.2).
+both (§8.2). An admin key that also grants the `administration` group lists one
+`admin_<resource>_<verb>` tool per `/admin` route after those, derived from the route table
+(ADR 0072); they are summarized after the JSON below.
 
 `tools/list` as an effective admin key with the `dashboards` group receives it, complete. Output
 schemas are not shipped (§8.2); results are validated server-side and returned as
@@ -4078,6 +4095,36 @@ the byte budgets of §8.2.
   }
 ]
 ```
+
+The `administration` group, as the same key with that grant lists it. Each input is the
+route's params, query and body merged into one object (the REST `format` switch excluded);
+the complete schemas are the route's in the OpenAPI document.
+
+| Tool                           | Does                                                                                       | Fields                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `admin_domains_list`           | List Google SSO domain access.                                                             | `limit`, `cursor`, `sort`, `order`, `domain`                                            |
+| `admin_members_list`           | List organization members.                                                                 | `limit`, `cursor`, `sort`, `order`, `filters`                                           |
+| `admin_members_add`            | Add people to the organization.                                                            | `emails`, `role`                                                                        |
+| `admin_member_password_setup`  | Issue initial password setup.                                                              | `user_id`                                                                               |
+| `admin_member_set_role`        | Change an organization member role.                                                        | `id`, `role`, `reason`                                                                  |
+| `admin_member_set_suspension`  | Suspend or restore a membership.                                                           | `id`, `suspended`, `reason`                                                             |
+| `admin_member_remove`          | Remove an organization member.                                                             | `id`, `reason`                                                                          |
+| `admin_keys_list`              | List organization API keys.                                                                | `limit`, `cursor`, `sort`, `order`, `filters`                                           |
+| `admin_key_revoke`             | Revoke an organization API key.                                                            | `id`, `reason`                                                                          |
+| `admin_sessions_list`          | List every session of the organization for moderation.                                     | `limit`, `cursor`, `sort`, `order`, `filters`, `roots_only`                             |
+| `admin_installation_set_tools` | Enable or disable installation MCP tools.                                                  | `id`, `reason`, `enabled`                                                               |
+| `admin_metrics_list`           | Read filtered organization metrics.                                                        | `group`, `limit`, `cursor`, `sort`, `order`, `filters`                                  |
+| `admin_policies_list`          | List redaction policies.                                                                   | `limit`, `cursor`, `sort`, `order`, `filters`                                           |
+| `admin_policy_create`          | Create a redaction policy.                                                                 | `name`, `replacement`, `enabled`, `kind`, `pattern`, `flags`, `ruleId`, `options`       |
+| `admin_policy_update`          | Update a redaction policy.                                                                 | `id`, `name`, `replacement`, `enabled`, `kind`, `pattern`, `flags`, `ruleId`, `options` |
+| `admin_policy_remove`          | Remove a redaction policy.                                                                 | `id`, `reason`                                                                          |
+| `admin_redaction_test`         | Test organization redaction policies.                                                      | `text`                                                                                  |
+| `admin_redaction_summary`      | Read the organization's redaction totals, recent windows, per-policy counts and run tally. |                                                                                         |
+| `admin_redaction_hits_list`    | List where redactions landed: session, message position, policy, source and time.          | `limit`, `cursor`, `sort`, `order`, `filters`                                           |
+| `admin_rescans_list`           | List redaction rescan runs with progress and the sessions each changed.                    | `limit`, `cursor`, `sort`, `order`                                                      |
+| `admin_rescan_get`             | Read redaction rescan progress.                                                            | `id`                                                                                    |
+| `admin_rescan_sessions_list`   | List the sessions a redaction rescan run changed, with counts.                             | `id`, `limit`, `cursor`, `sort`, `order`, `filters`                                     |
+| `admin_rescan_start`           | Rescan existing organization records.                                                      | `policyIds`, `since`, `reason`                                                          |
 
 `search` text rendering; structuredContent contains the corresponding schema-validated fixture value.
 

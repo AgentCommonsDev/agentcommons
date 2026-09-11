@@ -7,15 +7,26 @@ export const permissionOrder = [
   "ingest",
   "read",
   "dashboards",
+  "administration",
   "admin",
 ] as const;
-type Permission = (typeof permissionOrder)[number];
+export type Permission = (typeof permissionOrder)[number];
+/** The two grants only owners and admins may give; `administration` also needs `admin` on the key. */
+export const adminOnlyPermissions: readonly Permission[] = [
+  "administration",
+  "admin",
+];
 const tone = {
   ingest: "accent",
   read: "success",
   dashboards: "neutral",
+  administration: "warning",
   admin: "warning",
 } as const;
+type ToolGroup = NonNullable<KeyPermissions["tools"]>[number];
+const toolGroups: readonly ToolGroup[] = ["dashboards", "administration"];
+const isToolGroup = (permission: Permission): permission is ToolGroup =>
+  toolGroups.some((group) => group === permission);
 
 /** The permissions a key carries, in display order. */
 function grantedPermissions(permissions: KeyPermissions): Permission[] {
@@ -23,8 +34,8 @@ function grantedPermissions(permissions: KeyPermissions): Permission[] {
   return permissionOrder.filter((permission) =>
     permission === "admin"
       ? (permissions.admin ?? []).includes("*")
-      : permission === "dashboards"
-        ? (permissions.tools ?? []).includes("dashboards")
+      : isToolGroup(permission)
+        ? (permissions.tools ?? []).includes(permission)
         : sessions.includes(permission),
   );
 }
@@ -36,7 +47,7 @@ export function canInstall(key: ApiKey): boolean {
 /** Request-body permissions: groups are present only when granted. */
 interface PermissionInput {
   sessions?: ("ingest" | "read")[];
-  tools?: "dashboards"[];
+  tools?: ToolGroup[];
   admin?: "*"[];
 }
 /** Build the request body shape from checkbox state, omitting empty groups. */
@@ -47,12 +58,19 @@ export function buildPermissions(
     ...(selection.ingest ? ["ingest" as const] : []),
     ...(selection.read ? ["read" as const] : []),
   ];
+  const tools = toolGroups.filter((group) => selection[group]);
   return {
     ...(sessions.length ? { sessions } : {}),
-    ...(selection.dashboards ? { tools: ["dashboards" as const] } : {}),
+    ...(tools.length ? { tools } : {}),
     ...(selection.admin ? { admin: ["*" as const] } : {}),
   };
 }
+/** What the administrator install grants (§10): capture, reads, both tool groups and admin. */
+export const administratorPermissions: PermissionInput = {
+  sessions: ["ingest", "read"],
+  tools: ["dashboards", "administration"],
+  admin: ["*"],
+};
 /** The granted permissions as one line of labels, for CSV cells and sorting. */
 export function permissionSummary(permissions: KeyPermissions): string {
   return grantedPermissions(permissions)

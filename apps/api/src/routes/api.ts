@@ -5,6 +5,7 @@ import { z } from "zod";
 import * as schema from "@agentcommons/core/schemas";
 import { formatCsv, formatCsvLines } from "@agentcommons/core/format/csv";
 import type { ServiceContext, ServiceResult } from "../services/context.js";
+import { activeAdminRoutes, type RouteFeatures } from "./admin-routes.js";
 import { hijackRaw, requestContext } from "./context.js";
 import { requireServices, type Services } from "./services.js";
 
@@ -20,19 +21,6 @@ const pageSchema = z.looseObject({
 interface CsvExport {
   columns: readonly string[];
   rows: AsyncIterable<Record<string, unknown>>;
-}
-/**
- * Optional route groups. The build-time OpenAPI artifact registers every group so the
- * dashboard client is complete; a running instance registers only the groups its mode and
- * configuration activate, so the live reference lists active routes only (§7.6, §11).
- */
-interface RouteFeatures {
-  /** `/sessions/:id/similar`: operator embeddings flag. */
-  embeddings: boolean;
-  /** Onboarding, organization creation and billing usage/checkout/portal: `INSTANCE_MODE=saas`. */
-  saas: boolean;
-  /** `POST /admin/domains`: Google is the sole login provider and signup is not closed. */
-  domainEnrollment: boolean;
 }
 export function registerApiRoutes(
   app: FastifyInstance,
@@ -468,29 +456,6 @@ export function registerApiRoutes(
     },
     (ctx, input) => runtime().sessions.reuse(ctx, input.params.id, input.query),
   );
-  route(
-    "GET",
-    "/admin/domains",
-    "List Google SSO domain access",
-    {
-      ...read,
-      query: schema.domainsInputSchema,
-      output: schema.domainsOutputSchema,
-    },
-    (ctx, input) => runtime().auth.domains(ctx, input.query),
-  );
-  if (features.domainEnrollment)
-    route(
-      "POST",
-      "/admin/domains",
-      "Allow a Google email domain to join this organization",
-      {
-        ...read,
-        body: schema.domainInputSchema,
-        output: schema.domainOutputSchema,
-      },
-      (ctx, input) => runtime().auth.domain(ctx, input.body),
-    );
   if (features.saas) {
     route(
       "POST",
@@ -587,314 +552,20 @@ export function registerApiRoutes(
     },
     (ctx, input) => runtime().auth.revealKey(ctx, input.params.id),
   );
-  route(
-    "GET",
-    "/admin/users",
-    "List organization members",
-    {
-      ...read,
-      query: schema.membersInputSchema,
-      output: schema.membersOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().members.list(ctx, input.query),
-  );
-  route(
-    "POST",
-    "/admin/users",
-    "Add people to the organization",
-    {
-      ...read,
-      body: schema.memberAddInputSchema,
-      output: schema.memberAddOutputSchema,
-    },
-    (ctx, input) => runtime().members.add(ctx, input.body),
-  );
-  route(
-    "POST",
-    "/admin/users/password-setup",
-    "Issue initial password setup",
-    {
-      ...read,
-      body: schema.passwordSetupInputSchema,
-      output: schema.passwordSetupOutputSchema,
-    },
-    (ctx, input) => runtime().members.passwordSetup(ctx, input.body.user_id),
-  );
-  route(
-    "PATCH",
-    "/admin/users/:id/role",
-    "Change an organization member role",
-    {
-      ...read,
-      params: schema.identityParamsSchema,
-      body: schema.memberRoleInputSchema,
-      output: schema.mutationOutputSchema,
-    },
-    (ctx, input) => runtime().members.role(ctx, input.params.id, input.body),
-  );
-  route(
-    "PATCH",
-    "/admin/users/:id/suspension",
-    "Suspend or restore a membership",
-    {
-      ...read,
-      params: schema.identityParamsSchema,
-      body: schema.memberSuspensionInputSchema,
-      output: schema.mutationOutputSchema,
-    },
-    (ctx, input) => runtime().members.suspend(ctx, input.params.id, input.body),
-  );
-  route(
-    "DELETE",
-    "/admin/users/:id",
-    "Remove an organization member",
-    {
-      ...read,
-      params: schema.identityParamsSchema,
-      body: schema.reasonInputSchema,
-      output: schema.mutationOutputSchema,
-    },
-    (ctx, input) => runtime().members.remove(ctx, input.params.id, input.body),
-  );
-  route(
-    "GET",
-    "/admin/keys",
-    "List organization API keys",
-    {
-      ...read,
-      query: schema.keysInputSchema,
-      output: schema.keysOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().auth.listKeys(ctx, input.query, false),
-  );
-  route(
-    "DELETE",
-    "/admin/keys/:id",
-    "Revoke an organization API key",
-    {
-      ...read,
-      params: schema.identityParamsSchema,
-      body: schema.reasonInputSchema,
-      output: schema.mutationOutputSchema,
-    },
-    (ctx, input) =>
-      runtime().auth.revokeKey(ctx, input.params.id, input.body, false),
-  );
-  route(
-    "GET",
-    "/admin/sessions",
-    "List every session of the organization for moderation",
-    {
-      ...read,
-      query: schema.moderationInputSchema,
-      output: schema.moderationOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().admin.sessions(ctx, input.query),
-  );
-  route(
-    "POST",
-    "/admin/sessions/:id/visibility",
-    "Change session visibility",
-    {
-      ...read,
-      params: schema.uuidParamsSchema,
-      body: schema.visibilityInputSchema.omit({ session_id: true }),
-      output: schema.mutationOutputSchema,
-    },
-    (ctx, input) =>
-      runtime().admin.setVisibility(ctx, {
-        ...input.body,
-        session_id: input.params.id,
-      }),
-  );
-  route(
-    "POST",
-    "/admin/installations/:id/tools",
-    "Enable or disable installation MCP tools",
-    {
-      ...read,
-      params: schema.uuidParamsSchema,
-      body: schema.enabledInputSchema,
-      output: schema.installationToolsOutputSchema,
-    },
-    (ctx, input) =>
-      runtime().admin.setInstallationTools(ctx, input.params.id, input.body),
-  );
-  route(
-    "POST",
-    "/admin/sessions/:id/purge",
-    "Purge session contents",
-    {
-      ...read,
-      params: schema.uuidParamsSchema,
-      body: schema.purgeInputSchema.omit({ session_id: true }),
-      output: schema.purgeOutputSchema,
-    },
-    (ctx, input) =>
-      runtime().admin.purge(ctx, {
-        ...input.body,
-        session_id: input.params.id,
-      }),
-  );
-  route(
-    "GET",
-    "/admin/audit",
-    "List organization audit events",
-    {
-      ...read,
-      query: schema.auditListInputSchema,
-      output: schema.auditOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().admin.auditLog(ctx, input.query),
-  );
-  route(
-    "GET",
-    "/admin/metrics/:group",
-    "Read filtered organization metrics",
-    {
-      ...read,
-      params: z.strictObject({ group: schema.metricsGroupSchema }),
-      query: schema.metricsInputSchema,
-      output: schema.metricsOutputSchema,
-      csv: true,
-    },
-    (ctx, input) =>
-      runtime().admin.metrics(ctx, input.params.group, input.query),
-  );
-  route(
-    "GET",
-    "/admin/status",
-    "Read organization ingestion status",
-    { ...read, output: schema.statusOutputSchema },
-    (ctx) => runtime().admin.status(ctx),
-  );
-  route(
-    "GET",
-    "/admin/redaction/policies",
-    "List redaction policies",
-    {
-      ...read,
-      query: schema.redactionPoliciesInputSchema,
-      output: schema.redactionPoliciesOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().policies.list(ctx, input.query),
-  );
-  route(
-    "POST",
-    "/admin/redaction/policies",
-    "Create a redaction policy",
-    {
-      ...read,
-      body: schema.redactionPolicyInputSchema,
-      output: schema.redactionPolicySchema,
-    },
-    (ctx, input) => runtime().policies.save(ctx, null, input.body),
-  );
-  route(
-    "PATCH",
-    "/admin/redaction/policies/:id",
-    "Update a redaction policy",
-    {
-      ...read,
-      params: schema.uuidParamsSchema,
-      body: schema.redactionPolicyInputSchema,
-      output: schema.redactionPolicySchema,
-    },
-    (ctx, input) => runtime().policies.save(ctx, input.params.id, input.body),
-  );
-  route(
-    "DELETE",
-    "/admin/redaction/policies/:id",
-    "Remove a redaction policy",
-    {
-      ...read,
-      params: schema.uuidParamsSchema,
-      body: schema.reasonInputSchema,
-      output: schema.mutationOutputSchema,
-    },
-    (ctx, input) => runtime().policies.remove(ctx, input.params.id, input.body),
-  );
-  route(
-    "POST",
-    "/admin/redaction/test",
-    "Test organization redaction policies",
-    {
-      ...read,
-      body: schema.redactionTestInputSchema,
-      output: schema.redactionTestOutputSchema,
-    },
-    (ctx, input) => runtime().policies.test(ctx, input.body),
-  );
-  route(
-    "GET",
-    "/admin/redaction/summary",
-    "Read the organization's redaction totals, recent windows, per-policy counts and run tally",
-    { ...read, output: schema.redactionSummaryOutputSchema },
-    (ctx) => runtime().policies.summary(ctx),
-  );
-  route(
-    "GET",
-    "/admin/redaction/hits",
-    "List where redactions landed: session, message position, policy, source and time",
-    {
-      ...read,
-      query: schema.redactionHitsInputSchema,
-      output: schema.redactionHitsOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().policies.hits(ctx, input.query),
-  );
-  route(
-    "GET",
-    "/admin/redaction/rescan",
-    "List redaction rescan runs with progress and the sessions each changed",
-    {
-      ...read,
-      query: schema.redactionRunsInputSchema,
-      output: schema.redactionRunsOutputSchema,
-      csv: true,
-    },
-    (ctx, input) => runtime().policies.runs(ctx, input.query),
-  );
-  route(
-    "GET",
-    "/admin/redaction/rescan/:id",
-    "Read redaction rescan progress",
-    {
-      ...read,
-      params: schema.identityParamsSchema,
-      output: schema.jobProgressSchema,
-    },
-    (ctx, input) => runtime().jobs.progress(ctx, input.params.id),
-  );
-  route(
-    "GET",
-    "/admin/redaction/rescan/:id/sessions",
-    "List the sessions a redaction rescan run changed, with counts",
-    {
-      ...read,
-      params: schema.identityParamsSchema,
-      query: schema.redactionRunSessionsInputSchema,
-      output: schema.redactionRunSessionsOutputSchema,
-      csv: true,
-    },
-    (ctx, input) =>
-      runtime().policies.runSessions(ctx, input.params.id, input.query),
-  );
-  route(
-    "POST",
-    "/admin/redaction/rescan",
-    "Rescan existing organization records",
-    {
-      ...read,
-      body: schema.redactionRescanInputSchema,
-      output: schema.jobOutputSchema,
-    },
-    (ctx, input) => runtime().admin.rescan(ctx, input.body),
-  );
+  // The admin routes are data (`admin-routes.ts`): REST registers each active one here and
+  // the MCP catalog derives the `administration` tools from the same table (ADR 0072).
+  for (const admin of activeAdminRoutes(features))
+    route(
+      admin.method,
+      admin.path,
+      admin.summary,
+      {
+        body: admin.body ?? noBody,
+        query: admin.query ?? empty,
+        params: admin.params ?? empty,
+        output: admin.output,
+        ...(admin.csv ? { csv: true } : {}),
+      },
+      (ctx, data) => admin.execute(runtime(), ctx, data),
+    );
 }

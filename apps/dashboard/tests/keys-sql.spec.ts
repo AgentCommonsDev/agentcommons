@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { expect, type Page } from "@playwright/test";
+import { z } from "zod";
 import { formatInstallCommand } from "@agentcommons/core/format/install";
 import {
   ingestEnvelopeSchema,
@@ -19,6 +20,7 @@ import {
   fixture,
   openNavigation,
   settled,
+  signInAsMember,
   signInAsOwner,
   tableRow,
   test,
@@ -469,6 +471,98 @@ test("the API reference page frames the live Scalar reference inside the app she
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+});
+
+// @req R-DASH-43 @req R-DASH-23
+test("the administrator install creates a key with admin and both tool groups for the step 3 command, for owners and admins only", async ({
+  page,
+}, info) => {
+  const machine = `Admin machine ${info.project.name} ${String(Date.now())}`;
+  await page.goto(paths.install);
+  const section = page.getByTestId("install-admin");
+  await expect(section).toBeVisible();
+  await expect(section).toContainText(install.admin.title);
+  await expect(section).toContainText(install.admin.catalog);
+  // The card follows the four steps; the steps themselves are unchanged.
+  await expect(page.locator("main ol > li")).toHaveCount(4);
+  await section
+    .getByLabel(install.admin.machine, { exact: true })
+    .fill(machine);
+  await section
+    .getByRole("button", { name: install.admin.submit, exact: true })
+    .click();
+  await expect(
+    section.getByText(install.admin.created, { exact: true }),
+  ).toBeVisible();
+  const secret = (
+    await section.getByTestId("keys-secret").locator("code").first().innerText()
+  ).trim();
+  expect(secret.startsWith("ac_")).toBe(true);
+  // The administrator key is the machine's key: step 3 carries it and step 1 shows it picked.
+  await expect(page.getByTestId("install-command")).toHaveText(
+    formatInstallCommand(workspaceOrigin, secret),
+  );
+  await expect(page.getByTestId("install-key-picker")).toBeVisible();
+  const listed = z
+    .object({
+      items: z.array(
+        z.object({
+          name: z.string().nullable(),
+          permissions: z.object({
+            sessions: z.array(z.string()).optional(),
+            tools: z.array(z.string()).optional(),
+            admin: z.array(z.string()).optional(),
+          }),
+        }),
+      ),
+    })
+    .parse(await (await page.request.get("/api/v1/me/keys?limit=100")).json());
+  expect(listed.items.find((key) => key.name === machine)?.permissions).toEqual(
+    {
+      sessions: ["ingest", "read"],
+      tools: ["dashboards", "administration"],
+      admin: ["*"],
+    },
+  );
+  await accessible(page);
+  await expectNoHorizontalOverflow(page);
+  // The Keys dialog offers the administration group once Admin is checked.
+  await page.goto(paths.keys);
+  await page.getByTestId("keys-create").click();
+  const dialog = page.getByRole("dialog");
+  const administration = dialog.getByRole("checkbox", {
+    name: keys.permissions.administration,
+    exact: true,
+  });
+  await expect(administration).toBeDisabled();
+  await dialog
+    .getByRole("checkbox", { name: keys.permissions.admin, exact: true })
+    .check();
+  await expect(administration).toBeEnabled();
+  await administration.check();
+  await dialog
+    .getByRole("checkbox", { name: keys.permissions.admin, exact: true })
+    .uncheck();
+  await expect(administration).not.toBeChecked();
+  await expect(administration).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  // Members see neither the card nor the option.
+  await signInAsMember(page.context());
+  await page.goto(paths.install);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    install.title,
+  );
+  await expect(page.locator("main ol > li")).toHaveCount(4);
+  await expect(page.getByTestId("install-admin")).toHaveCount(0);
+  await page.goto(paths.keys);
+  await page.getByTestId("keys-create").click();
+  await expect(
+    page.getByRole("dialog").getByRole("checkbox", {
+      name: keys.permissions.administration,
+      exact: true,
+    }),
+  ).toHaveCount(0);
 });
 
 // @req R-DASH-26 @req R-DASH-22 @req R-DASH-01 @req R-WEB-02

@@ -410,24 +410,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/admin/domains": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** List Google SSO domain access */
-    get: operations["get_admin_domains"];
-    put?: never;
-    /** Allow a Google email domain to join this organization */
-    post: operations["post_admin_domains"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v1/me/organizations": {
     parameters: {
       query?: never;
@@ -543,6 +525,24 @@ export interface paths {
     put?: never;
     /** Reveal one of your API keys */
     post: operations["post_me_keys_id_reveal"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/domains": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Google SSO domain access */
+    get: operations["get_admin_domains"];
+    put?: never;
+    /** Allow a Google email domain to join this organization */
+    post: operations["post_admin_domains"];
     delete?: never;
     options?: never;
     head?: never;
@@ -5261,129 +5261,6 @@ export interface operations {
       };
     };
   };
-  get_admin_domains: {
-    parameters: {
-      query?: {
-        limit?: number;
-        cursor?: string | null;
-        sort?: "domain";
-        order?: "asc" | "desc";
-        domain?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Default Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            enabled: boolean;
-            items: {
-              organization_id: string;
-              domain: string;
-              provider_id: string;
-              verified: boolean;
-            }[];
-            /** @default null */
-            cursor: string | null;
-          };
-        };
-      };
-      /** @description Default Response */
-      "4XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-      /** @description Default Response */
-      "5XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-    };
-  };
-  post_admin_domains: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": {
-          domain: string;
-        };
-      };
-    };
-    responses: {
-      /** @description Default Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            organization_id: string;
-            domain: string;
-            provider_id: string;
-            verified: boolean;
-          };
-        };
-      };
-      /** @description Default Response */
-      "4XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-      /** @description Default Response */
-      "5XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-    };
-  };
   get_me_organizations: {
     parameters: {
       query?: never;
@@ -5606,7 +5483,7 @@ export interface operations {
               authMethod: "cookie" | "key";
               permissions: {
                 sessions?: ("ingest" | "read")[];
-                tools?: "dashboards"[];
+                tools?: ("dashboards" | "administration")[];
                 admin?: "*"[];
               };
             } | null;
@@ -5752,7 +5629,7 @@ export interface operations {
               prefix: string | null;
               permissions: {
                 sessions?: ("ingest" | "read")[];
-                tools?: "dashboards"[];
+                tools?: ("dashboards" | "administration")[];
                 admin?: "*"[];
               };
               enabled: boolean;
@@ -5810,7 +5687,7 @@ export interface operations {
           name: string;
           permissions: {
             sessions?: ("ingest" | "read")[];
-            tools?: "dashboards"[];
+            tools?: ("dashboards" | "administration")[];
             admin?: "*"[];
           };
           expires_in?: number;
@@ -5836,7 +5713,7 @@ export interface operations {
               prefix: string | null;
               permissions: {
                 sessions?: ("ingest" | "read")[];
-                tools?: "dashboards"[];
+                tools?: ("dashboards" | "administration")[];
                 admin?: "*"[];
               };
               enabled: boolean;
@@ -5960,6 +5837,129 @@ export interface operations {
         content: {
           "application/json": {
             key: string;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_domains: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+        sort?: "domain";
+        order?: "asc" | "desc";
+        domain?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            enabled: boolean;
+            items: {
+              organization_id: string;
+              domain: string;
+              provider_id: string;
+              verified: boolean;
+            }[];
+            /** @default null */
+            cursor: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_admin_domains: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          domain: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            organization_id: string;
+            domain: string;
+            provider_id: string;
+            verified: boolean;
           };
         };
       };
@@ -6420,7 +6420,7 @@ export interface operations {
               prefix: string | null;
               permissions: {
                 sessions?: ("ingest" | "read")[];
-                tools?: "dashboards"[];
+                tools?: ("dashboards" | "administration")[];
                 admin?: "*"[];
               };
               enabled: boolean;

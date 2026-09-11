@@ -24,6 +24,7 @@ import { formatCsv, formatSearch } from "@agentcommons/core/format";
 import { createAuth } from "../src/auth/config.js";
 import { createApp } from "../src/app.js";
 import {
+  administrationToolNames,
   adminToolNames,
   dashboardAdminToolNames,
   dashboardToolNames,
@@ -31,6 +32,9 @@ import {
   serverInstructions,
   toolJsonSchema,
 } from "../src/services/mcp.js";
+import { adminRoutes } from "../src/routes/admin-routes.js";
+import { domainEnrollmentEnabled } from "../src/auth/config.js";
+import { requireCaller } from "../src/services/context.js";
 import { environment, type Env } from "../src/env.js";
 import { DashboardService } from "../src/services/dashboards.js";
 import { MembershipService } from "../src/services/membership.js";
@@ -667,6 +671,208 @@ it("enforces private visibility through REST, SQL, MCP and the uploader's read-o
   await client.close();
 });
 
+// @req R-MCP-13
+// @req R-MCP-11
+// @req R-AUTH-04
+it("derives the administration tools from the admin routes and gates them by group and authority", async () => {
+  const features = {
+    embeddings: false,
+    saas: false,
+    domainEnrollment: domainEnrollmentEnabled(env.auth),
+  };
+  const administration = administrationToolNames(features);
+  const organizationId = requireCaller(organization.owner).organizationId;
+  const userId = requireCaller(organization.owner).userId;
+  const membership = {
+    where: { organizationId, userId },
+  };
+  // One tool per admin route that no standing admin tool covers, named admin_<resource>_<verb>.
+  expect(administration).toEqual(
+    adminRoutes
+      .filter(
+        (route) =>
+          !adminToolNames.some((name) => name === route.tool) &&
+          (route.feature === undefined || features[route.feature]),
+      )
+      .map((route) => route.tool),
+  );
+  expect(administration.length).toBeGreaterThanOrEqual(23);
+  expect(administration.every((name) => /^admin_[a-z_]+$/.test(name))).toBe(
+    true,
+  );
+  // An admin key without the group lists the standing admin tools only, and a cached
+  // client cannot call a derived tool: the refusal names the grant.
+  const adminClient = await mcpClient(address, organization.key, {
+    name: "admin-without-group",
+    defer,
+  });
+  expect(
+    (await adminClient.listTools()).tools.map((tool) => tool.name),
+  ).toEqual([...readToolNames, ...adminToolNames]);
+  const ungranted = await adminClient.callTool({
+    name: "admin_members_list",
+    arguments: {},
+  });
+  expect(ungranted.isError).toBe(true);
+  expect(JSON.stringify(ungranted.content)).toContain("TOOL_NOT_GRANTED");
+  expect(JSON.stringify(ungranted.content)).toContain("administration");
+  // The group needs admin permission on the same key; the shared schema refuses the pair.
+  await expect(
+    database.auth.createKey(organization.owner, {
+      name: "administration without admin",
+      permissions: { sessions: ["read"], tools: ["administration"] },
+    }),
+  ).rejects.toThrow(/administration tools need admin permission/);
+  const administrator = (
+    await database.auth.createKey(organization.owner, {
+      name: "administrator",
+      permissions: {
+        sessions: ["read"],
+        tools: ["administration"],
+        admin: ["*"],
+      },
+    })
+  ).result.key;
+  const client = await mcpClient(address, administrator, {
+    name: "administrator-test",
+    defer,
+  });
+  const tools = await client.listTools();
+  expect(tools.tools.map((tool) => tool.name)).toEqual([
+    ...readToolNames,
+    ...adminToolNames,
+    ...administration,
+  ]);
+  // The administration catalog has its own budget (§8.2); every input is an object schema
+  // without references, and the summary of the route is the description.
+  const bytes = new TextEncoder().encode(JSON.stringify(tools.tools)).length;
+  expect(bytes).toBeLessThan(40 * 1024);
+  expect(JSON.stringify(tools.tools)).not.toMatch(
+    /"\$(ref|defs|schema)"|"outputSchema"/,
+  );
+  for (const tool of tools.tools) expect(tool.inputSchema.type).toBe("object");
+  for (const route of adminRoutes.filter((route) =>
+    administration.includes(route.tool),
+  )) {
+    const tool = tools.tools.find((tool) => tool.name === route.tool);
+    expect(tool?.description).toContain(route.summary);
+    expect(tool?.annotations?.readOnlyHint).toBe(route.readOnly);
+    expect(tool?.annotations?.destructiveHint).toBe(route.destructive ?? false);
+  }
+  // The REST `format` switch is not advertised and not accepted.
+  expect(
+    Object.keys(
+      z
+        .object({ properties: z.record(z.string(), z.unknown()) })
+        .parse(
+          tools.tools.find((tool) => tool.name === "admin_members_list")
+            ?.inputSchema,
+        ).properties,
+    ),
+  ).not.toContain("format");
+  expect(
+    (
+      await client.callTool({
+        name: "admin_members_list",
+        arguments: { format: "csv" },
+      })
+    ).isError,
+  ).toBe(true);
+  // One round trip per resource family runs the same service the REST route runs and
+  // writes exactly one audit event, as an MCP call of the administrator key.
+  const audited = () =>
+    database.prisma.auditEvent.count({
+      where: {
+        organizationId,
+        transport: "mcp",
+        statusCode: { lt: 400 },
+        action: { notIn: ["mcp.tools.list", "mcp.protocol", "mcp.call"] },
+      },
+    });
+  const roundTrip = async (name: string, args: Record<string, unknown>) => {
+    const before = await audited();
+    const result = await client.callTool({ name, arguments: args });
+    expect(
+      result.isError,
+      `${name}: ${JSON.stringify(result.content)}`,
+    ).not.toBe(true);
+    expect(await audited(), name).toBe(before + 1);
+    return z.record(z.string(), z.unknown()).parse(result.structuredContent);
+  };
+  const members = await roundTrip("admin_members_list", {});
+  expect(
+    z.object({ items: z.array(z.unknown()) }).parse(members).items.length,
+  ).toBeGreaterThan(0);
+  await roundTrip("admin_keys_list", { limit: 5 });
+  await roundTrip("admin_sessions_list", { roots_only: true });
+  await roundTrip("admin_metrics_list", {
+    group: "usage",
+    filters: {
+      date_from: "2026-09-01T00:00:00Z",
+      date_to: "2026-09-08T00:00:00Z",
+    },
+  });
+  await roundTrip("admin_domains_list", {});
+  await roundTrip("admin_policies_list", {});
+  const policy = z.object({ id: z.uuid() }).parse(
+    await roundTrip("admin_policy_create", {
+      name: "transport-admin-policy",
+      kind: "REGEX",
+      pattern: "transport-secret-[0-9]+",
+      replacement: "[transport-redacted]",
+    }),
+  );
+  await roundTrip("admin_policy_update", {
+    id: policy.id,
+    name: "transport-admin-policy",
+    kind: "REGEX",
+    pattern: "transport-secret-[0-9a-f]+",
+    replacement: "[transport-redacted]",
+  });
+  expect(
+    z.object({ matches: z.array(z.unknown()) }).parse(
+      await roundTrip("admin_redaction_test", {
+        text: "transport-secret-42",
+      }),
+    ).matches.length,
+  ).toBeGreaterThan(0);
+  await roundTrip("admin_policy_remove", {
+    id: policy.id,
+    reason: "Transport administration test",
+  });
+  await roundTrip("admin_redaction_summary", {});
+  await roundTrip("admin_redaction_hits_list", {});
+  const job = z.object({ job_id: z.string() }).parse(
+    await roundTrip("admin_rescan_start", {
+      reason: "Transport administration test",
+    }),
+  );
+  await roundTrip("admin_rescan_get", { id: job.job_id });
+  await roundTrip("admin_rescans_list", {});
+  // Authority is checked again on every list and call: a key whose holder is demoted keeps
+  // the group and loses the tools (403), a member key with the group is never listed.
+  await database.prisma.member.updateMany({
+    ...membership,
+    data: { role: "member" },
+  });
+  try {
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      ...readToolNames,
+    ]);
+    const demoted = await client.callTool({
+      name: "admin_members_list",
+      arguments: {},
+    });
+    expect(demoted.isError).toBe(true);
+    expect(JSON.stringify(demoted.content)).toContain("FORBIDDEN");
+  } finally {
+    await database.prisma.member.updateMany({
+      ...membership,
+      data: { role: "owner" },
+    });
+  }
+});
+
 // @req R-MCP-01
 // @req R-MCP-02
 // @req R-MCP-03
@@ -799,6 +1005,35 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   expect(JSON.stringify(adminTools.tools)).not.toMatch(
     /"\$(ref|defs|schema)"|"outputSchema"/,
   );
+  // The administrator install's key (§10): both groups and admin authority list every
+  // tool, the administration group last, within its own budget (ADR 0072).
+  const administratorKey = (
+    await database.auth.createKey(organization.owner, {
+      name: "administrator install",
+      permissions: {
+        sessions: ["ingest", "read"],
+        tools: ["dashboards", "administration"],
+        admin: ["*"],
+      },
+    })
+  ).result.key;
+  const administratorClient = await mcpClient(address, administratorKey, {
+    name: "administrator-install-test",
+    defer,
+  });
+  const everyTool = await administratorClient.listTools();
+  expect(everyTool.tools.map((tool) => tool.name)).toEqual([
+    ...readToolNames,
+    ...dashboardToolNames,
+    ...adminToolNames,
+    ...dashboardAdminToolNames,
+    ...administrationToolNames({
+      embeddings: false,
+      saas: false,
+      domainEnrollment: domainEnrollmentEnabled(env.auth),
+    }),
+  ]);
+  expect(catalogBytes(everyTool)).toBeLessThan(48 * 1024);
   const getResult = await client.callTool({
     name: "get",
     arguments: { session_id: publicId },
@@ -811,6 +1046,9 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   });
   await checkMcpFixture({
     tools: adminTools.tools,
+    administration: everyTool.tools.filter((tool) =>
+      tool.name.startsWith("admin_"),
+    ),
     search: result.structuredContent,
     get: getResult.structuredContent,
     sql: sqlResult.structuredContent,

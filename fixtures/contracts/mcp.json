@@ -825,6 +825,1308 @@
       }
     }
   ],
+  "administration": [
+    {
+      "name": "admin_domains_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List Google SSO domain access.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "default": "domain",
+            "type": "string",
+            "enum": [
+              "domain"
+            ]
+          },
+          "order": {
+            "default": "asc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "domain": {
+            "type": "string",
+            "maxLength": 253
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_members_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List organization members.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "email",
+              "name",
+              "role",
+              "suspended",
+              "created_at"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string",
+                "format": "email"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "owner",
+                  "admin",
+                  "member"
+                ]
+              },
+              "suspended": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_members_add",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Add people to the organization.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "emails": {
+            "minItems": 1,
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "email"
+            }
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
+          }
+        },
+        "required": [
+          "emails",
+          "role"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_member_password_setup",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Issue initial password setup.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_member_set_role",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Change an organization member role.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_member_set_suspension",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Suspend or restore a membership.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "suspended": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "suspended",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_member_remove",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Remove an organization member.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_keys_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List organization API keys.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "name",
+              "user_id",
+              "created_at",
+              "expires_at",
+              "last_used_at",
+              "enabled"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "user_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_key_revoke",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Revoke an organization API key.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_sessions_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List every session of the organization for moderation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "started_at",
+              "last_activity_at",
+              "user_email",
+              "harness",
+              "status",
+              "visibility",
+              "purged_at"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "user_email": {
+                "description": "Sessions run by this member (exact email)",
+                "type": "string",
+                "format": "email"
+              },
+              "harness": {
+                "description": "Sessions of this coding agent",
+                "type": "string",
+                "enum": [
+                  "CLAUDE_CODE",
+                  "CODEX",
+                  "GEMINI_CLI",
+                  "PI"
+                ]
+              },
+              "status": {
+                "description": "ACTIVE, ENDED or INACTIVE",
+                "type": "string",
+                "enum": [
+                  "ACTIVE",
+                  "ENDED",
+                  "INACTIVE"
+                ]
+              },
+              "visibility": {
+                "description": "PUBLIC or PRIVATE",
+                "type": "string",
+                "enum": [
+                  "PUBLIC",
+                  "PRIVATE"
+                ]
+              },
+              "purged": {
+                "description": "True: purged sessions only; false: sessions with content",
+                "type": "boolean"
+              },
+              "published": {
+                "description": "True: sessions with a published read model; false: sessions still queued, waiting for their transcript or failed",
+                "type": "boolean"
+              },
+              "session_id": {
+                "description": "One session by id",
+                "type": "string",
+                "format": "uuid"
+              },
+              "since": {
+                "description": "Sessions started at or after this UTC time (inclusive)",
+                "type": "string",
+                "format": "date-time"
+              },
+              "until": {
+                "description": "Sessions started before this UTC time (exclusive)",
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "additionalProperties": false
+          },
+          "roots_only": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_installation_set_tools",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Enable or disable installation MCP tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "reason",
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_metrics_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Read filtered organization metrics.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "string",
+            "enum": [
+              "reuse",
+              "health",
+              "usage",
+              "outcomes"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "date",
+              "metric",
+              "value",
+              "repo_name",
+              "user_id",
+              "harness",
+              "tool",
+              "tools_enabled"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "type": "object",
+            "properties": {
+              "date_from": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "date_to": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "repo_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "metric": {
+                "type": "string",
+                "enum": [
+                  "reuse_rate",
+                  "cross_user_reuse_rate",
+                  "capture_coverage",
+                  "sessions",
+                  "capture_latency_seconds",
+                  "negative_capture_latency_records",
+                  "authorization_blocked_sessions",
+                  "redaction_hits",
+                  "agentcommons_search_sessions",
+                  "agentcommons_search_rate",
+                  "agentcommons_search_calls",
+                  "repeat_agentcommons_search_calls",
+                  "mcp_calls",
+                  "memory_assisted_rate",
+                  "follow_through_rate",
+                  "zero_result_rate",
+                  "cross_user_hit_rate",
+                  "dashboard_weekly_actives",
+                  "dashboard_searches",
+                  "dashboard_session_views",
+                  "tool_calls_per_session",
+                  "tokens_per_session",
+                  "duration_seconds_per_session",
+                  "near_duplicate_rate",
+                  "rerun_loop_rate",
+                  "observed_commit_rate"
+                ]
+              }
+            },
+            "required": [
+              "date_from",
+              "date_to"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "group",
+          "filters"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_policies_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List redaction policies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "name",
+              "kind",
+              "enabled",
+              "builtin",
+              "created_at",
+              "updated_at"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "REGEX",
+                  "SECRETLINT_RULE"
+                ]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "builtin": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_policy_create",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Create a redaction policy.",
+      "inputSchema": {
+        "type": "object",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+              },
+              "replacement": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string",
+                "const": "REGEX"
+              },
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "flags": {
+                "default": "g",
+                "type": "string",
+                "pattern": "^[gimsu]*$"
+              }
+            },
+            "required": [
+              "name",
+              "kind",
+              "pattern"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+              },
+              "replacement": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string",
+                "const": "SECRETLINT_RULE"
+              },
+              "ruleId": {
+                "type": "string",
+                "enum": [
+                  "@secretlint/secretlint-rule-preset-recommend",
+                  "@secretlint/secretlint-rule-aws",
+                  "@secretlint/secretlint-rule-gcp",
+                  "@secretlint/secretlint-rule-privatekey",
+                  "@secretlint/secretlint-rule-npm",
+                  "@secretlint/secretlint-rule-basicauth",
+                  "@secretlint/secretlint-rule-slack",
+                  "@secretlint/secretlint-rule-sendgrid",
+                  "@secretlint/secretlint-rule-shopify",
+                  "@secretlint/secretlint-rule-stripe",
+                  "@secretlint/secretlint-rule-github",
+                  "@secretlint/secretlint-rule-gitlab",
+                  "@secretlint/secretlint-rule-grafana",
+                  "@secretlint/secretlint-rule-openai",
+                  "@secretlint/secretlint-rule-anthropic",
+                  "@secretlint/secretlint-rule-groq",
+                  "@secretlint/secretlint-rule-huggingface",
+                  "@secretlint/secretlint-rule-linear",
+                  "@secretlint/secretlint-rule-notion",
+                  "@secretlint/secretlint-rule-1password",
+                  "@secretlint/secretlint-rule-database-connection-string",
+                  "@secretlint/secretlint-rule-hashicorp-vault",
+                  "@secretlint/secretlint-rule-vercel",
+                  "@secretlint/secretlint-rule-databricks",
+                  "@secretlint/secretlint-rule-docker",
+                  "@secretlint/secretlint-rule-figma",
+                  "@secretlint/secretlint-rule-cloudflare",
+                  "@secretlint/secretlint-rule-tailscale"
+                ]
+              },
+              "options": {
+                "default": {},
+                "type": "object",
+                "properties": {
+                  "allows": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "name",
+              "kind",
+              "ruleId"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_policy_update",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Update a redaction policy.",
+      "inputSchema": {
+        "type": "object",
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+              },
+              "replacement": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string",
+                "const": "REGEX"
+              },
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "flags": {
+                "default": "g",
+                "type": "string",
+                "pattern": "^[gimsu]*$"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "pattern"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+              },
+              "replacement": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "enabled": {
+                "default": true,
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string",
+                "const": "SECRETLINT_RULE"
+              },
+              "ruleId": {
+                "type": "string",
+                "enum": [
+                  "@secretlint/secretlint-rule-preset-recommend",
+                  "@secretlint/secretlint-rule-aws",
+                  "@secretlint/secretlint-rule-gcp",
+                  "@secretlint/secretlint-rule-privatekey",
+                  "@secretlint/secretlint-rule-npm",
+                  "@secretlint/secretlint-rule-basicauth",
+                  "@secretlint/secretlint-rule-slack",
+                  "@secretlint/secretlint-rule-sendgrid",
+                  "@secretlint/secretlint-rule-shopify",
+                  "@secretlint/secretlint-rule-stripe",
+                  "@secretlint/secretlint-rule-github",
+                  "@secretlint/secretlint-rule-gitlab",
+                  "@secretlint/secretlint-rule-grafana",
+                  "@secretlint/secretlint-rule-openai",
+                  "@secretlint/secretlint-rule-anthropic",
+                  "@secretlint/secretlint-rule-groq",
+                  "@secretlint/secretlint-rule-huggingface",
+                  "@secretlint/secretlint-rule-linear",
+                  "@secretlint/secretlint-rule-notion",
+                  "@secretlint/secretlint-rule-1password",
+                  "@secretlint/secretlint-rule-database-connection-string",
+                  "@secretlint/secretlint-rule-hashicorp-vault",
+                  "@secretlint/secretlint-rule-vercel",
+                  "@secretlint/secretlint-rule-databricks",
+                  "@secretlint/secretlint-rule-docker",
+                  "@secretlint/secretlint-rule-figma",
+                  "@secretlint/secretlint-rule-cloudflare",
+                  "@secretlint/secretlint-rule-tailscale"
+                ]
+              },
+              "options": {
+                "default": {},
+                "type": "object",
+                "properties": {
+                  "allows": {
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1024
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "ruleId"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_policy_remove",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Remove a redaction policy.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_redaction_test",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Test organization redaction policies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_redaction_summary",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Read the organization's redaction totals, recent windows, per-policy counts and run tally.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_redaction_hits_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List where redactions landed: session, message position, policy, source and time.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "redacted_at",
+              "count",
+              "seq"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "session_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "policy_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "capture",
+                  "rescan"
+                ]
+              },
+              "q": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_rescans_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List redaction rescan runs with progress and the sessions each changed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "created_at",
+              "state",
+              "redaction_count",
+              "total_sessions"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_rescan_get",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Read redaction rescan progress.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_rescan_sessions_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List the sessions a redaction rescan run changed, with counts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "processed_at",
+              "redaction_count"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {
+              "changed": true
+            },
+            "type": "object",
+            "properties": {
+              "changed": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_rescan_start",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Rescan existing organization records.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "policyIds": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    }
+  ],
   "search": {
     "blocks": [
       {

@@ -20,6 +20,13 @@ import {
   type Formatted,
 } from "@agentcommons/core/format";
 import type { Services } from "../routes/services.js";
+import {
+  activeAdminRoutes,
+  adminRoutes,
+  type AdminRoute,
+  type RouteFeatures,
+  type RouteObject,
+} from "../routes/admin-routes.js";
 import { auditedOperation } from "./audit.js";
 import {
   requireCaller,
@@ -58,8 +65,22 @@ export const adminToolNames = [
   "audit",
   "status",
 ] as const;
-/** Listed last: admin authority and the `dashboards` tool group together. */
+/** Listed next: admin authority and the `dashboards` tool group together. */
 export const dashboardAdminToolNames = ["dashboard_set_default"] as const;
+/** Whether a standing admin tool (§8.2) already covers the route, so no `admin_*` tool is derived. */
+const standing = (route: AdminRoute) =>
+  adminToolNames.some((name) => name === route.tool);
+/**
+ * Listed last, for admin authority and the `administration` tool group together: one
+ * `admin_<resource>_<verb>` tool per active admin route (ADR 0072), in route order.
+ */
+export function administrationToolNames(features: RouteFeatures): string[] {
+  return activeAdminRoutes(features)
+    .filter((route) => !standing(route))
+    .map((route) => route.tool);
+}
+const administrationInstruction =
+  "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations.";
 interface Definition<
   I extends z.ZodType = z.ZodType,
   O extends z.ZodType = z.ZodType,
@@ -109,12 +130,101 @@ export function toolJsonSchema(input: z.ZodType): Record<string, unknown> {
     },
   });
   delete rendered.$schema;
+  // Every tool input is an object. A union of object variants (one per body form of a
+  // route, ADR 0072) keeps its `anyOf` under that type, as the SDK's `Tool` requires.
+  if (rendered.type === undefined && Array.isArray(rendered.anyOf))
+    rendered.type = "object";
   return rendered;
+}
+/** The fields of a merged tool input that belong to one part of the route (params, query or body). */
+function part(
+  input: Record<string, unknown>,
+  keys: Iterable<string>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    [...keys].filter((key) => key in input).map((key) => [key, input[key]]),
+  );
+}
+/** A body schema as the objects whose fields a tool input flattens: one, or one per union option. */
+function bodyObjects(route: AdminRoute, body: z.ZodType): RouteObject[] {
+  if (body instanceof z.ZodObject) return [body];
+  if (body instanceof z.ZodDiscriminatedUnion) {
+    const options = body.options.filter(
+      (option): option is RouteObject => option instanceof z.ZodObject,
+    );
+    if (options.length === body.options.length) return options;
+  }
+  throw new Error(
+    `${route.method} ${route.path} needs an object or a union of objects as its body.`,
+  );
+}
+/**
+ * A static tool from one admin route declaration (ADR 0072). The route's summary is the
+ * description; its params, query and body schemas merge into one strict input, without
+ * the REST `format` switch, which is not open to agents; a call splits the arguments back
+ * into the route's parts, re-parsed with the route's own schemas so the service receives
+ * exactly what the REST route hands it, and the shared JSON formatter renders the result.
+ */
+export function toolFromRoute(
+  route: AdminRoute,
+  services: Services,
+): Definition {
+  const params = route.params ?? schema.emptySchema;
+  const query = route.query ?? schema.emptySchema;
+  const body = route.body ?? schema.emptySchema;
+  const queryShape: z.core.$ZodShape = Object.fromEntries(
+    Object.entries<z.core.$ZodType>(query.shape).filter(
+      ([key]) => key !== "format",
+    ),
+  );
+  const bodies = bodyObjects(route, body);
+  const bodyKeys = new Set(
+    bodies.flatMap((object) => Object.keys(object.shape)),
+  );
+  const keys = [
+    ...Object.keys(params.shape),
+    ...Object.keys(queryShape),
+    ...bodyKeys,
+  ];
+  if (new Set(keys).size !== keys.length)
+    throw new Error(
+      `${route.method} ${route.path} repeats a field across params, query and body.`,
+    );
+  const [first, ...rest] = bodies.map((object) =>
+    z.strictObject({ ...params.shape, ...queryShape, ...object.shape }),
+  );
+  if (!first)
+    throw new Error(`${route.method} ${route.path} has no body form.`);
+  const input: z.ZodType<Record<string, unknown>> =
+    rest.length === 0 ? first : z.union([first, ...rest]);
+  return define({
+    name: route.tool,
+    description: route.summary.endsWith(".")
+      ? route.summary
+      : `${route.summary}.`,
+    instruction: administrationInstruction,
+    permission: "admin",
+    group: "administration",
+    readOnly: route.readOnly,
+    destructive: route.destructive ?? false,
+    input,
+    output: route.output,
+    execute: (ctx, input) =>
+      route.execute(services, ctx, {
+        params: params.parse(part(input, Object.keys(params.shape))),
+        query: query.parse(part(input, Object.keys(queryShape))),
+        body: body.parse(part(input, bodyKeys)),
+      }),
+    format: formatJson,
+  });
 }
 export class McpService {
   /** The static catalog: each definition with the `Tool` it is listed as, built once. */
   private readonly tools: readonly { definition: Definition; tool: Tool }[];
-  constructor(private readonly services: Services) {
+  constructor(
+    private readonly services: Services,
+    features: RouteFeatures,
+  ) {
     const definitions: Definition[] = [
       define({
         name: "search",
@@ -289,6 +399,11 @@ export class McpService {
         execute: (ctx, input) => services.dashboards.setDefault(ctx, input),
         format: formatJson,
       }),
+      // The administration group: derived from the admin route table, one tool per route
+      // that no standing admin tool above already covers (ADR 0072).
+      ...activeAdminRoutes(features)
+        .filter((route) => !standing(route))
+        .map((route) => toolFromRoute(route, services)),
     ];
     const listed = (
       permission: Definition["permission"],
@@ -301,6 +416,7 @@ export class McpService {
         )
         .map((definition) => definition.name)
         .join();
+    const administration = administrationToolNames(features);
     if (
       definitions.map((definition) => definition.name).join() !==
         [
@@ -308,11 +424,17 @@ export class McpService {
           ...dashboardToolNames,
           ...adminToolNames,
           ...dashboardAdminToolNames,
+          ...administration,
         ].join() ||
       listed("read", undefined) !== readToolNames.join() ||
       listed("read", "dashboards") !== dashboardToolNames.join() ||
       listed("admin", undefined) !== adminToolNames.join() ||
-      listed("admin", "dashboards") !== dashboardAdminToolNames.join()
+      listed("admin", "dashboards") !== dashboardAdminToolNames.join() ||
+      listed("admin", "administration") !== administration.join() ||
+      !administration.every((name) => name.startsWith("admin_")) ||
+      !adminToolNames.every((name) =>
+        adminRoutes.some((route) => route.tool === name),
+      )
     )
       throw new Error("The MCP catalog and its exported tool names disagree.");
     this.tools = definitions.map((definition) => ({

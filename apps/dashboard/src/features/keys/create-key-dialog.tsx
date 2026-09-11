@@ -13,14 +13,20 @@ import { CheckboxField, Field } from "../../components/ui/field";
 import { Input } from "../../components/ui/input";
 import { copy } from "../../copy";
 import { errorMessage } from "../../lib/display";
-import { buildPermissions, permissionOrder } from "./permissions";
+import {
+  adminOnlyPermissions,
+  buildPermissions,
+  permissionOrder,
+  type Permission,
+} from "./permissions";
 import { createPersonalKey } from "./queries";
 
-/** Ingest and read on; the dashboards tool group and admin are opt-in (§8.2). */
-const defaultSelection = {
+/** Ingest and read on; the tool groups and admin are opt-in (§8.2). */
+const defaultSelection: Record<Permission, boolean> = {
   ingest: true,
   read: true,
   dashboards: false,
+  administration: false,
   admin: false,
 };
 
@@ -61,7 +67,7 @@ export function CreateKeyDialog({
     },
   });
   const offered = permissionOrder.filter(
-    (permission) => permission !== "admin" || allowAdmin,
+    (permission) => allowAdmin || !adminOnlyPermissions.includes(permission),
   );
   return (
     <Dialog
@@ -110,11 +116,19 @@ export function CreateKeyDialog({
                 label={copy.keys.permissions[permission]}
                 hint={copy.keys.permissions[`${permission}Hint`]}
                 checked={selection[permission]}
-                disabled={create.isPending}
+                // The administration tools need admin on the same key (§9.2): the box
+                // opens once Admin is checked and clears when Admin is cleared.
+                disabled={
+                  create.isPending ||
+                  (permission === "administration" && !selection.admin)
+                }
                 onCheckedChange={(checked) => {
                   setSelection((prior) => ({
                     ...prior,
                     [permission]: checked === true,
+                    ...(permission === "admin" && checked !== true
+                      ? { administration: false }
+                      : {}),
                   }));
                 }}
               />

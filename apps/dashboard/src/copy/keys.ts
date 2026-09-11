@@ -19,6 +19,7 @@ export const keysCopy = {
     ingest: "Ingest",
     read: "Read",
     dashboards: "Dashboard tools",
+    administration: "Administration tools",
     admin: "Admin",
     ingestHint:
       "Upload sessions from coding tools on the machine that holds this key.",
@@ -26,6 +27,8 @@ export const keysCopy = {
       "Search and read this organization's sessions, in the app and through MCP. Agents see three MCP tools: search, get and sql.",
     dashboardsHint:
       "Adds the five dashboard tools to the agent's MCP catalog: list, get, render, save and delete. Requires Read. Keys made before this option lack it, so create a new key to grant it.",
+    administrationHint:
+      "Adds one MCP tool per admin action: members, keys, redaction policies and rescans, moderation, installations and metrics. Requires Admin and Read. The catalog grows from 9 KB to about 40 KB, which Claude Code loads on every turn.",
     adminHint:
       "Manage members, keys, redaction and moderation through the API. Only owners and admins can grant this.",
     none: "No permissions",

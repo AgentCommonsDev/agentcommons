@@ -87,4 +87,18 @@ export const installCopy = {
       "Start Claude Code, Codex, Gemini CLI or pi on the connected machine and send at least one prompt. Only sessions uploaded with the key from step 1 are listed.",
     allSessions: "All sessions",
   },
+  admin: {
+    title: "Administrator install",
+    description:
+      "The key created here also carries Admin and the administration and dashboard tool groups, so your agent can manage members, keys, redaction, moderation and installations through MCP, next to search, get and sql. Only owners and admins see this section.",
+    catalog:
+      "The agent's MCP catalog grows from 3 tools in 9 KB to about 36 tools in 40 KB. The installer marks the agentcommons server as always loaded, so Claude Code keeps the whole catalog in context on every turn, about 10,000 tokens. Use this key only on machines where you administer the organization.",
+    upgrade:
+      "To upgrade a machine that already has the standard key, run the step 3 command there again. The installer replaces the key; the hook and MCP server names stay the same.",
+    machine: "Machine name",
+    machinePlaceholder: "Admin laptop",
+    submit: "Create administrator key",
+    created:
+      "Administrator key created. The install command in step 3 now includes it.",
+  },
 } as const;

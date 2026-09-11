@@ -13,6 +13,8 @@ import { formatGet, formatSearch, formatSql } from "@agentcommons/core/format";
 
 const mcpFixtureSchema = z.strictObject({
   tools: z.array(ToolSchema),
+  /** The `administration` group as an administrator key lists it (ADR 0072). */
+  administration: z.array(ToolSchema),
   search: searchOutputSchema,
   get: getOutputSchema,
   sql: sqlOutputSchema,
@@ -57,7 +59,19 @@ function normalizeMcpFixture(value: unknown): z.infer<typeof mcpFixtureSchema> {
 export async function renderAppendix(
   fixture: z.infer<typeof mcpFixtureSchema>,
 ): Promise<string> {
-  const markdown = `${appendixMarker}\n\nGenerated from the real PostgreSQL and ClickHouse and official MCP SDK contract fixture at\n\`fixtures/contracts/mcp.json\`. Regenerate with\n\`UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts\`.\nIdentifiers, receipt timestamps, and SQL timings are normalized for reproducibility.\n\nEvery \`sessions:read\` key lists \`search\`, \`get\` and \`sql\`, and nothing else by default. A key\nthat grants the \`dashboards\` tool group also lists \`dashboard_list\`, \`dashboard_get\`,\n\`dashboard_render\`, \`dashboard_save\` and \`dashboard_delete\`; effective admin keys add\n\`set_visibility\`, \`purge\`, \`audit\` and \`status\`, and \`dashboard_set_default\` when they hold\nboth (§8.2).\n\n\`tools/list\` as an effective admin key with the \`dashboards\` group receives it, complete. Output\nschemas are not shipped (§8.2); results are validated server-side and returned as\n\`structuredContent\`. The default catalog is the first three tools; every catalog stays within\nthe byte budgets of §8.2.\n\n\`\`\`json\n${JSON.stringify(
+  const fields = (inputSchema: z.infer<typeof ToolSchema>["inputSchema"]) => {
+    const objects = z
+      .array(z.looseObject({ properties: z.record(z.string(), z.unknown()) }))
+      .parse(
+        Array.isArray(inputSchema.anyOf) ? inputSchema.anyOf : [inputSchema],
+      );
+    return [
+      ...new Set(objects.flatMap((object) => Object.keys(object.properties))),
+    ]
+      .map((field) => `\`${field}\``)
+      .join(", ");
+  };
+  const markdown = `${appendixMarker}\n\nGenerated from the real PostgreSQL and ClickHouse and official MCP SDK contract fixture at\n\`fixtures/contracts/mcp.json\`. Regenerate with\n\`UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts\`.\nIdentifiers, receipt timestamps, and SQL timings are normalized for reproducibility.\n\nEvery \`sessions:read\` key lists \`search\`, \`get\` and \`sql\`, and nothing else by default. A key\nthat grants the \`dashboards\` tool group also lists \`dashboard_list\`, \`dashboard_get\`,\n\`dashboard_render\`, \`dashboard_save\` and \`dashboard_delete\`; effective admin keys add\n\`set_visibility\`, \`purge\`, \`audit\` and \`status\`, and \`dashboard_set_default\` when they hold\nboth (§8.2). An admin key that also grants the \`administration\` group lists one\n\`admin_<resource>_<verb>\` tool per \`/admin\` route after those, derived from the route table\n(ADR 0072); they are summarized after the JSON below.\n\n\`tools/list\` as an effective admin key with the \`dashboards\` group receives it, complete. Output\nschemas are not shipped (§8.2); results are validated server-side and returned as\n\`structuredContent\`. The default catalog is the first three tools; every catalog stays within\nthe byte budgets of §8.2.\n\n\`\`\`json\n${JSON.stringify(
     fixture.tools.map(({ name, description, inputSchema, annotations }) => ({
       name,
       description,
@@ -66,7 +80,12 @@ export async function renderAppendix(
     })),
     null,
     2,
-  )}\n\`\`\`\n\n${(
+  )}\n\`\`\`\n\nThe \`administration\` group, as the same key with that grant lists it. Each input is the\nroute's params, query and body merged into one object (the REST \`format\` switch excluded);\nthe complete schemas are the route's in the OpenAPI document.\n\n| Tool | Does | Fields |\n| --- | --- | --- |\n${fixture.administration
+    .map(
+      (tool) =>
+        `| \`${tool.name}\` | ${(tool.description ?? "").split(". ").slice(1).join(". ")} | ${fields(tool.inputSchema)} |`,
+    )
+    .join("\n")}\n\n${(
     [
       ["search", formatSearch(fixture.search)],
       ["get", formatGet(fixture.get)],

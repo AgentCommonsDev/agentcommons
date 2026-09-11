@@ -146,13 +146,28 @@ export const responseBytes = {
 /**
  * Optional MCP tool groups a key exposes beyond the read tools (§8.2). None is granted by
  * default, so an agent's catalog holds only `search`, `get` and `sql` unless a key opts in.
+ * `dashboards` is grantable by any member; `administration` (the `admin_*` tools derived
+ * from the `/admin` routes, ADR 0072) needs `admin:*` on the same key.
  */
-export const keyToolGroupSchema = /* @__PURE__ */ z.enum(["dashboards"]);
-export const keyPermissionsSchema = /* @__PURE__ */ z.strictObject({
-  sessions: z.array(z.enum(["ingest", "read"])).optional(),
-  tools: z.array(keyToolGroupSchema).optional(),
-  admin: z.array(z.literal("*")).optional(),
-});
+export const keyToolGroupSchema = /* @__PURE__ */ z.enum([
+  "dashboards",
+  "administration",
+]);
+export const keyPermissionsSchema = /* @__PURE__ */ z
+  .strictObject({
+    sessions: z.array(z.enum(["ingest", "read"])).optional(),
+    tools: z.array(keyToolGroupSchema).optional(),
+    admin: z.array(z.literal("*")).optional(),
+  })
+  .refine(
+    (permissions) =>
+      !permissions.tools?.includes("administration") ||
+      permissions.admin?.includes("*") === true,
+    {
+      path: ["tools"],
+      error: "The administration tools need admin permission on the same key.",
+    },
+  );
 /** Stored key permissions are JSON text; a key created without any is an empty object. */
 export function parseKeyPermissions(raw: string | null | undefined) {
   return keyPermissionsSchema.parse(raw ? (JSON.parse(raw) as unknown) : {});

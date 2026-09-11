@@ -18502,370 +18502,6 @@
         }
       }
     },
-    "/api/v1/admin/domains": {
-      "get": {
-        "operationId": "get_admin_domains",
-        "summary": "List Google SSO domain access",
-        "parameters": [
-          {
-            "schema": {
-              "default": 50,
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100
-            },
-            "in": "query",
-            "name": "limit",
-            "required": false
-          },
-          {
-            "schema": {
-              "default": null,
-              "anyOf": [
-                {
-                  "type": "string",
-                  "minLength": 1
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "in": "query",
-            "name": "cursor",
-            "required": false
-          },
-          {
-            "schema": {
-              "default": "domain",
-              "type": "string",
-              "enum": [
-                "domain"
-              ]
-            },
-            "in": "query",
-            "name": "sort",
-            "required": false
-          },
-          {
-            "schema": {
-              "default": "asc",
-              "type": "string",
-              "enum": [
-                "asc",
-                "desc"
-              ]
-            },
-            "in": "query",
-            "name": "order",
-            "required": false
-          },
-          {
-            "schema": {
-              "type": "string",
-              "maxLength": 253
-            },
-            "in": "query",
-            "name": "domain",
-            "required": false
-          }
-        ],
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "enabled": {
-                      "type": "boolean"
-                    },
-                    "items": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "organization_id": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "domain": {
-                            "type": "string",
-                            "maxLength": 253,
-                            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
-                          },
-                          "provider_id": {
-                            "type": "string"
-                          },
-                          "verified": {
-                            "type": "boolean"
-                          }
-                        },
-                        "required": [
-                          "organization_id",
-                          "domain",
-                          "provider_id",
-                          "verified"
-                        ],
-                        "additionalProperties": false
-                      }
-                    },
-                    "cursor": {
-                      "default": null,
-                      "anyOf": [
-                        {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    }
-                  },
-                  "required": [
-                    "enabled",
-                    "items",
-                    "cursor"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "position": {
-                      "anyOf": [
-                        {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "detail": {
-                      "$ref": "#/components/schemas/JsonValue"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "position": {
-                      "anyOf": [
-                        {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "detail": {
-                      "$ref": "#/components/schemas/JsonValue"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "operationId": "post_admin_domains",
-        "summary": "Allow a Google email domain to join this organization",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "domain": {
-                    "type": "string",
-                    "maxLength": 253,
-                    "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
-                  }
-                },
-                "required": [
-                  "domain"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "organization_id": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "domain": {
-                      "type": "string",
-                      "maxLength": 253,
-                      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
-                    },
-                    "provider_id": {
-                      "type": "string"
-                    },
-                    "verified": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "organization_id",
-                    "domain",
-                    "provider_id",
-                    "verified"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "position": {
-                      "anyOf": [
-                        {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "detail": {
-                      "$ref": "#/components/schemas/JsonValue"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "5XX": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "code": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "position": {
-                      "anyOf": [
-                        {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "detail": {
-                      "$ref": "#/components/schemas/JsonValue"
-                    }
-                  },
-                  "required": [
-                    "code",
-                    "message"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/me/organizations": {
       "post": {
         "operationId": "post_me_organizations",
@@ -19469,7 +19105,8 @@
                                   "items": {
                                     "type": "string",
                                     "enum": [
-                                      "dashboards"
+                                      "dashboards",
+                                      "administration"
                                     ]
                                   }
                                 },
@@ -19955,7 +19592,8 @@
                                 "items": {
                                   "type": "string",
                                   "enum": [
-                                    "dashboards"
+                                    "dashboards",
+                                    "administration"
                                   ]
                                 }
                               },
@@ -20159,7 +19797,8 @@
                         "items": {
                           "type": "string",
                           "enum": [
-                            "dashboards"
+                            "dashboards",
+                            "administration"
                           ]
                         }
                       },
@@ -20273,7 +19912,8 @@
                               "items": {
                                 "type": "string",
                                 "enum": [
-                                  "dashboards"
+                                  "dashboards",
+                                  "administration"
                                 ]
                               }
                             },
@@ -20631,6 +20271,370 @@
                   },
                   "required": [
                     "key"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/domains": {
+      "get": {
+        "operationId": "get_admin_domains",
+        "summary": "List Google SSO domain access",
+        "parameters": [
+          {
+            "schema": {
+              "default": 50,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": "domain",
+              "type": "string",
+              "enum": [
+                "domain"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": "asc",
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "in": "query",
+            "name": "order",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 253
+            },
+            "in": "query",
+            "name": "domain",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "organization_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "domain": {
+                            "type": "string",
+                            "maxLength": 253,
+                            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+                          },
+                          "provider_id": {
+                            "type": "string"
+                          },
+                          "verified": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "organization_id",
+                          "domain",
+                          "provider_id",
+                          "verified"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "cursor": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "items",
+                    "cursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "post_admin_domains",
+        "summary": "Allow a Google email domain to join this organization",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "domain": {
+                    "type": "string",
+                    "maxLength": 253,
+                    "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+                  }
+                },
+                "required": [
+                  "domain"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "organization_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "domain": {
+                      "type": "string",
+                      "maxLength": 253,
+                      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+                    },
+                    "provider_id": {
+                      "type": "string"
+                    },
+                    "verified": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "domain",
+                    "provider_id",
+                    "verified"
                   ],
                   "additionalProperties": false
                 }
@@ -21964,7 +21968,8 @@
                                 "items": {
                                   "type": "string",
                                   "enum": [
-                                    "dashboards"
+                                    "dashboards",
+                                    "administration"
                                   ]
                                 }
                               },

@@ -238,13 +238,16 @@ export async function createApp(options: {
     );
   });
   registerPublicApiRoutes(app, services);
-  registerApiRoutes(app, services, {
+  // One feature table decides which optional routes REST registers and which admin
+  // tools the MCP catalog derives from them (ADR 0072).
+  const features = {
     embeddings: Boolean(services.similar),
     saas: env.saas,
     domainEnrollment: domainEnrollmentEnabled(env.auth),
-  });
+  };
+  registerApiRoutes(app, services, features);
   registerAuthRoutes(app, services.auth, env.PUBLIC_URL);
-  registerMcpRoutes(app, new McpService(services), limit);
+  registerMcpRoutes(app, new McpService(services, features), limit);
   if (options.static !== false)
     await registerStaticRoutes(app, {
       publicUrl: env.PUBLIC_URL,
