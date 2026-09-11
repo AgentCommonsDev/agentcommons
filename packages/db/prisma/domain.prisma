@@ -164,6 +164,8 @@ model AuditEvent {
   @@index([ts(sort: Desc)])
   @@index([userId, ts(sort: Desc)])
   @@index([action, ts(sort: Desc)])
+  // The People page's "last seen": one probe per member for the newest cookie request.
+  @@index([organizationId, authMethod, userId, ts(sort: Desc)])
   @@map("audit_event")
 }
 

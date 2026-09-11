@@ -74,7 +74,12 @@ const workspaceNavigation: NavItem[] = [
   { to: paths.keys, label: copy.app.navigation.keys, icon: KeyRound },
 ];
 const organizationNavigation: NavItem[] = [
-  { to: paths.admin.users, label: copy.app.navigation.users, icon: Users },
+  {
+    to: paths.admin.users,
+    label: copy.app.navigation.users,
+    icon: Users,
+    match: (pathname) => pathname.startsWith(paths.admin.users),
+  },
   {
     to: paths.admin.keys,
     label: copy.app.navigation.adminKeys,

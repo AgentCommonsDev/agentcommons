@@ -294,6 +294,8 @@ export const memberSchema = z.strictObject({
   role: organizationRoleSchema,
   suspended: z.boolean(),
   created_at: utcDateTimeSchema,
+  /** The member's latest audited dashboard (cookie) request in this organization; null before the first. */
+  last_seen_at: utcDateTimeSchema.nullable(),
 });
 export const keyCreateInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(128),
@@ -382,6 +384,7 @@ export const membersInputSchema = createListInputSchema([
   "role",
   "suspended",
   "created_at",
+  "last_seen_at",
 ]).extend({
   filters: z
     .strictObject({

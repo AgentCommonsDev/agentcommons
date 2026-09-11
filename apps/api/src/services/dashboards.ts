@@ -700,7 +700,11 @@ export class DashboardService {
     return `${String(counts.published)}/${String(counts.purged)}/${String(counts.hidden)}`;
   }
 
-  /** Run data tiles four at a time; a tile's error is its result, never the request's. */
+  /**
+   * Run data tiles four at a time; a tile's error is its result, never the request's.
+   * Tiles with identical SQL share one run, so several stats reading columns of the same
+   * aggregate row cost one scan.
+   */
   private async runTiles(
     caller: CallerContext,
     tiles: readonly Extract<DashboardTile, { sql: string }>[],
@@ -709,31 +713,44 @@ export class DashboardService {
   ): Promise<DashboardTileResult[]> {
     // Availability cannot change between the tiles of one request.
     const embeddings = await this.dependencies.query.embeddingsEnabled(caller);
-    return concurrently(
-      tiles,
-      RENDER_CONCURRENCY,
-      async (tile): Promise<DashboardTileResult> => {
-        try {
-          return {
-            id: tile.id,
-            result: await this.dependencies.query.run(caller, {
-              sql: tile.sql,
-              parameters,
-              parameterTypes,
-              embeddings,
-            }),
-            error: null,
-          };
-        } catch (error) {
-          if (!(error instanceof ServiceError)) throw error;
-          return {
-            id: tile.id,
-            result: null,
-            error: { code: error.code, message: error.message },
-          };
-        }
-      },
+    const statements = [...new Set(tiles.map((tile) => tile.sql))];
+    const outcomes = new Map(
+      await concurrently(
+        statements,
+        RENDER_CONCURRENCY,
+        async (
+          sql,
+        ): Promise<[string, Pick<DashboardTileResult, "result" | "error">]> => {
+          try {
+            return [
+              sql,
+              {
+                result: await this.dependencies.query.run(caller, {
+                  sql,
+                  parameters,
+                  parameterTypes,
+                  embeddings,
+                }),
+                error: null,
+              },
+            ];
+          } catch (error) {
+            if (!(error instanceof ServiceError)) throw error;
+            return [
+              sql,
+              {
+                result: null,
+                error: { code: error.code, message: error.message },
+              },
+            ];
+          }
+        },
+      ),
     );
+    return tiles.map((tile) => ({
+      id: tile.id,
+      ...(outcomes.get(tile.sql) ?? { result: null, error: null }),
+    }));
   }
 
   /**

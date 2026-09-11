@@ -73,11 +73,17 @@ function jsonPrimitive(value: string): string | number | boolean | null {
 export function FilterPopover({
   state,
   onChange,
+  exclude,
 }: {
   state: SearchState;
   onChange: (next: SearchState) => void;
+  /** Fields the page fixes itself and so does not offer, such as the person page's member. */
+  exclude?: readonly FieldSpec["key"][] | undefined;
 }) {
   const labels = copy.sessions.filters;
+  const specs = exclude
+    ? fieldSpecs.filter((item) => !exclude.includes(item.key))
+    : fieldSpecs;
   const [open, setOpen] = useState(false);
   const [field, setField] = useState<FieldSpec["key"]>("repo_name");
   const [operator, setOperator] = useState<Operator>("eq");
@@ -211,13 +217,13 @@ export function FilterPopover({
                 {...props}
                 value={field}
                 onChange={(event) => {
-                  const next = fieldSpecs.find(
+                  const next = specs.find(
                     (item) => item.key === event.target.value,
                   );
                   if (next) changeField(next.key);
                 }}
               >
-                {fieldSpecs.map((item) => (
+                {specs.map((item) => (
                   <option key={item.key} value={item.key}>
                     {fieldTitle(item.key)}
                   </option>

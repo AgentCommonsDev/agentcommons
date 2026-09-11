@@ -15,3 +15,4 @@ export {
   teamOverviewDashboard,
   type BuiltinDashboard,
 } from "./builtin.js";
+export { personDashboard } from "./person.js";

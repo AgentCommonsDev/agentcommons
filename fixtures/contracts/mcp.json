@@ -909,7 +909,8 @@
               "name",
               "role",
               "suspended",
-              "created_at"
+              "created_at",
+              "last_seen_at"
             ]
           },
           "order": {
@@ -983,6 +984,28 @@
       },
       "annotations": {
         "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_member_get",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Read one organization member.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
         "destructiveHint": false,
         "openWorldHint": false
       }

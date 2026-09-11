@@ -1,11 +1,12 @@
 import { auditedOperation } from "./audit.js";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   memberAddInputSchema,
   memberAddOutputSchema,
   membersInputSchema,
   membersOutputSchema,
   memberRoleInputSchema,
+  memberSchema,
   memberSuspensionInputSchema,
   reasonInputSchema,
   passwordSetupOutputSchema,
@@ -31,6 +32,24 @@ import {
   type ServiceContext,
 } from "./context.js";
 import { offsetPage, wireValue } from "./read-budget.js";
+
+/** The list's sort keys as columns of the member statement's inner select. */
+const memberSort: Record<
+  NonNullable<z.infer<typeof membersInputSchema>["sort"]>,
+  string
+> = {
+  email: "email",
+  name: "name",
+  role: "role",
+  suspended: "suspended",
+  created_at: "created_at",
+  last_seen_at: "last_seen_at",
+};
+/** A member row as PostgreSQL returns it, before dates become wire strings. */
+const memberRowSchema = memberSchema.extend({
+  created_at: z.date(),
+  last_seen_at: z.date().nullable(),
+});
 
 function requireMemberAdmin(context: ServiceContext): CallerContext {
   requireCookie(context);
@@ -118,51 +137,30 @@ export class MembershipService {
           operation: "members",
           input: query,
         });
-        const field = parsed.sort ?? "created_at";
-        const orderBy: Prisma.MemberOrderByWithRelationInput =
-          field === "email" || field === "name"
-            ? { user: { [field]: parsed.order } }
-            : {
-                [{
-                  created_at: "createdAt",
-                  role: "role",
-                  suspended: "suspended",
-                }[field]]: parsed.order,
-              };
+        const f = parsed.filters;
+        const conditions = [
+          ...(f.email === undefined
+            ? []
+            : [Prisma.sql`u.email=${f.email.toLowerCase()}`]),
+          ...(f.role === undefined ? [] : [Prisma.sql`m.role=${f.role}`]),
+          ...(f.suspended === undefined
+            ? []
+            : [Prisma.sql`coalesce(m.suspended,false)=${f.suspended}`]),
+        ];
+        const order = Prisma.raw(
+          `${memberSort[parsed.sort ?? "created_at"]} ${parsed.order === "asc" ? "ASC" : "DESC"} NULLS LAST`,
+        );
         const page = await offsetPage(
           this.cursors,
           binding,
           cursor,
           parsed.limit,
-          async (skip, take) =>
-            (
-              await this.prisma.member.findMany({
-                where: {
-                  organizationId: caller.organizationId,
-                  removedAt: null,
-                  ...(parsed.filters.email
-                    ? { user: { email: parsed.filters.email.toLowerCase() } }
-                    : {}),
-                  ...(parsed.filters.role ? { role: parsed.filters.role } : {}),
-                  ...(parsed.filters.suspended === undefined
-                    ? {}
-                    : { suspended: parsed.filters.suspended }),
-                },
-                include: { user: true },
-                orderBy: [orderBy, { id: "asc" }],
-                skip,
-                take,
-              })
-            ).map((member) => ({
-              id: member.id,
-              organization_id: member.organizationId,
-              user_id: member.userId,
-              email: member.user.email,
-              name: member.user.name,
-              role: member.role,
-              suspended: member.suspended ?? false,
-              created_at: member.createdAt.toISOString(),
-            })),
+          (skip, take) =>
+            this.members(
+              caller,
+              conditions,
+              Prisma.sql`ORDER BY ${order},id LIMIT ${take} OFFSET ${skip}`,
+            ),
         );
         const result = membersOutputSchema.parse({
           items: page.items,
@@ -176,6 +174,67 @@ export class MembershipService {
         return { result, audit };
       },
     );
+  }
+
+  /** One member of the caller's organization by membership id, with the same fields as the list. */
+  async get(context: ServiceContext, id: string) {
+    return auditedOperation(
+      this.audit,
+      context,
+      { action: "members.get" },
+      async () => {
+        const caller = requirePermission(context, "admin");
+        const [member] = await this.members(
+          caller,
+          [Prisma.sql`m.id=${id}`],
+          Prisma.sql`LIMIT 1`,
+        );
+        if (!member)
+          throw new ServiceError(404, "NOT_FOUND", "Member not found.");
+        const result = memberSchema.parse(member);
+        const audit = await this.audit.write(context, {
+          action: "members.get",
+          resourceType: "member",
+          resourceIds: [id],
+        });
+        return { result, audit };
+      },
+    );
+  }
+
+  /**
+   * Current members of the caller's organization in one statement. `last_seen_at` is the
+   * newest audit event the member made through a dashboard (cookie) principal in this
+   * organization: a correlated newest-first probe of the
+   * `(organization_id, auth_method, user_id, ts)` index per row, so a member whose keys
+   * upload all day costs the same as one who never signed in. Sorting by it evaluates the
+   * probe once per member, which is bounded by the organization's size, not its audit log.
+   */
+  private async members(
+    caller: CallerContext,
+    conditions: readonly Prisma.Sql[],
+    tail: Prisma.Sql,
+  ): Promise<z.infer<typeof memberSchema>[]> {
+    const where = Prisma.join(
+      [
+        Prisma.sql`m."organizationId"=${caller.organizationId}`,
+        Prisma.sql`m."removedAt" IS NULL`,
+        ...conditions,
+      ],
+      " AND ",
+    );
+    return memberRowSchema
+      .array()
+      .parse(
+        await this.prisma.$queryRaw(
+          Prisma.sql`SELECT * FROM (SELECT m.id,m."organizationId" AS organization_id,m."userId" AS user_id,u.email,u.name,m.role,coalesce(m.suspended,false) AS suspended,m."createdAt" AS created_at,(SELECT a.ts FROM audit_event a WHERE a.organization_id=m."organizationId" AND a.auth_method='cookie' AND a.user_id=m."userId" ORDER BY a.ts DESC LIMIT 1) AS last_seen_at FROM member m JOIN "user" u ON u.id=m."userId" WHERE ${where}) rows ${tail}`,
+        ),
+      )
+      .map((row) => ({
+        ...row,
+        created_at: row.created_at.toISOString(),
+        last_seen_at: row.last_seen_at?.toISOString() ?? null,
+      }));
   }
 
   async add(

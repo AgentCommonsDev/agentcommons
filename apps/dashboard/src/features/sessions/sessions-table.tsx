@@ -268,12 +268,15 @@ export function SessionsTable({
   filters,
   usage,
   filtered,
+  hide = [],
 }: {
   filters: ApiFilters;
   /** The searched / used-prior-work selects; list parameters beside `filters`. */
   usage: UsageFilters;
   /** Whether the reader narrowed the list; picks the empty state wording. */
   filtered: boolean;
+  /** Columns the page starts hidden besides the defaults: the person page hides User. */
+  hide?: readonly string[] | undefined;
 }) {
   const { organization } = useWorkspace();
   const navigate = useNavigate();
@@ -335,7 +338,7 @@ export function SessionsTable({
           name: copy.sessions.list.csvName,
           fetchAll: (cursor, signal) => fetchPage(cursor, 100, signal),
         }}
-        hiddenColumns={hiddenColumns}
+        hiddenColumns={[...hiddenColumns, ...hide]}
         rowId={(row) => row.session_id}
         onRowClick={(row) => {
           void navigate({

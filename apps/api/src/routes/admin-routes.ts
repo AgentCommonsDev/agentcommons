@@ -115,6 +115,17 @@ export const adminRoutes: readonly AdminRoute[] = [
     execute: (services, ctx, input) => services.members.add(ctx, input.body),
   }),
   adminRoute({
+    method: "GET",
+    path: "/admin/users/:id",
+    summary: "Read one organization member",
+    params: schema.identityParamsSchema,
+    output: schema.memberSchema,
+    tool: "admin_member_get",
+    readOnly: true,
+    execute: (services, ctx, input) =>
+      services.members.get(ctx, input.params.id),
+  }),
+  adminRoute({
     method: "POST",
     path: "/admin/users/password-setup",
     summary: "Issue initial password setup",

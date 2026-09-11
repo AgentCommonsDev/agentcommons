@@ -22,6 +22,7 @@ import {
   fieldLabel,
   metricValue,
   number,
+  relativeTime,
   textValue,
 } from "../../lib/display";
 import { paths } from "../../lib/routes";
@@ -80,12 +81,18 @@ function StatBody({
   tile: TileOf<"stat">;
   result: SqlResult;
 }) {
-  const { value, compare } = statValues(tile, result);
+  const { value, compare, datetime } = statValues(tile, result);
   const delta = value !== null && compare !== null ? value - compare : null;
   return (
     <div className="flex h-full flex-col justify-end gap-1">
       <p className="truncate text-[28px] leading-none font-semibold tracking-tight tabular-nums sm:text-3xl">
-        {metricValue(value, tile.unit)}
+        {datetime === null ? (
+          metricValue(value, tile.unit)
+        ) : (
+          <time dateTime={datetime} title={dateTime(datetime)}>
+            {relativeTime(datetime)}
+          </time>
+        )}
       </p>
       {delta !== null && (
         <p

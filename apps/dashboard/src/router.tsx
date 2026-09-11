@@ -65,6 +65,10 @@ const RedactionPage = lazyRouteComponent(
   () => import("./pages/admin/redaction"),
   "RedactionPage",
 );
+const PersonPage = lazyRouteComponent(
+  () => import("./pages/admin/user"),
+  "PersonPage",
+);
 /**
  * Optional string search parameters; anything but a string reads as absent. The keys are
  * optional, so a search reducer can spread the previous search and set only its own.
@@ -323,6 +327,13 @@ const adminUsersRoute = createRoute({
     "UsersPage",
   ),
 });
+const adminUserRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/admin/users/$id",
+  component: () => {
+    return <PersonPage id={adminUserRoute.useParams().id} />;
+  },
+});
 const adminKeysRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/keys",
@@ -413,6 +424,7 @@ const routeTree = rootRoute.addChildren([
     billingRoute,
     newOrganizationRoute,
     adminUsersRoute,
+    adminUserRoute,
     adminKeysRoute,
     adminAuditRoute,
     adminModerationRoute,

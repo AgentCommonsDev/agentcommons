@@ -42,6 +42,9 @@ export const adminCopy = {
     active: "Active",
     suspended: "Suspended",
     addedAt: "Added",
+    lastSeen: "Last seen",
+    neverSeen: "Never",
+    open: (email: string) => `Open ${email}`,
     filterEmail: "Email",
     filterRole: "Role",
     filterStatus: "Status",
@@ -50,6 +53,20 @@ export const adminCopy = {
     csvName: "organization-people.csv",
     empty: "No members match",
     emptyHint: "Change the filters or add people.",
+  },
+  person: {
+    back: "People",
+    description: (email: string) =>
+      `${email}: activity across every coding agent, and the sessions this organization captured.`,
+    activity: "Activity",
+    activityHint:
+      "Counts cover the sessions you can see. Pick a time range to narrow them.",
+    sessions: "Sessions",
+    sessionsHint:
+      "Every captured session this member ran. Search words find messages inside them.",
+    notFound: "This member is not in the organization",
+    notFoundHint:
+      "They may have been removed, or the link belongs to another organization.",
   },
   keys: {
     title: "All keys",

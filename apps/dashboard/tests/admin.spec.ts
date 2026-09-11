@@ -49,7 +49,7 @@ test.beforeEach(async ({ context }) => {
   await signInAsOwner(context);
 });
 
-// @req R-ORG-02 @req R-DASH-05 @req R-DASH-21 @req R-WEB-02
+// @req R-ORG-02 @req R-ORG-12 @req R-DASH-05 @req R-DASH-21 @req R-DASH-44 @req R-WEB-02
 test("People: an admin adds an email, copies its setup link, changes the role, suspends, restores and removes the member", async ({
   page,
   context,
@@ -58,8 +58,25 @@ test("People: an admin adds an email, copies its setup link, changes the role, s
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto(paths.admin.users);
   const table = page.getByTestId("admin-users-table");
-  await expect(tableRow(table, /browser-primary@example.com/)).toBeVisible();
+  const ownerRow = tableRow(table, /browser-primary@example.com/);
+  await expect(ownerRow).toBeVisible();
+  // Last seen is derived from the owner's own dashboard requests, so it is never "Never".
+  await expect(
+    table.getByRole("columnheader", {
+      name: copy.admin.users.lastSeen,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(ownerRow.locator("time")).toHaveCount(1);
+  await expect(ownerRow).not.toContainText(copy.admin.users.neverSeen);
   await expectNoHorizontalOverflow(page);
+  // The table keeps fitting with the new column on the narrower desktop widths.
+  for (const width of [1280, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto(paths.admin.users);
+    await expect(ownerRow).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+  }
   await page.getByTestId("admin-add-people").click();
   let dialog = page.getByRole("dialog");
   await dialog.getByLabel(copy.admin.users.emails, { exact: true }).fill(email);
@@ -122,13 +139,16 @@ test("People: an admin adds an email, copies its setup link, changes the role, s
     "Restore browser verification access",
   );
   await expect(row).toContainText(copy.admin.users.active);
-  // Any row opens its complete record, including columns hidden from the summary.
-  await row.locator("td").first().click();
-  dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText(copy.app.common.details);
-  await expect(dialog.getByText(fields.user_id, { exact: true })).toBeVisible();
-  await expect(dialog).toContainText(email);
-  await closeDialog(page);
+  // A member who never opened the dashboard reads "Never"; their row opens the person page.
+  await expect(row).toContainText(copy.admin.users.neverSeen);
+  await row.locator("td").nth(1).click();
+  await expect(page).toHaveURL(/\/app\/admin\/users\/[^/]+$/);
+  const person = page.getByTestId("person-page");
+  await expect(person.getByRole("heading", { level: 1 })).toHaveText(email);
+  await expect(person).toContainText(copy.admin.users.neverSeen);
+  await expect(person.getByText(fields.user_id, { exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(table).toBeVisible();
   await applyFilters(page, copy.app.common.filters, async (scope) => {
     await scope
       .getByRole("textbox", { name: copy.admin.users.filterEmail, exact: true })
@@ -143,6 +163,7 @@ test("People: an admin adds an email, copies its setup link, changes the role, s
     fields.role,
     copy.admin.users.filterStatus,
     copy.admin.users.addedAt,
+    copy.admin.users.lastSeen,
     fields.user_id,
   ]);
   await (await rowAction(row, copy.admin.users.remove)).click();
@@ -912,7 +933,11 @@ test("a member opening an admin route sees the access message and the page makes
     if (new URL(request.url()).pathname.startsWith("/api/v1/admin/"))
       forbidden.push(request.url());
   });
-  for (const path of Object.values(paths.admin)) {
+  // Every admin page, including a person page addressed by a membership id.
+  const adminPaths = Object.values(paths.admin).map((path) =>
+    typeof path === "string" ? path : path("missing-member"),
+  );
+  for (const path of adminPaths) {
     await page.goto(path);
     await expect(
       page.getByText(copy.app.navigation.adminRequired, { exact: true }),

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { KeyRound, Plus, UserCheck, UserMinus, UserX } from "lucide-react";
 import { copy } from "../../copy";
@@ -8,6 +9,7 @@ import { memberSortKeys } from "../../lib/api/options";
 import { dateTime, statusLabel } from "../../lib/display";
 import type { Member } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
+import { LastSeen } from "./user";
 import { DataTable } from "../../components/app/data-table";
 import { ConfirmDialog } from "../../components/app/confirm-dialog";
 import { CopyButton } from "../../components/app/states";
@@ -83,6 +85,7 @@ function describe(action: Action | null) {
 export function UsersPage() {
   const { organization, me } = useWorkspace();
   const client = useQueryClient();
+  const navigate = useNavigate();
   const [emailDraft, setEmailDraft] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [setupMember, setSetupMember] = useState<Member | null>(null);
@@ -109,7 +112,14 @@ export function UsersPage() {
         header: copy.app.fields.email,
         size: 200,
         cell: ({ row }) => (
-          <span className="font-medium">{row.original.email}</span>
+          <Link
+            to="/app/admin/users/$id"
+            params={{ id: row.original.id }}
+            aria-label={text.open(row.original.email)}
+            className="font-medium text-fg hover:underline"
+          >
+            {row.original.email}
+          </Link>
         ),
       },
       {
@@ -153,6 +163,12 @@ export function UsersPage() {
         header: text.addedAt,
         size: 120,
         cell: ({ row }) => dateTime(row.original.created_at),
+      },
+      {
+        accessorKey: "last_seen_at",
+        header: text.lastSeen,
+        size: 100,
+        cell: ({ row }) => <LastSeen value={row.original.last_seen_at} />,
       },
       {
         accessorKey: "user_id",
@@ -244,6 +260,12 @@ export function UsersPage() {
           label={text.title}
           hiddenColumns={["user_id"]}
           rowId={(row) => row.id}
+          onRowClick={(row) => {
+            void navigate({
+              to: "/app/admin/users/$id",
+              params: { id: row.id },
+            });
+          }}
           emptyTitle={text.empty}
           emptyDescription={text.emptyHint}
           toolbar={

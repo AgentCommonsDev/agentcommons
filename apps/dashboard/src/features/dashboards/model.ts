@@ -148,27 +148,44 @@ function columnIndex(result: SqlResult, name: string | undefined): number {
     ? -1
     : result.columns.findIndex((column) => column.name === name);
 }
-function firstNumericColumn(result: SqlResult): number {
+/** The first column a stat can show: a number, or a point in time such as `max(last_activity_at)`. */
+function firstStatColumn(result: SqlResult): number {
   const first = result.rows[0];
-  return result.columns.findIndex(
-    (column, index) =>
-      columnKind(column.type) === "number" ||
-      cellNumber(first?.[index]) !== null,
-  );
+  return result.columns.findIndex((column, index) => {
+    const kind = columnKind(column.type);
+    return (
+      kind === "number" ||
+      kind === "datetime" ||
+      cellNumber(first?.[index]) !== null
+    );
+  });
 }
+/**
+ * The number a stat tile shows, or the instant it shows when its value column is a
+ * DateTime (`datetime` set, `value` null); `compare` is the optional second number.
+ */
 export function statValues(
   tile: TileOf<"stat">,
   result: SqlResult,
-): { value: number | null; compare: number | null } {
+): { value: number | null; compare: number | null; datetime: string | null } {
   const row = result.rows[0];
   const valueIndex =
     tile.value === undefined
-      ? firstNumericColumn(result)
+      ? firstStatColumn(result)
       : columnIndex(result, tile.value);
   const compareIndex = columnIndex(result, tile.compare);
+  const column = result.columns[valueIndex];
+  const cell = row?.[valueIndex];
+  const datetime =
+    column !== undefined &&
+    columnKind(column.type) === "datetime" &&
+    typeof cell === "string"
+      ? cell
+      : null;
   return {
-    value: valueIndex < 0 ? null : cellNumber(row?.[valueIndex]),
+    value: valueIndex < 0 || datetime !== null ? null : cellNumber(cell),
     compare: compareIndex < 0 ? null : cellNumber(row?.[compareIndex]),
+    datetime,
   };
 }
 

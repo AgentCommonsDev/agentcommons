@@ -76,6 +76,7 @@ export const memberSortKeys = [
   "role",
   "suspended",
   "created_at",
+  "last_seen_at",
 ] as const;
 export const moderationSortKeys = [
   "started_at",

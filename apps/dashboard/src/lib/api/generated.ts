@@ -567,6 +567,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/admin/users/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read one organization member */
+    get: operations["get_admin_users_id"];
+    put?: never;
+    post?: never;
+    /** Remove an organization member */
+    delete: operations["delete_admin_users_id"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/users/password-setup": {
     parameters: {
       query?: never;
@@ -616,23 +634,6 @@ export interface paths {
     head?: never;
     /** Suspend or restore a membership */
     patch: operations["patch_admin_users_id_suspension"];
-    trace?: never;
-  };
-  "/api/v1/admin/users/{id}": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post?: never;
-    /** Remove an organization member */
-    delete: operations["delete_admin_users_id"];
-    options?: never;
-    head?: never;
-    patch?: never;
     trace?: never;
   };
   "/api/v1/admin/keys": {
@@ -5998,7 +5999,13 @@ export interface operations {
       query?: {
         limit?: number;
         cursor?: string | null;
-        sort?: "email" | "name" | "role" | "suspended" | "created_at";
+        sort?:
+          | "email"
+          | "name"
+          | "role"
+          | "suspended"
+          | "created_at"
+          | "last_seen_at";
         order?: "asc" | "desc";
         /** @description Response format: json, or csv for a text/csv export */
         format?: "json" | "csv";
@@ -6035,6 +6042,7 @@ export interface operations {
               suspended: boolean;
               /** Format: date-time */
               created_at: string;
+              last_seen_at: string | null;
             }[];
             /** @default null */
             cursor: string | null;
@@ -6105,6 +6113,128 @@ export interface operations {
               setup_url: string | null;
               error: string | null;
             }[];
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_users_id: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            id: string;
+            user_id: string;
+            organization_id: string;
+            /** Format: email */
+            email: string;
+            name: string;
+            /** @enum {string} */
+            role: "owner" | "admin" | "member";
+            suspended: boolean;
+            /** Format: date-time */
+            created_at: string;
+            last_seen_at: string | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  delete_admin_users_id: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          reason: string;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            id: string;
+            updated: boolean;
           };
         };
       };
@@ -6271,65 +6401,6 @@ export interface operations {
       content: {
         "application/json": {
           suspended: boolean;
-          reason: string;
-        };
-      };
-    };
-    responses: {
-      /** @description Default Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            id: string;
-            updated: boolean;
-          };
-        };
-      };
-      /** @description Default Response */
-      "4XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-      /** @description Default Response */
-      "5XX": {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": {
-            code: string;
-            message: string;
-            position?: number | null;
-            detail?: components["schemas"]["JsonValue"];
-          };
-        };
-      };
-    };
-  };
-  delete_admin_users_id: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": {
           reason: string;
         };
       };

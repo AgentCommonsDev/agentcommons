@@ -19,6 +19,8 @@ export const paths = {
   organizationsNew: "/app/organizations/new",
   admin: {
     users: "/app/admin/users",
+    /** One member: their details, activity and sessions. `id` is the membership id. */
+    user: (id: string) => `/app/admin/users/${id}`,
     keys: "/app/admin/keys",
     audit: "/app/admin/audit",
     moderation: "/app/admin/moderation",

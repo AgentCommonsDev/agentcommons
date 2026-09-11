@@ -115,6 +115,10 @@ const urlSchema = z.looseObject({
     ]),
   ),
 });
+/** The URL parameters the search state owns; anything else in the URL belongs to the page. */
+export const ownedSearchKeys: ReadonlySet<string> = new Set(
+  Object.keys(urlSchema.shape),
+);
 const flagOf = (value: unknown): boolean | null =>
   flag.optional().catch(undefined).parse(value) ?? null;
 /** URL search params are the only source of truth for the page, so results are shareable. */
