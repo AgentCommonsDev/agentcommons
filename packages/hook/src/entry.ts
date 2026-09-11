@@ -100,9 +100,23 @@ async function main(): Promise<void> {
     noShellRc: args.includes("--no-shell-rc"),
   };
   if (mode === "install" || mode === "uninstall") {
-    const { configure, install, instructionFiles } =
-      await import("./install.js");
-    const names = install(directory, config, options, mode === "uninstall");
+    const {
+      configure,
+      install,
+      installFailed,
+      installNotice,
+      instructionFiles,
+    } = await import("./install.js");
+    const result = install(directory, config, options, mode === "uninstall");
+    const names = result.harnesses;
+    // Every harness was attempted; the notice names the ones that did not finish. Only
+    // a harness whose files could not be written, or a run that wired nothing, fails.
+    if (result.failures.length)
+      process.stderr.write(`${installNotice(result.failures)}\n`);
+    if (installFailed(result))
+      throw new Error(
+        `AgentCommons could not configure ${result.failures.map((failure) => failure.harness).join(", ")}.`,
+      );
     if (mode === "install") {
       // Self-update re-runs the installer with these flags after every swap (§6.2).
       configure(directory, { installOptions: options });

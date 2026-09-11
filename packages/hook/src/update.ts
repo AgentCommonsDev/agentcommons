@@ -355,6 +355,13 @@ export async function reconcileInstall(
       throw new Error(
         `install exited with ${String(result.status)}: ${result.stderr.trim().slice(0, 200)}`,
       );
+    // A harness whose native CLI registration failed is a notice on a successful run:
+    // its entry was written by the installer itself and every other harness was wired.
+    if (result.stderr.trim())
+      note(
+        directory,
+        `Harness configuration notice: ${result.stderr.trim().slice(0, 300)}`,
+      );
     // A success clears the throttle so a newly installed CLI is wired on the next run.
     const settled = readState(directory);
     delete settled.attemptedAt;

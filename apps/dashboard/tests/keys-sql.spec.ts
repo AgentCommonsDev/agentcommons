@@ -228,19 +228,16 @@ test("the Install page unlocks the installer command once a machine key exists a
   await expect(page.getByTestId("install-arrivals")).not.toContainText(
     install.arrivals.polling,
   );
-  // The repository guidance leads with the command; the text sits behind a disclosure.
+  // The hook writes the repository guidance itself; the manual step (command, off switch
+  // and the block to paste) sits behind an optional disclosure, closed by default.
   const guidance = page.getByTestId("repository-guidance");
-  await expect(guidance.getByTestId("repository-guidance-command")).toHaveText(
-    "node ~/.agentcommons/hook.js guidance --repo .",
-  );
-  await expect(
-    guidance.getByRole("button", {
-      name: install.prepare.repository.copyCommand,
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect(guidance).toContainText(install.prepare.repository.description);
   const details = guidance.getByTestId("repository-guidance-details");
   await expect(details).toHaveJSProperty("open", false);
+  await expect(details.locator("summary")).toHaveText(
+    install.prepare.repository.show,
+  );
+  await expect(page.getByTestId("repository-guidance-command")).toBeHidden();
   await expect(page.getByTestId("repository-guidance-block")).toBeHidden();
   await expect(
     guidance.getByRole("button", {
@@ -253,6 +250,18 @@ test("the Install page unlocks the installer command once a machine key exists a
   await expect(details).toHaveJSProperty("open", true);
   await expect(details.locator("summary")).toHaveText(
     install.prepare.repository.hide,
+  );
+  await expect(guidance.getByTestId("repository-guidance-command")).toHaveText(
+    "node ~/.agentcommons/hook.js guidance --repo .",
+  );
+  await expect(
+    guidance.getByRole("button", {
+      name: install.prepare.repository.copyCommand,
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByTestId("repository-guidance-off")).toContainText(
+    "--off",
   );
   await expect(page.getByTestId("repository-guidance-block")).toBeVisible();
   await expect(page.getByTestId("repository-guidance-block")).toContainText(

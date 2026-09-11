@@ -277,12 +277,163 @@ const registrySchema = z.record(
 type Registry = z.infer<typeof registrySchema>;
 const mcpUrl = (config: HookConfig): string =>
   new URL("/mcp", config.server).href;
+/**
+ * The harness CLI's own registration command failed or wrote nowhere we can see. The
+ * harness's files already carry the entry the installer wrote and restored, so this is
+ * reported, not fatal.
+ */
+class NativeRegistrationFailed extends Error {}
+/** One harness the installer could not finish; the other harnesses were still wired. */
+interface InstallFailure {
+  harness: CliHarness;
+  message: string;
+  /** Only the native CLI registration failed; the installer's own entry is in place. */
+  native: boolean;
+}
+interface InstallResult {
+  /** The harnesses the run selected (detected on PATH, or configured for an uninstall). */
+  harnesses: CliHarness[];
+  failures: InstallFailure[];
+}
+/**
+ * Whether an install run must exit non-zero: a harness's own files could not be written,
+ * or nothing was wired at all. A failed native registration alone is a notice, because
+ * the entry the installer wrote is what the harness reads (§6.1 step 4).
+ */
+export const installFailed = ({
+  harnesses,
+  failures,
+}: InstallResult): boolean =>
+  failures.some((failure) => !failure.native) ||
+  (failures.length > 0 && failures.length === harnesses.length);
+/** One line per failed harness, for stderr and `hook.log`. */
+export const installNotice = (failures: readonly InstallFailure[]): string =>
+  failures
+    .map(
+      (failure) =>
+        `${failure.harness}: ${failure.message}${failure.native ? " The entry the installer wrote is in place." : ""}`,
+    )
+    .join("\n");
+/** Wires (or unwires) one harness: hooks, instructions block and MCP entry. */
+function wireHarness(
+  directory: string,
+  config: HookConfig,
+  harness: CliHarness,
+  home: string,
+  url: string,
+  registry: Registry,
+  registryPath: string,
+  options: InstallOptions,
+  uninstall: boolean,
+): void {
+  const definition = HARNESSES[harness];
+  const format = FORMATS[definition.configFormat];
+  const wiring = wiringFor(directory, config, harness);
+  const path = join(home, ...definition.configPath);
+  const output = format.wire(readConfig(format, path) ?? {}, wiring, uninstall);
+  saveConfig(format, path, output);
+  if (definition.instructionsPath)
+    replaceMarkedBlock(
+      join(home, ...definition.instructionsPath),
+      guidanceMarkers,
+      uninstall ? null : agentInstructions,
+    );
+  if (!definition.mcpConfigPath) return;
+  const mcpPath = join(home, ...definition.mcpConfigPath);
+  const mcpConfig =
+    mcpPath === path ? output : (readConfig(format, mcpPath) ?? {});
+  const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
+  const previous = registry[mcpPath];
+  const expected = definition.mcp(url, config.key);
+  if (uninstall) {
+    if (
+      previous &&
+      JSON.stringify(servers[MCP_NAME]) === JSON.stringify(previous.installed)
+    ) {
+      if (previous.previous !== undefined)
+        servers[MCP_NAME] = previous.previous;
+      else Reflect.deleteProperty(servers, MCP_NAME);
+      Reflect.deleteProperty(registry, mcpPath);
+    }
+  } else {
+    registry[mcpPath] = {
+      installed: expected,
+      ...(previous
+        ? { previous: previous.previous }
+        : servers[MCP_NAME] !== undefined
+          ? { previous: servers[MCP_NAME] }
+          : {}),
+    };
+    servers[MCP_NAME] = expected;
+  }
+  mcpConfig[format.mcpKey] = servers;
+  saveConfig(format, mcpPath, mcpConfig);
+  const nativeCommand = definition.mcpCommand(url, config.key);
+  try {
+    if (!uninstall && options.configHome === undefined && nativeCommand) {
+      const registrationConfig = {
+        ...mcpConfig,
+        [format.mcpKey]: Object.fromEntries(
+          Object.entries(servers).filter(([name]) => name !== MCP_NAME),
+        ),
+      };
+      saveConfig(format, mcpPath, registrationConfig);
+      try {
+        execFileSync(definition.binary, nativeCommand, {
+          timeout: 10000,
+          stdio: "ignore",
+        });
+      } catch {
+        saveConfig(format, mcpPath, mcpConfig);
+        throw new NativeRegistrationFailed(
+          `The ${harness} MCP registration failed.`,
+        );
+      }
+      chmodSync(mcpPath, 0o600);
+      const nativeConfig = readConfig(format, mcpPath) ?? {};
+      const nativeServers = objectSchema.parse(
+        nativeConfig[format.mcpKey] ?? {},
+      );
+      const written = nativeServers[MCP_NAME];
+      if (written === undefined) {
+        saveConfig(format, mcpPath, mcpConfig);
+        throw new NativeRegistrationFailed(
+          `The ${harness} CLI wrote to an unexpected configuration location.`,
+        );
+      }
+      // The CLI owns its own fields; options it cannot express (Claude's alwaysLoad)
+      // are merged into the entry it wrote.
+      const missing = Object.entries(expected ?? {}).filter(
+        ([key]) => !(key in objectSchema.parse(written)),
+      );
+      const installed = missing.length
+        ? { ...objectSchema.parse(written), ...Object.fromEntries(missing) }
+        : written;
+      if (missing.length) {
+        nativeServers[MCP_NAME] = installed;
+        nativeConfig[format.mcpKey] = nativeServers;
+        saveConfig(format, mcpPath, nativeConfig);
+      }
+      const owned = registry[mcpPath];
+      if (owned) registry[mcpPath] = { ...owned, installed };
+    }
+  } finally {
+    // Recorded even when a native registration fails: the restored file carries the entry.
+    writeAtomic(registryPath, registry);
+  }
+}
+/**
+ * Wires every selected harness independently: a harness whose CLI registration fails, or
+ * whose files cannot be written, is recorded in `failures` and the run continues with the
+ * next one, so a machine whose `claude` is missing from the uploader's PATH still gets
+ * its Gemini and Codex entries rewritten. Callers decide with `installFailed`.
+ */
 export function install(
   directory: string,
   config: HookConfig,
   options: InstallOptions = {},
   uninstall = false,
-): CliHarness[] {
+): InstallResult {
   const home = options.configHome ?? homedir();
   const registryPath = join(directory, "installations.json");
   const registry: Registry = readJsonOr(registryPath, registrySchema, {});
@@ -292,107 +443,30 @@ export function install(
       )
     : detectHarnesses();
   const url = mcpUrl(config);
+  const failures: InstallFailure[] = [];
   for (const harness of selected) {
-    const definition = HARNESSES[harness];
-    const format = FORMATS[definition.configFormat];
-    const wiring = wiringFor(directory, config, harness);
-    const path = join(home, ...definition.configPath);
-    const output = format.wire(
-      readConfig(format, path) ?? {},
-      wiring,
-      uninstall,
-    );
-    saveConfig(format, path, output);
-    if (definition.instructionsPath)
-      replaceMarkedBlock(
-        join(home, ...definition.instructionsPath),
-        guidanceMarkers,
-        uninstall ? null : agentInstructions,
-      );
-    if (!definition.mcpConfigPath) continue;
-    const mcpPath = join(home, ...definition.mcpConfigPath);
-    const mcpConfig =
-      mcpPath === path ? output : (readConfig(format, mcpPath) ?? {});
-    const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
-    const previous = registry[mcpPath];
-    const expected = definition.mcp(url, config.key);
-    if (uninstall) {
-      if (
-        previous &&
-        JSON.stringify(servers[MCP_NAME]) === JSON.stringify(previous.installed)
-      ) {
-        if (previous.previous !== undefined)
-          servers[MCP_NAME] = previous.previous;
-        else Reflect.deleteProperty(servers, MCP_NAME);
-        Reflect.deleteProperty(registry, mcpPath);
-      }
-    } else {
-      registry[mcpPath] = {
-        installed: expected,
-        ...(previous
-          ? { previous: previous.previous }
-          : servers[MCP_NAME] !== undefined
-            ? { previous: servers[MCP_NAME] }
-            : {}),
-      };
-      servers[MCP_NAME] = expected;
-    }
-    mcpConfig[format.mcpKey] = servers;
-    saveConfig(format, mcpPath, mcpConfig);
-    const nativeCommand = definition.mcpCommand(url, config.key);
     try {
-      if (!uninstall && options.configHome === undefined && nativeCommand) {
-        const registrationConfig = {
-          ...mcpConfig,
-          [format.mcpKey]: Object.fromEntries(
-            Object.entries(servers).filter(([name]) => name !== MCP_NAME),
-          ),
-        };
-        saveConfig(format, mcpPath, registrationConfig);
-        try {
-          execFileSync(definition.binary, nativeCommand, {
-            timeout: 10000,
-            stdio: "ignore",
-          });
-        } catch {
-          saveConfig(format, mcpPath, mcpConfig);
-          throw new Error(`The ${harness} MCP registration failed.`);
-        }
-        chmodSync(mcpPath, 0o600);
-        const nativeConfig = readConfig(format, mcpPath) ?? {};
-        const nativeServers = objectSchema.parse(
-          nativeConfig[format.mcpKey] ?? {},
-        );
-        const written = nativeServers[MCP_NAME];
-        if (written === undefined) {
-          saveConfig(format, mcpPath, mcpConfig);
-          throw new Error(
-            `The ${harness} CLI wrote to an unexpected configuration location.`,
-          );
-        }
-        // The CLI owns its own fields; options it cannot express (Claude's alwaysLoad)
-        // are merged into the entry it wrote.
-        const missing = Object.entries(expected ?? {}).filter(
-          ([key]) => !(key in objectSchema.parse(written)),
-        );
-        const installed = missing.length
-          ? { ...objectSchema.parse(written), ...Object.fromEntries(missing) }
-          : written;
-        if (missing.length) {
-          nativeServers[MCP_NAME] = installed;
-          nativeConfig[format.mcpKey] = nativeServers;
-          saveConfig(format, mcpPath, nativeConfig);
-        }
-        const owned = registry[mcpPath];
-        if (owned) registry[mcpPath] = { ...owned, installed };
-      }
-    } finally {
-      // Recorded even when a native registration fails: the restored file carries the entry.
-      writeAtomic(registryPath, registry);
+      wireHarness(
+        directory,
+        config,
+        harness,
+        home,
+        url,
+        registry,
+        registryPath,
+        options,
+        uninstall,
+      );
+    } catch (error) {
+      failures.push({
+        harness,
+        message: error instanceof Error ? error.message : "unknown error",
+        native: error instanceof NativeRegistrationFailed,
+      });
     }
   }
   if (!options.noShellRc) shellRc(home, config, uninstall);
-  return selected;
+  return { harnesses: selected, failures };
 }
 export async function doctor(
   directory: string,

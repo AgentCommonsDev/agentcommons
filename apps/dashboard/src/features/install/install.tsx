@@ -337,22 +337,8 @@ export function Install() {
             <p className="text-xs leading-relaxed text-muted">
               {copy.install.prepare.repository.description}
             </p>
-            <CodeBlock
-              content="node ~/.agentcommons/hook.js guidance --repo ."
-              language="bash"
-              wrap
-              copyLabel={copy.install.prepare.repository.copyCommand}
-              showCopyLabel
-              testId="repository-guidance-command"
-              className="my-0"
-            />
-            <p
-              className="text-xs leading-relaxed text-muted"
-              data-testid="repository-guidance-off"
-            >
-              {copy.install.prepare.repository.off}
-            </p>
-            {/* The block itself stays behind a native disclosure so the step reads as a step. */}
+            {/* The hook writes the block itself; the manual step stays behind a native
+                disclosure so the default flow is the key and the install command. */}
             <details
               className="text-xs"
               data-testid="repository-guidance-details"
@@ -367,6 +353,24 @@ export function Install() {
                   : copy.install.prepare.repository.show}
               </summary>
               <div className="mt-2 flex flex-col gap-2">
+                <p className="text-xs leading-relaxed text-muted">
+                  {copy.install.prepare.repository.command}
+                </p>
+                <CodeBlock
+                  content="node ~/.agentcommons/hook.js guidance --repo ."
+                  language="bash"
+                  wrap
+                  copyLabel={copy.install.prepare.repository.copyCommand}
+                  showCopyLabel
+                  testId="repository-guidance-command"
+                  className="my-0"
+                />
+                <p
+                  className="text-xs leading-relaxed text-muted"
+                  data-testid="repository-guidance-off"
+                >
+                  {copy.install.prepare.repository.off}
+                </p>
                 <p className="text-xs leading-relaxed text-muted">
                   {copy.install.prepare.repository.manual}
                 </p>
