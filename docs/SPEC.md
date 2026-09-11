@@ -2471,8 +2471,15 @@ date/repository filters for historical health; current queue/spend snapshots rem
 organization-wide. Its installations table compares each installation's `hook_sha256`
 with `/hook/manifest.json` and marks it "Current", "Update pending" (the installed
 digest differs; the shim replaces itself within an hour, §6.2) or "Unknown" (no upload
-has reported a digest yet). It does not duplicate dashboard adoption, reuse or outcome
-panels.
+has reported a digest yet). Above the table a rollout summary answers "did everyone
+update?" from `GET /admin/installations`: the served bundle version and how many
+installations are on that bundle, behind it, or have reported no digest. That admin
+read lists installations directly from the control-plane `installation` table (organization
+scoped, audited, one PostgreSQL scan carrying the page rows and the freshness totals as
+window counts), derives each row's `up_to_date` against the served manifest digest, and is
+exposed to agents as the `admin_installations_list` tool in the `administration` group so
+the same question is answerable over MCP (§8.2). It does not duplicate dashboard adoption,
+reuse or outcome panels.
 **Management MCP** (`/app/admin/mcp`, owners and admins; members get no navigation entry and
 the admin access message) sets up the `agentcommons-admin` server of §8.4: two sentences on
 what it is, a "Create management key" form (name; the key is created through the same
@@ -4270,6 +4277,7 @@ the complete schemas are the route's in the OpenAPI document.
 | `admin_keys_list`              | List organization API keys.                                                                | `limit`, `cursor`, `sort`, `order`, `filters`                                           |
 | `admin_key_revoke`             | Revoke an organization API key.                                                            | `id`, `reason`                                                                          |
 | `admin_sessions_list`          | List every session of the organization for moderation.                                     | `limit`, `cursor`, `sort`, `order`, `filters`, `roots_only`                             |
+| `admin_installations_list`     | List installations with hook bundle heal status against the served manifest.               | `limit`, `cursor`, `sort`, `order`, `filters`                                           |
 | `admin_installation_set_tools` | Enable or disable installation MCP tools.                                                  | `id`, `reason`, `enabled`                                                               |
 | `admin_metrics_list`           | Read filtered organization metrics.                                                        | `group`, `limit`, `cursor`, `sort`, `order`, `filters`                                  |
 | `admin_policies_list`          | List redaction policies.                                                                   | `limit`, `cursor`, `sort`, `order`, `filters`                                           |

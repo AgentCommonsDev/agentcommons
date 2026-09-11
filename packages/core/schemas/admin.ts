@@ -22,6 +22,7 @@ import {
   reasonSchema,
   sessionIdSchema,
   sessionStatusSchema,
+  sha256Schema,
   transportSchema,
   utcDateTimeSchema,
   visibilitySchema,
@@ -52,6 +53,86 @@ export const visibilityInputSchema = z.strictObject({
 export const installationToolsOutputSchema = z.strictObject({
   installation_id: sessionIdSchema,
   tools_enabled: z.boolean(),
+});
+const installation = (column: string) =>
+  catalogDescription("installations", column);
+/**
+ * One installation as the admin heal view lists it: its control-plane identity, the hook
+ * bundle digest of its latest upload and whether that digest matches the bundle this
+ * instance serves at `/hook/manifest.json` (§10). `up_to_date` is null when the machine
+ * has reported no digest yet or the instance serves no manifest, so a comparison that
+ * cannot be made is never reported as behind.
+ */
+export const installationHealSchema = z.strictObject({
+  installation_id: sessionIdSchema.describe(installation("installation_id")),
+  hostname: z.string().describe(installation("hostname")),
+  os_user: z.string().describe(installation("os_user")),
+  platform: z.string().describe(installation("platform")),
+  arch: z.string().describe(installation("arch")),
+  tools_enabled: z.boolean().describe(installation("tools_enabled")),
+  hook_sha256: sha256Schema.nullable().describe(installation("hook_sha256")),
+  up_to_date: z
+    .boolean()
+    .nullable()
+    .describe(
+      "True when this machine's hook digest matches the served manifest; false when it reports an older digest; null when it has reported no digest or no manifest is served",
+    ),
+  first_seen_at: utcDateTimeSchema.describe(installation("first_seen_at")),
+  last_seen_at: utcDateTimeSchema.describe(installation("last_seen_at")),
+});
+export const installationHealSortKeys = [
+  "hostname",
+  "last_seen_at",
+  "first_seen_at",
+  "up_to_date",
+  "tools_enabled",
+] as const;
+export const installationHealInputSchema = createListInputSchema(
+  installationHealSortKeys,
+).extend({
+  filters: z
+    .strictObject({
+      hostname: z
+        .string()
+        .trim()
+        .min(1)
+        .max(256)
+        .optional()
+        .describe("Machines whose hostname contains this text (ignoring case)"),
+    })
+    .default({}),
+});
+/** The hook bundle this instance serves, that the heal view compares each machine with. */
+export const servedManifestSchema = z.strictObject({
+  version: z.string().describe("The served bundle version label"),
+  sha256: sha256Schema.describe("The served hook.js digest"),
+});
+/** Bundle-freshness counts over every installation the filters match, whatever the page. */
+export const installationHealTotalSchema = z.strictObject({
+  installations: nonnegativeIntegerSchema.describe(
+    "Installations the filters match across every page",
+  ),
+  up_to_date: nonnegativeIntegerSchema.describe(
+    "Installations whose hook digest matches the served bundle",
+  ),
+  behind: nonnegativeIntegerSchema.describe(
+    "Installations reporting an older hook digest",
+  ),
+  unknown: nonnegativeIntegerSchema.describe(
+    "Installations with no reported digest, or every installation when no bundle is served",
+  ),
+});
+export const installationHealOutputSchema = paginatedOutput(
+  installationHealSchema,
+).extend({
+  manifest: servedManifestSchema
+    .nullable()
+    .describe(
+      "The hook bundle this instance serves at /hook/manifest.json, or null when none is served",
+    ),
+  total: installationHealTotalSchema.describe(
+    "Freshness counts over every matching installation, unchanged by the page window",
+  ),
 });
 export const purgeInputSchema = z.strictObject({
   session_id: sessionIdSchema,

@@ -542,6 +542,77 @@ function HookState({
     </span>
   );
 }
+/**
+ * The rollout heal summary: how many machines run the bundle this server serves, how many
+ * are behind, and how many have reported no digest, with the served bundle version. The
+ * per-machine breakdown is the table below; this answers "did everyone update?" at a glance.
+ */
+export function InstallationHealSummary() {
+  const { organization } = useWorkspace();
+  const words = copy.admin.installations.heal;
+  const query = useQuery({
+    queryKey: [organization.id, "admin", "installations", "heal"],
+    queryFn: async ({ signal }) =>
+      unwrap(
+        await api.GET("/api/v1/admin/installations", {
+          params: { query: { limit: 1, format: "json" } },
+          signal,
+        }),
+      ),
+    refetchInterval: 30_000,
+  });
+  return (
+    <section className="flex flex-col gap-3" aria-label={words.title}>
+      <div>
+        <h2 className="text-[15px] leading-tight font-semibold">
+          {words.title}
+        </h2>
+        <p className="mt-1 text-[13px] leading-relaxed text-muted">
+          {words.hint}
+        </p>
+      </div>
+      <QueryState query={query} rows={1}>
+        {(data) => (
+          <StatGrid
+            data-testid="admin-installations-heal"
+            className="sm:grid-cols-4"
+          >
+            <Stat
+              label={words.bundle}
+              value={
+                data.manifest ? (
+                  <span
+                    className="font-mono text-lg"
+                    title={data.manifest.sha256}
+                  >
+                    {data.manifest.version}
+                  </span>
+                ) : (
+                  <span className="text-lg">{words.bundleNone}</span>
+                )
+              }
+            />
+            <Stat
+              label={words.current}
+              value={number(data.total.up_to_date)}
+              hint={words.currentHint(data.total.installations)}
+            />
+            <Stat
+              label={words.behind}
+              value={number(data.total.behind)}
+              hint={words.behindHint}
+            />
+            <Stat
+              label={words.unknown}
+              value={number(data.total.unknown)}
+              hint={words.unknownHint}
+            />
+          </StatGrid>
+        )}
+      </QueryState>
+    </section>
+  );
+}
 export function InstallationsCard() {
   const { organization } = useWorkspace();
   const client = useQueryClient();

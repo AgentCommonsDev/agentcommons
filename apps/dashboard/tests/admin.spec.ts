@@ -918,6 +918,53 @@ test("Status: installations are marked current or update pending against the hoo
   await accessible(page);
 });
 
+// @req R-DASH-46
+test("Status: the rollout summary reports the served bundle version and the on-current, behind and no-digest counts", async ({
+  page,
+  request,
+}, info) => {
+  const heal = copy.admin.installations.heal;
+  const served = await request.get("/hook/manifest.json");
+  expect(served.ok(), await served.text()).toBe(true);
+  const manifest = hookManifestSchema.parse(await served.json());
+  const state = await fixture();
+  // A machine reporting the served digest, so the on-current count is at least one.
+  const hostname = `heal-current-${info.project.name}`;
+  const accepted = await request.post("/api/v1/ingest", {
+    headers: { authorization: `Bearer ${state.ingestKey}` },
+    data: ingestEnvelopeSchema.parse({
+      ...state.liveEnvelope,
+      hook: {
+        sha256: manifest.sha256,
+        extensionSha256: manifest.extensionSha256,
+      },
+      harnessSessionId: randomUUID(),
+      installationId: randomUUID(),
+      batchId: randomUUID(),
+      sentAt: new Date().toISOString(),
+      context: {
+        ...state.liveEnvelope.context,
+        installation: { ...state.liveEnvelope.context.installation, hostname },
+      },
+    }),
+  });
+  expect(accepted.status(), await accepted.text()).toBe(202);
+  await waitForSession(
+    request,
+    z.object({ sessionId: z.uuid() }).parse(await accepted.json()).sessionId,
+    state.ingestKey,
+  );
+  await page.goto(paths.admin.status);
+  const summary = page.getByTestId("admin-installations-heal");
+  await expect(summary).toBeVisible();
+  await expect(
+    summary.getByText(manifest.version, { exact: true }),
+  ).toBeVisible();
+  for (const label of [heal.bundle, heal.current, heal.behind, heal.unknown])
+    await expect(summary.getByText(label, { exact: true })).toBeVisible();
+  await accessible(page);
+});
+
 // @req R-DASH-29 @req R-EMB-06 @req R-ORG-11 @req R-DASH-25
 test("Settings: embeddings confirm before switching, sign-in domains explain their state and the default dashboard round-trips", async ({
   page,
@@ -1077,7 +1124,7 @@ test("Billing and new organizations show the hosted-only state on a customer ins
   ).toHaveAttribute("href", paths.home);
 });
 
-// @req R-ORG-10 @req R-ORG-08 @req R-DASH-07
+// @req R-ORG-10 @req R-ORG-08 @req R-DASH-07 @req R-DASH-46
 test("a member opening an admin route sees the access message and the page makes no admin requests", async ({
   page,
   context,

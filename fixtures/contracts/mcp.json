@@ -1347,6 +1347,70 @@
       }
     },
     {
+      "name": "admin_installations_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List installations with hook bundle heal status against the served manifest.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "hostname",
+              "last_seen_at",
+              "first_seen_at",
+              "up_to_date",
+              "tools_enabled"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "hostname": {
+                "description": "Machines whose hostname contains this text (ignoring case)",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "admin_installation_set_tools",
       "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Enable or disable installation MCP tools.",
       "inputSchema": {

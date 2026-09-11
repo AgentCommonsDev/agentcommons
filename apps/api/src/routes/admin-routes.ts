@@ -223,6 +223,19 @@ export const adminRoutes: readonly AdminRoute[] = [
       services.admin.setVisibility(ctx, withId(input.params.id, input.body)),
   }),
   adminRoute({
+    method: "GET",
+    path: "/admin/installations",
+    summary:
+      "List installations with hook bundle heal status against the served manifest",
+    query: schema.installationHealInputSchema,
+    output: schema.installationHealOutputSchema,
+    csv: true,
+    tool: "admin_installations_list",
+    readOnly: true,
+    execute: (services, ctx, input) =>
+      services.admin.installations(ctx, input.query),
+  }),
+  adminRoute({
     method: "POST",
     path: "/admin/installations/:id/tools",
     summary: "Enable or disable installation MCP tools",

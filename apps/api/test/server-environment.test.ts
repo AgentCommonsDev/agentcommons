@@ -15,10 +15,16 @@ const base = {
 
 // @req R-INF-10
 it("reports the release baked into the image and the host's update setting, defaulting to a development build that updates", () => {
+  // The manifest path defaults to the packaged file, an absolute path resolved from the
+  // server module, so match its stable suffix rather than the machine-specific prefix.
+  const packagedManifest: unknown = expect.stringContaining(
+    "public/hook/manifest.json",
+  );
   expect(environment(base).server).toEqual({
     version: "development",
     autoUpdate: true,
     updateStateFile: "/var/lib/agentcommons/update-state",
+    hookManifestFile: packagedManifest,
   });
   expect(
     environment({
@@ -31,6 +37,7 @@ it("reports the release baked into the image and the host's update setting, defa
     version: "0123456789ab",
     autoUpdate: false,
     updateStateFile: "/mnt/updater/update-state",
+    hookManifestFile: packagedManifest,
   });
   // An empty value from a rendered .env means "unset", not an empty version.
   expect(

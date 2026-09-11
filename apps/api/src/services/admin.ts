@@ -20,6 +20,9 @@ import {
   moderationInputSchema,
   moderationOutputSchema,
   statusOutputSchema,
+  installationHealInputSchema,
+  installationHealOutputSchema,
+  installationHealTotalSchema,
   redactionRescanInputSchema,
   jobOutputSchema,
 } from "@agentcommons/core";
@@ -27,7 +30,7 @@ import type { AuditService } from "./audit.js";
 import type { CursorCodec } from "./cursor.js";
 import type { TraceQueue } from "./trace-outbox.js";
 import { lockOrganization } from "./auth.js";
-import { readUpdaterState } from "./health.js";
+import { readUpdaterState, readServedManifest } from "./health.js";
 import { mutationOperation } from "./mutation.js";
 import { readOperation } from "./read-operation.js";
 import { offsetPage, wireValue } from "./read-budget.js";
@@ -102,6 +105,35 @@ const moderationRowSchema = z.object({
   total: z.bigint(),
 });
 const countRowSchema = z.object({ count: z.bigint() });
+/** Sort keys of the installation heal list as columns/derived aliases of the scan. */
+const healSort = {
+  hostname: "hostname",
+  last_seen_at: "last_seen_at",
+  first_seen_at: "first_seen_at",
+  up_to_date: "up_to_date",
+  tools_enabled: "tools_enabled",
+} as const;
+/** One heal row as PostgreSQL returns it, with the freshness counts as window aggregates. */
+const healRowSchema = z.object({
+  installation_id: z.string(),
+  hostname: z.string(),
+  os_user: z.string(),
+  platform: z.string(),
+  arch: z.string(),
+  tools_enabled: z.boolean(),
+  hook_sha256: z.string().nullable(),
+  up_to_date: z.boolean().nullable(),
+  first_seen_at: z.date(),
+  last_seen_at: z.date(),
+  total: z.bigint(),
+  up_to_date_count: z.bigint(),
+  unknown_count: z.bigint(),
+});
+const healTotalsRowSchema = z.object({
+  total: z.bigint(),
+  up_to_date_count: z.bigint(),
+  unknown_count: z.bigint(),
+});
 /** Derived session fields a purge resets; the manifest and the audit detail list the same set. */
 const purgeResetFields = [
   "normalizer_context",
@@ -129,6 +161,8 @@ export class AdminService {
         version: string;
         autoUpdate: boolean;
         updateStateFile?: string;
+        /** The served hook manifest file the heal view compares each machine with (§10). */
+        hookManifestFile?: string;
       };
     },
   ) {
@@ -663,6 +697,130 @@ export class AdminService {
       },
       {
         permission: "admin",
+      },
+    );
+  }
+  /**
+   * Every installation the organization holds, with the hook bundle digest of its latest
+   * upload and whether that digest matches the bundle this instance serves (§10), so an
+   * admin sees the rollout heal state the deploy left. One control scan per page carries
+   * the rows and, as window aggregates, the freshness counts over the whole matching set;
+   * only an empty page past the last row costs a second aggregate. The served manifest is
+   * read once per request from the same file the static route serves.
+   */
+  installations(context: ServiceContext, input: unknown) {
+    return readOperation(
+      this.dependencies.audit,
+      context,
+      {
+        action: "installations.heal",
+        resourceType: "installation",
+        detail: input ?? null,
+      },
+      async (caller) => {
+        const request = installationHealInputSchema.parse(input);
+        const manifest = this.dependencies.server.hookManifestFile
+          ? await readServedManifest(this.dependencies.server.hookManifestFile)
+          : null;
+        const sha = manifest?.sha256 ?? null;
+        const binding = wireValue({
+          operation: "installations.heal",
+          organization: caller.organizationId,
+          sha,
+          ...request,
+          cursor: null,
+        });
+        const where = (extra: readonly Prisma.Sql[] = []) =>
+          Prisma.sql`FROM installation WHERE ${Prisma.join(
+            [
+              Prisma.sql`organization_id=${caller.organizationId}`,
+              ...(request.filters.hostname === undefined
+                ? []
+                : [
+                    Prisma.sql`position(lower(${request.filters.hostname}) in lower(hostname))>0`,
+                  ]),
+              ...extra,
+            ],
+            " AND ",
+          )}`;
+        // The served digest bounds every freshness comparison; a null digest (no manifest)
+        // makes each row and count indeterminate, never behind.
+        const upToDate = Prisma.sql`(CASE WHEN ${sha}::text IS NULL OR hook_sha256 IS NULL THEN NULL ELSE hook_sha256=${sha} END)`;
+        const current = Prisma.sql`(${sha}::text IS NOT NULL AND hook_sha256=${sha})`;
+        const indeterminate = Prisma.sql`(${sha}::text IS NULL OR hook_sha256 IS NULL)`;
+        let totals: z.infer<typeof installationHealTotalSchema> | undefined;
+        const page = await offsetPage(
+          this.dependencies.cursors,
+          binding,
+          request.cursor,
+          request.limit,
+          async (offset, take) => {
+            const order = Prisma.raw(
+              `${healSort[request.sort ?? "last_seen_at"]} ${request.order === "asc" ? "ASC" : "DESC"} NULLS LAST`,
+            );
+            const rows = healRowSchema
+              .array()
+              .parse(
+                await this.dependencies.prisma.$queryRaw(
+                  Prisma.sql`SELECT id::text AS installation_id,hostname,os_user,platform,arch,tools_enabled,hook_sha256,${upToDate} AS up_to_date,first_seen_at,last_seen_at,count(*) OVER () AS total,count(*) FILTER (WHERE ${current}) OVER () AS up_to_date_count,count(*) FILTER (WHERE ${indeterminate}) OVER () AS unknown_count ${where()} ORDER BY ${order},id LIMIT ${take} OFFSET ${offset}`,
+                ),
+              );
+            const first = rows[0];
+            const counts =
+              first !== undefined
+                ? {
+                    total: first.total,
+                    up_to_date_count: first.up_to_date_count,
+                    unknown_count: first.unknown_count,
+                  }
+                : offset === 0
+                  ? { total: 0n, up_to_date_count: 0n, unknown_count: 0n }
+                  : healTotalsRowSchema.parse(
+                      (
+                        await this.dependencies.prisma.$queryRaw<unknown[]>(
+                          Prisma.sql`SELECT count(*) AS total,count(*) FILTER (WHERE ${current}) AS up_to_date_count,count(*) FILTER (WHERE ${indeterminate}) AS unknown_count ${where()}`,
+                        )
+                      )[0],
+                    );
+            const total = Number(counts.total);
+            const upToDateCount = Number(counts.up_to_date_count);
+            const unknown = Number(counts.unknown_count);
+            totals = installationHealTotalSchema.parse({
+              installations: total,
+              up_to_date: upToDateCount,
+              behind: total - upToDateCount - unknown,
+              unknown,
+            });
+            return rows.map((row) => ({
+              installation_id: row.installation_id,
+              hostname: row.hostname,
+              os_user: row.os_user,
+              platform: row.platform,
+              arch: row.arch,
+              tools_enabled: row.tools_enabled,
+              hook_sha256: row.hook_sha256,
+              up_to_date: row.up_to_date,
+              first_seen_at: row.first_seen_at.toISOString(),
+              last_seen_at: row.last_seen_at.toISOString(),
+            }));
+          },
+        );
+        if (totals === undefined)
+          throw new Error("The installation heal totals are unavailable.");
+        return installationHealOutputSchema.parse({
+          ...page,
+          manifest: manifest
+            ? { version: manifest.version, sha256: manifest.sha256 }
+            : null,
+          total: totals,
+        });
+      },
+      {
+        permission: "admin",
+        describeResult: (result) => ({
+          row_count: result.items.length,
+          total: result.total,
+        }),
       },
     );
   }

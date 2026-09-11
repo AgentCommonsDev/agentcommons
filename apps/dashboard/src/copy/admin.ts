@@ -392,5 +392,18 @@ export const adminCopy = {
     csvName: "installations.csv",
     empty: "No installations yet",
     emptyHint: "Install the hook on a machine to see it here.",
+    heal: {
+      title: "Hook bundle rollout",
+      hint: "How many machines run the hook bundle this server now serves.",
+      bundle: "Served bundle",
+      bundleNone: "No bundle served",
+      current: "On current bundle",
+      behind: "Behind",
+      unknown: "No digest yet",
+      currentHint: (total: number) =>
+        `of ${String(total)} ${total === 1 ? "installation" : "installations"}`,
+      behindHint: "Update on their next upload",
+      unknownHint: "No upload has reported a digest",
+    },
   },
 } as const;

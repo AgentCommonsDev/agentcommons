@@ -704,6 +704,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/admin/installations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List installations with hook bundle heal status against the served manifest */
+    get: operations["get_admin_installations"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/installations/{id}/tools": {
     parameters: {
       query?: never;
@@ -6812,6 +6829,123 @@ export interface operations {
             id: string;
             updated: boolean;
           };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_installations: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+        sort?:
+          | "hostname"
+          | "last_seen_at"
+          | "first_seen_at"
+          | "up_to_date"
+          | "tools_enabled";
+        order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
+        format?: "json" | "csv";
+        filters?: {
+          /** @description Machines whose hostname contains this text (ignoring case) */
+          hostname?: string;
+        };
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            items: {
+              /**
+               * Format: uuid
+               * @description Install id; matches sessions.installation_id
+               */
+              installation_id: string;
+              /** @description Machine hostname */
+              hostname: string;
+              /** @description Operating-system user */
+              os_user: string;
+              /** @description Operating system, such as darwin or linux */
+              platform: string;
+              /** @description CPU architecture */
+              arch: string;
+              /** @description Whether the AgentCommons MCP tools are installed there */
+              tools_enabled: boolean;
+              /** @description SHA-256 of the installed hook script */
+              hook_sha256: string | null;
+              /** @description True when this machine's hook digest matches the served manifest; false when it reports an older digest; null when it has reported no digest or no manifest is served */
+              up_to_date: boolean | null;
+              /**
+               * Format: date-time
+               * @description Earliest session start
+               */
+              first_seen_at: string;
+              /**
+               * Format: date-time
+               * @description Latest session activity
+               */
+              last_seen_at: string;
+            }[];
+            /** @default null */
+            cursor: string | null;
+            /** @description The hook bundle this instance serves at /hook/manifest.json, or null when none is served */
+            manifest: {
+              /** @description The served bundle version label */
+              version: string;
+              /** @description The served hook.js digest */
+              sha256: string;
+            } | null;
+            /** @description Freshness counts over every matching installation, unchanged by the page window */
+            total: {
+              /** @description Installations the filters match across every page */
+              installations: number;
+              /** @description Installations whose hook digest matches the served bundle */
+              up_to_date: number;
+              /** @description Installations reporting an older hook digest */
+              behind: number;
+              /** @description Installations with no reported digest, or every installation when no bundle is served */
+              unknown: number;
+            };
+          };
+          "text/csv": string;
         };
       };
       /** @description Default Response */

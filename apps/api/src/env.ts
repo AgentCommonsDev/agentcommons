@@ -5,6 +5,7 @@ import {
 import { emailTransportSchema } from "./auth/mail.js";
 import { EMBEDDING_MODEL } from "./embeddings/provider.js";
 import { createEnv } from "@t3-oss/env-core";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   calendarUrlSchema,
@@ -118,6 +119,16 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
         .string()
         .min(1)
         .default("/var/lib/agentcommons/update-state"),
+      // The served hook manifest the installation heal view compares each machine with;
+      // the same file the static route serves at `/hook/manifest.json` (§10).
+      HOOK_MANIFEST_FILE: z
+        .string()
+        .min(1)
+        .default(
+          fileURLToPath(
+            new URL("../public/hook/manifest.json", import.meta.url),
+          ),
+        ),
     },
     runtimeEnv,
     emptyStringAsUndefined: true,
@@ -134,6 +145,7 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
       version: env.AGENTCOMMONS_VERSION,
       autoUpdate: env.AUTO_UPDATE,
       updateStateFile: env.UPDATE_STATE_FILE,
+      hookManifestFile: env.HOOK_MANIFEST_FILE,
     },
     embeddingProvider,
     auth: authEnvironment(runtimeEnv).auth,

@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client as PgClient } from "pg";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -26,6 +29,9 @@ let owner: Awaited<ReturnType<typeof provisionOrganization>>;
 let other: Awaited<ReturnType<typeof provisionOrganization>>;
 let member: Awaited<ReturnType<typeof provisionMember>>;
 let address: string;
+/** The digest the served manifest advertises, so the heal view can derive `up_to_date`. */
+const servedSha = "c".repeat(64);
+const servedVersion = "0.1.0-rollout-test";
 const { defer, release } = releaser();
 const headers = (key: string) => ({ authorization: `Bearer ${key}` });
 function envelope(
@@ -91,9 +97,21 @@ beforeAll(async () => {
   owner = await provisionOrganization(db, "rollout-primary");
   other = await provisionOrganization(db, "rollout-other");
   member = await provisionMember(db, owner.owner, "rollout-member@example.com");
+  const manifestDir = await mkdtemp(join(tmpdir(), "rollout-manifest-"));
+  const manifestFile = join(manifestDir, "manifest.json");
+  await writeFile(
+    manifestFile,
+    JSON.stringify({
+      version: servedVersion,
+      sha256: servedSha,
+      url: `/hook/${servedVersion}/hook.js`,
+      extensionSha256: "d".repeat(64),
+      extensionUrl: `/hook/${servedVersion}/pi-extension.mjs`,
+    }),
+  );
   const started = await startApp(
     db,
-    { TRUST_PROXY: "loopback" },
+    { TRUST_PROXY: "loopback", HOOK_MANIFEST_FILE: manifestFile },
     { listen: true },
   );
   defer(() => started.close());
@@ -380,6 +398,91 @@ it("stores the envelope hook digest per installation and exposes it in the insta
       })
       .parse(response.json()).items,
   ).toEqual([{ installation_id: installation, hook_sha256: "c".repeat(64) }]);
+});
+
+// @req R-DASH-45
+it("lists installation heal status: derived up_to_date, organization-wide freshness totals, the served manifest, admin-gated and organization-scoped", async () => {
+  const organizationId = z.string().parse(owner.context.caller?.organizationId);
+  const prefix = `heal-${randomUUID().slice(0, 8)}`;
+  const current = randomUUID();
+  const behind = randomUUID();
+  const unknown = randomUUID();
+  await ingest(owner.key, current, {
+    hostname: `${prefix}-current`,
+    hookSha256: servedSha,
+  });
+  await ingest(owner.key, behind, {
+    hostname: `${prefix}-behind`,
+    hookSha256: "b".repeat(64),
+  });
+  await ingest(owner.key, unknown, {
+    hostname: `${prefix}-unknown`,
+    hookSha256: servedSha,
+  });
+  // A machine that has reported no digest is indeterminate, never behind.
+  await db.prisma.installation.update({
+    where: { organizationId_id: { organizationId, id: unknown } },
+    data: { hookSha256: null },
+  });
+  const listed = await runtime.services.admin.installations(owner.owner, {
+    filters: { hostname: prefix },
+    sort: "hostname",
+    order: "asc",
+  });
+  expect(listed.result.manifest).toEqual({
+    version: servedVersion,
+    sha256: servedSha,
+  });
+  expect(listed.result.total).toEqual({
+    installations: 3,
+    up_to_date: 1,
+    behind: 1,
+    unknown: 1,
+  });
+  expect(
+    listed.result.items.map((row) => [
+      row.installation_id,
+      row.hook_sha256,
+      row.up_to_date,
+    ]),
+  ).toEqual([
+    [behind, "b".repeat(64), false],
+    [current, servedSha, true],
+    [unknown, null, null],
+  ]);
+  // The read writes one audit event as an admin read of the installations.
+  const audit = await db.prisma.auditEvent.findFirstOrThrow({
+    where: { organizationId, action: "installations.heal" },
+    orderBy: { ts: "desc" },
+  });
+  expect(audit.statusCode).toBe(200);
+  // Effective admin authority is required: a member key is refused.
+  const denied = await app.inject({
+    method: "GET",
+    url: "/api/v1/admin/installations",
+    headers: headers(member.key),
+  });
+  expect(denied.statusCode).toBe(403);
+  const query = new URLSearchParams({
+    filters: JSON.stringify({ hostname: prefix }),
+  });
+  const allowed = await app.inject({
+    method: "GET",
+    url: `/api/v1/admin/installations?${query.toString()}`,
+    headers: headers(owner.key),
+  });
+  expect(allowed.statusCode, allowed.body).toBe(200);
+  expect(
+    z
+      .object({ total: z.object({ installations: z.number() }) })
+      .parse(allowed.json()).total.installations,
+  ).toBe(3);
+  // Another organization's admin sees none of these installations.
+  const foreign = await runtime.services.admin.installations(other.owner, {
+    filters: { hostname: prefix },
+  });
+  expect(foreign.result.items).toEqual([]);
+  expect(foreign.result.total.installations).toBe(0);
 });
 
 it("normalizes typed audit detail before redaction, retains bounds, and rejects storage failure", async () => {

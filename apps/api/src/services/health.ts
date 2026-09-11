@@ -1,10 +1,39 @@
 import { readFile } from "node:fs/promises";
-import { updaterStateSchema } from "@agentcommons/core";
+import { hookManifestSchema, updaterStateSchema } from "@agentcommons/core";
+import type { HookManifest } from "@agentcommons/core/schemas/ingest";
 import type { PrismaClient } from "@agentcommons/db";
 import type { TraceRepository } from "@agentcommons/traces";
 import { z } from "zod";
 
 type UpdaterState = z.infer<typeof updaterStateSchema>;
+
+/**
+ * The hook bundle this instance serves at `/hook/manifest.json`, read from the same file
+ * the static route serves, so the installation heal view (§10) compares each machine's
+ * reported digest against exactly what a shim would download. Null when the file is absent
+ * (a build that shipped no bundle, or a test with none configured) or does not parse, so a
+ * missing manifest reads as "no comparison possible" rather than failing the read.
+ */
+export async function readServedManifest(
+  path: string,
+): Promise<HookManifest | null> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+  const parsed = hookManifestSchema.safeParse(
+    ((): unknown => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    })(),
+  );
+  return parsed.success ? parsed.data : null;
+}
 const integerText = z.coerce.number().int().nonnegative();
 /**
  * The host updater's `KEY=VALUE` state file (`scripts/self-host/lib.sh` `record_state`),

@@ -10,6 +10,7 @@ import { Input } from "../../components/ui/input";
 import { FilterBar, dateToIso } from "../../features/admin/filters";
 import {
   HealthMetricsCard,
+  InstallationHealSummary,
   InstallationsCard,
   SnapshotCards,
   type MetricFilters,
@@ -159,6 +160,7 @@ export function StatusPage() {
         }
       />
       <SnapshotCards embeddings={embeddings} />
+      <InstallationHealSummary />
       <InstallationsCard />
     </>
   );
