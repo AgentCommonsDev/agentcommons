@@ -272,6 +272,26 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
     },
   },
   {
+    id: "tokens_per_person",
+    title: "Tokens per person",
+    description:
+      "The 15 members who consumed the most tokens (input plus output).",
+    variables: standard,
+    tile: {
+      id: "tokens_per_person",
+      type: "chart",
+      title: "Tokens per person",
+      layout: layout(6, 6),
+      sql: `SELECT ${person} AS person, sum(input_tokens + output_tokens) AS tokens FROM sessions WHERE ${scope} GROUP BY person ORDER BY tokens DESC, person LIMIT 15`,
+      unit: "count",
+      chart: {
+        series: [{ type: "bar", encode: { x: "tokens", y: "person" } }],
+        xAxis: { type: "value" },
+        yAxis: { type: "category", inverse: true },
+      },
+    },
+  },
+  {
     id: "activity_per_person",
     title: "Activity per person",
     description:

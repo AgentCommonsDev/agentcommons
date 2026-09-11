@@ -43,7 +43,7 @@ it("ships two valid built-in dashboards whose tile queries pass the guard with t
       "captured_sessions",
       "messages_total",
       "tool_calls_total",
-      "sessions_per_person",
+      "tokens_per_person",
       "activity_per_person",
       "sessions_per_day_by_person",
       "harness_per_person",

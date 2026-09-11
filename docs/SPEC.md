@@ -2317,8 +2317,9 @@ returns each tile's rows or its error so one broken tile does not blank the page
 editor offers starter tile templates (captured sessions, sessions that searched, sessions
 reusing prior work, reuse rate, weekly reuse trend, sessions per day, harness share, top
 tools, top repositories, most reused sessions, active people, messages, tool calls,
-sessions per person, activity per person, sessions per day by person, repositories per
-person, average session duration per person, coding tools per person, recent sessions),
+sessions per person, tokens per person, activity per person, sessions per day by person,
+repositories per person, average session duration per person, coding tools per person,
+recent sessions),
 every one of which is a tile of a built-in dashboard, a tile inspector with the
 SQL editor and schema browser, chart option JSON, and a JSON view of the whole definition
 with the same validation. No custom scripts or executable chart declarations.

@@ -53,18 +53,18 @@ export const teamOverviewDashboard: BuiltinDashboard = {
   ]),
 };
 
-/** Who is doing what: per-person sessions, messages, tool calls, repositories and coding tools. */
+/** Who is doing what: per-person sessions, messages, tool calls, tokens, repositories and coding tools. */
 export const teamActivityDashboard: BuiltinDashboard = {
   id: builtinDashboardIds.teamActivity,
   name: "Team activity",
   description:
-    "Who is doing what across coding agents: sessions, messages, tool calls and repositories per person for the selected time range and repositories.",
+    "Who is doing what across coding agents: sessions, messages, tool calls, tokens and repositories per person for the selected time range and repositories.",
   definition: definition([
     place("active_people", { x: 0, y: 0, w: 3, h: 2 }),
     place("captured_sessions", { x: 3, y: 0, w: 3, h: 2 }),
     place("messages_total", { x: 6, y: 0, w: 3, h: 2 }),
     place("tool_calls_total", { x: 9, y: 0, w: 3, h: 2 }),
-    place("sessions_per_person", { x: 0, y: 2, w: 6, h: 6 }),
+    place("tokens_per_person", { x: 0, y: 2, w: 6, h: 6 }),
     place("activity_per_person", { x: 6, y: 2, w: 6, h: 6 }),
     place("sessions_per_day_by_person", { x: 0, y: 8, w: 8, h: 5 }),
     place("harness_per_person", { x: 8, y: 8, w: 4, h: 5 }),

@@ -687,27 +687,40 @@ it("ships the built-in Team activity as a second read-only, non-default dashboar
   );
   expect(Number(tileValue(rendered, "tool_calls_total"))).toBe(total);
 
-  const perPerson = tileRows(rendered, "sessions_per_person");
-  expect(perPerson).toHaveLength(2);
-  expect(perPerson[0]?.person).toBe(memberPerson);
-  expect(num(perPerson[0]?.sessions)).toBe(3);
-  expect(num(perPerson[1]?.sessions)).toBe(total - 3);
-  const ownerPerson = z.string().parse(perPerson[1]?.person);
-  expect(ownerPerson).not.toBe(memberPerson);
-
   const activity = tileRows(rendered, "activity_per_person");
-  expect(activity.map((row) => row.person)).toEqual([
-    memberPerson,
-    ownerPerson,
-  ]);
+  expect(activity).toHaveLength(2);
+  expect(activity[0]?.person).toBe(memberPerson);
+  const ownerPerson = z.string().parse(activity[1]?.person);
+  expect(ownerPerson).not.toBe(memberPerson);
   expect(
     ["sessions", "tool_calls", "repositories"].map((column) =>
       num(activity[0]?.[column]),
     ),
   ).toEqual([3, 3, 2]);
+  expect(num(activity[1]?.sessions)).toBe(total - 3);
   expect(num(activity[0]?.messages)).toBeGreaterThanOrEqual(6);
   expect(num(activity[0]?.tokens)).toBeGreaterThanOrEqual(0);
   expect(z.string().parse(activity[0]?.last_active)).toMatch(/^20\d\d-/);
+
+  // The tokens-per-person chart ranks members by input plus output tokens and agrees
+  // with the activity table's per-person tokens column.
+  const tokensPerPerson = tileRows(rendered, "tokens_per_person");
+  expect(tokensPerPerson).toHaveLength(2);
+  const tokensByPerson = new Map(
+    tokensPerPerson.map((row) => [
+      z.string().parse(row.person),
+      num(row.tokens),
+    ]),
+  );
+  expect(new Set(tokensByPerson.keys())).toEqual(
+    new Set([memberPerson, ownerPerson]),
+  );
+  for (const value of tokensByPerson.values())
+    expect(value).toBeGreaterThanOrEqual(0);
+  expect(tokensByPerson.get(memberPerson)).toBe(num(activity[0]?.tokens));
+  expect(num(tokensPerPerson[0]?.tokens)).toBeGreaterThanOrEqual(
+    num(tokensPerPerson[1]?.tokens),
+  );
 
   const daily = tileRows(rendered, "sessions_per_day_by_person");
   expect(daily.reduce((sum, row) => sum + num(row.sessions), 0)).toBe(total);
@@ -742,16 +755,13 @@ it("ships the built-in Team activity as a second read-only, non-default dashboar
   // Variables narrow every tile: one repository, one person.
   const scoped = await render(member, {
     id: activityId,
-    tiles: ["active_people", "sessions_per_person", "repos_per_person"],
+    tiles: ["active_people", "tokens_per_person", "repos_per_person"],
     variables: { time_range: "30d", repo: ["github.com/acme/tools"] },
   });
   expect(tileValue(scoped, "active_people")).toBe("1");
-  expect(
-    tileRows(scoped, "sessions_per_person").map((row) => [
-      row.person,
-      num(row.sessions),
-    ]),
-  ).toEqual([[memberPerson, 1]]);
+  const scopedTokens = tileRows(scoped, "tokens_per_person");
+  expect(scopedTokens.map((row) => row.person)).toEqual([memberPerson]);
+  expect(num(scopedTokens[0]?.tokens)).toBeGreaterThanOrEqual(0);
   expect(tileRows(scoped, "repos_per_person")).toHaveLength(1);
   // Built-ins render through the same cache as saved dashboards.
   expect(
