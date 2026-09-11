@@ -44,7 +44,7 @@ jobs:
         if: steps.aws.outputs.configured == 'true'
       - uses: ./.github/actions/setup
         if: steps.aws.outputs.configured == 'true'
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         if: steps.aws.outputs.configured == 'true'
         with:
           role-to-assume: ${{ vars.AWS_PREVIEW_ROLE_ARN }}
@@ -95,7 +95,7 @@ jobs:
       # Manual production releases verify the selected commit too.
       - run: pnpm verify
         if: steps.aws.outputs.configured == 'true' && github.event_name == 'workflow_dispatch'
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         if: steps.aws.outputs.configured == 'true'
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
