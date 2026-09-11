@@ -126,6 +126,26 @@ to re-render `.env` and restart. Run the release script for changes to the check
 (Compose files, Caddy and database configuration, host scripts); application releases
 arrive on their own.
 
+Restart gap. `docker compose up` stops the running API container before the migration
+runs and starts the new one after it, so `api` is unreachable for the migration plus the
+API's boot: 27 s on the hosted instance on 2026-09-11 (no address for 15 s, then connection
+refused for 9 s, read from Caddy's log). `infra/caddy/Caddyfile` sets `lb_try_duration 45s`
+and `lb_try_interval 250ms`: Caddy holds a request that arrives during the swap and retries
+the connection every 250 ms until the new API accepts, for any method, so hook uploads, the
+hook manifest and an MCP `initialize` succeed late instead of failing with 502. This matters
+for agents: Claude Code connects its MCP servers once at session start and drops one whose
+handshake fails, for the whole session; the shim retries uploads, agents do not. The API
+opens its port only after PostgreSQL, ClickHouse and the job runner are connected, so a
+port that accepts is ready and Caddy needs no active health check (one on `/ready` would
+also take the static manifest down with a database). Residual gap: a swap longer than 45 s
+(a slow migration) fails the held requests after 45 s; a request already in flight on the
+old container when it stops is retried only if it is a GET; the client's own timeout still
+applies while the request is held; and the `caddy` container is recreated, with a second or
+two of refused connections, only when `docker-compose.caddy.yml` or the Caddy image changes.
+Between releases Caddy is reloaded, never restarted (see DNS and Cloudflare below). To
+shorten the swap itself, run the migration before the API is stopped; `stack_up` does not
+do this yet.
+
 Automatic updates. `.github/workflows/release.yml` publishes an image for every commit on
 `main` whose CI run succeeded, tagged `sha-<12-hex commit>` and `stable`, signed with
 Sigstore. On the host, `agentcommons-update.timer` runs
@@ -207,12 +227,17 @@ below).
 DNS and Cloudflare. The hostname may be a Cloudflare-proxied record (orange cloud, the
 default and the zpghl setting) or a plain A record to the Elastic IP; `environment.
 CADDY_TRUSTED_PROXIES` selects the mode. `cloudflare` (also the value when unset): at
-every start Caddy's entrypoint (`infra/caddy/entrypoint.sh`) fetches Cloudflare's
+every start and every release Caddy's entrypoint (`infra/caddy/entrypoint.sh`) fetches Cloudflare's
 published IPv4 and IPv6 ranges, validates them, trusts them as proxies and reads the
 client address from `CF-Connecting-IP`; if the fetch fails it uses the last fetched list
 from its data volume and, before any fetch has succeeded, `infra/caddy/cloudflare-ranges.txt`
 shipped with the release, logging which list it used (`docker compose logs caddy`). Every
-release restarts Caddy, so the list is refreshed at least that often. `none`: trust no
+release reloads Caddy (`docker compose exec -T caddy sh /etc/caddy/entrypoint.sh caddy
+reload --config /etc/caddy/Caddyfile --adapter caddyfile`), which refreshes the list and
+applies the shipped Caddyfile while the listening sockets stay open; `infra/caddy` is
+mounted as a directory so the running container sees the files a release replaces. A
+reload that fails falls back to `docker compose restart caddy`, about a second of refused
+connections. `none`: trust no
 proxy, for DNS-only records; forwarded headers from any client are ignored. Any other
 value is a literal space-separated CIDR list for a different proxy, with the client read
 from `X-Forwarded-For`. In every mode Caddy rewrites `X-Forwarded-For` to the single

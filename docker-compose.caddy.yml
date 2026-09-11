@@ -3,10 +3,12 @@
 #   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 # (or set COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml in .env once).
 # Caddy serves PUBLIC_URL with a Let's Encrypt certificate (HTTP-01, which also works
-# behind Cloudflare's proxy) and plain HTTP on the host address. At every start its
-# entrypoint refreshes Cloudflare's published ranges as trusted proxies, so the API
-# receives the real client address whether the DNS record is proxied or not; the API
-# itself trusts forwarded headers only from the Compose network.
+# behind Cloudflare's proxy) and plain HTTP on the host address. At every start, and at
+# every release through `caddy reload` (scripts/self-host/lib.sh), its entrypoint refreshes
+# Cloudflare's published ranges as trusted proxies, so the API receives the real client
+# address whether the DNS record is proxied or not; the API itself trusts forwarded headers
+# only from the Compose network. While a release swaps the api container, Caddy holds and
+# retries requests instead of failing them (infra/caddy/Caddyfile).
 # Memory limits size the stack for one 8 GiB host: ClickHouse 3.5 GiB (server limit 3 GiB
 # in infra/compose/clickhouse-server.xml, 2 GiB per query in clickhouse-users.xml),
 # PostgreSQL 1 GiB with matching shared_buffers, API 1 GiB, Caddy 256 MiB.
@@ -30,9 +32,10 @@ services:
       CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-cloudflare}
     ports: ["80:80", "443:443"]
     volumes:
-      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./infra/caddy/entrypoint.sh:/etc/caddy/entrypoint.sh:ro
-      - ./infra/caddy/cloudflare-ranges.txt:/etc/caddy/cloudflare-ranges.txt:ro
+      # The directory, not its files: a release replaces the files (new inodes), which a
+      # file bind mount would hide from the running container until it is recreated, so
+      # `caddy reload` would re-read the Caddyfile of the previous release.
+      - ./infra/caddy:/etc/caddy:ro
       - agentcommons-caddy-data:/data
       - agentcommons-caddy-config:/config
     depends_on:

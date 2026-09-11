@@ -204,8 +204,9 @@ stack_revision() {
 }
 # stack_up MODE [LOG]: MODE pull fetches the configured image, build builds it from the
 # checkout, start uses what is already present. Then starts every service (the migration
-# runs before the API), waits for /ready and restarts Caddy when it is part of the stack so
-# it refreshes its trusted proxy ranges. Compose output goes to LOG when given.
+# runs before the API), waits for /ready and reloads Caddy when it is part of the stack so
+# it refreshes its trusted proxy ranges and applies the shipped Caddyfile without closing
+# its listening sockets. Compose output goes to LOG when given.
 stack_up() {
   local mode=$1
   stack_log=${2:-}
@@ -233,14 +234,21 @@ stack_up() {
   esac
   logged compose up -d --no-build --remove-orphans || return 1
   wait_ready || return 1
-  # Caddy is restarted whenever it is one of the stack's services. The list is read whole
-  # before matching: `grep -q` stops at its first hit, and under pipefail a writer still
-  # emitting lines would die of SIGPIPE and silently skip the restart (seen on a 2-vCPU CI
-  # runner with GNU grep; ugrep drains its input and never showed it).
+  # Caddy is reloaded whenever it is one of the stack's services: its entrypoint refreshes
+  # the trusted proxy ranges and then runs `caddy reload`, which re-adapts the Caddyfile the
+  # release shipped (infra/caddy is a directory mount, so the running container sees it)
+  # and swaps the configuration while the listening sockets stay open, so the edge never
+  # refuses a connection. When the reload fails (Caddy not running, admin endpoint down)
+  # the restart releases used before takes over, at the cost of about a second of refused
+  # connections. The list is read whole before matching: `grep -q` stops at its first hit,
+  # and under pipefail a writer still emitting lines would die of SIGPIPE and silently skip
+  # the reload (seen on a 2-vCPU CI runner with GNU grep; ugrep drains its input and never
+  # showed it).
   local services
   services=$(compose config --services) || return 1
   if grep -qx caddy <<<"$services"; then
-    logged compose restart caddy || return 1
+    logged compose exec -T caddy sh /etc/caddy/entrypoint.sh caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile ||
+      logged compose restart caddy || return 1
   fi
 }
 # record_state KEY=VALUE...: merges values into the updater's state file, read by --status.

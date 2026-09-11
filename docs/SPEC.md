@@ -2782,7 +2782,10 @@ bucket and applies it through SSM Run Command (pull of the published image, or a
 build with `--build` that stamps `AGENTCOMMONS_VERSION` from the archive's `.commit` file,
 else the checkout's git HEAD, else `development`, printing the value it used, plus the
 revision and created release labels the updater compares; both
-migrations, restart, updater install);
+migrations, API restart behind Caddy, whose `reverse_proxy` holds a request whose dial
+fails and retries it every 250 ms for up to 45 s (`lb_try_duration`) so the container swap
+delays hook uploads and MCP handshakes instead of failing them, then a Caddy reload through
+its entrypoint rather than a restart, updater install);
 `single-node-run.sh bootstrap.sh` seeds the owner organization and enrolls Google sign-in
 domains through a native owner session. Seven daily DLM snapshots; no replica, no ALB,
 no NAT.

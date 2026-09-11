@@ -432,6 +432,7 @@ describe("single-node resource contract", () => {
       "stack_up()",
       "compose pull --quiet api",
       "compose up -d --no-build --remove-orphans",
+      "compose exec -T caddy sh /etc/caddy/entrypoint.sh caddy reload",
       "compose restart caddy",
     ])
       expect(shared).toContain(helper);

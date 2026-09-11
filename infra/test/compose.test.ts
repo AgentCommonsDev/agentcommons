@@ -167,25 +167,33 @@ describe("Compose configuration", () => {
       expect.objectContaining({ target: 80, published: "80" }),
       expect.objectContaining({ target: 443, published: "443" }),
     ]);
-    expect(services.caddy?.volumes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "bind",
-          target: "/etc/caddy/Caddyfile",
-          read_only: true,
+    // The whole directory: a release replaces the files, and `caddy reload` must see them.
+    const caddyVolumes = z
+      .array(
+        z.object({
+          type: z.string(),
+          source: z.string().optional(),
+          target: z.string(),
+          read_only: z.boolean().optional(),
         }),
-        expect.objectContaining({
-          type: "bind",
-          target: "/etc/caddy/entrypoint.sh",
-          read_only: true,
-        }),
-        expect.objectContaining({
-          type: "bind",
-          target: "/etc/caddy/cloudflare-ranges.txt",
-          read_only: true,
-        }),
-        expect.objectContaining({ type: "volume", target: "/data" }),
-      ]),
+      )
+      .parse(services.caddy?.volumes);
+    expect(caddyVolumes.map((volume) => volume.target).sort()).toEqual([
+      "/config",
+      "/data",
+      "/etc/caddy",
+    ]);
+    expect(
+      caddyVolumes.find((volume) => volume.target === "/etc/caddy"),
+    ).toMatchObject({
+      type: "bind",
+      read_only: true,
+    });
+    expect(
+      caddyVolumes.find((volume) => volume.target === "/etc/caddy")?.source,
+    ).toMatch(/\/infra\/caddy$/);
+    expect(caddyVolumes.find((volume) => volume.target === "/data")?.type).toBe(
+      "volume",
     );
     expect(services.caddy?.env_file).toBeUndefined();
     expect(services.api).toMatchObject({
@@ -291,7 +299,10 @@ describe("Compose configuration", () => {
     );
     expect(caddyfile).toContain("{$PUBLIC_URL} {");
     expect(caddyfile).toContain("http:// {");
-    expect(caddyfile.match(/reverse_proxy api:3000/g)).toHaveLength(2);
+    // One upstream definition, imported by both sites.
+    expect(caddyfile.match(/reverse_proxy api:3000/g)).toHaveLength(1);
+    expect(caddyfile).toContain("(upstream) {");
+    expect(caddyfile.match(/^\timport upstream$/gm)).toHaveLength(2);
     // Forwarded headers are trusted only from configured upstream proxies (empty by
     // default); the API always receives the real client address.
     expect(caddyfile).toContain(
@@ -332,7 +343,36 @@ describe("Compose configuration", () => {
       );
     expect(
       caddyfile.match(/header_up X-Forwarded-For \{client_ip\}/g),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+  });
+  // @req R-INF-07
+  it("holds requests while a release swaps the API container and reloads Caddy instead of restarting it", () => {
+    const caddyfile = readFileSync(
+      join(repository, "infra", "caddy", "Caddyfile"),
+      "utf8",
+    );
+    // Every failure during the swap is a dial error (no address, then connection refused),
+    // which Caddy retries for any method until the duration runs out. The hosted instance
+    // measured 27 s from the old container's stop to the new one's listen.
+    expect(caddyfile).toMatch(/^\t\tlb_try_duration 45s$/m);
+    expect(caddyfile).toMatch(/^\t\tlb_try_interval 250ms$/m);
+    // The API opens its port only once its databases are connected, so a port that accepts
+    // is ready; an active check on /ready would take the static manifest down with them.
+    expect(caddyfile).not.toContain("health_uri");
+    expect(caddyfile).not.toContain("fail_duration");
+    // The release step reloads through the entrypoint (refreshed proxy ranges, shipped
+    // Caddyfile, listening sockets kept open) and restarts only when the reload fails.
+    const lib = readFileSync(
+      join(repository, "scripts", "self-host", "lib.sh"),
+      "utf8",
+    );
+    const reload =
+      "compose exec -T caddy sh /etc/caddy/entrypoint.sh caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile";
+    expect(lib).toContain(reload);
+    expect(lib.indexOf("compose restart caddy")).toBeGreaterThan(
+      lib.indexOf(reload),
+    );
+    expect(lib.match(/compose restart caddy/g)).toHaveLength(1);
   });
   // @req R-INF-07
   it("moves the trace store to ClickHouse Cloud and publishes PostgreSQL to it over TLS only", () => {

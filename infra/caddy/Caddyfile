@@ -17,15 +17,28 @@
 	}
 }
 
-{$PUBLIC_URL} {
-	encode zstd gzip
+# A release or the hourly updater recreates the api container (docker compose up): the
+# old container stops, the migration runs, the new one boots. Measured on the hosted
+# instance, `api` had no address and then refused connections for 27 s. During that
+# window every failure is a dial error, which Caddy retries for any method (a POST /mcp
+# handshake included) until lb_try_duration runs out, so a request that arrives mid-swap
+# waits for the new API and then succeeds instead of getting 502. The API opens its port
+# only after PostgreSQL, ClickHouse and the job runner are connected (apps/api/src/main.ts),
+# so a port that accepts is ready; no active health check is needed and none is configured,
+# because gating on /ready would also take the static hook manifest down with a database.
+(upstream) {
 	reverse_proxy api:3000 {
 		header_up X-Forwarded-For {client_ip}
+		lb_try_duration 45s
+		lb_try_interval 250ms
 	}
 }
 
+{$PUBLIC_URL} {
+	encode zstd gzip
+	import upstream
+}
+
 http:// {
-	reverse_proxy api:3000 {
-		header_up X-Forwarded-For {client_ip}
-	}
+	import upstream
 }

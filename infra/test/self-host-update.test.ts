@@ -18,6 +18,9 @@ const repository = fileURLToPath(new URL("../..", import.meta.url));
 const selfHost = join(repository, "scripts", "self-host");
 const updater = join(selfHost, "agentcommons-update.sh");
 const stable = "ghcr.io/agentcommonsdev/agentcommons:stable";
+// The release step's Caddy reload (scripts/self-host/lib.sh stack_up).
+const reloadCaddy =
+  "compose exec -T caddy sh /etc/caddy/entrypoint.sh caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile";
 
 /**
  * A fake `docker` that answers the calls the updater makes from environment variables and
@@ -51,6 +54,7 @@ case "$*" in
   # Written line by line with a pause, like the real client: a reader that stops at
   # "caddy" must not turn the rest into SIGPIPE for the writer.
   printf 'api\\ncaddy\\n'; sleep 0.1; printf 'db\\nmigrate\\n' ;;
+"compose exec -T caddy sh /etc/caddy/entrypoint.sh caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile") [ "$FAKE_RELOAD_FAIL" != 1 ] || exit 1 ;;
 "compose restart caddy" | "compose ps" | "compose logs --tail 50 api" | "image prune -f") ;;
 *) echo "unexpected docker $*" >&2; exit 99 ;;
 esac
@@ -259,7 +263,7 @@ describe("self-host updater", () => {
     expect(same.docker.some((line) => line.startsWith("tag "))).toBe(false);
     expect(same.state()).toContain("last_result=unchanged");
   });
-  it("keeps the running image as agentcommons:previous, starts the stack, waits for /ready and restarts Caddy", () => {
+  it("keeps the running image as agentcommons:previous, starts the stack, waits for /ready and reloads Caddy", () => {
     const { run } = fixture();
     const updated = run([], { running: "sha256:aaa", pulled: "sha256:bbb" });
     expect(updated.status, updated.stderr).toBe(0);
@@ -275,9 +279,11 @@ describe("self-host updater", () => {
     expect(order("compose config --services")).toBeGreaterThan(
       order("compose up -d --no-build --remove-orphans"),
     );
-    expect(order("compose restart caddy")).toBeGreaterThan(
+    expect(order(reloadCaddy)).toBeGreaterThan(
       order("compose config --services"),
     );
+    // The reload keeps Caddy's listening sockets open; a restart is only the fallback.
+    expect(updated.docker).not.toContain("compose restart caddy");
     expect(updated.docker).toContain("image prune -f");
     expect(updated.docker).not.toContain(
       "compose up -d --no-build --no-deps api",
@@ -293,6 +299,19 @@ describe("self-host updater", () => {
     expect(state).toContain(`running_created=${olderRelease.created}`);
     expect(state).toContain(`pulled_revision=${newerRelease.revision}`);
     expect(state).toContain(`pulled_created=${newerRelease.created}`);
+  });
+  it("restarts Caddy only when the reload fails, and still reports the update", () => {
+    const { run } = fixture();
+    const updated = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:bbb",
+      env: { FAKE_RELOAD_FAIL: "1" },
+    });
+    expect(updated.status, updated.stderr).toBe(0);
+    expect(updated.docker.indexOf("compose restart caddy")).toBeGreaterThan(
+      updated.docker.indexOf(reloadCaddy),
+    );
+    expect(updated.state()).toContain("last_result=updated");
   });
   // @req R-INF-14
   it("holds a floating tag that offers an older release than the one running, and installs the next newer one", () => {
