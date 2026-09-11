@@ -880,8 +880,10 @@ async function drainAll(
         sweep: false,
       });
   }
-  // The session's repository, as the first drain recorded it; an unreadable state was
-  // already logged by its drain and has no repository to serve.
+  // The session's checkout root, as the first drain recorded it; the recall refresh and
+  // the guidance write both read the checkout's current `origin` from it (`repositoryAt`),
+  // never the recorded URL. An unreadable state was already logged by its drain and has
+  // no repository to serve.
   let git: HookState["context"]["git"] = null;
   try {
     git = loadState(path).context.git;

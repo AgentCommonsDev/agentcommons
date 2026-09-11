@@ -73,6 +73,17 @@ export function repositoryFromCwd(cwd: string): Repository | null {
   }
   return null;
 }
+/**
+ * This checkout's repository as it is now: the enclosing repository with the `origin`
+ * its `.git/config` names today, else `path` itself with no remote. The one notion of
+ * "the repository of this checkout" in the shim: the guidance decision, the recall cache
+ * and the hint request all resolve through it from a root or `cwd`, never from a remote
+ * recorded earlier, which outlives a rename (the session state keeps the URL of its
+ * first drain).
+ */
+export function repositoryAt(path: string): Repository {
+  return repositoryFromCwd(path) ?? { root: resolve(path), remoteUrl: null };
+}
 /** The server's `repo_name` for a checkout's remote, so caches and list filters agree. */
 export function repositoryName(
   repository: Pick<Repository, "remoteUrl"> | null,

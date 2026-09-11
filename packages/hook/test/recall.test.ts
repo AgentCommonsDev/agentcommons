@@ -35,8 +35,19 @@ import { loadState } from "../src/state.js";
 import { upload } from "../src/upload.js";
 import { SHIM, fixture, stubFetch, wiredConfigHome } from "./fixture.js";
 
+/**
+ * A real checkout with `origin`: the shim names a repository from its `.git/config` as it
+ * is now (`repositoryAt`), never from the remote a session state recorded.
+ */
+const ROOT = mkdtempSync(join(tmpdir(), "agentcommons-recall-repo-"));
+execFileSync("git", ["init", "-q"], { cwd: ROOT });
+execFileSync(
+  "git",
+  ["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+  { cwd: ROOT },
+);
 const GIT = {
-  root: "/repo",
+  root: ROOT,
   remoteUrl: "git@github.com:acme/widgets.git",
   branch: "main",
   head: null,
@@ -524,6 +535,65 @@ describe("recall hint", () => {
     expect(readdirSync(join(f.directory, "recall"))).toEqual([
       `${hash(REPO)}.json`,
     ]);
+  });
+
+  // @req R-CAP-19
+  it("names the repository by the checkout's current origin, not by the remote the session state recorded", async () => {
+    const f = fixture({ config: wired() });
+    const root = mkdtempSync(join(tmpdir(), "agentcommons-recall-renamed-"));
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync(
+      "git",
+      ["remote", "add", "origin", "git@github.com:acme/renamed.git"],
+      { cwd: root },
+    );
+    // The session began while `origin` was still `acme/old`; its state keeps that URL
+    // (5,309 states on the machine this was found on still named a renamed remote).
+    const stale = {
+      root,
+      remoteUrl: "git@github.com:acme/old.git",
+      branch: "main",
+      head: null,
+    };
+    const calls: URL[] = [];
+    expect(
+      await refreshRecallHint(f.directory, f.config, stale, {
+        fetch: listFetch(4, calls, 200, recent),
+        now: () => 5_000,
+      }),
+    ).toBe("refreshed");
+    expect(
+      JSON.parse(calls[0]?.searchParams.get("filters") ?? "") as unknown,
+    ).toEqual({ repo_name: "github.com/acme/renamed" });
+    expect(readdirSync(join(f.directory, "recall"))).toEqual([
+      `${hash("github.com/acme/renamed")}.json`,
+    ]);
+    expect(
+      JSON.parse(
+        readFileSync(
+          recallCachePath(f.directory, "github.com/acme/renamed"),
+          "utf8",
+        ),
+      ) as unknown,
+    ).toMatchObject({ repoName: "github.com/acme/renamed", sessions: 4 });
+    // Hook mode resolves the same name from the state's root and finds that cache.
+    const path = f.hook({ hook_event_name: "SessionStart" });
+    const state = loadState(path);
+    writeAtomic(path, { ...state, context: { ...state.context, git: stale } });
+    expect(
+      promptHint(
+        f.directory,
+        "claude",
+        { ...f.event, hook_event_name: "UserPromptSubmit", prompt: "x" },
+        path,
+        NOW,
+      ),
+    ).toBe(
+      hookContextOutput(
+        "UserPromptSubmit",
+        recallHintText("github.com/acme/renamed", 4),
+      ),
+    );
   });
 
   // @req R-CAP-19

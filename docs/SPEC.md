@@ -965,9 +965,13 @@ timer. Nothing is lost while the disk survives: `ackedCursor` only advances on `
 and the server dedupes.
 
 **Recall hint.** After its drain, the uploader refreshes the recall data of the session's
-repository, so the hook can hint from the cache without a request. The repository name is
-`repositoryIdentity(remote)`, the same `repo_name` the server derives, so the cache key and
-the list filter agree. One request, `GET /api/v1/sessions?limit=10&roots_only=true&filters={"repo_name":"<repo_name>"}`
+repository, so the hook can hint from the cache without a request. The repository is the
+checkout at the state's root as it is now (`repositoryAt`: the `origin` in its
+`.git/config`, read on every run, the one identity the recall cache, the hint request and
+the repository guidance decision share; the state's `remoteUrl` dates from the first drain
+and outlives a renamed remote), and its name is `repositoryIdentity` of that remote, the
+same `repo_name` the server derives, so the cache key and the list filter agree. Hook mode
+resolves the same identity from the state's root, else from `cwd`. One request, `GET /api/v1/sessions?limit=10&roots_only=true&filters={"repo_name":"<repo_name>"}`
 with the installation key (10 s timeout), whose `total.sessions` comes from the page's own
 scan (§7.6) and whose ten newest root sessions become the recent list; at most every 15
 minutes per repository. The cache is `recall/<sha256(repo_name)>.json` in the data

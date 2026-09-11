@@ -8,7 +8,7 @@ import { guidanceAnnouncement } from "./guidance.js";
 import { HARNESSES, nativeHookSchema, type CliHarness } from "./harnesses.js";
 import { note } from "./paths.js";
 import { registrationFile, registrationStatus } from "./registration.js";
-import { repositoryFromCwd, repositoryName } from "./repository.js";
+import { repositoryAt, repositoryName } from "./repository.js";
 import { loadState, type HookState } from "./state.js";
 
 /** The uploader refreshes a repository's recall cache at most this often (§6.2). */
@@ -300,8 +300,11 @@ export function promptHint(
       ),
     );
   }
-  const repository =
-    loadState(statePath).context.git ?? repositoryFromCwd(event.cwd);
+  // The checkout as it is now, from the root the first drain recorded, else from `cwd`
+  // (a session's first event, before any drain): a few small reads, no subprocess.
+  const repository = repositoryAt(
+    loadState(statePath).context.git?.root ?? event.cwd,
+  );
   const announcement = guidanceAnnouncement(directory, repository);
   const hint = ((): string | null => {
     const repoName = repositoryName(repository);
@@ -351,7 +354,10 @@ interface RefreshOptions {
  * cached under `recall/` for hook mode as the count plus the newest sessions' id, title,
  * start time and branch (what the same key already reads). The attempt is recorded before
  * the request so a failing server is asked again only after the interval; failures are
- * logged and ignored and the durability path is never involved.
+ * logged and ignored and the durability path is never involved. The repository is the
+ * checkout at the state's root as it is now (`repositoryAt`, the identity the guidance
+ * decision uses); the state's own `remoteUrl` dates from the first drain and is never the
+ * name asked for or cached, so a renamed remote takes effect at the next refresh.
  */
 export async function refreshRecallHint(
   directory: string,
@@ -359,7 +365,7 @@ export async function refreshRecallHint(
   git: GitContext,
   options: RefreshOptions = {},
 ): Promise<"refreshed" | "current" | "skipped"> {
-  const repoName = repositoryName(git);
+  const repoName = repositoryName(git ? repositoryAt(git.root) : null);
   if (!repoName) return "skipped";
   const now = options.now?.() ?? Date.now();
   const cache = readCache(directory, repoName);

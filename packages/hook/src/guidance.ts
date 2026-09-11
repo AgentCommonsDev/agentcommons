@@ -18,11 +18,7 @@ import type { HookConfig } from "./config.js";
 import { hash, isCode, readJsonOr, writeAtomic } from "./files.js";
 import { HARNESSES } from "./harnesses.js";
 import { note } from "./paths.js";
-import {
-  repositoryFromCwd,
-  repositoryKey,
-  type Repository,
-} from "./repository.js";
+import { repositoryAt, repositoryKey, type Repository } from "./repository.js";
 
 // ---------------------------------------------------------------------------------------
 // Repository instructions files (data in HARNESSES)
@@ -247,14 +243,6 @@ function record(
   };
   writeAtomic(guidanceDecisionPath(directory, key), value);
   return value;
-}
-/**
- * The checkout a decision is keyed on, as it is now: the enclosing repository with the
- * `origin` its `.git/config` names today, else the path itself. Both the command and the
- * uploader key through this, never through a remote recorded earlier.
- */
-function repositoryAt(root: string): Repository {
-  return repositoryFromCwd(root) ?? { root: resolve(root), remoteUrl: null };
 }
 /**
  * The command run by a person: the write is recorded so the uploader neither repeats it

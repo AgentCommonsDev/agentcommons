@@ -75,6 +75,14 @@ it("all hook events exit zero within 150 ms with a blackholed server and no hook
   });
   const path = statePath(directory, "claude", hinted);
   const state = loadState(path);
+  // The hook names the repository from the checkout's `.git/config`, so the root is a
+  // real checkout with `origin`; the state's recorded URL is never what it reads.
+  execFileSync("git", ["init", "-q"], { cwd: directory });
+  execFileSync(
+    "git",
+    ["remote", "add", "origin", "git@github.com:acme/widgets.git"],
+    { cwd: directory },
+  );
   const git = {
     root: directory,
     remoteUrl: "git@github.com:acme/widgets.git",
