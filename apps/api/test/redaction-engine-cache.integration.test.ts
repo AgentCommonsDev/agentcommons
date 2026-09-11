@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices, waitForJob } from "./trace-services.js";
 import { provisionOrganization, releaser } from "./support.js";
@@ -172,23 +172,36 @@ it("applies a policy saved after ingest to every earlier session through a resca
         },
       }),
     ).toBe(1);
-  const advances = await database.prisma.auditEvent.findMany({
-    where: {
-      organizationId,
-      action: "redaction.rescan.advance",
-      resourceIds: { has: run.result.job_id },
-    },
-  });
-  const batches = advances.map((row) =>
-    row.detail &&
-    typeof row.detail === "object" &&
-    "batch_sessions" in row.detail
-      ? Number(row.detail.batch_sessions)
-      : 0,
-  );
-  expect(batches.reduce((sum, size) => sum + size, 0)).toBe(total);
+  // The last checkpoint completes the run inside the publish transaction and the batch's
+  // progress audit commits right after it, so the audits are polled rather than read once.
+  const batchSizes = async () =>
+    (
+      await database.prisma.auditEvent.findMany({
+        where: {
+          organizationId,
+          action: "redaction.rescan.advance",
+          resourceIds: { has: run.result.job_id },
+        },
+      })
+    ).map((row) =>
+      row.detail &&
+      typeof row.detail === "object" &&
+      "batch_sessions" in row.detail
+        ? Number(row.detail.batch_sessions)
+        : 0,
+    );
+  await expect
+    .poll(
+      async () => (await batchSizes()).reduce((sum, size) => sum + size, 0),
+      {
+        timeout: 20_000,
+        interval: 100,
+      },
+    )
+    .toBe(total);
+  const batches = await batchSizes();
   expect(Math.max(...batches)).toBe(RESCAN_CONCURRENCY);
-  expect(advances.length).toBe(Math.ceil(total / RESCAN_CONCURRENCY));
+  expect(batches.length).toBe(Math.ceil(total / RESCAN_CONCURRENCY));
 
   // Removing the policy changes the engine for new accepts; redacted text never returns.
   await policies.remove(organization.owner, saved.result.id, {
@@ -336,4 +349,74 @@ it("checkpoints every session of a rescan that changes nothing without rebuildin
     }
   }
   expect(services.errors).toEqual([]);
+});
+
+// @req R-RED-06
+it("stops a rescan whose key is revoked before an unchanged session advances, leaving that session untouched", async () => {
+  const organization = await provisionOrganization(
+    database,
+    "engine-cache-revoked",
+  );
+  const caller = requireCaller(organization.context);
+  const organizationId = caller.organizationId;
+  const sessionId = await publish(organization.context, "revoked key session");
+  const before = await database.prisma.traceSessionControl.findUniqueOrThrow({
+    where: { organizationId_id: { organizationId, id: sessionId } },
+  });
+  // Revoke the initiating key once the target's snapshot has been read, i.e. between the
+  // claim and the checkpoint of a session whose output does not change.
+  const original = database.traces.readSession.bind(database.traces);
+  const revoke = vi
+    .spyOn(database.traces, "readSession")
+    .mockImplementationOnce(async (...args) => {
+      const value = await original(...args);
+      await database.prisma.apikey.update({
+        where: { id: caller.apiKeyId ?? "" },
+        data: { enabled: false },
+      });
+      return value;
+    });
+  try {
+    const runId = await database.prisma.$transaction((tx) =>
+      services.jobs.rescan(tx, organization.context, {
+        reason: "Revoked before an unchanged checkpoint",
+      }),
+    );
+    const failed = await waitForJob(
+      services.jobs,
+      organization.owner,
+      runId,
+      "failed",
+      60_000,
+    );
+    expect(failed).toMatchObject({
+      processed_sessions: 0,
+      redaction_count: 0,
+      error:
+        "The initiating account no longer has permission to run this rescan.",
+    });
+    expect(revoke).toHaveBeenCalled();
+  } finally {
+    revoke.mockRestore();
+  }
+  const after = await database.prisma.traceSessionControl.findUniqueOrThrow({
+    where: { organizationId_id: { organizationId, id: sessionId } },
+  });
+  // Not advanced, not rewritten: the revoked run left the session as it was.
+  expect(after.publishedRevision).toBe(before.publishedRevision);
+  expect(after.redactionGeneration).toBe(before.redactionGeneration);
+  expect(after.projectionLease).toBeNull();
+  expect(
+    await database.prisma.auditEvent.count({
+      where: {
+        organizationId,
+        action: "redaction.rescan.session",
+        resourceIds: { has: sessionId },
+        statusCode: 200,
+      },
+    }),
+  ).toBe(0);
+  expect((await services.header(organizationId, sessionId)).title).toBe(
+    "revoked key session",
+  );
 });

@@ -630,6 +630,10 @@ export class JobService implements AdminJobs {
                 payload: traceRescanPayloadSchema.parse(data),
               },
             });
+            // The rescan job publishes the target itself; its own pg-boss retries re-claim
+            // a target whose outbox is still pending, and maintenance recovers an outbox a
+            // failed run left behind (recoverTraceOutboxes). A projection job per target
+            // would only race this job for the same outbox.
             await tx.traceSessionControl.update({
               where: {
                 organizationId_id: {
@@ -642,11 +646,6 @@ export class JobService implements AdminJobs {
                 projectionState: "queued",
                 projectionError: null,
               },
-            });
-            await this.enqueue(tx, {
-              organizationId: data.organizationId,
-              sessionId: target.sessionId,
-              outboxId: id,
             });
           }
         }

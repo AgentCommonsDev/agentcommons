@@ -596,6 +596,20 @@ it("cancels a rescan whose key is revoked after native writes without blocking l
   const envelope = await captured();
   const first = await ingest.execute(org.context, envelope);
   await projection.process(caller.organizationId, first.result.sessionId);
+  // A policy the captured transcript matches, so the rescan rewrites the session and
+  // reaches its native writes; an unchanged session is checkpointed without them.
+  await prisma.redactionPolicy.create({
+    data: {
+      organizationId: caller.organizationId,
+      id: randomUUID(),
+      name: "revoked-scan-target",
+      kind: "REGEX",
+      pattern: "tool-identities-[A-Za-z0-9]+",
+      flags: "g",
+      replacement: "[REMOVED]",
+      enabled: true,
+    },
+  });
   const runId = randomUUID();
   const outboxId = randomUUID();
   await prisma.$transaction(async (tx) => {

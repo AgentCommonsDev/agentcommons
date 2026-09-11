@@ -140,7 +140,9 @@ export class TraceProjectionService {
       if (!build) return;
       if (build === "unchanged") {
         await this.publishUnchanged(plan);
-        await this.publishReceipts(organizationId, sessionId);
+        // Receipts accepted since the last publish (empty syncs) still need appending.
+        if (plan.receipts.some((receipt) => receipt.publishedAt === null))
+          await this.publishReceipts(organizationId, sessionId);
         return;
       }
       await this.publish(plan, build);
