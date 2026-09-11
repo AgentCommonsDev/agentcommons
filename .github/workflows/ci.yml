@@ -19,7 +19,7 @@ jobs:
       EMBEDDINGS_ENABLED: ${{ matrix.embeddings }}
       EMBEDDINGS_PROVIDER: fake
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
       - run: pnpm build
       # The API reference integration test drives a real browser; install before the suites.
