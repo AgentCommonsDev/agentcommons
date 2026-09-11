@@ -39,7 +39,7 @@ jobs:
       - run: pnpm knip
       - run: pnpm test:e2e:built
       - run: pnpm test:performance
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results-embeddings-${{ matrix.embeddings }}

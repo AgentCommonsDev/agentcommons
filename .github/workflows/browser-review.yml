@@ -39,7 +39,7 @@ jobs:
             exit 0
           fi
           pnpm test:browser-agent
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: browser-agent-findings
