@@ -40,7 +40,7 @@ jobs:
             exit 0
           fi
           echo 'configured=true' >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.aws.outputs.configured == 'true'
       - uses: ./.github/actions/setup
         if: steps.aws.outputs.configured == 'true'
@@ -84,7 +84,7 @@ jobs:
             exit 0
           fi
           echo 'configured=true' >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.aws.outputs.configured == 'true'
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
