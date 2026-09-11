@@ -79,11 +79,22 @@ it("the uploader's refresh caches the caller-visible session count of the sessio
     node: process.execPath,
   });
   expect(await refreshRecallHint(directory, config, GIT)).toBe("refreshed");
-  expect(
-    JSON.parse(
-      readFileSync(recallCachePath(directory, REPO), "utf8"),
-    ) as unknown,
-  ).toMatchObject({ v: 1, repoName: REPO, sessions: 2 });
+  // The cache carries the count and the newest root sessions the same key can list (§6.2).
+  const cached = z
+    .looseObject({
+      v: z.literal(2),
+      repoName: z.string(),
+      sessions: z.number(),
+      recent: z.array(
+        z.looseObject({ id: z.uuid(), title: z.string().nullable() }),
+      ),
+    })
+    .parse(JSON.parse(readFileSync(recallCachePath(directory, REPO), "utf8")));
+  expect(cached).toMatchObject({ v: 2, repoName: REPO, sessions: 2 });
+  expect(cached.recent.map((item) => item.title)).toEqual([
+    "Recall hint fixture",
+    "Recall hint fixture",
+  ]);
   // The other organization's session is invisible to this key, and the refresh is one audited read.
   expect(
     await db.prisma.auditEvent.count({
@@ -100,5 +111,5 @@ it("the uploader's refresh caches the caller-visible session count of the sessio
     JSON.parse(
       readFileSync(recallCachePath(directory, "github.com/acme/empty"), "utf8"),
     ) as unknown,
-  ).toMatchObject({ sessions: 0 });
+  ).toMatchObject({ sessions: 0, recent: [] });
 });

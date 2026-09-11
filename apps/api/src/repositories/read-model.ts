@@ -141,29 +141,40 @@ export async function filterSql(
     );
   const conditions = plan.session;
   if (filters.repo_name !== undefined) {
+    // Three accepted forms (§7.2): the canonical `host/org/repo` (exact), the `org/repo`
+    // pair agents read off a remote (one slash: exact, or the unique repository whose
+    // name ends with it), and the bare repository name (unique last segment). The
+    // canonical form needs no lookup; the other two share one query over the repos view.
     const requested = array(filters.repo_name);
+    const slashes = (repo: string) => repo.split("/").length - 1;
     const aliases = [
-      ...new Set(requested.filter((repo) => !repo.includes("/"))),
+      ...new Set(requested.filter((repo) => slashes(repo) === 0)),
     ];
-    const matches = aliases.length
-      ? await client.query<{ repo_name: string; alias: string }>(
-          "SELECT repo_name,arrayElement(splitByChar('/',repo_name),-1) AS alias FROM api_ro.repos WHERE alias IN {aliases:Array(String)}",
-          { aliases },
-        )
-      : { rows: [] };
-    const byAlias = new Map<string, string[]>();
-    for (const match of matches.rows) {
-      const names = byAlias.get(match.alias) ?? [];
-      names.push(match.repo_name);
-      byAlias.set(match.alias, names);
-    }
+    const pairs = [...new Set(requested.filter((repo) => slashes(repo) === 1))];
+    const matches =
+      aliases.length || pairs.length
+        ? await client.query<{ repo_name: string; alias: string }>(
+            "SELECT repo_name,arrayElement(splitByChar('/',repo_name),-1) AS alias FROM api_ro.repos WHERE alias IN {aliases:Array(String)} OR repo_name IN {pairs:Array(String)} OR arrayExists(pair -> endsWith(repo_name,concat('/',pair)),{pairs:Array(String)})",
+            { aliases, pairs },
+          )
+        : { rows: [] };
+    const resolve = (repo: string): string[] =>
+      slashes(repo) === 0
+        ? matches.rows
+            .filter((match) => match.alias === repo)
+            .map((match) => match.repo_name)
+        : matches.rows.some((match) => match.repo_name === repo)
+          ? [repo]
+          : matches.rows
+              .filter((match) => match.repo_name.endsWith(`/${repo}`))
+              .map((match) => match.repo_name);
     const names: string[] = [];
     for (const repo of requested) {
-      if (repo.includes("/")) {
+      if (slashes(repo) > 1) {
         names.push(repo);
         continue;
       }
-      const resolved = byAlias.get(repo) ?? [];
+      const resolved = resolve(repo);
       if (resolved.length > 1)
         throw new ServiceError(
           400,

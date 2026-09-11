@@ -3520,7 +3520,7 @@ export interface operations {
            * @default {}
            */
           filters?: {
-            /** @description Sessions in these repositories: host/org/repo, or an unambiguous short name */
+            /** @description Sessions in these repositories: host/org/repo, or org/repo or the bare repository name when only one repository matches */
             repo_name?: string | string[];
             /** @description Sessions on these git branches (exact) */
             branch?: string | string[];
@@ -3963,7 +3963,7 @@ export interface operations {
         format?: "json" | "csv";
         /** @description Narrow by session or message fields. Each key takes one value or a list (any of); every key given must hold */
         filters?: {
-          /** @description Sessions in these repositories: host/org/repo, or an unambiguous short name */
+          /** @description Sessions in these repositories: host/org/repo, or org/repo or the bare repository name when only one repository matches */
           repo_name?: string | string[];
           /** @description Sessions on these git branches (exact) */
           branch?: string | string[];

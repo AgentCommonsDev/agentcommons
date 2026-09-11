@@ -135,7 +135,7 @@ const filterShape = {
   repo_name: filter(z.string().min(1))
     .optional()
     .describe(
-      "Sessions in these repositories: host/org/repo, or an unambiguous short name",
+      "Sessions in these repositories: host/org/repo, or org/repo or the bare repository name when only one repository matches",
     ),
   branch: filter(z.string().min(1))
     .optional()

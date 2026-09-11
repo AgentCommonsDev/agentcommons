@@ -50,7 +50,7 @@ describe("read tool descriptions", () => {
   it("stay inside the per-tool share of the catalog budget", () => {
     // The default catalog (three tools) stays under 12 KB (ADR 0068); the descriptions are
     // the part that grows with guidance, so each is bounded to 1,200 bytes with the
-    // governing sentence (measured 2026-09-11: search 1,051, get 871, sql 1,160 bytes).
+    // governing sentence (measured 2026-09-11: search 1,086, get 871, sql 1,160 bytes).
     for (const name of ["search", "get", "sql"] as const) {
       const bytes = Buffer.byteLength(
         `${governingSentence} ${toolDescriptions[name]}`,

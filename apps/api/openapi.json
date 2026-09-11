@@ -12898,7 +12898,7 @@
                     "type": "object",
                     "properties": {
                       "repo_name": {
-                        "description": "Sessions in these repositories: host/org/repo, or an unambiguous short name",
+                        "description": "Sessions in these repositories: host/org/repo, or org/repo or the bare repository name when only one repository matches",
                         "anyOf": [
                           {
                             "type": "string",
@@ -14227,7 +14227,7 @@
               "type": "object",
               "properties": {
                 "repo_name": {
-                  "description": "Sessions in these repositories: host/org/repo, or an unambiguous short name",
+                  "description": "Sessions in these repositories: host/org/repo, or org/repo or the bare repository name when only one repository matches",
                   "anyOf": [
                     {
                       "type": "string",

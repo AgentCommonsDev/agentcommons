@@ -1122,7 +1122,9 @@ Input (`packages/core/schemas/search.ts`):
 
 - Filters: scalar or array (OR within, AND across); enums on scalars and array items;
   unknown key or empty array → 400 listing valid keys. `repo_name` accepts the canonical
-  `host/org/repo` or a short name when unambiguous (400 otherwise). `user_email` exact.
+  `host/org/repo`, the `org/repo` pair an agent reads off a remote, or the bare repository
+  name; the last two resolve through the `repos` view to the one repository whose name
+  ends with them (400 `AMBIGUOUS_REPO` when several do; ADR 0070). `user_email` exact.
   `ingest_api_key_id` exact (the key that uploaded the session; the Install page uses it
   to list one machine's sessions, §10). `tool_name` matches tool-use/result messages themselves. `file_prefix` selects
   _sessions_ that touched the path. `file_operation` (`read`, `edit`, `write` or
@@ -1574,7 +1576,7 @@ questions it answers ("has anyone…", "why does…", "how did we…"), tells th
 to 4 specific words from its task in `query` because every word must match, names the
 accepted `repo_name` forms and points at `get`; `get` opens the best hit; `sql` answers
 what search cannot. Each description with the governing sentence stays under 1,200 bytes
-(measured 2026-09-11: 1,051, 871 and 1,160; the default catalog is 9,319 bytes). Claude Code 2.1.266 hands the model a tool
+(measured 2026-09-11: 1,086, 871 and 1,160; the default catalog is 9,398 bytes). Claude Code 2.1.266 hands the model a tool
 result's `structuredContent` JSON, not its text rendering (Appendix A), so the text form
 serves other clients and people; guidance for the agent belongs in the descriptions and
 the hint, not in result text.
@@ -3248,7 +3250,7 @@ the byte budgets of §8.2.
 [
   {
     "name": "search",
-    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Find the earlier sessions about a test, file, error, library or value: the first call for \"has anyone…\", \"why does…\" and \"how did we…\" questions and before any change. Put 2 to 4 specific words from your task in query (a test name, file path, identifier, error text or component); every word must appear (English inflections share a stem), so a whole sentence finds nothing while its key words do. Results are message excerpts grouped by session with each session_id; open the best one with get. Filters take one value or a list (any of), all must hold: repo_name is host/org/repo as git names the remote or the bare repository name; file_prefix with file_operation selects sessions that touched a file. Example, \"why does the payments client retry the way it does?\": {\"query\":\"payments retry\",\"filters\":{\"file_prefix\":\"src/payments\",\"file_operation\":\"edit\"}}.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Find the earlier sessions about a test, file, error, library or value: the first call for \"has anyone…\", \"why does…\" and \"how did we…\" questions and before any change. Put 2 to 4 specific words from your task in query (a test name, file path, identifier, error text or component); every word must appear (English inflections share a stem), so a whole sentence finds nothing while its key words do. Results are message excerpts grouped by session with each session_id; open the best one with get. Filters take one value or a list (any of), all must hold: repo_name is host/org/repo as git names the remote, or org/repo or the bare name when only one repository matches; file_prefix with file_operation selects sessions that touched a file. Example, \"why does the payments client retry the way it does?\": {\"query\":\"payments retry\",\"filters\":{\"file_prefix\":\"src/payments\",\"file_operation\":\"edit\"}}.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3262,7 +3264,7 @@ the byte budgets of §8.2.
           "type": "object",
           "properties": {
             "repo_name": {
-              "description": "Sessions in these repositories: host/org/repo, or an unambiguous short name",
+              "description": "Sessions in these repositories: host/org/repo, or org/repo or the bare repository name when only one repository matches",
               "anyOf": [
                 {
                   "type": "string",

@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "search",
-      "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Find the earlier sessions about a test, file, error, library or value: the first call for \"has anyone…\", \"why does…\" and \"how did we…\" questions and before any change. Put 2 to 4 specific words from your task in query (a test name, file path, identifier, error text or component); every word must appear (English inflections share a stem), so a whole sentence finds nothing while its key words do. Results are message excerpts grouped by session with each session_id; open the best one with get. Filters take one value or a list (any of), all must hold: repo_name is host/org/repo as git names the remote or the bare repository name; file_prefix with file_operation selects sessions that touched a file. Example, \"why does the payments client retry the way it does?\": {\"query\":\"payments retry\",\"filters\":{\"file_prefix\":\"src/payments\",\"file_operation\":\"edit\"}}.",
+      "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Find the earlier sessions about a test, file, error, library or value: the first call for \"has anyone…\", \"why does…\" and \"how did we…\" questions and before any change. Put 2 to 4 specific words from your task in query (a test name, file path, identifier, error text or component); every word must appear (English inflections share a stem), so a whole sentence finds nothing while its key words do. Results are message excerpts grouped by session with each session_id; open the best one with get. Filters take one value or a list (any of), all must hold: repo_name is host/org/repo as git names the remote, or org/repo or the bare name when only one repository matches; file_prefix with file_operation selects sessions that touched a file. Example, \"why does the payments client retry the way it does?\": {\"query\":\"payments retry\",\"filters\":{\"file_prefix\":\"src/payments\",\"file_operation\":\"edit\"}}.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -16,7 +16,7 @@
             "type": "object",
             "properties": {
               "repo_name": {
-                "description": "Sessions in these repositories: host/org/repo, or an unambiguous short name",
+                "description": "Sessions in these repositories: host/org/repo, or org/repo or the bare repository name when only one repository matches",
                 "anyOf": [
                   {
                     "type": "string",

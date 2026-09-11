@@ -71,11 +71,18 @@ JSON, not the text rendering, so guidance placed in result text never reaches it
 After (the same bench, the rebuilt bundle and descriptions; filled in from
 `summary-after.md` and `summary-placeholder-after.md`):
 
-| condition                | runs | searched before write | first call hits > 0 | first call has seed | used decision | hinted        | reply names the repair |
-| ------------------------ | ---- | --------------------- | ------------------- | ------------------- | ------------- | ------------- | ---------------------- |
-| squashed history         | 12   | AFTER_SQ_SEARCHED     | AFTER_SQ_HITS       | AFTER_SQ_SEED       | AFTER_SQ_USED | AFTER_SQ_HINT | n/a                    |
-| history available        | 12   | AFTER_AV_SEARCHED     | AFTER_AV_HITS       | AFTER_AV_SEED       | AFTER_AV_USED | AFTER_AV_HINT | n/a                    |
-| placeholder registration | 6    | AFTER_PH_SEARCHED     | n/a                 | n/a                 | AFTER_PH_USED | AFTER_PH_HINT | AFTER_PH_REPAIR        |
+| condition                | runs | searched before write | first call hits > 0                        | first call has seed | used decision | hinted | reply names the repair |
+| ------------------------ | ---- | --------------------- | ------------------------------------------ | ------------------- | ------------- | ------ | ---------------------- |
+| squashed history         | 12   | 12/12                 | 1/1 (search first once; `get` first 11/12) | 12/12               | 12/12         | 12/12  | n/a                    |
+| history available        | 12   | 12/12                 | n/a (`get` first 12/12)                    | 12/12               | 11/12         | 12/12  | n/a                    |
+| placeholder registration | 6    | 0/6 (server dropped)  | n/a                                        | n/a                 | 3/6           | 6/6    | 6/6 (was 0/6)          |
+
+Every task run received both the overview and a matched hint; 23 of 24 opened the matched
+seed session with `get` as their first call and the 24th searched and hit, so the first
+result carried the seed in 24/24 (was 19/24), the first recall call came at p50 4.7 s and
+4.2 s (was 6.9 s and 5.3 s), the rate held at 24/24 and the decision was applied in 23/24
+(was 22/24). With the placeholder registration the reply named the repair in 6/6 runs (was
+0/6) and no run tried to search.
 
 ## Decision
 
@@ -105,14 +112,15 @@ After (the same bench, the rebuilt bundle and descriptions; filled in from
    names the accepted `repo_name` forms and points at `get`; `get` opens the best hit; `sql`
    answers what search cannot. Each example is data parsed by the call schema in a core
    unit test; each description with the governing sentence stays under 1,200 bytes. The
-   default catalog measures 9,319 bytes (was 8,414; budget 12 KB). The ADR 0057 governing
+   default catalog measures 9,398 bytes (was 8,414; budget 12 KB). The ADR 0057 governing
    sentence and server instructions are unchanged.
 4. **Not shipped, by measurement.** A next-step line in the search result text would not
    reach Claude Code's model (it reads `structuredContent`), and every zero-hit first call
    in the bench was followed by a successful second query without one. A server-side
    default `repo_name` filter would hide cross-repository decisions and every first call
    in the bench that omitted the filter still found the seed; agents add the filter
-   themselves when they know the repository. Both are recorded here rather than built.
+   themselves when they know the repository. Both are recorded here rather than built; the
+   `org/repo` filter form that silently matched nothing is fixed instead (Consequences).
 
 ## Consequences
 
@@ -122,11 +130,13 @@ After (the same bench, the rebuilt bundle and descriptions; filled in from
 - The hint carries session titles and ids the same key can already read through the list
   endpoint; nothing from other users' sessions crosses the wire that the row policies would
   not show. Titles are bounded to 100 characters and the cache to ten sessions.
-- The bundle grows by about 7 KB (171,694 bytes). Hook mode reads up to four more small
+- The bundle grows by about 7 KB (171,723 bytes). Hook mode reads up to four more small
   files (config.json, the MCP configuration once or twice per session, `.git/config`) and
   keeps its 150 ms budget (timing in `scripts/recall-bench/hook-timing.ts`).
 - Codex and Gemini measurements need API keys this workstation lacks; their session-start
   contract is documented (Gemini) or absent (Codex) and marked canary-pending in Appendix A.
-- The `org/repo` form of `repo_name` still matches nothing; resolving it like the bare
-  alias in `read-model.ts` is a follow-up for the read-path owner (3 of the 5 first-call
-  misses used it).
+- The `org/repo` form of `repo_name`, which agents read off a remote and which 3 of the 5
+  baseline first-call misses used, now resolves like the bare alias: one query over the
+  `repos` view (only when a bare or one-slash value is present; canonical names still need
+  no lookup) picks the repository whose name ends with it, and several matches are refused
+  with `AMBIGUOUS_REPO` (`apps/api/test/repo-alias.integration.test.ts`).
