@@ -38,6 +38,7 @@ import {
 } from "react";
 import { z } from "zod";
 import { copy } from "../../copy";
+import { columnWidths, type ColumnSpec } from "../../lib/column-widths";
 import { csvBlob, downloadBlob } from "../../lib/csv";
 import { errorMessage } from "../../lib/display";
 import type { Page } from "../../lib/types";
@@ -146,51 +147,11 @@ function minColumnWidth<T>(column: Column<T>): number {
   );
   return widest + 28 + (column.getIsSorted() ? 16 : 0);
 }
-/**
- * Pixel widths for the fixed layout once the container is measured: action columns take
- * their pixels, data columns share the rest by `size`, and no data column goes below
- * its header floor while others still have room to give. When even the floors do not
- * fit, every column scales down together and header words break (`wrap-anywhere`).
- */
-function columnWidths<T>(
-  columns: Column<T>[],
-  containerWidth: number,
-): number[] {
-  const entries = columns.map((column) => ({
-    fixed: isAction(column) ? (column.columnDef.size ?? actionColumnWidth) : 0,
-    floor: isAction(column) ? 0 : minColumnWidth(column),
-    weight: isAction(column) ? 0 : column.getSize(),
-    width: 0,
-  }));
-  const available = Math.max(
-    0,
-    containerWidth - entries.reduce((sum, entry) => sum + entry.fixed, 0),
-  );
-  const floorTotal = entries.reduce((sum, entry) => sum + entry.floor, 0);
-  if (floorTotal >= available) {
-    const scale = floorTotal === 0 ? 0 : available / floorTotal;
-    return entries.map((entry) => entry.fixed || entry.floor * scale);
-  }
-  let flexible = entries.filter((entry) => entry.weight > 0);
-  let room = available;
-  // Pin every column that would fall under its floor, then share what is left again.
-  while (flexible.length > 0) {
-    const weightTotal = flexible.reduce((sum, entry) => sum + entry.weight, 0);
-    const pinned = flexible.filter(
-      (entry) => (entry.weight / weightTotal) * room < entry.floor,
-    );
-    if (pinned.length === 0) {
-      for (const entry of flexible)
-        entry.width = (entry.weight / weightTotal) * room;
-      break;
-    }
-    for (const entry of pinned) {
-      entry.width = entry.floor;
-      room -= entry.floor;
-    }
-    flexible = flexible.filter((entry) => !pinned.includes(entry));
-  }
-  return entries.map((entry) => entry.fixed || entry.width);
+/** What the width algorithm needs to know about one visible column. */
+function columnSpec<T>(column: Column<T>): ColumnSpec {
+  return isAction(column)
+    ? { fixed: column.columnDef.size ?? actionColumnWidth, floor: 0, weight: 0 }
+    : { fixed: 0, floor: minColumnWidth(column), weight: column.getSize() };
 }
 /** Before the first measurement: pixels for actions and percentage shares for the rest. */
 function fallbackWidth<T>(column: Column<T>, weightTotal: number): string {
@@ -318,8 +279,8 @@ export function DataTable<T>({
   const widths =
     containerWidth === null
       ? visibleColumns.map((column) => fallbackWidth(column, weightTotal))
-      : columnWidths(visibleColumns, containerWidth).map(
-          (width) => `${width.toFixed(2)}px`,
+      : columnWidths(visibleColumns.map(columnSpec), containerWidth).map(
+          (width) => `${String(width)}px`,
         );
   const exportCsv = async () => {
     if (!csv) return;

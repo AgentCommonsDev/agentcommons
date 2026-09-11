@@ -367,10 +367,13 @@ test("the usage selects list sessions that searched or used prior work and the c
     agentcommons_search_calls: z.number(),
     reuses_made: z.number(),
   });
-  /** The visible root sessions under one usage filter, as the API answers it. */
+  // The reader member's own sessions keep the expected set on one page whatever the
+  // fixture has accumulated; the page applies the same quick filter through the URL.
+  const scope = `filters[user_email]=${encodeURIComponent(data.reuse.userEmail)}`;
+  /** The reader's visible root sessions under one usage filter, as the API answers it. */
   const listed = async (query: string) => {
     const response = await page.request.get(
-      `/api/v1/sessions?roots_only=true&limit=100&${query}`,
+      `/api/v1/sessions?roots_only=true&limit=100&${scope}&${query}`,
     );
     expect(response.ok(), await response.text()).toBe(true);
     return z
@@ -380,7 +383,9 @@ test("the usage selects list sessions that searched or used prior work and the c
       })
       .parse(await response.json());
   };
-  await page.goto(paths.sessions);
+  await page.goto(
+    `${paths.sessions}?user_email=${encodeURIComponent(data.reuse.userEmail)}`,
+  );
   const list = page.getByRole("table", { name: labels.list.label });
   await expect(list).toBeVisible();
   await settled(page);
@@ -422,7 +427,8 @@ test("the usage selects list sessions that searched or used prior work and the c
   expect((await pending).ok()).toBe(true);
   await settled(page);
   await expect(page).toHaveURL(/used_prior_work=true/);
-  await expect(rows(page)).toHaveCount(withUsage.items.length);
+  expect(withUsage.items.length).toBe(withUsage.total.sessions);
+  await expect(rows(page)).toHaveCount(Math.min(50, withUsage.items.length));
   await expect(page.getByTestId("sessions-total")).toContainText(
     String(withUsage.total.sessions),
   );
@@ -452,9 +458,15 @@ test("the usage selects list sessions that searched or used prior work and the c
   await settled(page);
   await expect(reader).toHaveCount(0);
   await expect(rows(page)).toHaveCount(Math.min(50, withoutUsage.items.length));
-  await expect(
-    rows(page).first().locator(`td[data-label="${labels.list.usedPriorWork}"]`),
-  ).toHaveText(copy.app.common.unavailable);
+  await expect(page.getByTestId("sessions-total")).toContainText(
+    String(withoutUsage.total.sessions),
+  );
+  if (withoutUsage.items.length > 0)
+    await expect(
+      rows(page)
+        .first()
+        .locator(`td[data-label="${labels.list.usedPriorWork}"]`),
+    ).toHaveText(copy.app.common.unavailable);
   // The searched select works the same way and composes with the first one.
   pending = response("searched", "true");
   await searched.selectOption("on");
@@ -463,6 +475,9 @@ test("the usage selects list sessions that searched or used prior work and the c
   await expect(page).toHaveURL(/searched=true/);
   const both = await listed("searched=true&used_prior_work=false");
   await expect(rows(page)).toHaveCount(Math.min(50, both.items.length));
+  await expect(page.getByTestId("sessions-total")).toContainText(
+    String(both.total.sessions),
+  );
   // Clear filters resets both selects and their URL parameters.
   await page
     .getByRole("button", { name: labels.filters.clearAll, exact: true })

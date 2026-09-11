@@ -26,6 +26,7 @@ import {
   expectNoHorizontalOverflow,
   fixture,
   rowAction,
+  settled,
   showColumn,
   signInAsMember,
   signInAsOwner,
@@ -352,6 +353,8 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
       .getByRole("combobox", { name: text.published.label, exact: true })
       .selectOption({ label: text.published.on });
   });
+  // The table dims itself while a page refetches; scan the settled page, not the fade.
+  await settled(page);
   const row = tableRow(table, textLine);
   await expect(row).toBeVisible();
   await expect(total).toHaveText(/^\d[\d,]* sessions?$/);
@@ -382,6 +385,7 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
       .getByRole("combobox", { name: text.visibility, exact: true })
       .selectOption("PRIVATE");
   });
+  await settled(page);
   await expect(row).toBeVisible();
   await expect(total).toHaveText(/^\d[\d,]* sessions?$/);
   // Once the filtered page lands, no row on it is visible to members.
@@ -395,6 +399,7 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
       .getByRole("combobox", { name: text.visibility, exact: true })
       .selectOption("");
   });
+  await settled(page);
   await expect(row).toBeVisible();
   await expect(
     await rowAction(row, copy.admin.moderation.private),
@@ -434,6 +439,7 @@ test("Moderation: make private, make visible and purge each confirm with a reaso
       .getByRole("combobox", { name: text.purged.label, exact: true })
       .selectOption({ label: text.purged.on });
   });
+  await settled(page);
   await expect(tombstone).toBeVisible();
   await expect(
     tombstone.locator(`td[data-label="${fields.purged_at}"]`),
