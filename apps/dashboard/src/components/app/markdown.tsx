@@ -45,7 +45,7 @@ async function loadHighlighter() {
       // 4.5:1 WCAG AA ratio the accessibility checks enforce; github-light's keyword,
       // variable and comment colors fall short there.
       import("@shikijs/themes/github-light-high-contrast"),
-      import("@shikijs/themes/github-dark"),
+      import("@shikijs/themes/github-dark-high-contrast"),
     ],
     langs: Object.values(langs).map((load) => load()),
   });
@@ -75,7 +75,7 @@ function useHighlightedCode(
               lang,
               themes: {
                 light: "github-light-high-contrast",
-                dark: "github-dark",
+                dark: "github-dark-high-contrast",
               },
               // Colors come from the `--shiki-*` variables that `.code-block` reads per
               // theme; the block's scroll container is the one focus stop, not the <pre>.

@@ -1163,7 +1163,10 @@ test("a message longer than one slice arrives bounded and the rest loads on dema
   await waitForPublished(page, id);
   await page.goto(paths.session(id));
   // Every message is on the page; the long one is bounded, not the transcript.
-  await expect(message(page, 2)).toContainText("After the long prompt.");
+  // The second message arrives with the head page; the runner can take several seconds.
+  await expect(message(page, 2)).toContainText("After the long prompt.", {
+    timeout: 20_000,
+  });
   const long = message(page, 1);
   await expect(long).toContainText(labels.detail.transcript.longMessage);
   await expect(long).not.toContainText(marker);
