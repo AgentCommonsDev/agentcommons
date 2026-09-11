@@ -19,6 +19,8 @@ import {
   guidanceMarkers,
   repositoryInstructions,
 } from "@agentcommons/core/format/install";
+// Test-only: the root's prettier checks the layout the zero-dependency shim writes.
+import { format } from "prettier";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeAtomic } from "../src/files.js";
 import { gitContext } from "../src/git.js";
@@ -379,7 +381,7 @@ describe("automatic repository guidance", () => {
         root: committed,
         remoteUrl: "https://github.com/acme/committed.git",
       }),
-    ).toBe("written");
+    ).toBe("adopted");
     expect(statSync(join(committed, "AGENTS.md")).mtimeMs).toBe(mtime);
     expect(
       readGuidanceDecision(f.directory, "github.com/acme/committed"),
@@ -388,6 +390,145 @@ describe("automatic repository guidance", () => {
       announce: false,
     });
     expect(read(join(f.directory, "hook.log"))).not.toContain(committed);
+  });
+
+  // @req R-CAP-25
+  it("adopts a block however a formatter laid it out, rewrites only changed words, and writes what prettier keeps", async () => {
+    const f = fixture({ config: wired() });
+    const log = () =>
+      existsSync(join(f.directory, "hook.log"))
+        ? read(join(f.directory, "hook.log"))
+        : "";
+    // The repository's own settings, as `prettier --write` runs them on `AGENTS.md`.
+    const prettier = (text: string) =>
+      format(text, { parser: "markdown", proseWrap: "preserve" });
+    const remoteUrl = "git@github.com:acme/formatted.git";
+    const repository = { root: checkout(remoteUrl), remoteUrl };
+    const agents = join(repository.root, "AGENTS.md");
+    const key = "github.com/acme/formatted";
+    // Observed live on 2026-09-11: this repository's AGENTS.md carried the committed block,
+    // formatted by prettier, and the writer rewrote it to remove two blank lines that the
+    // pre-commit prettier run put back. The writer's layout is now prettier's own.
+    const committed = await prettier(
+      `# Working in this repo\n\nRules people wrote.\n\n${BLOCK}`,
+    );
+    expect(committed).toBe(
+      `# Working in this repo\n\nRules people wrote.\n\n${BLOCK}`,
+    );
+    writeFileSync(agents, committed);
+    symlinkSync("AGENTS.md", join(repository.root, "CLAUDE.md"));
+    symlinkSync("AGENTS.md", join(repository.root, "GEMINI.md"));
+    const mtime = statSync(agents).mtimeMs;
+    expect(applyRepositoryGuidance(f.directory, f.config, repository)).toBe(
+      "adopted",
+    );
+    expect(read(agents)).toBe(committed);
+    expect(statSync(agents).mtimeMs).toBe(mtime);
+    const decision = readGuidanceDecision(f.directory, key);
+    expect(decision).toMatchObject({
+      repository: key,
+      decision: "written",
+      blockHash: repositoryBlockHash(),
+      files: ["AGENTS.md"],
+      announce: false,
+    });
+    if (!decision) throw new Error("Missing decision.");
+    expect(log()).not.toContain(repository.root);
+    // Blank lines and trailing whitespace never count as a difference: the layout an older
+    // bundle wrote (no blank line after the marker or the heading) and a sloppy hand edit
+    // are both the same block, so a release whose hash differs still leaves them alone.
+    for (const layout of [
+      `# P\n\n${guidanceMarkers.begin}\n${repositoryInstructions.replace("\n\n", "\n")}\n${guidanceMarkers.end}\n`,
+      `# P\n\n\n${guidanceMarkers.begin}\n\n\n${repositoryInstructions.replaceAll("\n", "  \n")}\n\n${guidanceMarkers.end}\n\n`,
+    ]) {
+      writeFileSync(agents, layout);
+      writeAtomic(guidanceDecisionPath(f.directory, key), {
+        ...decision,
+        blockHash: "stale",
+      });
+      expect(applyRepositoryGuidance(f.directory, f.config, repository)).toBe(
+        "adopted",
+      );
+      expect(read(agents)).toBe(layout);
+      expect(readGuidanceDecision(f.directory, key)).toMatchObject({
+        blockHash: repositoryBlockHash(),
+        announce: false,
+      });
+    }
+    expect(log()).not.toContain(repository.root);
+    // Older words are rewritten, once, in a layout prettier leaves unchanged.
+    writeFileSync(
+      agents,
+      `# P\n\n${guidanceMarkers.begin}\n\n## AgentCommons\n\nOlder text.\n${guidanceMarkers.end}\n`,
+    );
+    writeAtomic(guidanceDecisionPath(f.directory, key), {
+      ...decision,
+      blockHash: "stale",
+    });
+    expect(applyRepositoryGuidance(f.directory, f.config, repository)).toBe(
+      "written",
+    );
+    expect(read(agents)).toBe(`# P\n\n${BLOCK}`);
+    expect(await prettier(read(agents))).toBe(read(agents));
+    expect(readGuidanceDecision(f.directory, key)?.announce).toBe(true);
+    expect(log()).toContain(
+      `Repository guidance written in ${repository.root}: AGENTS.md.`,
+    );
+    // The same holds for a block that sat in the middle of a file, for a fresh file, and
+    // for a file whose trailing blank lines would otherwise pile up before the block.
+    const cases: [string, string][] = [
+      [
+        `# P\n\n${guidanceMarkers.begin}\nold\n${guidanceMarkers.end}\n\nAfter.\n`,
+        `# P\n\nAfter.\n\n${BLOCK}`,
+      ],
+      ["", BLOCK],
+      ["# P\n\n\n\n", `# P\n\n${BLOCK}`],
+    ];
+    for (const [before, after] of cases) {
+      const root = checkout(null);
+      writeFileSync(join(root, "AGENTS.md"), before);
+      expect(writeRepositoryGuidance(root).changed).toEqual([
+        join(root, "AGENTS.md"),
+      ]);
+      expect(read(join(root, "AGENTS.md"))).toBe(after);
+      expect(await prettier(after)).toBe(after);
+    }
+  });
+
+  // @req R-CAP-25
+  it("keys the decision on the checkout's current origin, not on the remote the session state recorded", () => {
+    const f = fixture({ config: wired() });
+    // The session began while `origin` was still `acme/old`; its state keeps that URL, the
+    // checkout has since been renamed.
+    const root = checkout("git@github.com:acme/renamed.git");
+    const stale = { root, remoteUrl: "git@github.com:acme/old.git" };
+    expect(applyRepositoryGuidance(f.directory, f.config, stale)).toBe(
+      "written",
+    );
+    expect(
+      readGuidanceDecision(f.directory, "github.com/acme/renamed"),
+    ).toMatchObject({
+      repository: "github.com/acme/renamed",
+      root,
+      decision: "written",
+    });
+    expect(readGuidanceDecision(f.directory, "github.com/acme/old")).toBeNull();
+    expect(applyRepositoryGuidance(f.directory, f.config, stale)).toBe(
+      "current",
+    );
+    // A checkout that lost its remote is keyed by its root, whatever the state remembers.
+    const local = checkout(null);
+    expect(
+      applyRepositoryGuidance(f.directory, f.config, {
+        root: local,
+        remoteUrl: REMOTE,
+      }),
+    ).toBe("written");
+    expect(readGuidanceDecision(f.directory, local)).toMatchObject({
+      repository: local,
+      root: local,
+    });
+    expect(readGuidanceDecision(f.directory, REPO)).toBeNull();
   });
 
   // @req R-CAP-25

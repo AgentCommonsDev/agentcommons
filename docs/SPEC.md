@@ -997,17 +997,24 @@ left alone when they are symlinks; everything outside the markers is kept byte f
 The gates are data: `guidance.auto` in `config.json` (default `true`),
 `AGENTCOMMONS_GUIDANCE_AUTO` in the environment (`0` off, `1` on, overriding the file), and
 a per-repository decision in `guidance/<sha256(key)>.json` in the data directory, keyed by
-`repositoryIdentity(remote)` when the checkout has an `origin` (every clone on the machine
-shares it) and by the resolved root path otherwise: `{ v: 1, repository, root, decision:
+`repositoryIdentity` of the checkout's `origin` as it is now, read from its `.git/config` on
+every run (every clone on the machine shares it; the state's `remoteUrl` dates from the
+first drain and outlives a renamed remote), and by the resolved root path otherwise: `{ v:
+1, repository, root, decision:
 "written" | "declined", blockHash, files, announce, at }`, read loosely like `update.json`.
 A recorded `declined` (written by `hook.js guidance --repo <path> --off`, which also
 removes the block and unlinks a `CLAUDE.md`/`GEMINI.md` link to `AGENTS.md` the removal
 left dangling) or a `written` whose `blockHash` is this bundle's block text ends the step
-before any repository file is read; a differing hash (a release changed the text) replaces
-the block in place once. A root that is missing, read-only, inside `node_modules` or
-without its own `.git` is skipped quietly and nothing is recorded, so a later session looks
-again. A block already present and identical (a teammate committed it) is adopted:
-recorded, not rewritten, not announced. The files that changed are named in `hook.log`.
+before any repository file is read; a differing hash (a release changed the text) compares
+each file's block with the new text by `blockText` (trailing whitespace and blank lines
+aside) and rewrites, once, only a block whose words differ. A root that is missing,
+read-only, inside `node_modules` or without its own `.git` is skipped quietly and nothing is
+recorded, so a later session looks again. A block already present that says the same thing
+(a teammate committed it, prettier reformatted it) is adopted: recorded, not rewritten, not
+announced. The block is written in `markedBlock`'s layout, the one prettier's markdown
+printer produces (a blank line after the begin marker and after the heading, the end marker
+on the line after the text, one blank line before the block, a single final newline), so a
+formatter run on the file changes nothing. The files that changed are named in `hook.log`.
 The next hinted hook event (**Recall hint**) then adds, once per repository, "AgentCommons
 guidance was added to AGENTS.md (with CLAUDE.md/GEMINI.md); commit it so every teammate's
 agent reads it." to its context: hook mode reads the decision file and clears `announce`,
@@ -1709,6 +1716,7 @@ agent reads at different moments (global instructions, `initialize`, `tools/list
 
 ```
 ## AgentCommons
+
 Past agent sessions for this organization are indexed in AgentCommons (MCP server
 `agentcommons`: search, get, sql). This session is recorded automatically. Before you
 change code, search it for the test, file or error you were given: an earlier session
@@ -1732,6 +1740,7 @@ three (ADR 0069). It tells an agent without the `agentcommons` server to say so 
 
 ```
 ## AgentCommons
+
 Past agent sessions on this repository and across its organization are indexed in
 AgentCommons (MCP server `agentcommons`: search, get, sql). Sessions on machines with
 the AgentCommons hook are recorded automatically. Before you change code, search it for

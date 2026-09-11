@@ -6,9 +6,11 @@ import { execFileSync } from "node:child_process";
 import {
   agentInstructions,
   agentInstructionsFor,
+  blockText,
   formatInstallCommand,
   guidanceBlock,
   guidanceMarkers,
+  markedBlock,
   repositoryInstructions,
 } from "./install.js";
 
@@ -44,11 +46,13 @@ describe("agent guidance", () => {
       "Before you\nchange code, search it for the test, file or error you were given: an earlier session";
     expect(agentInstructions).toContain(shared);
     expect(agentInstructionsFor("machine")).toBe(agentInstructions);
+    // A blank line after the heading, as prettier prints a heading followed by a paragraph.
     expect(
       repositoryInstructions.startsWith(
-        "## AgentCommons\nPast agent sessions on this repository",
+        "## AgentCommons\n\nPast agent sessions on this repository",
       ),
     ).toBe(true);
+    expect(agentInstructions.startsWith("## AgentCommons\n\nPast")).toBe(true);
     expect(repositoryInstructions.replaceAll("\n", " ")).toContain(
       shared.replaceAll("\n", " "),
     );
@@ -57,12 +61,34 @@ describe("agent guidance", () => {
     );
     for (const line of repositoryInstructions.split("\n"))
       expect(line.length).toBeLessThanOrEqual(88);
+    // The block layout prettier's markdown printer keeps: a blank line after the begin
+    // marker, no trailing whitespace, the end marker right after the last line of text.
     const block = guidanceBlock(repositoryInstructions);
-    expect(block.startsWith(`${guidanceMarkers.begin}\n`)).toBe(true);
-    expect(block.endsWith(`\n${guidanceMarkers.end}`)).toBe(true);
+    expect(block).toBe(
+      `${guidanceMarkers.begin}\n\n${repositoryInstructions}\n${guidanceMarkers.end}`,
+    );
+    expect(markedBlock(guidanceMarkers, "\n\n## Title  \n\nText \t\n\n")).toBe(
+      `${guidanceMarkers.begin}\n\n## Title\n\nText\n${guidanceMarkers.end}`,
+    );
     expect(guidanceMarkers).toEqual({
       begin: "<!-- agentcommons-hook begin -->",
       end: "<!-- agentcommons-hook end -->",
     });
+  });
+
+  // @req R-CAP-25
+  it("compares what a block says, not how a formatter laid it out", () => {
+    expect(blockText("## AgentCommons\n\nText.\n")).toBe(
+      "## AgentCommons\nText.",
+    );
+    expect(blockText("\n\n## AgentCommons  \n\n\nText.  \n\n")).toBe(
+      blockText(repositoryInstructions.slice(0, 15) + "\nText."),
+    );
+    expect(blockText(agentInstructions)).not.toBe(
+      blockText(repositoryInstructions),
+    );
+    expect(blockText("## AgentCommons\nText.")).not.toBe(
+      blockText("## AgentCommons\nText"),
+    );
   });
 });

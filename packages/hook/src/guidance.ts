@@ -109,7 +109,9 @@ interface RepositoryGuidance {
  * (a regular file carrying the block where the platform refuses symlinks), receives its own
  * block when it is a regular file, and is left alone when it is already a symlink (this
  * repository links `CLAUDE.md` and `GEMINI.md` to `AGENTS.md`). Everything outside the
- * markers is kept, so the write is idempotent and safe to repeat.
+ * markers is kept, and a block that already says the same thing is left as it is however
+ * a formatter laid it out (`replaceMarkedBlock`), so the write is idempotent and safe to
+ * repeat.
  */
 export function writeRepositoryGuidance(root: string): RepositoryGuidance {
   const primary = primaryRepositoryInstructionsFile();
@@ -246,7 +248,11 @@ function record(
   writeAtomic(guidanceDecisionPath(directory, key), value);
   return value;
 }
-/** The checkout `hook.js guidance` runs against: the enclosing repository, else the path itself. */
+/**
+ * The checkout a decision is keyed on, as it is now: the enclosing repository with the
+ * `origin` its `.git/config` names today, else the path itself. Both the command and the
+ * uploader key through this, never through a remote recorded earlier.
+ */
 function repositoryAt(root: string): Repository {
   return repositoryFromCwd(root) ?? { root: resolve(root), remoteUrl: null };
 }
@@ -298,16 +304,22 @@ function eligibleCheckout(root: string): boolean {
   }
 }
 type GuidanceOutcome =
-  "written" | "current" | "declined" | "disabled" | "skipped";
+  "written" | "adopted" | "current" | "declined" | "disabled" | "skipped";
 /**
  * Upload mode only, after the drain: the first uploader run of a session inside a
  * checkout writes the §8.3 repository block into the checkout's instructions files, once
- * per repository (`guidance/<sha256(key)>.json` in the data directory). A recorded
- * `declined` (from `guidance --off`) or a `written` with this bundle's block hash ends the
- * call before any repository file is read; a differing hash (a release changed the text)
- * refreshes the block in place. Bare repositories never reach here (no working tree
- * root), and a root that is missing, read-only, inside `node_modules` or without its own
- * `.git` is skipped quietly. Nothing here touches the network, `pending` or `ackedCursor`.
+ * per repository (`guidance/<sha256(key)>.json` in the data directory). The session state
+ * gives the checkout's root; the decision is keyed on the checkout's `origin` as it is now,
+ * read from its `.git/config` (`repositoryAt`), because the state's `remoteUrl` was
+ * recorded by the first drain and outlives a renamed remote. A recorded `declined` (from
+ * `guidance --off`) or a `written` with this bundle's block hash ends the call before any
+ * repository file is read; a differing hash (a release changed the text) compares the
+ * block in each file with the new text, blank lines and trailing whitespace aside, and
+ * rewrites only a block whose words differ. A block already saying the same thing is
+ * `adopted`: recorded, never rewritten, never announced. Bare repositories never reach
+ * here (no working tree root), and a root that is missing, read-only, inside
+ * `node_modules` or without its own `.git` is skipped quietly. Nothing here touches the
+ * network, `pending` or `ackedCursor`.
  */
 export function applyRepositoryGuidance(
   directory: string,
@@ -316,38 +328,39 @@ export function applyRepositoryGuidance(
 ): GuidanceOutcome {
   if (!repository) return "skipped";
   if (!autoGuidanceEnabled(config)) return "disabled";
-  const key = repositoryKey(repository);
+  const checkout = repositoryAt(repository.root);
+  const key = repositoryKey(checkout);
   const decision = readGuidanceDecision(directory, key);
   if (decision?.decision === "declined") return "declined";
   const blockHash = repositoryBlockHash();
   if (decision?.decision === "written" && decision.blockHash === blockHash)
     return "current";
-  if (!eligibleCheckout(repository.root)) return "skipped";
+  if (!eligibleCheckout(checkout.root)) return "skipped";
   let result: RepositoryGuidance;
   try {
-    result = writeRepositoryGuidance(repository.root);
+    result = writeRepositoryGuidance(checkout.root);
   } catch (error) {
     // A checkout that turned read-only under us is left alone like one found read-only.
     if (!["EACCES", "EPERM", "EROFS"].some((code) => isCode(error, code)))
       note(
         directory,
-        `Repository guidance skipped for ${repository.root}: ${error instanceof Error ? error.message : "unknown error"}`,
+        `Repository guidance skipped for ${checkout.root}: ${error instanceof Error ? error.message : "unknown error"}`,
       );
     return "skipped";
   }
   if (!result.written.length) return "skipped";
   const added = [...result.changed, ...result.linked];
-  record(directory, repository, {
+  record(directory, checkout, {
     decision: "written",
     blockHash,
     files: [...result.written, ...result.linked].map((file) => basename(file)),
     announce: added.length > 0,
   });
-  if (added.length)
-    note(
-      directory,
-      `Repository guidance written in ${repository.root}: ${added.map((file) => basename(file)).join(", ")}. Commit these files so every teammate's agent reads it.`,
-    );
+  if (!added.length) return "adopted";
+  note(
+    directory,
+    `Repository guidance written in ${checkout.root}: ${added.map((file) => basename(file)).join(", ")}. Commit these files so every teammate's agent reads it.`,
+  );
   return "written";
 }
 

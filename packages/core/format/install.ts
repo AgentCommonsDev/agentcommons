@@ -15,8 +15,41 @@ export const guidanceMarkers = {
   begin: "<!-- agentcommons-hook begin -->",
   end: "<!-- agentcommons-hook end -->",
 } as const;
+/** Delimits one block AgentCommons owns inside a file the user owns. */
+export interface BlockMarkers {
+  begin: string;
+  end: string;
+}
+/**
+ * The one layout a marked block is written in, chosen so prettier's markdown printer
+ * leaves it unchanged: a blank line after the begin marker (an HTML comment and a heading
+ * are separate blocks), the content with no trailing whitespace, and the end marker on the
+ * line after the last line of text, where the printer keeps it. The caller adds the final
+ * newline and whatever separates the block from the text around it.
+ */
+export function markedBlock(markers: BlockMarkers, content: string): string {
+  const body = content
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/^\n+|\n+$/g, "");
+  return `${markers.begin}\n\n${body}\n${markers.end}`;
+}
 export function guidanceBlock(content: string): string {
-  return `${guidanceMarkers.begin}\n${content}\n${guidanceMarkers.end}`;
+  return markedBlock(guidanceMarkers, content);
+}
+/**
+ * What a block says, without its layout: every line with trailing whitespace removed, blank
+ * lines dropped. Two blocks with the same `blockText` carry the same guidance, so a
+ * formatter that adds or removes blank lines (prettier puts one after a heading and after
+ * the begin marker) never makes an existing block look out of date.
+ */
+export function blockText(content: string): string {
+  return content
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line !== "")
+    .join("\n");
 }
 /** Greedy word wrap; the instructions files are read by people as well as agents. */
 function wrap(text: string, width: number): string {
@@ -56,7 +89,8 @@ export function agentInstructionsFor(scope: GuidanceScope): string {
     SEARCH_FIRST,
     ...(scope === "repository" ? [WITHOUT_SERVER] : []),
   ];
-  return `## AgentCommons\n${wrap(sentences.join(" "), 88)}`;
+  // A blank line after the heading: well-formed markdown that prettier leaves as it is.
+  return `## AgentCommons\n\n${wrap(sentences.join(" "), 88)}`;
 }
 export const agentInstructions = agentInstructionsFor("machine");
 export const repositoryInstructions = agentInstructionsFor("repository");
