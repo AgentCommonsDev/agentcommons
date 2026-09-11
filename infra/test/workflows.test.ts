@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { parse } from "yaml";
 import { z } from "zod";
@@ -10,6 +10,19 @@ const stepSchema = z.object({
   if: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
   with: z.record(z.string(), z.unknown()).optional(),
+});
+type Step = z.infer<typeof stepSchema>;
+// Third-party actions are written `owner/name@v<major>` and Dependabot bumps the major, so
+// assertions name the action and accept whichever major the workflow runs.
+const actionReference = /^[\w.-]+\/[\w.-]+@v\d+$/;
+function actionName(step: Step) {
+  return step.uses?.replace(/@v\d+$/, "");
+}
+function usesAction(name: string) {
+  return (step: Step) => actionName(step) === name;
+}
+const compositeActionSchema = z.object({
+  runs: z.object({ steps: z.array(stepSchema) }),
 });
 const jobSchema = z
   .object({
@@ -55,14 +68,36 @@ const workflowNames = [
   "live-canary",
 ];
 
+it("references every third-party action as owner/name at a major version tag", () => {
+  const steps = readdirSync(
+    new URL("../../.github/workflows/", import.meta.url),
+  )
+    .filter((file) => file.endsWith(".yml"))
+    .flatMap((file) => Object.values(workflow(file.slice(0, -4)).jobs))
+    .flatMap((job) => job.steps);
+  const setup = compositeActionSchema.parse(
+    parse(
+      readFileSync(
+        new URL("../../.github/actions/setup/action.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as unknown,
+  ).runs.steps;
+  const references = [...steps, ...setup].flatMap((step) =>
+    step.uses === undefined || step.uses.startsWith("./") ? [] : [step.uses],
+  );
+  expect(references.length).toBeGreaterThan(0);
+  for (const reference of references)
+    expect(reference).toMatch(actionReference);
+});
 it("sets up every job through the shared composite action right after checkout", () => {
   for (const name of workflowNames)
     for (const job of Object.values(workflow(name).jobs)) {
-      const uses = job.steps.map((step) => step.uses);
-      const checkout = uses.indexOf("actions/checkout@v4");
+      const actions = job.steps.map(actionName);
+      const checkout = actions.indexOf("actions/checkout");
       expect(checkout).toBeGreaterThanOrEqual(0);
-      expect(uses[checkout + 1]).toBe("./.github/actions/setup");
-      expect(uses).not.toContain("pnpm/action-setup@v4");
+      expect(actions[checkout + 1]).toBe("./.github/actions/setup");
+      expect(actions).not.toContain("pnpm/action-setup");
       expect(job.steps.map((step) => step.run)).not.toContain(
         "pnpm install --frozen-lockfile",
       );
@@ -109,12 +144,12 @@ it("previews same-repository PRs with OIDC and a separate preview role", () => {
     "head.repo.full_name == github.repository",
   );
   expect(
-    config.jobs.preview?.steps.find((step) => step.uses === "pulumi/actions@v6")
-      ?.with?.command,
+    config.jobs.preview?.steps.find(usesAction("pulumi/actions"))?.with
+      ?.command,
   ).toBe("preview");
   expect(
     config.jobs.preview?.steps.find(
-      (step) => step.uses === "aws-actions/configure-aws-credentials@v4",
+      usesAction("aws-actions/configure-aws-credentials"),
     )?.with?.["role-to-assume"],
   ).toBe("${{ vars.AWS_PREVIEW_ROLE_ARN }}");
 });
@@ -141,13 +176,10 @@ it("deploys the successful CI commit and puts production behind its GitHub envir
   expect(config.jobs.deploy?.if).toContain("github.ref == 'refs/heads/main'");
   expect(config.jobs.deploy?.environment).toBe("${{ inputs.stack || 'dev' }}");
   expect(
-    config.jobs.deploy?.steps.find(
-      (step) => step.uses === "actions/checkout@v4",
-    )?.with?.ref,
+    config.jobs.deploy?.steps.find(usesAction("actions/checkout"))?.with?.ref,
   ).toBe("${{ github.event.workflow_run.head_sha || github.sha }}");
   expect(
-    config.jobs.deploy?.steps.find((step) => step.uses === "pulumi/actions@v6")
-      ?.with?.command,
+    config.jobs.deploy?.steps.find(usesAction("pulumi/actions"))?.with?.command,
   ).toBe("up");
   expect(
     config.jobs.deploy?.steps.find((step) => step.run === "pnpm verify")?.if,
@@ -239,8 +271,7 @@ it("schedules the live browser review and keeps provider credentials out of fork
   expect(credentialSteps[0]?.run).toContain("exit 0");
   expect(credentialSteps[0]?.run).not.toContain("exit 1");
   expect(
-    review?.steps.find((step) => step.uses === "actions/upload-artifact@v4")
-      ?.with?.path,
+    review?.steps.find(usesAction("actions/upload-artifact"))?.with?.path,
   ).toBe("test-results/browser-agent/report.json");
 });
 it("runs the live canary nightly and on every native adapter change, with read-only workflow permissions", () => {
@@ -276,8 +307,7 @@ it("runs the live canary nightly and on every native adapter change, with read-o
     canary?.steps.some((step) => step.run?.includes("pnpm test:canary")),
   ).toBe(true);
   expect(
-    canary?.steps.find((step) => step.uses === "actions/upload-artifact@v4")
-      ?.with?.path,
+    canary?.steps.find(usesAction("actions/upload-artifact"))?.with?.path,
   ).toBe(
     "test-results/live-canary/report.json\ntest-results/live-canary/*-mobile.png\n",
   );
@@ -306,27 +336,25 @@ it("publishes a signed multi-architecture image per green main commit with only 
     "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
   ])
     expect(job?.if).toContain(condition);
-  expect(
-    job?.steps.find((step) => step.uses === "actions/checkout@v4")?.with?.ref,
-  ).toBe("${{ github.event.workflow_run.head_sha || github.sha }}");
-  const uses = job?.steps.map((step) => step.uses) ?? [];
+  expect(job?.steps.find(usesAction("actions/checkout"))?.with?.ref).toBe(
+    "${{ github.event.workflow_run.head_sha || github.sha }}",
+  );
+  const actions = job?.steps.map(actionName) ?? [];
   for (const action of [
-    "docker/setup-qemu-action@v3",
-    "docker/setup-buildx-action@v3",
-    "docker/login-action@v3",
-    "docker/build-push-action@v6",
-    "sigstore/cosign-installer@v3",
+    "docker/setup-qemu-action",
+    "docker/setup-buildx-action",
+    "docker/login-action",
+    "docker/build-push-action",
+    "sigstore/cosign-installer",
   ])
-    expect(uses).toContain(action);
+    expect(actions).toContain(action);
   expect(
-    job?.steps.find((step) => step.uses === "docker/login-action@v3")?.with,
+    job?.steps.find(usesAction("docker/login-action"))?.with,
   ).toMatchObject({
     registry: "ghcr.io",
     password: "${{ secrets.GITHUB_TOKEN }}",
   });
-  const build = job?.steps.find(
-    (step) => step.uses === "docker/build-push-action@v6",
-  )?.with;
+  const build = job?.steps.find(usesAction("docker/build-push-action"))?.with;
   expect(build).toMatchObject({
     context: ".",
     platforms: "linux/amd64,linux/arm64",
@@ -360,7 +388,9 @@ it("publishes a signed multi-architecture image per green main commit with only 
     job?.steps.some((step) => step.run?.startsWith("cosign sign --yes ")),
   ).toBe(true);
   // No cloud account: no AWS action, no configured secret beyond the workflow's own token.
-  expect(uses.some((action) => action?.startsWith("aws-actions/"))).toBe(false);
+  expect(actions.some((action) => action?.startsWith("aws-actions/"))).toBe(
+    false,
+  );
   const text = readFileSync(
     new URL("../../.github/workflows/release.yml", import.meta.url),
     "utf8",
