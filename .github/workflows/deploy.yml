@@ -27,13 +27,30 @@ jobs:
       group: preview-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
+      # Environment variables bind when the runner takes the job, after the job-level `if`, so the
+      # AWS check is the first step. Dependabot runs and unconfigured environments have no role.
+      - id: aws
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_ARN: ${{ vars.AWS_PREVIEW_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_REGION" ] || [ -z "$AWS_ROLE_ARN" ]; then
+            echo '::notice::Skipped: Set AWS_REGION and AWS_PREVIEW_ROLE_ARN on the preview environment to preview infrastructure changes.'
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'configured=true' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.aws.outputs.configured == 'true'
       - uses: ./.github/actions/setup
+        if: steps.aws.outputs.configured == 'true'
       - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.aws.outputs.configured == 'true'
         with:
           role-to-assume: ${{ vars.AWS_PREVIEW_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - uses: pulumi/actions@v6
+        if: steps.aws.outputs.configured == 'true'
         with:
           command: preview
           stack-name: ${{ vars.PULUMI_DEV_STACK }}
@@ -56,20 +73,35 @@ jobs:
       group: deploy-${{ inputs.stack || 'dev' }}
       cancel-in-progress: false
     steps:
+      - id: aws
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -z "$AWS_REGION" ] || [ -z "$AWS_ROLE_ARN" ]; then
+            echo '::notice::Skipped: Set AWS_REGION and AWS_DEPLOY_ROLE_ARN on the deployment environment to deploy.'
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'configured=true' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.aws.outputs.configured == 'true'
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: ./.github/actions/setup
+        if: steps.aws.outputs.configured == 'true'
       - run: pnpm exec playwright install --with-deps
-        if: github.event_name == 'workflow_dispatch'
+        if: steps.aws.outputs.configured == 'true' && github.event_name == 'workflow_dispatch'
       # Manual production releases verify the selected commit too.
       - run: pnpm verify
-        if: github.event_name == 'workflow_dispatch'
+        if: steps.aws.outputs.configured == 'true' && github.event_name == 'workflow_dispatch'
       - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.aws.outputs.configured == 'true'
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - uses: pulumi/actions@v6
+        if: steps.aws.outputs.configured == 'true'
         with:
           command: up
           stack-name: ${{ vars.PULUMI_STACK }}

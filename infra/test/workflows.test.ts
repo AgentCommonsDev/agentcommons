@@ -4,6 +4,7 @@ import { parse } from "yaml";
 import { z } from "zod";
 
 const stepSchema = z.object({
+  id: z.string().optional(),
   uses: z.string().optional(),
   run: z.string().optional(),
   if: z.string().optional(),
@@ -150,7 +151,51 @@ it("deploys the successful CI commit and puts production behind its GitHub envir
   ).toBe("up");
   expect(
     config.jobs.deploy?.steps.find((step) => step.run === "pnpm verify")?.if,
-  ).toBe("github.event_name == 'workflow_dispatch'");
+  ).toContain("github.event_name == 'workflow_dispatch'");
+});
+// @req R-INF-03
+it("skips preview and deploy with a notice when the run has no AWS region or role", () => {
+  const config = workflow("deploy");
+  for (const [job, role] of [
+    ["preview", "AWS_PREVIEW_ROLE_ARN"],
+    ["deploy", "AWS_DEPLOY_ROLE_ARN"],
+  ] as const) {
+    const [check, ...rest] = config.jobs[job]?.steps ?? [];
+    // Environment-scoped variables bind after the job-level `if`, so the check is the first step
+    // and reads them as step environment. Dependabot runs and unconfigured environments have none.
+    expect(check?.id).toBe("aws");
+    expect(check?.uses).toBeUndefined();
+    expect(check?.env).toEqual({
+      AWS_REGION: "${{ vars.AWS_REGION }}",
+      AWS_ROLE_ARN: `\${{ vars.${role} }}`,
+    });
+    expect(check?.run).toContain(
+      '[ -z "$AWS_REGION" ] || [ -z "$AWS_ROLE_ARN" ]',
+    );
+    expect(check?.run).toContain(
+      `::notice::Skipped: Set AWS_REGION and ${role}`,
+    );
+    expect(check?.run).toContain("exit 0");
+    expect(check?.run).not.toContain("exit 1");
+    expect(check?.run).toContain(`echo 'configured=false' >> "$GITHUB_OUTPUT"`);
+    expect(check?.run).toContain(`echo 'configured=true' >> "$GITHUB_OUTPUT"`);
+    // Every other step, checkout included, waits on that output: a skipped job prints the notice
+    // and nothing else.
+    expect(rest.length).toBeGreaterThanOrEqual(4);
+    for (const step of rest)
+      expect(step.if).toContain("steps.aws.outputs.configured == 'true'");
+  }
+  // OIDC or nothing: the pipeline holds no AWS keys and no secret beyond the Pulumi token.
+  const text = readFileSync(
+    new URL("../../.github/workflows/deploy.yml", import.meta.url),
+    "utf8",
+  );
+  expect(text).not.toMatch(
+    /aws-access-key-id|aws-secret-access-key|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/,
+  );
+  expect(new Set(text.match(/secrets\.[A-Z_]+/g))).toEqual(
+    new Set(["secrets.PULUMI_ACCESS_TOKEN"]),
+  );
 });
 // @req R-INF-05
 it("runs fixture redaction, integration, E2E, schema drift, and traceability checks in CI", () => {
