@@ -74,6 +74,9 @@ was at p50 3.3 s and one page load put ClickHouse at 75% CPU.
 - `packages/traces` gains `sessionReadColumns`, `appendSessionReads`, `backfillCompleted`
   and `completeBackfill`; the projection service gains a `readers` dependency; requirement
   R-AUD-05 is added.
+- The backfill records completion only after it enumerated at least one organization: a
+  process booted against an empty database leaves the derivation pending (found on the
+  hosted instance, where the marker had been written before the data existed; ADR 0067).
 
 ## Update (2026-09-10, read-path performance pass)
 

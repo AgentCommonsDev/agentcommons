@@ -1,5 +1,9 @@
 # 0034: Measure search adoption from captured tool calls
 
+Status: superseded by ADR 0067. Search adoption is measured from the attributed API
+reads (`session_reads`), not from transcript tool names; the exact-identity list and the
+subsequent-other-search count below are retired.
+
 Status already measures server-side MCP requests and approximate session attribution
 through installation activity windows. The user also wants direct session evidence of
 AgentCommons use and searches that follow it. Keep the two evidence sources distinct.

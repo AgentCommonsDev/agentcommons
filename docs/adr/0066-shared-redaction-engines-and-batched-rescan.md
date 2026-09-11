@@ -58,3 +58,26 @@ session cost one poll interval (1 s) plus about 0.55 s of work: 60 small session
   the 30 s shared cache still governs ordinary reads and is still invalidated on mutation.
 - The unit test that expected a new `Redactor` instance after the 30 s expiry now expects
   the same compiled engine while rows are unchanged and a new one when a row changes.
+
+## Addendum (2026-09-11): unchanged targets and the concurrency cap
+
+CI on a 2-vCPU runner that also hosts Chromium, the API and both databases still took
+about 5 s per fixture session for a rescan whose policy matched nothing (24 of 69 sessions
+in 120 s), because every target was rebuilt: all raw rows re-appended at a new generation,
+projection re-derived, manifests re-read, receipts re-appended, then superseded rows
+cleaned up.
+
+4. **A rescan target whose snapshot did not change is not rebuilt.** After re-redaction,
+   `snapshotUnchanged` compares the rewritten records (key, payload, redaction context),
+   header and control text against what the build read from the published generation by
+   fingerprint, and requires zero policy hits. For such a target `publishUnchanged`
+   publishes the claimed revision on the control row (lease released, outbox row removed,
+   run checkpoint, `redaction.rescan.session` audit with `unchanged: true`, installation
+   and context text re-redacted as before) and writes nothing to ClickHouse: the
+   generation stays, and since readers select `revision <= published_revision` within the
+   current generation and no row exists at the new revision, their row sets are identical
+   before and after, so the publication fence is not taken. `embedding_source_revision`
+   follows the published revision when it was current, so vectors computed from this
+   content are not recomputed. Any hit or fingerprint difference takes the full rebuild.
+5. **The concurrency cap follows the cores.** `RESCAN_CONCURRENCY = max(1, min(3,
+availableParallelism − 1))`: three on the 8-core workstation, one on a 2-vCPU host.

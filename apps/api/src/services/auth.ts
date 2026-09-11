@@ -856,6 +856,9 @@ export class AuthService {
                 ...(parsed.permissions.sessions
                   ? { sessions: parsed.permissions.sessions }
                   : {}),
+                ...(parsed.permissions.tools
+                  ? { tools: parsed.permissions.tools }
+                  : {}),
                 ...(parsed.permissions.admin
                   ? { admin: parsed.permissions.admin }
                   : {}),

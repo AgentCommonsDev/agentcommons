@@ -7,11 +7,18 @@ import { setTimeout as delay } from "node:timers/promises";
 import { expect, it } from "vitest";
 import { configure } from "../src/install.js";
 import { HARNESSES } from "../src/harnesses.js";
-import { hash } from "../src/files.js";
-import { intentFileName, intentSchema, journalPath } from "../src/state.js";
+import { hash, writeAtomic } from "../src/files.js";
+import { recallCachePath } from "../src/recall.js";
+import {
+  intentFileName,
+  intentSchema,
+  journalPath,
+  loadState,
+  statePath,
+} from "../src/state.js";
 const executable = resolve("packages/hook/dist/hook.js");
-// @req R-CAP-01 @req R-INST-05
-it("all hook events exit zero within 150 ms with a blackholed server and no hook-process network", async () => {
+// @req R-CAP-01 @req R-INST-05 @req R-CAP-20
+it("all hook events exit zero within 150 ms with a blackholed server and no hook-process network, a hinted prompt included", async () => {
   const directory = mkdtempSync(join(tmpdir(), "agentcommons-fast-"));
   configure(directory, {
     server: "http://127.0.0.1:1",
@@ -48,6 +55,50 @@ it("all hook events exit zero within 150 ms with a blackholed server and no hook
       await delay(200);
     }
   }
+  // A prompt that carries the cached recall hint (§6.2) reads two more small files and
+  // writes one; it must fit the same budget.
+  const hinted = randomUUID();
+  const hintedInput = (event: string) =>
+    JSON.stringify({
+      session_id: hinted,
+      cwd: directory,
+      hook_event_name: event,
+    });
+  const env = { ...process.env, AGENTCOMMONS_DIR: directory };
+  execFileSync(process.execPath, [executable, "claude"], {
+    input: hintedInput("SessionStart"),
+    env,
+  });
+  const path = statePath(directory, "claude", hinted);
+  const state = loadState(path);
+  const git = {
+    root: directory,
+    remoteUrl: "git@github.com:acme/widgets.git",
+    branch: "main",
+    head: null,
+  };
+  writeAtomic(path, { ...state, context: { ...state.context, git } });
+  writeAtomic(recallCachePath(directory, "github.com/acme/widgets"), {
+    v: 1,
+    repoName: "github.com/acme/widgets",
+    sessions: 12,
+    fetchedAt: Date.now(),
+  });
+  await delay(200);
+  const started = performance.now();
+  const stdout = execFileSync(process.execPath, [executable, "claude"], {
+    input: hintedInput("UserPromptSubmit"),
+    env: { ...env, NODE_OPTIONS: `--require=${preloader}` },
+    timeout: 150,
+  }).toString();
+  const hintedMs = performance.now() - started;
+  times.push(hintedMs);
+  expect(stdout).toContain(
+    "12 prior AgentCommons sessions touch github.com/acme/widgets",
+  );
+  console.log(
+    `hook wall clock: max ${Math.max(...times).toFixed(1)} ms, hinted prompt ${hintedMs.toFixed(1)} ms`,
+  );
   expect(Math.max(...times)).toBeLessThan(150);
   expect(
     execFileSync(process.execPath, [executable, "claude"], {

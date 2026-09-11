@@ -143,8 +143,14 @@ export const responseBytes = {
   /** One search or get result, in both its structured and text forms. */
   read: 32 * 1024,
 } as const;
+/**
+ * Optional MCP tool groups a key exposes beyond the read tools (§8.2). None is granted by
+ * default, so an agent's catalog holds only `search`, `get` and `sql` unless a key opts in.
+ */
+export const keyToolGroupSchema = /* @__PURE__ */ z.enum(["dashboards"]);
 export const keyPermissionsSchema = /* @__PURE__ */ z.strictObject({
   sessions: z.array(z.enum(["ingest", "read"])).optional(),
+  tools: z.array(keyToolGroupSchema).optional(),
   admin: z.array(z.literal("*")).optional(),
 });
 /** Stored key permissions are JSON text; a key created without any is an empty object. */
@@ -199,6 +205,7 @@ export type Harness = z.infer<typeof harnessSchema>;
 export type JsonValue = z.infer<typeof jsonValueSchema>;
 export type CallerContext = z.infer<typeof callerContextSchema>;
 export type KeyPermissions = z.infer<typeof keyPermissionsSchema>;
+export type KeyToolGroup = z.infer<typeof keyToolGroupSchema>;
 export type MessageRole = z.infer<typeof messageRoleSchema>;
 export type MessageKind = z.infer<typeof messageKindSchema>;
 

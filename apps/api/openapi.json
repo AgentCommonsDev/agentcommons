@@ -19368,6 +19368,15 @@
                                     ]
                                   }
                                 },
+                                "tools": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "enum": [
+                                      "dashboards"
+                                    ]
+                                  }
+                                },
                                 "admin": {
                                   "type": "array",
                                   "items": {
@@ -19845,6 +19854,15 @@
                                   ]
                                 }
                               },
+                              "tools": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "dashboards"
+                                  ]
+                                }
+                              },
                               "admin": {
                                 "type": "array",
                                 "items": {
@@ -20040,6 +20058,15 @@
                           ]
                         }
                       },
+                      "tools": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "dashboards"
+                          ]
+                        }
+                      },
                       "admin": {
                         "type": "array",
                         "items": {
@@ -20142,6 +20169,15 @@
                                 "enum": [
                                   "ingest",
                                   "read"
+                                ]
+                              }
+                            },
+                            "tools": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "dashboards"
                                 ]
                               }
                             },
@@ -21827,6 +21863,15 @@
                                   ]
                                 }
                               },
+                              "tools": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "enum": [
+                                    "dashboards"
+                                  ]
+                                }
+                              },
                               "admin": {
                                 "type": "array",
                                 "items": {
@@ -23223,7 +23268,6 @@
                     "agentcommons_search_rate",
                     "agentcommons_search_calls",
                     "repeat_agentcommons_search_calls",
-                    "subsequent_other_search_calls",
                     "mcp_calls",
                     "memory_assisted_rate",
                     "follow_through_rate",
@@ -23298,7 +23342,6 @@
                               "agentcommons_search_rate",
                               "agentcommons_search_calls",
                               "repeat_agentcommons_search_calls",
-                              "subsequent_other_search_calls",
                               "mcp_calls",
                               "memory_assisted_rate",
                               "follow_through_rate",

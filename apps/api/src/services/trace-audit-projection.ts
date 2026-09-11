@@ -214,6 +214,9 @@ export class TraceAuditProjectionService {
       }
       after = page.at(-1)?.id;
     }
+    // A process booted against a database that holds no organization yet has nothing to
+    // derive; leaving the marker unset keeps the backfill pending for the first real data.
+    if (organizations === 0) return;
     await traces.completeBackfill(SESSION_READS_BACKFILL);
     await audit.write(operatorContext(), {
       action: "audit.projection.backfill",

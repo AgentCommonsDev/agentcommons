@@ -40,7 +40,7 @@ ten sessions that read earlier sessions through the API while live, so the reuse
 non-zero. The API renames neither people nor organizations and stamps upload receipts on
 arrival, so the script sets display names, the organization name and each session's
 `ended_at`/`last_activity_at` with psql on the fixture's PostgreSQL container, and removes
-the fixture's own control session. Captured on 2026-09-10 with Playwright Chromium at
+the fixture's own control session. Captured on 2026-09-11 with Playwright Chromium at
 1440 × 900 and a device scale factor of 2, once with `agentcommons-theme=dark` and once
 with `light`. Home and Sessions are captured as the admin; the session page, SQL and
 Install as a member. Every image is a viewport capture cut at the last element boundary

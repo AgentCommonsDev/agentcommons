@@ -25,6 +25,8 @@ import { createAuth } from "../src/auth/config.js";
 import { createApp } from "../src/app.js";
 import {
   adminToolNames,
+  dashboardAdminToolNames,
+  dashboardToolNames,
   readToolNames,
   serverInstructions,
   toolJsonSchema,
@@ -671,6 +673,7 @@ it("enforces private visibility through REST, SQL, MCP and the uploader's read-o
 // @req R-MCP-04
 // @req R-MCP-05
 // @req R-MCP-09
+// @req R-MCP-11
 // @req R-DASH-39
 it("uses the official stateless MCP client with permission-filtered tools, structured results and immediate demotion", async () => {
   const client = await mcpClient(address, readKey, {
@@ -678,41 +681,75 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
     defer,
   });
   const tools = await client.listTools();
+  // The default catalog is the read tools alone (§8.2): a key created for an install
+  // sees search, get and sql and nothing else until it opts into a tool group.
   expect(tools.tools.map((tool) => tool.name)).toEqual([...readToolNames]);
   expect(
-    tools.tools
-      .filter((tool) => ["search", "get", "sql"].includes(tool.name))
-      .every((tool) =>
-        tool.description?.startsWith(
-          "Use this to check prior work before changing code",
-        ),
+    tools.tools.every((tool) =>
+      tool.description?.startsWith(
+        "Use this to check prior work before changing code",
       ),
+    ),
   ).toBe(true);
   // The same guidance reaches clients that show server instructions (Claude Code).
   expect(client.getInstructions()).toBe(serverInstructions);
   expect(client.transport?.sessionId).toBeUndefined();
   expect(tools.tools.map((tool) => tool.inputSchema)).toEqual(
-    [
-      z.strictObject({}),
-      dashboardIdInputSchema,
-      dashboardRenderToolInputSchema,
-      dashboardSaveToolInputSchema,
-      dashboardIdInputSchema,
-      searchToolInputSchema,
-      getToolInputSchema,
-      sqlInputSchema,
-    ].map(toolJsonSchema),
+    [searchToolInputSchema, getToolInputSchema, sqlInputSchema].map(
+      toolJsonSchema,
+    ),
   );
   // Claude Code defers every MCP tool behind a search step once definitions near 10% of
   // the context window, so the catalog itself is budgeted (§8.2): no output schemas, no
   // draft URL, no recursion or references, and dashboard inputs in their compact form.
   const catalogBytes = (listed: typeof tools) =>
     new TextEncoder().encode(JSON.stringify(listed.tools)).length;
-  expect(catalogBytes(tools)).toBeLessThan(20 * 1024);
+  expect(catalogBytes(tools)).toBeLessThan(12 * 1024);
   expect(tools.tools.map((tool) => tool.outputSchema)).toEqual(
     tools.tools.map(() => undefined),
   );
   expect(JSON.stringify(tools.tools)).not.toMatch(/"\$(ref|defs|schema)"/);
+  // A cached client cannot call what its key does not expose: the refusal names the grant.
+  const ungranted = await client.callTool({
+    name: "dashboard_list",
+    arguments: {},
+  });
+  expect(ungranted.isError).toBe(true);
+  expect(JSON.stringify(ungranted.content)).toContain("TOOL_NOT_GRANTED");
+  // The dashboards tool group is opt-in on the key and adds exactly the five tools.
+  const dashboardsKey = (
+    await database.auth.createKey(organization.owner, {
+      name: "dashboards",
+      permissions: { sessions: ["read"], tools: ["dashboards"] },
+    })
+  ).result.key;
+  const dashboardsClient = await mcpClient(address, dashboardsKey, {
+    name: "dashboards-test",
+    defer,
+  });
+  const dashboardsTools = await dashboardsClient.listTools();
+  expect(dashboardsTools.tools.map((tool) => tool.name)).toEqual([
+    ...readToolNames,
+    ...dashboardToolNames,
+  ]);
+  expect(
+    dashboardsTools.tools
+      .filter((tool) => tool.name.startsWith("dashboard_"))
+      .map((tool) => tool.inputSchema),
+  ).toEqual(
+    [
+      z.strictObject({}),
+      dashboardIdInputSchema,
+      dashboardRenderToolInputSchema,
+      dashboardSaveToolInputSchema,
+      dashboardIdInputSchema,
+    ].map(toolJsonSchema),
+  );
+  expect(catalogBytes(dashboardsTools)).toBeLessThan(20 * 1024);
+  expect(
+    (await dashboardsClient.callTool({ name: "dashboard_list", arguments: {} }))
+      .isError,
+  ).not.toBe(true);
   const result = await client.callTool({
     name: "search",
     arguments: { query: "transport" },
@@ -732,14 +769,31 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
     arguments: { session_id: publicId, reason: "Not authorized" },
   });
   expect(denied.isError).toBe(true);
+  // Effective admin authority adds the admin tools and nothing from an ungranted group.
   const adminClient = await mcpClient(address, organization.key, {
     name: "admin-test",
     defer,
   });
-  const adminTools = await adminClient.listTools();
+  expect(
+    (await adminClient.listTools()).tools.map((tool) => tool.name),
+  ).toEqual([...readToolNames, ...adminToolNames]);
+  // The complete catalog needs admin authority and the dashboards group together.
+  const completeKey = (
+    await database.auth.createKey(organization.owner, {
+      name: "complete",
+      permissions: { sessions: ["read"], tools: ["dashboards"], admin: ["*"] },
+    })
+  ).result.key;
+  const completeClient = await mcpClient(address, completeKey, {
+    name: "complete-test",
+    defer,
+  });
+  const adminTools = await completeClient.listTools();
   expect(adminTools.tools.map((tool) => tool.name)).toEqual([
     ...readToolNames,
+    ...dashboardToolNames,
     ...adminToolNames,
+    ...dashboardAdminToolNames,
   ]);
   expect(catalogBytes(adminTools)).toBeLessThan(25 * 1024);
   expect(JSON.stringify(adminTools.tools)).not.toMatch(

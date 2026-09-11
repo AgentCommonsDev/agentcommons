@@ -3,9 +3,19 @@ import { Badge } from "../../components/ui/badge";
 import { copy } from "../../copy";
 import type { ApiKey } from "../../lib/types";
 
-export const permissionOrder = ["ingest", "read", "admin"] as const;
+export const permissionOrder = [
+  "ingest",
+  "read",
+  "dashboards",
+  "admin",
+] as const;
 type Permission = (typeof permissionOrder)[number];
-const tone = { ingest: "accent", read: "success", admin: "warning" } as const;
+const tone = {
+  ingest: "accent",
+  read: "success",
+  dashboards: "neutral",
+  admin: "warning",
+} as const;
 
 /** The permissions a key carries, in display order. */
 function grantedPermissions(permissions: KeyPermissions): Permission[] {
@@ -13,7 +23,9 @@ function grantedPermissions(permissions: KeyPermissions): Permission[] {
   return permissionOrder.filter((permission) =>
     permission === "admin"
       ? (permissions.admin ?? []).includes("*")
-      : sessions.includes(permission),
+      : permission === "dashboards"
+        ? (permissions.tools ?? []).includes("dashboards")
+        : sessions.includes(permission),
   );
 }
 /** The installer needs a live key that can both upload and read sessions. */
@@ -24,20 +36,20 @@ export function canInstall(key: ApiKey): boolean {
 /** Request-body permissions: groups are present only when granted. */
 interface PermissionInput {
   sessions?: ("ingest" | "read")[];
+  tools?: "dashboards"[];
   admin?: "*"[];
 }
 /** Build the request body shape from checkbox state, omitting empty groups. */
-export function buildPermissions(selection: {
-  ingest: boolean;
-  read: boolean;
-  admin: boolean;
-}): PermissionInput {
+export function buildPermissions(
+  selection: Record<Permission, boolean>,
+): PermissionInput {
   const sessions: ("ingest" | "read")[] = [
     ...(selection.ingest ? ["ingest" as const] : []),
     ...(selection.read ? ["read" as const] : []),
   ];
   return {
     ...(sessions.length ? { sessions } : {}),
+    ...(selection.dashboards ? { tools: ["dashboards" as const] } : {}),
     ...(selection.admin ? { admin: ["*" as const] } : {}),
   };
 }

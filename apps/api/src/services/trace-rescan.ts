@@ -8,6 +8,7 @@ import {
   redactNormalizerContext,
   redactObservedCommits,
   redactSourceRecord,
+  redactionContextSchema,
   redactionRescanInputSchema,
   sanitizeSourceRecord,
   type RedactionCount,
@@ -19,7 +20,9 @@ import type {
   PrismaClient,
   TraceSessionControl,
 } from "@agentcommons/db";
+import { fingerprint } from "@agentcommons/traces";
 import type { TraceRawRecord, TraceSession } from "@agentcommons/traces";
+import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 
 export const traceRescanPayloadSchema = z.strictObject({
@@ -31,11 +34,16 @@ export const traceRescanPayloadSchema = z.strictObject({
 });
 
 /**
- * Targets one rescan job publishes at a time (ADR 0066). Their ClickHouse reads and inserts
- * overlap; only the claim step is serialized on the organization row, and each target still
- * commits its own rewrite, counters, audit and checkpoint.
+ * Targets one rescan job publishes at a time (ADR 0066): at most three, and one fewer
+ * than the cores this process may run on, so a two-core host keeps a core for the API,
+ * the databases and the dashboard it shares the machine with. Their ClickHouse reads and
+ * inserts overlap; only the claim step is serialized on the organization row, and each
+ * target still commits its own rewrite, counters, audit and checkpoint.
  */
-export const RESCAN_CONCURRENCY = 3;
+export const RESCAN_CONCURRENCY = Math.max(
+  1,
+  Math.min(3, os.availableParallelism() - 1),
+);
 /** A job hands over to its successor after this long, well inside pg-boss's 180 s job expiry. */
 export const RESCAN_JOB_BUDGET_MS = 60_000;
 
@@ -111,6 +119,53 @@ export async function completeRunSession(
         run.processedSessions === run.totalSessions ? "completed" : "running",
     },
   });
+}
+
+/** The fields of a raw record a rescan can rewrite, in one comparable form. */
+function redactedFields(record: TraceRawRecord) {
+  return {
+    key: record.key,
+    payload: record.payload,
+    redactionContext: redactionContextSchema.parse(
+      record.redactionContext ?? {},
+    ),
+  };
+}
+
+/**
+ * True when re-redaction left the published generation as it is: no policy hit, every
+ * record's redacted fields, the header and the control row's native text hash to what
+ * is already stored. Such a target is checkpointed without a rebuild (ADR 0066).
+ */
+export function snapshotUnchanged(
+  source: readonly TraceRawRecord[],
+  header: TraceSession,
+  control: TraceSessionControl,
+  rewritten: Awaited<ReturnType<typeof redactTraceSnapshot>>,
+): boolean {
+  if (
+    rewritten.metadataCounts.length ||
+    [...rewritten.counts.values()].some((hits) => hits.length) ||
+    rewritten.records.length !== source.length
+  )
+    return false;
+  const stored = new Map(
+    source.map((record) => [record.id, fingerprint(redactedFields(record))]),
+  );
+  for (const record of rewritten.records)
+    if (stored.get(record.id) !== fingerprint(redactedFields(record)))
+      return false;
+  if (fingerprint(rewritten.header) !== fingerprint(header)) return false;
+  const context = (value: unknown) =>
+    JSON.stringify(normalizerContextSchema.parse(value));
+  return (
+    context(control.normalizerContext) ===
+      context(rewritten.control.normalizerContext) &&
+    context(control.projectedContext) ===
+      context(rewritten.control.projectedContext) &&
+    control.harnessSessionId === rewritten.control.harnessSessionId &&
+    control.parentNativeRef === rewritten.control.parentNativeRef
+  );
 }
 
 /** Reuses native record classification and schema-aware redaction for each storage generation. */

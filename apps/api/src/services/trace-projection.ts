@@ -1,6 +1,7 @@
 import {
   completeRunSession,
   redactTraceSnapshot,
+  snapshotUnchanged,
   traceRescanPayloadSchema,
 } from "./trace-rescan.js";
 import { createPolicyCache } from "./policy-cache.js";
@@ -137,6 +138,11 @@ export class TraceProjectionService {
     try {
       const build = await this.build(plan);
       if (!build) return;
+      if (build === "unchanged") {
+        await this.publishUnchanged(plan);
+        await this.publishReceipts(organizationId, sessionId);
+        return;
+      }
       await this.publish(plan, build);
       await this.cleanupSuperseded(plan, build);
       await this.cleanupGenerations(organizationId, sessionId);
@@ -342,9 +348,11 @@ export class TraceProjectionService {
   }
   /**
    * Write the plan's raw records, projection and receipts to the sink under its lease.
-   * Null when the lease was lost mid-way; the next reservation starts over.
+   * Null when the lease was lost mid-way; the next reservation starts over. "unchanged"
+   * when a rescan's re-redacted snapshot equals the published generation, before any
+   * sink write (ADR 0066).
    */
-  private async build(plan: Plan): Promise<Build | null> {
+  private async build(plan: Plan): Promise<Build | "unchanged" | null> {
     const { organizationId, sessionId } = plan;
     const { repository } = this.dependencies;
     const guarded = (operation: () => Promise<void>) =>
@@ -445,6 +453,11 @@ export class TraceProjectionService {
             records,
           )
         : null;
+    if (
+      rewritten &&
+      snapshotUnchanged(records, header, plan.control, rewritten)
+    )
+      return "unchanged";
     if (rewritten) {
       records = rewritten.records;
       header = rewritten.header;
@@ -601,35 +614,9 @@ export class TraceProjectionService {
         return;
       if (plan.rescan) await this.reauthorizeRescan(tx, plan.rescan);
       if (rewritten && plan.redactor) {
-        // An upload can advance its native context while this generation is built.
-        // Redact the latest accepted context without replacing it with an older snapshot.
-        rewritten.control.normalizerContext = (
-          await redactNormalizerContext(
-            normalizerContextSchema.parse(current.normalizerContext),
-            plan.redactor,
-          )
-        ).value;
-        rewritten.control.parentNativeRef =
-          current.parentNativeRef === null
-            ? null
-            : (await canonicalIdentity(current.parentNativeRef, plan.redactor))
-                .value;
-        const installation = await tx.installation.findUniqueOrThrow({
-          where: {
-            organizationId_id: { organizationId, id: current.installationId },
-          },
-        });
-        await tx.installation.update({
-          where: {
-            organizationId_id: { organizationId, id: installation.id },
-          },
-          data: {
-            hostname: (await plan.redactor.text(installation.hostname)).value,
-            osUser: (await plan.redactor.text(installation.osUser)).value,
-            platform: (await plan.redactor.text(installation.platform)).value,
-            arch: (await plan.redactor.text(installation.arch)).value,
-          },
-        });
+        const text = await this.redactControlText(tx, current, plan.redactor);
+        rewritten.control.normalizerContext = text.normalizerContext;
+        rewritten.control.parentNativeRef = text.parentNativeRef;
       }
       if (rewritten)
         for (const [receiptId, counts] of rewritten.counts)
@@ -714,6 +701,107 @@ export class TraceProjectionService {
           changed_messages: messages.length,
           changed_files: files.length,
           projection_ready: projection?.ready ?? false,
+        },
+      });
+    });
+  }
+  /**
+   * Re-redact the control row's native text with the rescan's engine. An upload can
+   * advance the native context while a generation is built, so the latest accepted
+   * context is redacted rather than replaced with an older snapshot; the installation's
+   * observed fields are rewritten in place.
+   */
+  private async redactControlText(
+    tx: Prisma.TransactionClient,
+    current: TraceSessionControl,
+    redactor: Redactor,
+  ) {
+    const { organizationId } = current;
+    const normalizerContext = (
+      await redactNormalizerContext(
+        normalizerContextSchema.parse(current.normalizerContext),
+        redactor,
+      )
+    ).value;
+    const parentNativeRef =
+      current.parentNativeRef === null
+        ? null
+        : (await canonicalIdentity(current.parentNativeRef, redactor)).value;
+    const installation = await tx.installation.findUniqueOrThrow({
+      where: {
+        organizationId_id: { organizationId, id: current.installationId },
+      },
+    });
+    await tx.installation.update({
+      where: { organizationId_id: { organizationId, id: installation.id } },
+      data: {
+        hostname: (await redactor.text(installation.hostname)).value,
+        osUser: (await redactor.text(installation.osUser)).value,
+        platform: (await redactor.text(installation.platform)).value,
+        arch: (await redactor.text(installation.arch)).value,
+      },
+    });
+    return { normalizerContext, parentNativeRef };
+  }
+  /**
+   * Checkpoint a rescan target whose re-redacted snapshot equals the published generation
+   * (ADR 0066). The accepted revision is published with no sink write and no new
+   * generation: readers select `revision <= published_revision` within the current
+   * generation and no row exists at the new revision, so their row sets are identical
+   * before and after and the publication fence is not needed. Embeddings computed from
+   * this content stay current. Progress, the per-session audit and the authority recheck
+   * are the same as for a rebuilt target.
+   */
+  private async publishUnchanged(plan: Plan): Promise<void> {
+    const { organizationId, sessionId, rescan, redactor } = plan;
+    if (!rescan || !redactor)
+      throw new Error("Only a rescan can publish an unchanged snapshot.");
+    await this.dependencies.prisma.$transaction(async (tx) => {
+      if (!(await lockTraceSessionControl(tx, organizationId, sessionId)))
+        return;
+      const current = await tx.traceSessionControl.findUniqueOrThrow({
+        where: { organizationId_id: { organizationId, id: sessionId } },
+      });
+      if (
+        current.purgedAt ||
+        current.projectionLease !== plan.lease ||
+        current.publishedRevision !== plan.control.publishedRevision
+      )
+        return;
+      await this.reauthorizeRescan(tx, rescan);
+      const text = await this.redactControlText(tx, current, redactor);
+      await tx.traceSessionControl.update({
+        where: { organizationId_id: { organizationId, id: sessionId } },
+        data: {
+          normalizerContext: text.normalizerContext,
+          parentNativeRef: text.parentNativeRef,
+          publishedRevision: plan.revision,
+          ...(current.embeddingSourceRevision === current.publishedRevision
+            ? { embeddingSourceRevision: plan.revision }
+            : {}),
+          projectionLease: null,
+          projectionLeaseUntil: null,
+          // The projection did not change, so neither did its readiness; the claim set
+          // the row to queued and it returns to published (a pi session still waiting
+          // for a branch is relabelled by the upload that brings it).
+          projectionState:
+            current.acceptedRevision > plan.revision ? "queued" : "published",
+        },
+      });
+      await tx.traceOutbox.deleteMany({
+        where: { id: { in: plan.outboxes.map((row) => row.id) } },
+      });
+      await completeRunSession(tx, organizationId, rescan.runId, sessionId, 0);
+      await this.audit(tx, organizationId, {
+        action: "redaction.rescan.session",
+        resourceType: "session",
+        resourceIds: [sessionId],
+        detail: {
+          revision: String(plan.revision),
+          run_id: rescan.runId,
+          unchanged: true,
+          changed_messages: 0,
+          changed_files: 0,
         },
       });
     });

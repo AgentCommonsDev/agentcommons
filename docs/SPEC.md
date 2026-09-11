@@ -64,8 +64,8 @@ Cloud deployment is explicitly deferred until operator approval (ADR 0019).
 - Redaction before any persisted write, with admin-managed policies (regex and a fixed
   allowlist of preinstalled secretlint rules) and a complete rescan.
 - Sessions linked to parents (subagent, explicit fork, spawned).
-- Three agent tools over MCP: `search`, `get`, `sql`. Admin keys additionally see four
-  static admin tools.
+- Three agent tools over MCP by default: `search`, `get`, `sql`. The dashboard tools are an
+  opt-in key permission; admin keys additionally see four static admin tools.
 - Semantic ranking implemented and shipped behind `EMBEDDINGS_ENABLED=false`, internal to
   `search`; no change to the agent surface when it flips (§11).
 - Dashboard under `/app`: organization dashboards (Home is the default one), search and
@@ -230,8 +230,9 @@ models retain the types emitted by its generator. Better Auth owns `user`, `sess
   onboarding (§9.6). There is no invitation-email flow.
 - **ApiKey**: Better Auth API Key plugin with native organization references; bound
   to one organization for its lifetime; `permissions`
-  `{ sessions: ["ingest" | "read"], admin: ["*"] }`; hashed; prefix `ac_`; a user may
-  hold many. `ApiKeyOwner` stores the issuing user's identity and organization as
+  `{ sessions: ["ingest" | "read"], tools: ["dashboards"], admin: ["*"] }` (`tools` names
+  the opt-in MCP tool groups, §8.2; any member may grant it); hashed; prefix `ac_`; a user
+  may hold many. `ApiKeyOwner` stores the issuing user's identity and organization as
   immutable attribution alongside the plugin-owned key. `admin:*` is grantable only
   by organization owners/admins and remains effective only while the issuing user has
   that membership. Removal or suspension invalidates every key issued by that member
@@ -615,13 +616,19 @@ on the session and its organization-scoped installation are re-redacted too. Pen
 New policy hits add to the originating receipt's RedactionEvent counters and appear
 in one audit row per session touched. The session rewrite, audit, target checkpoint and
 progress counters commit together per session, serialized with ingest. A job claims up to
-three unprocessed targets in one transaction under the organization row, publishes them
-concurrently (three in flight; the fence and control rows serialize only the commits),
-records one progress audit per batch and repeats until the run completes or its 60 s
-budget ends, when it enqueues its successor in the same transaction as that audit (ADR
-0066). A claimed target another publisher is finishing is awaited while its projection
-lease is held; a target that reached no checkpoint fails the job, which retries from the
-committed checkpoints.
+`min(3, cores − 1)` (at least one) unprocessed targets in one transaction under the
+organization row, publishes them concurrently (the fence and control rows serialize only
+the commits), records one progress audit per batch and repeats until the run completes or
+its 60 s budget ends, when it enqueues its successor in the same transaction as that
+audit (ADR 0066). A target whose re-redacted records, header and control text equal the
+published generation (no policy hit, identical fingerprints) is checkpointed without a
+rebuild: its claimed revision is published with no sink write, no new generation and no
+fence, since readers select `revision <= published_revision` within the current
+generation and no row exists at the new revision; its progress, per-session audit
+(`unchanged: true`) and authority recheck are those of a rebuilt target, and current
+embeddings stay current. A claimed target another publisher is finishing is awaited while
+its projection lease is held; a target that reached no checkpoint fails the job, which
+retries from the committed checkpoints.
 The worker rechecks current membership/key authority for each batch and skips
 tombstoned targets. It stores no request headers or credentials in job data.
 `GET /admin/redaction/rescan/:id` exposes organization-scoped progress as specified in
@@ -742,7 +749,12 @@ AGENTCOMMONS_API_KEY`, Gemini `mcpServers` entry); write the marker-delimited
    (`instructionsPath` in `HARNESSES`: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
    `~/.gemini/GEMINI.md`; pi's extension adds the same text to its system prompt), replacing
    the marker-delimited block in place so a self-update carries new text, and name the
-   files in the output. Nothing is added to repositories. Fields the
+   files in the output. The installer adds nothing to repositories; `node hook.js guidance
+[--repo <path>]` (no configuration needed) writes the repository variant of the block
+   (§8.3, ADR 0069) into the repository's `AGENTS.md`, creates `CLAUDE.md` and `GEMINI.md`
+   as symlinks to it when absent, adds the block to them when they already exist as files
+   and leaves a symlink that points elsewhere alone (`repositoryInstructionsFile` in
+   `HARNESSES`), so a team commits it once. Fields the
    native CLI cannot express are merged into the entry it wrote: Claude Code's entry gets
    `alwaysLoad: true`, because Claude Code 2.1.x otherwise defers every MCP tool behind
    `ToolSearch` (Appendix A) and the budgeted catalog (ADR 0053, R-MCP-09) is cheap to
@@ -798,6 +810,18 @@ pending); `SubagentStart` → add a child source using the event mapping's captu
 path semantics; `end` → persist the end reason and set `intent = "end"`.
 Then, if no live owner holds the lock, spawn `hook.js upload <state>` detached
 (`detached: true, stdio: 'ignore'`, `.unref()`) and exit 0. Never any network I/O.
+On an event flagged `hint` in `HARNESSES` (Claude Code and Codex `UserPromptSubmit`,
+Gemini `BeforeAgent`; pi has no shell hook and gets none) hook mode also reads the
+repository's cached recall count (**Recall hint**, below) and, when it is positive, prints
+the harness's documented context output and nothing else:
+`{"hookSpecificOutput":{"hookEventName":"<event>","additionalContext":"<N> prior
+AgentCommons sessions touch <repo_name>; search them before changing code (search, get,
+sql over MCP)."}}`. It does so on the first hinted prompt that finds a count and then
+every 25 prompts (counter in `<state>.hint`, written by hook mode; the uploader owns the
+state file), so the line is a nudge and not noise. Reading two small JSON files and
+writing one keeps the 150 ms budget (R-CAP-20). This is the only stdout a hook ever
+writes: Claude Code adds plain stdout on these events as context too, and Gemini parses
+stdout as JSON (Appendix A).
 
 **Upload mode** (`hook.js upload <state>`, always a detached child):
 Git context and end observations are collected here with 500 ms per-command timeouts,
@@ -872,6 +896,22 @@ for its next hook or another session's sweep; after the post-turn settle there i
 timer. Nothing is lost while the disk survives: `ackedCursor` only advances on `202`,
 and the server dedupes.
 
+**Recall hint.** After its drain, the uploader refreshes the count of indexed sessions
+for the session's repository, so the next prompt hook can hint from the cache without a
+request. The repository name is `repositoryIdentity(remote)`, the same `repo_name` the
+server derives, so the cache key and the list filter agree. One request, `GET
+/api/v1/sessions?limit=1&filters={"repo_name":"<repo_name>"}` with the installation key
+(10 s timeout), whose `total.sessions` comes from the page's own scan (§7.6); at most
+every 15 minutes per repository. The cache is `recall/<sha256(repo_name)>.json` in the
+data directory, `{ v, repoName, sessions, fetchedAt }`; the attempt is recorded before the
+request so a failing server is asked again only after the interval. Failures are logged
+to `hook.log` and ignored; nothing here touches `pending` or `ackedCursor`. No request is
+made for a session outside a repository with a remote, and the first hook of a session
+has no git context yet, so a hint appears from the second prompt at the earliest and lags
+a newly indexed session by at most one refresh. The count is the caller's visibility
+(row policies); the hint carries only that number and the repository name the hook
+already knows (ADR 0069).
+
 **Self-update.** A shim's identity is the sha256 of its own `hook.js` bundle (and of
 `pi-extension.mjs`), the same digests the server publishes in `/hook/manifest.json`
 (§6.1). Every envelope carries them as `hook: { sha256, extensionSha256 | null }`
@@ -924,6 +964,7 @@ machine that has that CLI within an hour of its next session.
 | `sync`                                                                                                 | `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStop` | same                 | `BeforeAgent`, `AfterTool`, `AfterAgent` | `input`, `tool_result`, `agent_end`, `session_tree` |
 | child source                                                                                           | `SubagentStart` (+ `SubagentStop` confirms)               | `SubagentStart/Stop` | —                                        | —                                                   |
 | `end`                                                                                                  | `SessionEnd`                                              | `SessionEnd`         | `SessionEnd`                             | `session_shutdown`                                  |
+| `hint` (prompt context)                                                                                | `UserPromptSubmit`                                        | `UserPromptSubmit`   | `BeforeAgent`                            | —                                                   |
 | Readers: `jsonl-append` (byte offset) and `json-document` (per-index content hashes and                |
 | source versions; acknowledged only with the pending batch). Each entry also carries config path, hooks |
 | key, timeout unit (Gemini: ms), and MCP registration shape.                                            |
@@ -1404,16 +1445,26 @@ a tool result.
 
 ### 8.2 Catalog: static, permission-filtered
 
-User tools (`sessions:read`): `search`, `get`, `sql`, exactly as §7.2–7.4, plus the
-organization dashboard tools `dashboard_list`, `dashboard_get`, `dashboard_render`,
-`dashboard_save` and `dashboard_delete` (§10). Schemas generated from the shared zod. If the key's installation has `toolsEnabled = false`
-(staged rollout, §10), `tools/list` is empty for that key and calls return a clear
-error; ingest is unaffected. Admin tools, listed only when the caller has effective
-admin authority (§7.5) and each authorized again on invocation: `set_visibility
-(session_id, visibility, reason)`, `purge(session_id, reason)` (`destructiveHint`),
-`audit(filters, limit, cursor)` (exact ids, UTC bounds), `status()`, and
-`dashboard_set_default(id)`. No data-derived
-schema content; discovery is `schema_columns` via `sql`. The `sql` description lists the
+The default catalog is the read tools and nothing else. User tools (`sessions:read`):
+`search`, `get`, `sql`, exactly as §7.2–7.4; discovery of views and columns is
+`schema_columns` via `sql`, so no further tool is needed to write a query. The organization
+dashboard tools `dashboard_list`, `dashboard_get`, `dashboard_render`, `dashboard_save` and
+`dashboard_delete` (§10) form the `dashboards` tool group, listed only for keys whose
+`permissions.tools` names it (ADR 0068). A tool group is data on the key and on the tool
+definition (`group`), never a code path: `tools/list` filters by it and every call checks
+it again (`403 TOOL_NOT_GRANTED`, naming the grant), so a cached catalog cannot call a tool
+the key does not expose. The install flow creates keys with `sessions: [ingest, read]` and
+no tool group; the key form offers the group as an unchecked option any member may grant.
+Keys created before the group existed keep the read tools and lose the dashboard tools
+from their catalog; permissions are immutable, so a new key grants them. Schemas generated
+from the shared zod. If the key's installation has `toolsEnabled = false` (staged rollout,
+§10), `tools/list` is empty for that key and calls return a clear error; ingest is
+unaffected. Admin tools, listed only when the caller has effective admin authority (§7.5)
+and each authorized again on invocation: `set_visibility (session_id, visibility, reason)`,
+`purge(session_id, reason)` (`destructiveHint`), `audit(filters, limit, cursor)` (exact
+ids, UTC bounds) and `status()`; `dashboard_set_default(id)` needs admin authority and the
+`dashboards` group together. Catalog order is read tools, dashboard tools, admin tools,
+`dashboard_set_default`. No data-derived schema content. The `sql` description lists the
 views by name with one line each and the discovery query; it does not enumerate every
 column. Every `search` filter carries its one-line meaning in the advertised input schema,
 and the `search` description says how filters combine and gives one example call using the
@@ -1451,8 +1502,10 @@ template → render → save workflow.
 The catalog is sized for the client, not only for validation. Claude Code defers every MCP
 tool behind a search step once deferrable tool definitions approach 10% of its context
 window across all servers, which would hide `search` at the "have we done this before?"
-moment the product exists for. `tools/list` therefore stays under 20 KB for a read key and
-25 KB for an effective admin key, leaving headroom for future tools: no `outputSchema` is shipped (results still carry
+moment the product exists for. `tools/list` therefore stays under 12 KB for the default
+catalog (measured 8.4 KB on 2026-09-11, ADR 0068), 20 KB with the `dashboards` group and
+25 KB for the complete catalog of an effective admin key with the group, leaving headroom
+for future tools: no `outputSchema` is shipped (results still carry
 `structuredContent`, validated server-side); input schemas omit the draft `$schema` URL and
 regex `pattern`s that only restate a `format`; and the dashboard tools advertise the compact
 tool-facing definition (`dashboardDefinitionToolSchema`: variables and tiles as described
@@ -1461,7 +1514,7 @@ keys and pointing at `dashboard_list`, whose `structuredContent.definition_schem
 the complete schema and whose text names the templates)
 instead of inlining the style allowlist once per series. Every call is still parsed with the
 strict shared schema, so validation is unchanged. No advertised schema contains `$ref` or
-recursion, which the Gemini API rejects. The contract test measures both catalogs.
+recursion, which the Gemini API rejects. The contract test measures all three catalogs.
 
 ### 8.3 Global agent instructions
 
@@ -1470,7 +1523,7 @@ Written by the installer into each configured harness's global instructions file
 per `HARNESSES` entry) between `<!-- agentcommons-hook begin -->` and
 `<!-- agentcommons-hook end -->` markers, replaced in place on every install and self-update
 reconfiguration and removed on uninstall; the pi extension adds the same text to pi's
-system prompt on `before_agent_start`. Teams add nothing to their repositories. It, the
+system prompt on `before_agent_start`. It, the
 governing sentence and the server instructions carry the same guidance in three places the
 agent reads at different moments (global instructions, `initialize`, `tools/list`):
 
@@ -1483,6 +1536,29 @@ often holds the root cause, the library the team chose or the exact value. Use i
 when the user asks about prior work; anything beyond a quick lookup runs in a subagent
 that brings back only findings and session ids.
 ```
+
+**Repository block.** The same guidance framed for a project (`repositoryInstructions`,
+`agentInstructionsFor("repository")`, inside the same markers) reaches teammates whose
+machines have no install, and ADR 0057's measurement showed agents with git history
+available never searched without it. `hook.js guidance [--repo <path>]` writes it into
+`AGENTS.md` and links `CLAUDE.md` and `GEMINI.md` to it (§6.1 step 4); the Install page
+shows the block to copy with the instruction to commit it, and the README points at both
+(ADR 0069). It tells an agent without the `agentcommons` server to say so once:
+
+```
+## AgentCommons
+Past agent sessions on this repository and across its organization are indexed in
+AgentCommons (MCP server `agentcommons`: search, get, sql). Sessions on machines with
+the AgentCommons hook are recorded automatically. Before you change code, search it for
+the test, file or error you were given: an earlier session often holds the root cause,
+the library the team chose or the exact value. Use it too when the user asks about prior
+work; anything beyond a quick lookup runs in a subagent that brings back only findings
+and session ids. If this machine has no `agentcommons` MCP server, tell the user once
+that the AgentCommons install is missing and continue without it.
+```
+
+The prompt-time recall hint (§6.2) is the fourth surface: one line per 25 prompts, from
+the capture hook, stating how many indexed sessions touch the repository.
 
 ### 8.4 Client configuration
 
@@ -1503,7 +1579,8 @@ one-line prompt snippet. Each call POSTs `tools/call` (60 s timeout, pi's abort 
 honored) and returns the text content with `structuredContent` as details, or fails the
 tool when the server answers `isError`. The catalog is therefore the same
 permission-filtered, installation-gated list every other client sees; nothing is
-redeclared by hand, and admin tools appear only for keys with effective admin authority.
+redeclared by hand, dashboard tools appear only for keys granting the `dashboards` group,
+and admin tools only for keys with effective admin authority.
 A missing, unreachable or rejecting server registers no tools, appends one line to
 `hook.log`, and leaves capture untouched. The bridge speaks only the stateless
 JSON-response subset of Streamable HTTP that §8.1 configures.
@@ -1599,6 +1676,12 @@ tokens for established identities.
 `authenticate` accepts a cookie session or an API key (`Authorization: Bearer` /
 `x-api-key`). `requirePermission`. Visibility lives in the `api_ro` views and the
 repository layer, never in handlers. Read scopes cannot mutate; keys cannot mint keys.
+Key permissions are three groups: `sessions` (`ingest`, `read`) authorizes REST and MCP
+reads and uploads; `tools` (`dashboards`) exposes an opt-in MCP tool group on top of
+`sessions:read` and is grantable by any member; `admin` (`*`) is grantable only by owners
+and admins and effective only while the issuing user keeps that membership (§7.5). Cookie
+sessions hold every group their membership allows. A group absent from a stored key is
+absent from its parsed permissions, so keys created before a group existed simply lack it.
 Key names contain 1–128 characters; optional `expires_in` is 1–31,536,000 seconds.
 Omitting expiration creates a non-expiring key. Native Better Auth settings enforce
 the same bounds as the shared input schema.
@@ -1948,15 +2031,17 @@ with the same validation. No custom scripts or executable chart declarations.
 
 REST: `GET`/`POST /dashboards`, `POST /dashboards/render`, `GET`/`DELETE /dashboards/:id`
 and `POST /dashboards/:id/default` (admin). MCP: `dashboard_list`, `dashboard_get`,
-`dashboard_render`, `dashboard_save` and `dashboard_delete` for read keys and
-`dashboard_set_default` for effective admins (§8.2). Both adapters call one service; each
+`dashboard_render`, `dashboard_save` and `dashboard_delete` for read keys that grant the
+`dashboards` tool group and `dashboard_set_default` for effective admins with the group
+(§8.2; absent from the default catalog). Both adapters call one service; each
 operation writes one audit event. The audit page lists each event with the acting user's email (`user_email`, resolved at read time) beside the action, status and resources, so admins never decode ids. Dashboards are a Prisma `Dashboard` control model
 (organization and author foreign keys, immutable authorship, one default per
 organization); the personal `DashboardProfile` rows of ADR 0045 are dropped.
 
 **Home KPIs.** Home shows the default dashboard. The Team overview's first row holds the
 four counts and rates for the selected time range and repositories: captured sessions,
-sessions using AgentCommons search, sessions using prior work, and reuse rate, computed by
+sessions that queried AgentCommons (a `search` or `sql` call while active), sessions using
+prior work, and reuse rate, computed by
 stat tiles over `api_ro.sessions`, `api_ro.metrics_search_sessions` and
 `api_ro.metrics_reuse_sessions`. There is no dedicated Home API; the reuse, impact and gap
 relations remain available through `sql`, the metric API and dashboard tiles.
@@ -2105,32 +2190,26 @@ denominator, unit and explicit truncated metadata fields; an empty denominator g
 null ratio. Live queue/backlog/current-UTC-day spend remain clearly labeled organization
 snapshots on `/admin/status`, rather than fabricated historical or per-repo allocations.
 
-**Transcript search adoption.** The Team overview's "Sessions that searched" tile shows
-every member the search-adoption count for the selected window. The authorized Usage
-metric API exposes the full measures over its selected date/repo window, including
-sortable rows and CSV. The common source is the caller-visible,
-nonpurged `api_ro.metrics_search_sessions` relation, one row per captured session:
-`session_id`, `started_at`, `repo_name`, `harness`, `user_id`,
-`agentcommons_search_calls`, `repeat_agentcommons_search_calls`, and
-`subsequent_other_search_calls`. Selection uses the session's start time. Dashboard tiles
-count the selected sessions and the sessions with at least one AgentCommons search; the
-Usage API returns those counts, the three call totals and the resulting session-adoption
-ratio (null for an empty denominator) under the metric names `agentcommons_search_sessions`, `agentcommons_search_rate`,
-`agentcommons_search_calls`, `repeat_agentcommons_search_calls`, and
-`subsequent_other_search_calls`.
-
-Only actual captured typed tool invocations count. A shared classification reads exact
-native tool identities verified in live fixtures; tool results, prose mentioning search,
-advertised tool lists and arbitrary shell/program text are not searches. Native invocation
-IDs deduplicate repeated observations within a session; a message identity is the fallback
-when no invocation ID exists. Repeat AgentCommons searches are calls after its first call
-in that session. Subsequent other searches are recognized code/web-search invocations
-after that first AgentCommons call in canonical source order. Calls before it are excluded.
-The active projected branch is counted, so retries, rewritten documents, forks, rescan,
-privacy changes and purge cannot accumulate obsolete observations. Counts describe
-attempted calls, including failures; they do not assert a successful response, saved time
-or causation. The UI states the captured-tool coverage and keeps server-audit usage
-measures available separately. See ADR 0034.
+**Search adoption.** The Team overview's "Sessions that searched" tile shows every member
+the search-adoption count for the selected window. The authorized Usage metric API exposes
+the full measures over its selected date/repo window, including sortable rows and CSV. The
+common source is the caller-visible, nonpurged `api_ro.metrics_search_sessions` relation,
+one row per captured session: `session_id`, `started_at`, `repo_name`, `harness`,
+`user_id`, `agentcommons_search_calls` and `repeat_agentcommons_search_calls`. A call is a
+`search` or `sql` row of `session_reads` credited to the session (ADR 0060, ADR 0067): a
+successful key-authenticated MCP/REST call made while the session was active on the
+calling installation, the same attribution that defines reuse. `get` reads are reuse, not
+search. Transcript tool names play no part, so the count does not depend on how the MCP
+server is aliased in a harness; the metric appears when the audit projection flushes.
+Repeat calls are those after the first. Selection uses the session's start time. Dashboard
+tiles count the selected sessions and the sessions with at least one call; the Usage API
+returns those counts, the two call totals and the session-adoption ratio (null for an
+empty denominator) under the metric names `agentcommons_search_sessions`,
+`agentcommons_search_rate`, `agentcommons_search_calls` and
+`repeat_agentcommons_search_calls`. Counts describe successful calls; they do not assert
+saved time or causation. The exact transcript tool-identity classification and the
+`subsequent_other_search_calls` measure of ADR 0034 are retired; the captured tool
+identities remain the normalizers' contract.
 
 Reuse has one canonical `api_ro.reuse_edges` relation, shared by weekly, session and member
 aggregates. It is materialized, not derived on read (ADR 0060): the audit projection worker
@@ -2548,7 +2627,8 @@ the same.
    After the separate agent check, each MCP-capable harness runs a second hooked
    native session that uses the registration `install.sh` wrote to `search` for the
    earlier capture marker, `get` a returned session, run one `sql` query and
-   `dashboard_render` the default dashboard. The shim must capture that session; its
+   `dashboard_render` the default dashboard (the canary's installed key grants the
+   `dashboards` tool group for this, §8.2; an install-flow key would not list it). The shim must capture that session; its
    transcript must hold `TOOL_USE`/`TOOL_RESULT` rows for all four tools under the
    harness's native names (Appendix A) without an error envelope; the audit log must
    hold `transport=mcp` rows for the installed key (`mcp.tools.list`, `search`, `get`,
@@ -2858,6 +2938,26 @@ to `harness_version`/`entrypoint`. A 2026-09-08 live run (SDK driver with fork/r
 git observations, or the end observation, and that the detached uploads acknowledged the
 final `session_shutdown` bytes within seconds of process exit.
 
+**Prompt-time context from hooks, 2026-09-11.** Claude Code 2.1.266
+(`fixtures/hooks/claude-code-2.1.266-prompt-context-events.jsonl`): a `-p` session in an
+isolated `CLAUDE_CONFIG_DIR` with `--settings` registering one `UserPromptSubmit` hook
+that printed `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":
+…}}`; the hook received the documented stdin fields, the model's only output was the
+injected sentinel, and the user's configuration was untouched. The transcript stores the
+context as an `attachment` record (`attachment.type: "hook_additional_context"`, `content:
+[…]`, `hookName`, `hookEvent`, `toolUseID`), not as a user message; the normalizer projects
+it as `SYSTEM` text, so a hinted session shows its hint. Claude Code's reference also adds
+plain stdout on exit 0 as context for `UserPromptSubmit` and `SessionStart`, so the shim
+prints nothing else on those events. Codex 0.153.4: the binary's hook wire schema
+(`UserPromptSubmitHookSpecificOutputWire`: `hookEventName: "UserPromptSubmit"`,
+`additionalContext?: string`) and the published hooks reference ("added as extra developer
+context") document the same shape; not yet exercised live (canary-pending). Gemini CLI
+0.35.3: the bundled `docs/hooks/reference.md` documents `hookSpecificOutput.additionalContext`
+on `BeforeAgent` ("appended to the prompt for this turn only"), `hookRunner.js` joins the
+contexts with blank lines, and exit 0 stdout must be JSON; not yet exercised live
+(canary-pending). pi has no shell hook output; the extension's `before_agent_start`
+`systemPrompt` is the documented place for a later hint.
+
 **Native search tool identities, 2026-09-08.** Seven sanitized native transcripts in
 `fixtures/transcripts/tool-identities/` capture Claude `mcp__agentcommons__search`,
 `Grep`, `Glob`, `WebSearch`; Gemini `mcp_agentcommons_search`, `grep_search`, `glob`,
@@ -2935,212 +3035,19 @@ Generated from the real PostgreSQL and ClickHouse and official MCP SDK contract 
 `UPDATE_MCP_FIXTURES=1 pnpm exec vitest run apps/api/test/transport.integration.test.ts`.
 Identifiers, receipt timestamps, and SQL timings are normalized for reproducibility.
 
-Read keys list `dashboard_list`, `dashboard_get`, `dashboard_render`, `dashboard_save`,
-`dashboard_delete`, `search`, `get`, and `sql`; effective admin keys also list
-`set_visibility`, `purge`, `audit`, `status`, and `dashboard_set_default`.
+Every `sessions:read` key lists `search`, `get` and `sql`, and nothing else by default. A key
+that grants the `dashboards` tool group also lists `dashboard_list`, `dashboard_get`,
+`dashboard_render`, `dashboard_save` and `dashboard_delete`; effective admin keys add
+`set_visibility`, `purge`, `audit` and `status`, and `dashboard_set_default` when they hold
+both (§8.2).
 
-`tools/list` as an effective admin key receives it, complete. Output schemas are not shipped (§8.2);
-results are validated server-side and returned as `structuredContent`. The read-key catalog is
-the first eight tools; both catalogs stay within the byte budgets of §8.2.
+`tools/list` as an effective admin key with the `dashboards` group receives it, complete. Output
+schemas are not shipped (§8.2); results are validated server-side and returned as
+`structuredContent`. The default catalog is the first three tools; every catalog stays within
+the byte budgets of §8.2.
 
 ```json
 [
-  {
-    "name": "dashboard_list",
-    "description": "Use this when the user asks to view, build or change dashboards. List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "additionalProperties": false
-    },
-    "annotations": {
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "dashboard_get",
-    "description": "Use this when the user asks to view, build or change dashboards. Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        }
-      },
-      "required": ["id"],
-      "additionalProperties": false
-    },
-    "annotations": {
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "dashboard_render",
-    "description": "Use this when the user asks to view, build or change dashboards. Run the queries of a dashboard (by id or an inline definition) with variable values such as {\"time_range\":\"7d\",\"repo\":[\"github.com/org/repo\"]} and return each tile's rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "definition": {
-          "type": "object",
-          "properties": {
-            "version": {
-              "type": "number",
-              "const": 2
-            },
-            "variables": {
-              "default": [],
-              "maxItems": 8,
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": {},
-                "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
-              }
-            },
-            "tiles": {
-              "minItems": 1,
-              "maxItems": 24,
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": {},
-                "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
-              }
-            }
-          },
-          "required": ["version", "tiles"],
-          "additionalProperties": false,
-          "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
-        },
-        "variables": {
-          "default": {},
-          "description": "Values by variable name: a preset (24h|7d|14d|30d|90d|this_week|last_week|this_month|all) or {from, to} in UTC for time_range; a list of strings for repo, harness and user; text for text.",
-          "type": "object",
-          "properties": {},
-          "additionalProperties": {}
-        },
-        "tiles": {
-          "minItems": 1,
-          "maxItems": 24,
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^[a-z][a-z0-9_]{0,39}$"
-          }
-        },
-        "refresh": {
-          "default": false,
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "annotations": {
-      "readOnlyHint": true,
-      "destructiveHint": false,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "dashboard_save",
-    "description": "Use this when the user asks to view, build or change dashboards. Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "revision": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 80
-        },
-        "description": {
-          "default": "",
-          "type": "string",
-          "maxLength": 400
-        },
-        "definition": {
-          "type": "object",
-          "properties": {
-            "version": {
-              "type": "number",
-              "const": 2
-            },
-            "variables": {
-              "default": [],
-              "maxItems": 8,
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": {},
-                "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
-              }
-            },
-            "tiles": {
-              "minItems": 1,
-              "maxItems": 24,
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": {},
-                "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
-              }
-            }
-          },
-          "required": ["version", "tiles"],
-          "additionalProperties": false,
-          "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
-        }
-      },
-      "required": ["name", "definition"],
-      "additionalProperties": false
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": false,
-      "openWorldHint": false
-    }
-  },
-  {
-    "name": "dashboard_delete",
-    "description": "Use this when the user asks to view, build or change dashboards. Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string",
-          "format": "uuid"
-        }
-      },
-      "required": ["id"],
-      "additionalProperties": false
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "openWorldHint": false
-    }
-  },
   {
     "name": "search",
     "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Search previous coding-agent sessions with words and structured filters. Start with the test name, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {\"query\":\"\",\"filters\":{\"file_prefix\":\"src/auth/\",\"file_operation\":\"edit\"}}.",
@@ -3514,6 +3421,202 @@ the first eight tools; both catalogs stay within the byte budgets of §8.2.
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dashboard_list",
+    "description": "Use this when the user asks to view, build or change dashboards. List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dashboard_get",
+    "description": "Use this when the user asks to view, build or change dashboards. Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dashboard_render",
+    "description": "Use this when the user asks to view, build or change dashboards. Run the queries of a dashboard (by id or an inline definition) with variable values such as {\"time_range\":\"7d\",\"repo\":[\"github.com/org/repo\"]} and return each tile's rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "definition": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "number",
+              "const": 2
+            },
+            "variables": {
+              "default": [],
+              "maxItems": 8,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": {},
+                "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
+              }
+            },
+            "tiles": {
+              "minItems": 1,
+              "maxItems": 24,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": {},
+                "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
+              }
+            }
+          },
+          "required": ["version", "tiles"],
+          "additionalProperties": false,
+          "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
+        },
+        "variables": {
+          "default": {},
+          "description": "Values by variable name: a preset (24h|7d|14d|30d|90d|this_week|last_week|this_month|all) or {from, to} in UTC for time_range; a list of strings for repo, harness and user; text for text.",
+          "type": "object",
+          "properties": {},
+          "additionalProperties": {}
+        },
+        "tiles": {
+          "minItems": 1,
+          "maxItems": 24,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,39}$"
+          }
+        },
+        "refresh": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dashboard_save",
+    "description": "Use this when the user asks to view, build or change dashboards. Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "default": "",
+          "type": "string",
+          "maxLength": 400
+        },
+        "definition": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "number",
+              "const": 2
+            },
+            "variables": {
+              "default": [],
+              "maxItems": 8,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": {},
+                "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
+              }
+            },
+            "tiles": {
+              "minItems": 1,
+              "maxItems": 24,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": {},
+                "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
+              }
+            }
+          },
+          "required": ["version", "tiles"],
+          "additionalProperties": false,
+          "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
+        }
+      },
+      "required": ["name", "definition"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "dashboard_delete",
+    "description": "Use this when the user asks to view, build or change dashboards. Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
       "openWorldHint": false
     }
   },

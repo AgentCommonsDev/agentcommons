@@ -13,6 +13,8 @@ export const attributedReadRule = {
   authMethod: "key",
   status: { min: 200, max: 299 },
 } as const;
+/** The attributed actions that count as querying AgentCommons for search adoption (ADR 0067). */
+export const searchReadActions = ["search", "sql"] as const;
 /** `target_session_id` of a `session_reads` row whose call named no session (search, sql). */
 export const NO_TARGET_SESSION_ID = "00000000-0000-0000-0000-000000000000";
 /** The ClickHouse table holding attributed reads; `api_ro.reuse_edges` and its aggregates read it. */

@@ -23,7 +23,7 @@ import {
 import { provisionOrganization, provisionMember, releaser } from "./support.js";
 import { mcpClient as connectMcp, startApp } from "./app.js";
 import { sourceRecord, testEnvelope } from "./envelopes.js";
-import { ServiceError } from "../src/services/context.js";
+import { ServiceError, type ServiceContext } from "../src/services/context.js";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let first: Awaited<ReturnType<typeof provisionOrganization>>;
@@ -33,7 +33,7 @@ let other: typeof member;
 let runtime: Awaited<ReturnType<typeof startApp>>["runtime"];
 let address: string;
 const { defer, release } = releaser();
-type Account = { key: string };
+type Account = { key: string; owner: ServiceContext };
 type Ingester = Awaited<ReturnType<typeof provisionMember>>;
 
 function template(id: string, layout: DashboardTile["layout"]): DashboardTile {
@@ -158,8 +158,18 @@ async function ingestSession(remoteUrl: string, by: Ingester = first) {
   await waitForTracePublication(db.prisma, [sessionId]);
   return sessionId;
 }
-const mcpClient = (account: Account) =>
-  connectMcp(address, account.key, { name: "dashboard-test", defer });
+/** An MCP client on a key of the account's authority that also grants the dashboards tool group (§8.2). */
+async function mcpClient(account: Account) {
+  const key = await db.auth.createKey(account.owner, {
+    name: "dashboard-tools",
+    permissions: {
+      sessions: ["read"],
+      tools: ["dashboards"],
+      ...(account.owner.caller?.role === "member" ? {} : { admin: ["*"] }),
+    },
+  });
+  return connectMcp(address, key.result.key, { name: "dashboard-test", defer });
+}
 
 beforeAll(async () => {
   db = await startTraceDatabase();

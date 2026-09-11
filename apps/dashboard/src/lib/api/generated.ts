@@ -5515,6 +5515,7 @@ export interface operations {
               authMethod: "cookie" | "key";
               permissions: {
                 sessions?: ("ingest" | "read")[];
+                tools?: "dashboards"[];
                 admin?: "*"[];
               };
             } | null;
@@ -5660,6 +5661,7 @@ export interface operations {
               prefix: string | null;
               permissions: {
                 sessions?: ("ingest" | "read")[];
+                tools?: "dashboards"[];
                 admin?: "*"[];
               };
               enabled: boolean;
@@ -5717,6 +5719,7 @@ export interface operations {
           name: string;
           permissions: {
             sessions?: ("ingest" | "read")[];
+            tools?: "dashboards"[];
             admin?: "*"[];
           };
           expires_in?: number;
@@ -5742,6 +5745,7 @@ export interface operations {
               prefix: string | null;
               permissions: {
                 sessions?: ("ingest" | "read")[];
+                tools?: "dashboards"[];
                 admin?: "*"[];
               };
               enabled: boolean;
@@ -6325,6 +6329,7 @@ export interface operations {
               prefix: string | null;
               permissions: {
                 sessions?: ("ingest" | "read")[];
+                tools?: "dashboards"[];
                 admin?: "*"[];
               };
               enabled: boolean;
@@ -6764,7 +6769,6 @@ export interface operations {
             | "agentcommons_search_rate"
             | "agentcommons_search_calls"
             | "repeat_agentcommons_search_calls"
-            | "subsequent_other_search_calls"
             | "mcp_calls"
             | "memory_assisted_rate"
             | "follow_through_rate"
@@ -6811,7 +6815,6 @@ export interface operations {
                 | "agentcommons_search_rate"
                 | "agentcommons_search_calls"
                 | "repeat_agentcommons_search_calls"
-                | "subsequent_other_search_calls"
                 | "mcp_calls"
                 | "memory_assisted_rate"
                 | "follow_through_rate"

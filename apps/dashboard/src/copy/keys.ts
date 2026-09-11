@@ -18,11 +18,14 @@ export const keysCopy = {
     label: "Permissions",
     ingest: "Ingest",
     read: "Read",
+    dashboards: "Dashboard tools",
     admin: "Admin",
     ingestHint:
       "Upload sessions from coding tools on the machine that holds this key.",
     readHint:
-      "Search and read this organization's sessions, in the app and through MCP.",
+      "Search and read this organization's sessions, in the app and through MCP. Agents see three MCP tools: search, get and sql.",
+    dashboardsHint:
+      "Adds the five dashboard tools to the agent's MCP catalog: list, get, render, save and delete. Requires Read. Keys made before this option lack it, so create a new key to grant it.",
     adminHint:
       "Manage members, keys, redaction and moderation through the API. Only owners and admins can grant this.",
     none: "No permissions",

@@ -92,9 +92,17 @@ history supplies the evidence behind them.
    team adds.
 4. Ask your agent: “Has anyone already worked on this problem?” The installer also
    connects Claude Code, Codex, and Gemini CLI on that machine to AgentCommons over MCP
-   with the same key, so the agent can search before it starts. It can search, open
-   source sessions, run SQL, and save dashboards. pi reaches the same tools through its
-   AgentCommons extension.
+   with the same key, so the agent can search before it starts. By default the agent gets
+   three read tools: search, open a source session, and run SQL. Dashboard tools appear
+   only when the key grants the `dashboards` tool group. pi reaches the same tools through
+   its AgentCommons extension.
+
+The install writes search-first guidance into each tool's global instructions file on
+that machine. To reach teammates whose machines have no install, put the same guidance in
+the repository: run `node ~/.agentcommons/hook.js guidance --repo .` in a checkout, or copy
+the block from the Install page, and commit the AGENTS.md, CLAUDE.md and GEMINI.md it
+writes. Hooked sessions also get a one-line reminder every 25 prompts saying how many
+earlier sessions touch the repository, so the agent searches before it edits.
 
 If the installer did not detect a tool, or a machine has no hook, add the server by hand:
 

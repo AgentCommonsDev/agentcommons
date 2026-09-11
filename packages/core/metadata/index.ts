@@ -5,6 +5,7 @@ import type { JsonValue } from "../schemas/common.js";
 import { utf8ByteLength, utf8CodePointLength } from "../schemas/common.js";
 import type { ParentHint } from "../schemas/ingest-context.js";
 import { projectionIdentity } from "../redaction/tool-results.js";
+export { repositoryIdentity } from "./repository.js";
 
 export function utf8Slice(
   value: string,
@@ -100,29 +101,6 @@ export function messageId(
   blockIndex: number,
 ): string {
   return v5(`${rawRecordId}:${String(blockIndex)}`, sessionId);
-}
-
-export function repositoryIdentity(remote: string | null): {
-  repoName: string | null;
-  repoUrl: string | null;
-} {
-  if (!remote) return { repoName: null, repoUrl: null };
-  const scp = /^(?:[^@/]+@)?([^/:]+):([^/].*)$/.exec(remote);
-  try {
-    const url = new URL(
-      scp && !remote.includes("://")
-        ? `ssh://${scp[1] ?? ""}/${scp[2] ?? ""}`
-        : remote,
-    );
-    if (!["http:", "https:", "ssh:", "git:"].includes(url.protocol))
-      return { repoName: null, repoUrl: null };
-    const path = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
-    if (!url.hostname || !path) return { repoName: null, repoUrl: null };
-    const canonical = `${url.host.toLowerCase()}/${path}`;
-    return { repoName: canonical, repoUrl: canonical };
-  } catch {
-    return { repoName: null, repoUrl: null };
-  }
 }
 
 export function repositoryPath(

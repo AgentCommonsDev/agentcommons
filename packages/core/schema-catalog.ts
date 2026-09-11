@@ -292,18 +292,16 @@ export const traceViewCatalog: Readonly<
   },
   metrics_search_sessions: {
     purpose:
-      "Per session, how often it searched AgentCommons versus other search tools",
+      "Per session, how many AgentCommons search and sql calls its agent made through the API while it was active",
     columns: {
       session_id: sessionKey,
       started_at: startedAt,
       repo_name: repoOfSession,
       harness: "Harness of the session",
       user_id: "Member who ran it",
-      agentcommons_search_calls: "Calls to the AgentCommons search tool",
-      repeat_agentcommons_search_calls:
-        "AgentCommons searches after the first one",
-      subsequent_other_search_calls:
-        "Grep, glob or web searches after the first AgentCommons search",
+      agentcommons_search_calls:
+        "search and sql calls credited to the session while active",
+      repeat_agentcommons_search_calls: "Those calls after the first one",
     },
   },
   metrics_reuse_weekly: {

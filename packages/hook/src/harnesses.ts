@@ -36,6 +36,8 @@ export interface EventDefinition {
   parentPath?: boolean;
   /** The harness may append its final record after this hook fires; the uploader briefly waits for growth (§6.2). */
   settle?: boolean;
+  /** The harness adds this hook's stdout JSON (`hookSpecificOutput.additionalContext`) to the model's context; the recall hint rides on it (§6.2). */
+  hint?: boolean;
 }
 export interface HarnessDefinition {
   id: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
@@ -46,6 +48,8 @@ export interface HarnessDefinition {
   configPath: readonly string[];
   /** Global instructions file that receives the §8.3 guidance block; null when the harness's extension carries it. */
   instructionsPath: readonly string[] | null;
+  /** Instructions file this harness reads from a repository root; `hook.js guidance --repo` writes the §8.3 block there. */
+  repositoryInstructionsFile: string;
   mcpConfigPath: readonly string[] | null;
   configFormat: "json" | "toml" | "extension";
   mcp(url: string): Record<string, unknown> | null;
@@ -60,7 +64,7 @@ export interface HarnessDefinition {
 }
 const shellEvents: Readonly<Record<string, EventDefinition>> = {
   SessionStart: { behavior: "start", always: true },
-  UserPromptSubmit: { behavior: "sync", always: true },
+  UserPromptSubmit: { behavior: "sync", always: true, hint: true },
   PostToolUse: { behavior: "sync" },
   Stop: { behavior: "sync", always: true, settle: true },
   SubagentStart: { behavior: "sync", child: true, childBehavior: "start" },
@@ -104,6 +108,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     }),
     configPath: [".claude", "settings.json"],
     instructionsPath: [".claude", "CLAUDE.md"],
+    repositoryInstructionsFile: "CLAUDE.md",
     configFormat: "json",
     timeout: 3,
     events: shellEvents,
@@ -151,6 +156,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
       "Open a new terminal before starting Codex so it reads the exported key.",
     configPath: [".codex", "config.toml"],
     instructionsPath: [".codex", "AGENTS.md"],
+    repositoryInstructionsFile: "AGENTS.md",
     configFormat: "toml",
     timeout: 3,
     events: {
@@ -191,11 +197,12 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     }),
     configPath: [".gemini", "settings.json"],
     instructionsPath: [".gemini", "GEMINI.md"],
+    repositoryInstructionsFile: "GEMINI.md",
     configFormat: "json",
     timeout: 3000,
     events: {
       SessionStart: { behavior: "start", always: true },
-      BeforeAgent: { behavior: "sync", always: true },
+      BeforeAgent: { behavior: "sync", always: true, hint: true },
       AfterTool: { behavior: "sync" },
       AfterAgent: { behavior: "sync", always: true, settle: true },
       SessionEnd: { behavior: "end", always: true },
@@ -213,6 +220,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     mcp: () => null,
     configPath: [".pi", "agent", "settings.json"],
     instructionsPath: null,
+    repositoryInstructionsFile: "AGENTS.md",
     configFormat: "extension",
     timeout: 3,
     events: {

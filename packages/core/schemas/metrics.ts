@@ -12,7 +12,6 @@ export const searchAdoptionMetricNames = [
   "agentcommons_search_rate",
   "agentcommons_search_calls",
   "repeat_agentcommons_search_calls",
-  "subsequent_other_search_calls",
 ] as const;
 
 export const metricGroups = {

@@ -220,3 +220,17 @@ pnpm hook:link                 # install the local shim against http://localhost
 Spec updated if behavior changed · requirement rows updated and cited by tests ·
 `pnpm spec:check` passes · ADR if a decision changed · tests green · lint and typecheck
 clean · OpenAPI diff reviewed if routes changed.
+
+<!-- agentcommons-hook begin -->
+
+## AgentCommons
+
+Past agent sessions on this repository and across its organization are indexed in
+AgentCommons (MCP server `agentcommons`: search, get, sql). Sessions on machines with
+the AgentCommons hook are recorded automatically. Before you change code, search it for
+the test, file or error you were given: an earlier session often holds the root cause,
+the library the team chose or the exact value. Use it too when the user asks about prior
+work; anything beyond a quick lookup runs in a subagent that brings back only findings
+and session ids. If this machine has no `agentcommons` MCP server, tell the user once
+that the AgentCommons install is missing and continue without it.
+<!-- agentcommons-hook end -->

@@ -35,7 +35,8 @@ export const installCopy = {
       },
       mcp: {
         title: "MCP server",
-        detail: "Claude Code, Codex and Gemini CLI; pi through its extension",
+        detail:
+          "search, get and sql in Claude Code, Codex and Gemini CLI, and in pi through its extension. Dashboard tools need a key that grants them.",
       },
       guidance: {
         title: "Search-first guidance",
@@ -46,6 +47,14 @@ export const installCopy = {
         title: "Self-check and updates",
         detail: "Hooks update themselves from this server",
       },
+    },
+    repository: {
+      title: "Guidance for a repository",
+      description:
+        "The same guidance, framed for a project. Add it to AGENTS.md at the repository root, with CLAUDE.md and GEMINI.md as symlinks or copies, and commit it. Every teammate's agent then reads it, on machines with or without the install.",
+      command:
+        "On a machine with the install, this command writes and links the files for you:",
+      copy: "Copy repository guidance",
     },
     notesTitle: "Good to know",
     notes: {

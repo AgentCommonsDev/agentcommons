@@ -18,13 +18,16 @@ import {
   type IngestEnvelope,
   type MetricRow,
 } from "@agentcommons/core";
+import {
+  NO_TARGET_SESSION_ID,
+  type TraceSessionRead,
+} from "@agentcommons/traces";
 type JsonObject = z.infer<typeof jsonObjectSchema>;
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices } from "./trace-services.js";
 import { DashboardService } from "../src/services/dashboards.js";
 import { QueryService } from "../src/services/query.js";
 import { MetricsService } from "../src/services/metrics.js";
-import { PolicyService } from "../src/services/policies.js";
 import { AdminService } from "../src/services/admin.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
@@ -44,13 +47,14 @@ const countSchema = z.strictObject({
   session_id: z.string(),
   agentcommons_search_calls: z.coerce.number(),
   repeat_agentcommons_search_calls: z.coerce.number(),
-  subsequent_other_search_calls: z.coerce.number(),
 });
 const week = new Date();
 week.setUTCHours(0, 0, 0, 0);
 week.setUTCDate(week.getUTCDate() - ((week.getUTCDay() + 6) % 7));
 const dateFrom = week.toISOString();
 const dateTo = new Date(week.getTime() + 7 * 86_400_000).toISOString();
+const minutes = (count: number, from = week) =>
+  new Date(from.getTime() + count * 60_000);
 
 async function fixture(name: string) {
   const text = await readFile(
@@ -141,85 +145,80 @@ async function capture(
 async function counts(context: ServiceContext, ids: string[]) {
   return db.traceReaders.read(requireCaller(context), async (client) => {
     const result = await client.query(
-      `SELECT session_id,agentcommons_search_calls,
-      repeat_agentcommons_search_calls,subsequent_other_search_calls
+      `SELECT session_id,agentcommons_search_calls,repeat_agentcommons_search_calls
       FROM api_ro.metrics_search_sessions WHERE session_id IN {ids:Array(UUID)} ORDER BY session_id`,
       { ids },
     );
     return z.array(countSchema).parse(result.rows);
   });
 }
-async function one(id: string, calls: number, repeat: number, other: number) {
+async function one(id: string, calls: number, repeat: number) {
   expect(await counts(org.context, [id])).toEqual([
     {
       session_id: id,
       agentcommons_search_calls: calls,
       repeat_agentcommons_search_calls: repeat,
-      subsequent_other_search_calls: other,
     },
   ]);
 }
-function claudeTool(name: string, id: string, uuid = randomUUID()): JsonObject {
-  return {
-    type: "assistant",
-    uuid,
-    message: {
-      role: "assistant",
-      content: [{ type: "tool_use", id, name, input: { query: "fixture" } }],
-    },
-  };
-}
-/** pi transcript rows: the extension's bridge tools are ordinary `toolCall` blocks (ADR 0054). */
-function piRecords(calls: Array<{ name: string; id: string }>): JsonObject[] {
-  const rows: JsonObject[] = [];
-  let parentId: string | null = null;
-  const push = (row: JsonObject) => {
-    const id = randomUUID().slice(0, 8);
-    rows.push({ ...row, id, parentId });
-    parentId = id;
-  };
-  rows.push({
-    type: "session",
-    version: 3,
-    id: randomUUID(),
-    cwd: "/adoption",
-  });
-  push({
-    type: "message",
-    message: {
-      role: "user",
-      content: [
-        { type: "text", text: "Find prior work on the adoption view." },
-      ],
-    },
-  });
-  for (const call of calls) {
-    push({
-      type: "message",
-      message: {
-        role: "assistant",
-        content: [
-          {
-            type: "toolCall",
-            id: call.id,
-            name: call.name,
-            arguments: { query: "fixture" },
-          },
-        ],
-      },
-    });
-    push({
-      type: "message",
-      message: {
-        role: "toolResult",
-        toolCallId: call.id,
-        toolName: call.name,
-        content: [{ type: "text", text: "fixture result" }],
-        isError: false,
-      },
-    });
-  }
+/**
+ * Reads credited to a session, written the way the audit projection stores them
+ * (ADR 0060): one row per successful key-authenticated call while the session was active.
+ */
+async function credit(
+  context: ServiceContext,
+  sessionId: string,
+  actions: readonly ("search" | "sql")[],
+): Promise<TraceSessionRead[]> {
+  const caller = requireCaller(context);
+  const rows: TraceSessionRead[] = actions.map((action, index) => ({
+    organization_id: caller.organizationId,
+    session_id: sessionId,
+    audit_id: randomUUID(),
+    read_at: minutes(index + 1),
+    action,
+    target_session_id: NO_TARGET_SESSION_ID,
+    reader_user_id: caller.userId,
+    reader_email: "reader@example.com",
+    reader_harness: "CLAUDE_CODE",
+  }));
+  await db.traces.appendSessionReads(rows);
   return rows;
+}
+/** A successful key-authenticated MCP call audited from the envelope's installation at `time`. */
+async function agentCall(
+  context: ServiceContext,
+  input: IngestEnvelope,
+  action: "search" | "sql" | "get",
+  time: Date,
+  target?: string,
+) {
+  const caller = requireCaller(context);
+  const row = await db.prisma.auditEvent.create({
+    data: {
+      organizationId: caller.organizationId,
+      id: randomUUID(),
+      ts: time,
+      requestId: randomUUID(),
+      userId: caller.userId,
+      apiKeyId: caller.apiKeyId,
+      installationId: input.installationId,
+      authMethod: "key",
+      ip: "fixture",
+      transport: "mcp",
+      action,
+      statusCode: 200,
+      durationMs: 1,
+      resourceIds: target ? [target] : [],
+      detail: {
+        input: action === "sql" ? { sql: "SELECT 1" } : { query: "fixture" },
+        result: target ? { session_id: target } : { hits: 0 },
+      },
+    },
+  });
+  await db.prisma.traceAuditOutbox.create({ data: { auditId: row.id } });
+  await services.drainTraceAudit();
+  return row;
 }
 /** Home's KPIs are stat tiles of the default dashboard; read this week's captured and searching sessions. */
 async function homeKpis(context: ServiceContext) {
@@ -286,67 +285,15 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(release);
 
-// @req R-DASH-18
-it("counts real persisted Claude and Codex typed calls, including rejected Codex attempts, without counting results or batch retries", async () => {
-  for (const [harness, name, other] of [
-    ["CLAUDE_CODE", "claude.jsonl", 2],
-    ["CODEX", "codex.jsonl", 1],
-    ["CODEX", "codex-failed.jsonl", 1],
-  ] as const) {
-    const { input, id } = await capture(
-      harness,
-      await fixture(name),
-      `native-${name}`,
-    );
-    await one(id, 2, 1, other);
-    const rows = await messages(org.context, id);
-    expect(
-      rows.filter(
-        (message) =>
-          message.kind === "TOOL_USE" &&
-          message.tool_name === "mcp__agentcommons__search",
-      ),
-    ).toHaveLength(2);
-    if (name !== "codex-failed.jsonl")
-      expect(rows.some((message) => message.kind === "TOOL_RESULT")).toBe(true);
-    await publish(org.context, input);
-    await publish(org.context, { ...input, batchId: randomUUID() });
-    await one(id, 2, 1, other);
-  }
-});
-
-// @req R-DASH-18
-it("deduplicates native call IDs, counts failed attempts and uses source order while ignoring shell text, prose, tool results and unknown identities", async () => {
-  const callId = randomUUID();
-  const records: JsonObject[] = [
-    claudeTool("Grep", "before"),
+// @req R-DASH-18 @req R-AUD-05
+it("counts sessions that queried AgentCommons from attributed search and sql reads, whatever the transcript calls the tool", async () => {
+  // The transcript names the server by a user-chosen alias no list could know.
+  const aliased: JsonObject[] = [
     {
       type: "user",
       uuid: randomUUID(),
-      message: {
-        role: "user",
-        content: "mcp__agentcommons__search search Grep WebSearch",
-      },
+      message: { role: "user", content: "Check prior work first." },
     },
-    claudeTool("mcp__agentcommons__search", callId),
-    claudeTool("mcp__agentcommons__search", callId),
-    {
-      type: "user",
-      uuid: randomUUID(),
-      message: {
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: callId,
-            is_error: true,
-            content: "Search failed. mcp__agentcommons__search Grep",
-          },
-        ],
-      },
-    },
-    claudeTool("Glob", "after-glob"),
-    claudeTool("mcp__agentcommons__search", "second"),
     {
       type: "assistant",
       uuid: randomUUID(),
@@ -355,133 +302,76 @@ it("deduplicates native call IDs, counts failed attempts and uses source order w
         content: [
           {
             type: "tool_use",
-            id: "shell",
-            name: "Bash",
-            input: {
-              command: "rg needle .; curl /mcp; echo mcp__agentcommons__search",
-            },
+            id: "alias-1",
+            name: "mcp__mymemory__sql",
+            input: { sql: "SELECT 1" },
+          },
+          {
+            type: "tool_use",
+            id: "alias-2",
+            name: "mcp__mymemory__sql",
+            input: { sql: "SELECT 2" },
+          },
+          {
+            type: "tool_use",
+            id: "grep",
+            name: "Grep",
+            input: { pattern: "x" },
           },
         ],
       },
     },
-    claudeTool("search", "bare"),
-    claudeTool("mcp__different_server__search", "foreign-tool"),
-    claudeTool("WebSearch", "after-web"),
   ];
-  const input = envelope("CLAUDE_CODE", records, "source-order");
-  input.records = input.records.map((record, index) => ({
-    ...record,
-    line: JSON.stringify({
-      ...jsonObjectSchema.parse(JSON.parse(record.line)),
-      timestamp: new Date(
-        week.getTime() + (records.length - index) * 1000,
-      ).toISOString(),
-    }),
-  }));
-  const result = await publish(org.context, input);
-  await one(result.result.sessionId, 2, 1, 2);
+  const prior = await capture("CLAUDE_CODE", aliased, "alias-prior");
+  const reader = await capture("CLAUDE_CODE", aliased, "alias-reader");
   expect(
-    (await messages(org.context, result.result.sessionId)).filter(
-      (row) => row.kind === "TOOL_RESULT",
-    ).length,
-  ).toBe(1);
-});
-
-// @req R-DASH-18 @req R-MCP-08
-it("counts pi bridge searches (agentcommons_search) like the MCP-native identities", async () => {
-  const result = await publish(
-    org.context,
-    envelope(
-      "PI",
-      piRecords([
-        { name: "agentcommons_search", id: "bridge-1" },
-        { name: "agentcommons_search", id: "bridge-2" },
-        { name: "grep", id: "native-grep" },
-        { name: "search", id: "unqualified" },
-      ]),
-      "pi-bridge",
-    ),
-  );
-  await one(result.result.sessionId, 2, 1, 1);
-  expect(
-    (await messages(org.context, result.result.sessionId))
+    (await messages(org.context, reader.id))
       .filter((row) => row.kind === "TOOL_USE")
       .map((row) => row.tool_name),
-  ).toEqual(["agentcommons_search", "agentcommons_search", "grep", "search"]);
-});
-
-// @req R-DASH-18
-it("replaces rewritten Gemini document observations instead of accumulating old search calls", async () => {
-  const records = await fixture("gemini.json");
-  const full = envelope("GEMINI_CLI", records, "gemini-rewrite");
-  const initial = { ...full, records: full.records.slice(0, 2) };
-  const response = await publish(org.context, initial);
-  await one(response.result.sessionId, 1, 0, 0);
-  await publish(org.context, {
-    ...full,
-    batchId: randomUUID(),
-    records: full.records.map((record) => ({
-      ...record,
-      key: `${z.string().parse(record.key)}:1`,
-      sourceVersion: 1,
-    })),
-  });
-  await one(response.result.sessionId, 2, 1, 2);
-  // A later document version removes the second message's tools; the old projection must disappear.
-  const withoutTools = full.records.map((record) => ({
-    ...record,
-    key: `${z.string().parse(record.key)}:2`,
-    sourceVersion: 2,
-    line: JSON.stringify({
-      ...jsonObjectSchema.parse(JSON.parse(record.line)),
-      ...(record.pos === 2 ? { toolCalls: [] } : {}),
-    }),
-  }));
-  await publish(org.context, {
-    ...full,
-    batchId: randomUUID(),
-    records: withoutTools,
-  });
-  await one(response.result.sessionId, 1, 0, 0);
-  await publish(org.context, { ...full, batchId: randomUUID() });
-  await one(response.result.sessionId, 1, 0, 0);
-});
-
-// @req R-DASH-18
-it("uses distinct projected message identities when an invocation has no native call ID", async () => {
-  const records: JsonObject[] = [0, 1].map(() => ({
-    type: "assistant",
-    uuid: randomUUID(),
-    message: {
-      role: "assistant",
-      content: [
-        {
-          type: "tool_use",
-          name: "mcp__agentcommons__search",
-          input: { query: "fixture" },
-        },
-      ],
-    },
-  }));
-  const { input, id } = await capture(
+  ).toEqual(["mcp__mymemory__sql", "mcp__mymemory__sql", "Grep"]);
+  await one(reader.id, 0, 0);
+  // The calls the agent actually made, audited on the reader's installation while active.
+  await agentCall(org.context, reader.input, "sql", minutes(1));
+  await agentCall(org.context, reader.input, "sql", minutes(2));
+  await agentCall(org.context, reader.input, "search", minutes(3));
+  await agentCall(org.context, reader.input, "get", minutes(4), prior.id);
+  // An hour before the session started, outside every active window: credited to no session.
+  await agentCall(org.context, reader.input, "sql", minutes(-60));
+  await one(reader.id, 3, 2);
+  await one(prior.id, 0, 0);
+  // Transcript tool names that match the retired identity list count for nothing on their own.
+  const named = await capture(
     "CLAUDE_CODE",
-    records,
-    "missing-call-id",
+    await fixture("claude.jsonl"),
+    "named-only",
   );
-  await one(id, 2, 1, 0);
-  await publish(org.context, { ...input, batchId: randomUUID() });
-  await one(id, 2, 1, 0);
+  expect(
+    (await messages(org.context, named.id)).filter(
+      (row) =>
+        row.kind === "TOOL_USE" &&
+        row.tool_name === "mcp__agentcommons__search",
+    ),
+  ).toHaveLength(2);
+  await one(named.id, 0, 0);
+  expect(await homeKpis(org.owner)).toMatchObject({
+    agentcommons_search_sessions: 1,
+  });
 });
 
 // @req R-DASH-18
-it("uses pi's current projected branch and never invents AgentCommons usage from ordinary grep/find calls", async () => {
+it("counts stored reads once per audited call and keeps transcript branches out of the metric", async () => {
   const records = await fixture("pi.jsonl");
   const { input, id } = await capture("PI", records, "pi-branch");
-  await one(id, 0, 0, 0);
   expect(
     (await messages(org.context, id)).filter((row) => row.kind === "TOOL_USE")
       .length,
   ).toBe(2);
+  const stored = await credit(org.context, id, ["sql", "search"]);
+  await one(id, 2, 1);
+  // A retried flush stores the same audit ids again without double counting.
+  await db.traces.appendSessionReads(stored);
+  await one(id, 2, 1);
+  // Switching the projected branch rewrites the transcript, not the audited calls.
   const firstTool = records.find((record) => record.id === "6438540e");
   const priorLeaf = z.string().parse(firstTool?.parentId);
   await publish(org.context, {
@@ -495,20 +385,7 @@ it("uses pi's current projected branch and never invents AgentCommons usage from
     (await messages(org.context, id)).filter((row) => row.kind === "TOOL_USE")
       .length,
   ).toBe(0);
-  await one(id, 0, 0, 0);
-  const finalLeaf = z.string().parse(records.at(-1)?.id);
-  await publish(org.context, {
-    ...input,
-    batchId: randomUUID(),
-    records: [],
-    sentAt: new Date(Date.parse(input.sentAt) + 2000).toISOString(),
-    context: { ...input.context, activeLeafId: finalLeaf },
-  });
-  expect(
-    (await messages(org.context, id)).filter((row) => row.kind === "TOOL_USE")
-      .length,
-  ).toBe(2);
-  await one(id, 0, 0, 0);
+  await one(id, 2, 1);
 });
 
 // @req R-DASH-18 @req R-DASH-16
@@ -542,7 +419,19 @@ it("shares exact caller-visible adoption with every member's Home dashboard and 
     org.context,
     new Date(week.getTime() - 86_400_000),
   );
-  await capture("CLAUDE_CODE", native, "window", org.context, new Date(dateTo));
+  const next = await capture(
+    "CLAUDE_CODE",
+    native,
+    "window",
+    org.context,
+    new Date(dateTo),
+  );
+  await credit(member.context, visible.id, ["search", "search"]);
+  await credit(org.context, hidden.id, ["sql", "sql"]);
+  await credit(org.context, purged.id, ["sql", "search"]);
+  await credit(foreign.context, outside.id, ["sql", "sql"]);
+  await credit(org.context, old.id, ["search"]);
+  await credit(org.context, next.id, ["search"]);
   await admin.setVisibility(org.owner, {
     session_id: hidden.id,
     visibility: "PRIVATE",
@@ -575,7 +464,6 @@ it("shares exact caller-visible adoption with every member's Home dashboard and 
     ["agentcommons_search_rate", 2 / 3],
     ["agentcommons_search_sessions", 2],
     ["repeat_agentcommons_search_calls", 2],
-    ["subsequent_other_search_calls", 4],
   ]);
   const rate = (await usage("window", "agentcommons_search_rate")).result.items;
   expect(rate).toHaveLength(1);
@@ -657,8 +545,8 @@ it("executes every metric group on empty and populated native views with null ra
           {
             type: "tool_use",
             id: "search-repeat",
-            name: "mcp__agentcommons__search",
-            input: { query: "prior implementation" },
+            name: "mcp__agentcommons__sql",
+            input: { sql: "SELECT 1" },
           },
           {
             type: "tool_use",
@@ -678,8 +566,14 @@ it("executes every metric group on empty and populated native views with null ra
     },
   ];
   const others = await homeKpis(org.owner);
-  await capture("CLAUDE_CODE", searching, "metrics-alpha", fresh.context);
+  const alpha = await capture(
+    "CLAUDE_CODE",
+    searching,
+    "metrics-alpha",
+    fresh.context,
+  );
   await capture("CLAUDE_CODE", plain, "metrics-beta", freshMember.context);
+  await credit(fresh.context, alpha.id, ["search", "sql"]);
   expect(await homeKpis(fresh.owner)).toEqual({
     sessions: 2,
     agentcommons_search_sessions: 1,
@@ -693,6 +587,10 @@ it("executes every metric group on empty and populated native views with null ra
   expect(
     usageRows.items.find((row) => row.metric === "agentcommons_search_rate"),
   ).toMatchObject({ value: 1, numerator: 1, denominator: 1 });
+  expect(
+    usageRows.items.find((row) => row.metric === "agentcommons_search_calls")
+      ?.value,
+  ).toBe(2);
   const absent = (
     await metrics.get(fresh.owner, "usage", {
       filters: { ...window, repo_name: "github.com/adoption/absent" },
@@ -786,7 +684,7 @@ it("paginates and sorts admin adoption rows without omission or duplication and 
     rows.filter((row) =>
       searchAdoptionMetricNames.some((name) => name === row.metric),
     ),
-  ).toHaveLength(5);
+  ).toHaveLength(searchAdoptionMetricNames.length);
   await expect(
     metrics.get(org.owner, "usage", {
       ...input,
@@ -794,45 +692,6 @@ it("paginates and sorts admin adoption rows without omission or duplication and 
       filters: { ...input.filters, repo_name: "different" },
     }),
   ).rejects.toMatchObject({ code: "INVALID_CURSOR" });
-});
-
-// @req R-DASH-18
-it("classifies the redacted native projection without recovering tool identities hidden by organization policy", async () => {
-  const scoped = await provisionOrganization(db, "adoption-redacted-tools");
-  await new PolicyService({
-    ...db,
-    cache: db.policies,
-    cursors: new CursorCodec("adoption-redaction"),
-  }).save(scoped.owner, null, {
-    name: "hide-search-identity",
-    kind: "REGEX",
-    flags: "g",
-    enabled: true,
-    pattern: "mcp__agentcommons__search",
-  });
-  const accepted = await capture(
-    "CLAUDE_CODE",
-    await fixture("claude.jsonl"),
-    "redacted-tools",
-    scoped.context,
-  );
-  expect(await counts(scoped.context, [accepted.id])).toEqual([
-    {
-      session_id: accepted.id,
-      agentcommons_search_calls: 0,
-      repeat_agentcommons_search_calls: 0,
-      subsequent_other_search_calls: 0,
-    },
-  ]);
-  const tools = (await messages(scoped.context, accepted.id)).filter(
-    (row) => row.kind === "TOOL_USE",
-  );
-  expect(tools.map((message) => message.tool_name)).toEqual([
-    "[REDACTED:hide-search-identity]",
-    "[REDACTED:hide-search-identity]",
-    "Grep",
-    "WebSearch",
-  ]);
 });
 
 // @req R-HRN-03 @req R-HRN-04

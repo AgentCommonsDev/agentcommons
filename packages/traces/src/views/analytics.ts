@@ -3,6 +3,7 @@ import { controlTableSql } from "../control.js";
 import {
   attributedReadSql,
   NO_TARGET_SESSION_ID,
+  searchReadActions,
   SESSION_READS_TABLE,
 } from "../reads.js";
 import { sessionColumns, sessionReadColumns } from "../schema.js";
@@ -187,10 +188,12 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
     "metrics_outcomes",
     `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,i.tools_enabled AS tools_enabled,s.tool_call_count AS tool_call_count,toDecimal256(s.input_tokens,0)+toDecimal256(s.output_tokens,0) AS tokens,greatest(0,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0) AS duration_seconds,(s.ended_at IS NOT NULL AND JSONLength(s.observed_commits)>0) AS observed_commit,d.session_id IS NOT NULL AS near_duplicate,r.session_id IS NOT NULL AS rerun_loop FROM ${control} s JOIN api_ro.installations i ON i.installation_id=s.installation_id LEFT JOIN api_ro.outcome_duplicates d ON d.session_id=s.session_id LEFT JOIN api_ro.outcome_reruns r ON r.session_id=s.session_id WHERE ${admin} AND s.purged_at IS NULL`,
   );
+  // Search adoption (ADR 0067): the `search` and `sql` reads credited to a session while it
+  // was active, from the same attributed reads as reuse. Transcript tool names play no
+  // part, so the count does not depend on how a user aliased the MCP server.
   add(
     "metrics_search_sessions",
-    `WITH calls AS (SELECT m.session_id AS session_id,coalesce(concat('call:',m.tool_use_id),concat('message:',toString(m.message_id))) AS identity,tupleElement(argMin(tuple(m.seq,m.tool_name),tuple(m.seq,m.message_id)),1) AS seq,tupleElement(argMin(tuple(m.seq,m.tool_name),tuple(m.seq,m.message_id)),2) AS tool_name FROM api_ro.message_metadata m WHERE m.kind='TOOL_USE' GROUP BY m.session_id,identity), classified AS (SELECT session_id,seq,if(tool_name IN ('mcp__agentcommons__search','mcp_agentcommons_search','agentcommons_search'),'agentcommons','other') AS category FROM calls WHERE tool_name IN ('mcp__agentcommons__search','mcp_agentcommons_search','agentcommons_search','Grep','Glob','grep_search','glob','grep','find','WebSearch','google_web_search','web.search')), first_search AS (SELECT session_id,minIfOrNull(seq,category='agentcommons') AS seq FROM classified GROUP BY session_id), totals AS (SELECT c.session_id AS session_id,countIf(c.category='agentcommons') AS agentcommons_search_calls,countIf(c.category='other' AND c.seq>f.seq) AS subsequent_other_search_calls FROM classified c JOIN first_search f ON f.session_id=c.session_id GROUP BY c.session_id)
- SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,s.harness AS harness,s.user_id AS user_id,coalesce(t.agentcommons_search_calls,toUInt64(0)) AS agentcommons_search_calls,greatest(toInt64(coalesce(t.agentcommons_search_calls,0))-1,0) AS repeat_agentcommons_search_calls,coalesce(t.subsequent_other_search_calls,toUInt64(0)) AS subsequent_other_search_calls FROM ${projection} s LEFT JOIN totals t ON t.session_id=s.session_id WHERE s.purged_at IS NULL`,
+    `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,s.harness AS harness,s.user_id AS user_id,coalesce(t.calls,toUInt64(0)) AS agentcommons_search_calls,greatest(toInt64(coalesce(t.calls,0))-1,0) AS repeat_agentcommons_search_calls FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,count() AS calls FROM (${reads}) r WHERE r.action IN (${searchReadActions.map(sqlString).join(",")}) GROUP BY r.session_id) t ON t.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
   // One query context: session details, the file and child aggregates and the reuse
   // aggregate all read the caller's control once through the shared policy scalar.

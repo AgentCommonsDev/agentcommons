@@ -1,215 +1,6 @@
 {
   "tools": [
     {
-      "name": "dashboard_list",
-      "description": "Use this when the user asks to view, build or change dashboards. List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {},
-        "additionalProperties": false
-      },
-      "annotations": {
-        "readOnlyHint": true,
-        "destructiveHint": false,
-        "openWorldHint": false
-      }
-    },
-    {
-      "name": "dashboard_get",
-      "description": "Use this when the user asks to view, build or change dashboards. Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "additionalProperties": false
-      },
-      "annotations": {
-        "readOnlyHint": true,
-        "destructiveHint": false,
-        "openWorldHint": false
-      }
-    },
-    {
-      "name": "dashboard_render",
-      "description": "Use this when the user asks to view, build or change dashboards. Run the queries of a dashboard (by id or an inline definition) with variable values such as {\"time_range\":\"7d\",\"repo\":[\"github.com/org/repo\"]} and return each tile's rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "definition": {
-            "type": "object",
-            "properties": {
-              "version": {
-                "type": "number",
-                "const": 2
-              },
-              "variables": {
-                "default": [],
-                "maxItems": 8,
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {},
-                  "additionalProperties": {},
-                  "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
-                }
-              },
-              "tiles": {
-                "minItems": 1,
-                "maxItems": 24,
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {},
-                  "additionalProperties": {},
-                  "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
-                }
-              }
-            },
-            "required": [
-              "version",
-              "tiles"
-            ],
-            "additionalProperties": false,
-            "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
-          },
-          "variables": {
-            "default": {},
-            "description": "Values by variable name: a preset (24h|7d|14d|30d|90d|this_week|last_week|this_month|all) or {from, to} in UTC for time_range; a list of strings for repo, harness and user; text for text.",
-            "type": "object",
-            "properties": {},
-            "additionalProperties": {}
-          },
-          "tiles": {
-            "minItems": 1,
-            "maxItems": 24,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^[a-z][a-z0-9_]{0,39}$"
-            }
-          },
-          "refresh": {
-            "default": false,
-            "type": "boolean"
-          }
-        },
-        "additionalProperties": false
-      },
-      "annotations": {
-        "readOnlyHint": true,
-        "destructiveHint": false,
-        "openWorldHint": false
-      }
-    },
-    {
-      "name": "dashboard_save",
-      "description": "Use this when the user asks to view, build or change dashboards. Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "revision": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80
-          },
-          "description": {
-            "default": "",
-            "type": "string",
-            "maxLength": 400
-          },
-          "definition": {
-            "type": "object",
-            "properties": {
-              "version": {
-                "type": "number",
-                "const": 2
-              },
-              "variables": {
-                "default": [],
-                "maxItems": 8,
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {},
-                  "additionalProperties": {},
-                  "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
-                }
-              },
-              "tiles": {
-                "minItems": 1,
-                "maxItems": 24,
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {},
-                  "additionalProperties": {},
-                  "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
-                }
-              }
-            },
-            "required": [
-              "version",
-              "tiles"
-            ],
-            "additionalProperties": false,
-            "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
-          }
-        },
-        "required": [
-          "name",
-          "definition"
-        ],
-        "additionalProperties": false
-      },
-      "annotations": {
-        "readOnlyHint": false,
-        "destructiveHint": false,
-        "openWorldHint": false
-      }
-    },
-    {
-      "name": "dashboard_delete",
-      "description": "Use this when the user asks to view, build or change dashboards. Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "additionalProperties": false
-      },
-      "annotations": {
-        "readOnlyHint": false,
-        "destructiveHint": true,
-        "openWorldHint": false
-      }
-    },
-    {
       "name": "search",
       "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Search previous coding-agent sessions with words and structured filters. Start with the test name, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {\"query\":\"\",\"filters\":{\"file_prefix\":\"src/auth/\",\"file_operation\":\"edit\"}}.",
       "inputSchema": {
@@ -625,6 +416,215 @@
       "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_list",
+      "description": "Use this when the user asks to view, build or change dashboards. List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_get",
+      "description": "Use this when the user asks to view, build or change dashboards. Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_render",
+      "description": "Use this when the user asks to view, build or change dashboards. Run the queries of a dashboard (by id or an inline definition) with variable values such as {\"time_range\":\"7d\",\"repo\":[\"github.com/org/repo\"]} and return each tile's rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "definition": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "const": 2
+              },
+              "variables": {
+                "default": [],
+                "maxItems": 8,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
+                }
+              },
+              "tiles": {
+                "minItems": 1,
+                "maxItems": 24,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
+                }
+              }
+            },
+            "required": [
+              "version",
+              "tiles"
+            ],
+            "additionalProperties": false,
+            "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
+          },
+          "variables": {
+            "default": {},
+            "description": "Values by variable name: a preset (24h|7d|14d|30d|90d|this_week|last_week|this_month|all) or {from, to} in UTC for time_range; a list of strings for repo, harness and user; text for text.",
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {}
+          },
+          "tiles": {
+            "minItems": 1,
+            "maxItems": 24,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,39}$"
+            }
+          },
+          "refresh": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_save",
+      "description": "Use this when the user asks to view, build or change dashboards. Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "default": "",
+            "type": "string",
+            "maxLength": 400
+          },
+          "definition": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "number",
+                "const": 2
+              },
+              "variables": {
+                "default": [],
+                "maxItems": 8,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Variable {name, label?, type, default?}: type time_range (default preset 24h|7d|14d|30d|90d|this_week|last_week|this_month|all) exposes {name}_from and {name}_to as DateTime; repo, harness and user expose {name} as Array(String) where empty means all; text exposes {name} as String."
+                }
+              },
+              "tiles": {
+                "minItems": 1,
+                "maxItems": 24,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": {},
+                  "description": "Tile {id, title, description?, layout {x 0-11, y, w 1-12, h 1-40}} plus per type: stat {sql, value?, compare?, unit?}; chart {sql, series_by?, unit?, chart}; table {sql, columns?}; text {markdown}; control {variable}. sql: one ClickHouse SELECT over api_ro, declared variables as {name:Type}. unit: count|ratio|seconds|milliseconds|tokens|usd. chart: allowlisted ECharts option with series (1-20; type line|bar|pie|scatter|gauge|heatmap; encode {x?, y?, value?, itemName?, tooltip?} binds result columns; name?, stack?, smooth?, step?, showSymbol?, symbol?, symbolSize?, connectNulls?, areaStyle?, lineStyle?, itemStyle?, label?, labelLine?, emphasis?, barWidth?, barMaxWidth?, barGap?, radius?, center?, roseType?, xAxisIndex?, yAxisIndex?, min?, max?, progress?, detail?, axisLine?, pointer?, splitLine?, axisLabel?, axisTick?, title?) and xAxis?, yAxis?, legend?, tooltip?, grid?, color?, dataZoom?, visualMap?, polar?, radiusAxis?, angleAxis?. Style blocks: plain JSON, at most three levels, scalar or scalar-array leaves. Unknown keys are rejected."
+                }
+              }
+            },
+            "required": [
+              "version",
+              "tiles"
+            ],
+            "additionalProperties": false,
+            "description": "Dashboard definition. dashboard_list names the starter templates and carries the complete JSON Schema as structuredContent.definition_schema; dashboard_get on a built-in shows a complete working definition; dashboard_render validates an inline definition and names the failing path."
+          }
+        },
+        "required": [
+          "name",
+          "definition"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "dashboard_delete",
+      "description": "Use this when the user asks to view, build or change dashboards. Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
         "openWorldHint": false
       }
     },

@@ -49,7 +49,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
     id: "search_sessions",
     title: "Sessions that searched AgentCommons",
     description:
-      "Sessions where the agent called the AgentCommons search tool.",
+      "Sessions whose agent ran an AgentCommons search or sql query while active.",
     variables: standard,
     tile: {
       id: "search_sessions",

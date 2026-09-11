@@ -59,6 +59,13 @@ describe("session relations read control once per query and scan each base table
     expect(
       sql("metrics_reuse_sessions").split("`session_reads` FINAL").length - 1,
     ).toBe(1);
+    // Search adoption reads attributed API calls, never the message corpus (ADR 0067).
+    expect(scansOf(sql("metrics_search_sessions"), "messages")).toBe(0);
+    expect(scansOf(sql("metrics_search_sessions"), "sessions")).toBe(1);
+    expect(
+      sql("metrics_search_sessions").split("`session_reads` FINAL").length - 1,
+    ).toBe(1);
+    expect(sql("metrics_search_sessions")).not.toContain("tool_name");
   });
   it("composes public views as one query context instead of layering api_ro views", () => {
     for (const name of [

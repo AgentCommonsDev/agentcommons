@@ -2,11 +2,13 @@ import * as z from "zod";
 z.config({ jitless: true });
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { HARNESSES, cliHarnessSchema } from "./harnesses.js";
 import { recordHook } from "./hook.js";
 import type { InstallOptions } from "./install.js";
 import { dataDirectory } from "./paths.js";
+import { promptHint } from "./recall.js";
 
 async function main(): Promise<void> {
   const [mode, ...args] = process.argv.slice(2);
@@ -16,13 +18,18 @@ async function main(): Promise<void> {
   const harness = cliHarnessSchema.safeParse(mode);
   if (harness.success) {
     try {
-      recordHook(
+      const input = JSON.parse(readFileSync(0, "utf8")) as unknown;
+      const path = recordHook(
         directory,
         executable,
         loadConfig(directory),
         harness.data,
-        JSON.parse(readFileSync(0, "utf8")) as unknown,
+        input,
       );
+      // The only stdout a hook ever writes: the cached recall hint, on events the
+      // harness reads as additional model context (§6.2). Never a network request.
+      const hint = path && promptHint(directory, harness.data, input, path);
+      if (hint) process.stdout.write(hint);
     } catch {
       /* Fail open: native agent work must continue. */
     }
@@ -37,6 +44,19 @@ async function main(): Promise<void> {
   if (mode === "configure") {
     const { configure } = await import("./install.js");
     configure(directory, JSON.parse(readFileSync(0, "utf8")) as unknown);
+    return;
+  }
+  if (mode === "guidance") {
+    // Needs no configuration: the block is the same text for every server (§8.3).
+    const repoIndex = args.indexOf("--repo");
+    const root = resolve(
+      (repoIndex >= 0 ? args[repoIndex + 1] : undefined) ?? process.cwd(),
+    );
+    const { writeRepositoryGuidance } = await import("./install.js");
+    const { written, linked } = writeRepositoryGuidance(root);
+    process.stdout.write(
+      `Wrote the AgentCommons guidance to ${written.join(", ")}${linked.length ? ` and linked ${linked.join(", ")} to it` : ""}.\nCommit these files so every teammate's agent reads the guidance.\n`,
+    );
     return;
   }
   const config = loadConfig(directory);
@@ -109,7 +129,7 @@ async function main(): Promise<void> {
     return;
   }
   throw new Error(
-    "Use a harness name, upload, configure, install, doctor, version, or uninstall.",
+    "Use a harness name, upload, configure, guidance, install, doctor, version, or uninstall.",
   );
 }
 void main().catch((error: unknown) => {

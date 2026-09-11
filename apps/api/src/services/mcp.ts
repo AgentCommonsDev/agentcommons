@@ -4,7 +4,7 @@ import {
   type CallToolResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { CallerContext } from "@agentcommons/core";
+import type { CallerContext, KeyToolGroup } from "@agentcommons/core";
 import * as schema from "@agentcommons/core/schemas";
 import {
   formatSearch,
@@ -19,6 +19,7 @@ import {
 import type { Services } from "../routes/services.js";
 import { auditedOperation } from "./audit.js";
 import {
+  requireCaller,
   requirePermission,
   ServiceError,
   type ServiceContext,
@@ -36,25 +37,28 @@ const governingSentence =
  */
 export const serverInstructions =
   "AgentCommons indexes this organization's past coding-agent sessions (search, get, sql). Before changing code, search for the test, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value; read a hit with get and cite its session_id. Also use it whenever the user asks about prior work. Keep long investigations in a subagent that returns only findings and session ids.";
-/** Catalog order of `tools/list` for a read key; the constructor checks the registry agrees. */
-export const readToolNames = [
+/**
+ * The default catalog: what every `sessions:read` key lists, in `tools/list` order. Nothing
+ * else is exposed unless the key opts in (§8.2); the constructor checks the registry agrees.
+ */
+export const readToolNames = ["search", "get", "sql"] as const;
+/** Listed after the read tools when the key grants the `dashboards` tool group. */
+export const dashboardToolNames = [
   "dashboard_list",
   "dashboard_get",
   "dashboard_render",
   "dashboard_save",
   "dashboard_delete",
-  "search",
-  "get",
-  "sql",
 ] as const;
-/** The tools an effective admin key sees after the read tools, in catalog order. */
+/** Listed next for effective admin authority, whatever the key's tool groups. */
 export const adminToolNames = [
   "set_visibility",
   "purge",
   "audit",
   "status",
-  "dashboard_set_default",
 ] as const;
+/** Listed last: admin authority and the `dashboards` tool group together. */
+export const dashboardAdminToolNames = ["dashboard_set_default"] as const;
 interface Definition<
   I extends z.ZodType = z.ZodType,
   O extends z.ZodType = z.ZodType,
@@ -62,6 +66,11 @@ interface Definition<
   name: string;
   description: string;
   permission: "read" | "admin";
+  /**
+   * Opt-in tool group (§8.2): listed and callable only when the key's `tools` permission
+   * names it. Tools without a group form the default catalog.
+   */
+  group?: KeyToolGroup;
   /** Strict schema every call is parsed with. */
   input: I;
   /** Compact rendering advertised in `tools/list` when it differs from `input` (§8.2). */
@@ -107,73 +116,6 @@ export class McpService {
   constructor(private readonly services: Services) {
     const definitions: Definition[] = [
       define({
-        name: "dashboard_list",
-        instruction: dashboardInstruction,
-        readOnly: true,
-        destructive: false,
-        description:
-          "List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
-        permission: "read",
-        input: schema.emptySchema,
-        output: schema.dashboardListOutputSchema,
-        execute: (ctx) => services.dashboards.list(ctx),
-        format: formatDashboardList,
-      }),
-      define({
-        name: "dashboard_get",
-        instruction: dashboardInstruction,
-        readOnly: true,
-        destructive: false,
-        description:
-          "Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
-        permission: "read",
-        input: schema.dashboardIdInputSchema,
-        output: schema.dashboardSchema,
-        execute: (ctx, input) => services.dashboards.get(ctx, input),
-        format: formatDashboard,
-      }),
-      define({
-        name: "dashboard_render",
-        instruction: dashboardInstruction,
-        readOnly: true,
-        destructive: false,
-        description:
-          'Run the queries of a dashboard (by id or an inline definition) with variable values such as {"time_range":"7d","repo":["github.com/org/repo"]} and return each tile\'s rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.',
-        permission: "read",
-        input: schema.dashboardRenderInputSchema,
-        toolInput: schema.dashboardRenderToolInputSchema,
-        output: schema.dashboardRenderOutputSchema,
-        execute: (ctx, input) => services.dashboards.render(ctx, input),
-        format: (result) => formatDashboardRender(result),
-      }),
-      define({
-        name: "dashboard_save",
-        instruction: dashboardInstruction,
-        readOnly: false,
-        destructive: false,
-        description:
-          "Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
-        permission: "read",
-        input: schema.dashboardSaveInputSchema,
-        toolInput: schema.dashboardSaveToolInputSchema,
-        output: schema.dashboardSchema,
-        execute: (ctx, input) => services.dashboards.save(ctx, input),
-        format: formatDashboard,
-      }),
-      define({
-        name: "dashboard_delete",
-        instruction: dashboardInstruction,
-        readOnly: false,
-        destructive: true,
-        description:
-          "Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
-        permission: "read",
-        input: schema.dashboardIdInputSchema,
-        output: schema.dashboardDeleteOutputSchema,
-        execute: (ctx, input) => services.dashboards.delete(ctx, input),
-        format: formatJson,
-      }),
-      define({
         name: "search",
         description:
           'Search previous coding-agent sessions with words and structured filters. Start with the test name, file path or error you were given: an earlier session often holds the root cause, the library the team chose or the exact value. All query tokens must match; English inflections share a stem. Results are message windows grouped by session; follow up with get (session_id, seq) or sql. Each filter takes one value or a list (any of), all filters must hold, and the input schema states what each one means. Example, sessions that edited a file under src/auth/: {"query":"","filters":{"file_prefix":"src/auth/","file_operation":"edit"}}.',
@@ -214,6 +156,78 @@ export class McpService {
         output: schema.sqlOutputSchema,
         execute: (ctx, input) => services.query.execute(ctx, input),
         format: formatSql,
+      }),
+      define({
+        name: "dashboard_list",
+        instruction: dashboardInstruction,
+        group: "dashboards",
+        readOnly: true,
+        destructive: false,
+        description:
+          "List the organization's dashboards (id, name, tile count, flags, updated_at, description), which one is the Home default and the starter tile template ids; read a definition with dashboard_get. Two built-ins always exist: Team overview (captured sessions, search adoption and reuse; the default until an admin picks another) and Team activity (sessions, messages, tool calls, repositories and coding tools per person, for managers). The definition JSON Schema travels as structuredContent.definition_schema.",
+        permission: "read",
+        input: schema.emptySchema,
+        output: schema.dashboardListOutputSchema,
+        execute: (ctx) => services.dashboards.list(ctx),
+        format: formatDashboardList,
+      }),
+      define({
+        name: "dashboard_get",
+        instruction: dashboardInstruction,
+        group: "dashboards",
+        readOnly: true,
+        destructive: false,
+        description:
+          "Read one dashboard by id with its full definition: variables, tiles, SQL, layout and chart options.",
+        permission: "read",
+        input: schema.dashboardIdInputSchema,
+        output: schema.dashboardSchema,
+        execute: (ctx, input) => services.dashboards.get(ctx, input),
+        format: formatDashboard,
+      }),
+      define({
+        name: "dashboard_render",
+        instruction: dashboardInstruction,
+        group: "dashboards",
+        readOnly: true,
+        destructive: false,
+        description:
+          'Run the queries of a dashboard (by id or an inline definition) with variable values such as {"time_range":"7d","repo":["github.com/org/repo"]} and return each tile\'s rows. Pass tiles to render a subset. Saved dashboards are served from a cache that a newly published session invalidates; the result says when it was rendered and whether it came from the cache, and refresh: true re-runs the tiles.',
+        permission: "read",
+        input: schema.dashboardRenderInputSchema,
+        toolInput: schema.dashboardRenderToolInputSchema,
+        output: schema.dashboardRenderOutputSchema,
+        execute: (ctx, input) => services.dashboards.render(ctx, input),
+        format: (result) => formatDashboardRender(result),
+      }),
+      define({
+        name: "dashboard_save",
+        instruction: dashboardInstruction,
+        group: "dashboards",
+        readOnly: false,
+        destructive: false,
+        description:
+          "Create or update a dashboard everyone in the organization can see. Start from dashboard_list templates, validate with dashboard_render on an inline definition, then save. Updates need id and revision; only the creator or an organization admin can change a saved dashboard.",
+        permission: "read",
+        input: schema.dashboardSaveInputSchema,
+        toolInput: schema.dashboardSaveToolInputSchema,
+        output: schema.dashboardSchema,
+        execute: (ctx, input) => services.dashboards.save(ctx, input),
+        format: formatDashboard,
+      }),
+      define({
+        name: "dashboard_delete",
+        instruction: dashboardInstruction,
+        group: "dashboards",
+        readOnly: false,
+        destructive: true,
+        description:
+          "Delete a saved dashboard. Creators can delete their own; organization admins can delete any.",
+        permission: "read",
+        input: schema.dashboardIdInputSchema,
+        output: schema.dashboardDeleteOutputSchema,
+        execute: (ctx, input) => services.dashboards.delete(ctx, input),
+        format: formatJson,
       }),
       define({
         name: "set_visibility",
@@ -266,6 +280,7 @@ export class McpService {
       define({
         name: "dashboard_set_default",
         instruction: dashboardInstruction,
+        group: "dashboards",
         readOnly: false,
         destructive: false,
         description:
@@ -277,14 +292,29 @@ export class McpService {
         format: formatJson,
       }),
     ];
-    const listed = (permission: Definition["permission"]) =>
+    const listed = (
+      permission: Definition["permission"],
+      group: Definition["group"],
+    ) =>
       definitions
-        .filter((definition) => definition.permission === permission)
+        .filter(
+          (definition) =>
+            definition.permission === permission && definition.group === group,
+        )
         .map((definition) => definition.name)
         .join();
     if (
-      listed("read") !== readToolNames.join() ||
-      listed("admin") !== adminToolNames.join()
+      definitions.map((definition) => definition.name).join() !==
+        [
+          ...readToolNames,
+          ...dashboardToolNames,
+          ...adminToolNames,
+          ...dashboardAdminToolNames,
+        ].join() ||
+      listed("read", undefined) !== readToolNames.join() ||
+      listed("read", "dashboards") !== dashboardToolNames.join() ||
+      listed("admin", undefined) !== adminToolNames.join() ||
+      listed("admin", "dashboards") !== dashboardAdminToolNames.join()
     )
       throw new Error("The MCP catalog and its exported tool names disagree.");
     this.tools = definitions.map((definition) => ({
@@ -317,18 +347,28 @@ export class McpService {
       );
     return { ...context, caller: identity.caller, principal: identity };
   }
+  /** Whether the key's `tools` grant names the definition's opt-in group; ungrouped tools need none. */
+  private granted(caller: CallerContext, definition: Definition): boolean {
+    return (
+      definition.group === undefined ||
+      caller.permissions.tools?.includes(definition.group) === true
+    );
+  }
   /**
-   * The permission-filtered catalog a caller sees. Output schemas stay server-side:
-   * results still carry `structuredContent`, and shipping them would triple the payload.
+   * The permission-filtered catalog a caller sees: the read tools for `sessions:read`, each
+   * opt-in group only when the key grants it, admin tools only with effective admin
+   * authority (§8.2). Output schemas stay server-side: results still carry
+   * `structuredContent`, and shipping them would triple the payload.
    */
   catalog(caller: CallerContext | null): Tool[] {
+    if (!caller || caller.toolsEnabled === false) return [];
     return this.tools
-      .filter(({ definition }) =>
-        caller?.toolsEnabled === false
-          ? false
-          : definition.permission === "admin"
-            ? caller && hasAdminAuthority(caller)
-            : caller?.permissions.sessions?.includes("read"),
+      .filter(
+        ({ definition }) =>
+          this.granted(caller, definition) &&
+          (definition.permission === "admin"
+            ? hasAdminAuthority(caller)
+            : caller.permissions.sessions?.includes("read") === true),
       )
       .map(({ tool }) => tool);
   }
@@ -392,6 +432,14 @@ export class McpService {
               404,
               "UNKNOWN_TOOL",
               "This MCP tool is not available.",
+            );
+          // The same gate as the catalog: a cached client cannot call a tool its key does
+          // not expose, and the message names the permission that would.
+          if (!this.granted(requireCaller(current), definition))
+            throw new ServiceError(
+              403,
+              "TOOL_NOT_GRANTED",
+              `This key does not grant the ${String(definition.group)} tools. Create a key with that tool permission.`,
             );
           requirePermission(current, definition.permission);
           // A call satisfies the advertised schema first: fields the catalog does not

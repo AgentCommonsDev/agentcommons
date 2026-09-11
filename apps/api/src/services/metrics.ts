@@ -71,9 +71,6 @@ const searchAdoption = {
   repeat_agentcommons_search_calls: {
     value: "coalesce(sum(t.repeat_agentcommons_search_calls),0)",
   },
-  subsequent_other_search_calls: {
-    value: "coalesce(sum(t.subsequent_other_search_calls),0)",
-  },
 } satisfies Record<
   (typeof searchAdoptionMetricNames)[number] | "sessions",
   { value: string } | { numerator: string; denominator: string }
@@ -153,7 +150,7 @@ function statements(
       };
     case "usage":
       return {
-        cte: `a AS MATERIALIZED (SELECT * FROM api_ro.metrics_usage WHERE ${filter("ts")}), s AS MATERIALIZED (SELECT memory_assisted FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), m AS MATERIALIZED (SELECT * FROM api_ro.metrics_mcp_calls WHERE ${filter("ts")}), d AS MATERIALIZED (SELECT * FROM api_ro.metrics_dashboard WHERE ${filter("ts")}), t AS MATERIALIZED (SELECT agentcommons_search_calls,repeat_agentcommons_search_calls,subsequent_other_search_calls FROM api_ro.metrics_search_sessions WHERE ${filter("started_at")}), adoption AS MATERIALIZED (SELECT ${searchAdoptionSelect} FROM t)`,
+        cte: `a AS MATERIALIZED (SELECT * FROM api_ro.metrics_usage WHERE ${filter("ts")}), s AS MATERIALIZED (SELECT memory_assisted FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), m AS MATERIALIZED (SELECT * FROM api_ro.metrics_mcp_calls WHERE ${filter("ts")}), d AS MATERIALIZED (SELECT * FROM api_ro.metrics_dashboard WHERE ${filter("ts")}), t AS MATERIALIZED (SELECT agentcommons_search_calls,repeat_agentcommons_search_calls FROM api_ro.metrics_search_sessions WHERE ${filter("started_at")}), adoption AS MATERIALIZED (SELECT ${searchAdoptionSelect} FROM t)`,
         selects: [
           ...searchAdoptionMetricNames.map((name) => {
             const definition = searchAdoption[name];

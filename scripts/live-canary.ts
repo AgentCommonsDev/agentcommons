@@ -124,7 +124,8 @@ try {
   }
   const read = await runtime.services.auth.createKey(member.owner, {
     name: "Live canary MCP reader",
-    permissions: { sessions: ["read"] },
+    // The canary exercises dashboard_render, which the default catalog no longer exposes.
+    permissions: { sessions: ["read"], tools: ["dashboards"] },
   });
   const userClient = await connectMcp(publicUrl, read.result.key);
   handles.clients.push(userClient);

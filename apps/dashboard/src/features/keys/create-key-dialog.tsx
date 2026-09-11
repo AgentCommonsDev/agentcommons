@@ -16,6 +16,14 @@ import { errorMessage } from "../../lib/display";
 import { buildPermissions, permissionOrder } from "./permissions";
 import { createPersonalKey } from "./queries";
 
+/** Ingest and read on; the dashboards tool group and admin are opt-in (§8.2). */
+const defaultSelection = {
+  ingest: true,
+  read: true,
+  dashboards: false,
+  admin: false,
+};
+
 /** Name, permissions and optional expiry; the secret is handed to the caller exactly once. */
 export function CreateKeyDialog({
   open,
@@ -30,11 +38,7 @@ export function CreateKeyDialog({
 }) {
   const [name, setName] = useState("");
   const [days, setDays] = useState("");
-  const [selection, setSelection] = useState({
-    ingest: true,
-    read: true,
-    admin: false,
-  });
+  const [selection, setSelection] = useState(defaultSelection);
   const permissions = buildPermissions(selection);
   const hasPermission =
     permissions.sessions !== undefined || permissions.admin !== undefined;
@@ -52,7 +56,7 @@ export function CreateKeyDialog({
       onOpenChange(false);
       setName("");
       setDays("");
-      setSelection({ ingest: true, read: true, admin: false });
+      setSelection(defaultSelection);
       await onCreated(result.key);
     },
   });

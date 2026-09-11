@@ -28,6 +28,7 @@ import { HARNESSES, type HarnessDefinition } from "./harnesses.js";
 import { spawnUpload } from "./hook.js";
 import { acquireLock, MAX_UPLOADER_MS, type Lock } from "./lock.js";
 import { note } from "./paths.js";
+import { refreshRecallHint } from "./recall.js";
 import { hookIdentity, reconcileInstall, selfUpdate } from "./update.js";
 import {
   OversizedSourceRecord,
@@ -90,6 +91,8 @@ interface UploadOptions {
   ) => Promise<void>;
   sweep?: boolean;
   update?: boolean;
+  /** Refresh the repository's recall hint cache after the drain (§6.2); tests turn it off. */
+  recall?: boolean;
 }
 interface DrainResult {
   readonly children: readonly string[];
@@ -811,6 +814,15 @@ export async function upload(
         sweep: false,
       });
   }
+  // The session's repository count is refreshed at most every 15 minutes so the next
+  // prompt hook answers from the cache without a request (§6.2 recall hint).
+  if (options.recall !== false)
+    await refreshRecallHint(
+      directory,
+      config,
+      loadState(path).context.git,
+      options.fetch ? { fetch: options.fetch } : {},
+    );
   // The served manifest is checked at most hourly; a differing bundle is replaced
   // atomically for the next hook run, and harness wiring is brought in step with the
   // bundle and the CLIs present. Failures never reach the durability path.

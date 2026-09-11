@@ -1,4 +1,8 @@
-import { formatInstallCommand } from "@agentcommons/core/format/install";
+import {
+  formatInstallCommand,
+  guidanceBlock,
+  repositoryInstructions,
+} from "@agentcommons/core/format/install";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -312,6 +316,35 @@ export function Install() {
               </li>
             ))}
           </ul>
+          <div
+            className="flex flex-col gap-2 rounded-md border border-line bg-surface px-3 py-2.5"
+            data-testid="repository-guidance"
+          >
+            <p className="text-sm font-medium">
+              {copy.install.prepare.repository.title}
+            </p>
+            <p className="text-xs leading-relaxed text-muted">
+              {copy.install.prepare.repository.description}
+            </p>
+            <CodeBlock
+              content={guidanceBlock(repositoryInstructions)}
+              language="markdown"
+              copyLabel={copy.install.prepare.repository.copy}
+              showCopyLabel
+              testId="repository-guidance-block"
+              className="my-0"
+            />
+            <p className="text-xs text-muted">
+              {copy.install.prepare.repository.command}
+            </p>
+            <CodeBlock
+              content="node ~/.agentcommons/hook.js guidance --repo ."
+              language="bash"
+              wrap
+              testId="repository-guidance-command"
+              className="my-0"
+            />
+          </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted">
             <span className="font-medium">
               {copy.install.prepare.notesTitle}
