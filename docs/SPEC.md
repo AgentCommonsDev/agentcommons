@@ -890,6 +890,11 @@ notice were given, the sessions already named and the registration verdict. Read
 small files and writing one keeps the 150 ms budget. This is the only stdout a hook ever
 writes: Claude Code adds plain stdout on these events as context too, and Gemini parses
 stdout as JSON (Appendix A). pi has no shell hook and gets no hint.
+The budget is a whole-process figure for an idle developer machine; the perf test times
+the built bundle against a same-run baseline of bare node starts, applies the 150 ms bound
+when that baseline shows an idle machine, and always bounds the shim's own work beyond the
+node start by the budget scaled with the measured slowdown, so a loaded machine still
+catches a slow shim without failing on its own load.
 
 **Upload mode** (`hook.js upload <state>`, always a detached child):
 Git context and end observations are collected here with 500 ms per-command timeouts,
