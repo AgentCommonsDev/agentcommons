@@ -32,6 +32,7 @@ import {
   messageText,
   readMessagePayloads,
 } from "../repositories/message-payload.js";
+import { traceReadFailure } from "../repositories/read-failure.js";
 import { ServiceError, type ServiceContext } from "./context.js";
 import {
   compactMetadata,
@@ -69,8 +70,15 @@ export const searchAuditStructure = protocolObject(["input", "result"], {
   }),
   result: protocolObject(["hits", "truncated_response"], {
     total: protocolObject(["sessions", "hits"]),
+    partial: protocolObject(["sessions_searched"]),
   }),
 });
+/**
+ * Sessions the one bounded attempt after a time limit searches (§7.5): the most recently
+ * active ones matching the filters. With time-ordered session ids they are the newest
+ * primary-key ranges, so the bound prunes both message scans instead of only the page.
+ */
+const PARTIAL_SEARCH_SESSIONS = 50;
 const positionSchema = z.strictObject({
   strategy: z.enum(["lexical", "rrf"]),
   rank: z.number(),
@@ -223,31 +231,51 @@ export class SearchService {
             "SEARCH_RANKING_UNAVAILABLE",
             "The ranking provider is unavailable. Retry this page later.",
           );
-        return this.dependencies.readers.read(caller, async (client) => {
-          const params = new Parameters();
-          const plan = await filterSql(client, request.filters, params);
-          const query = params.add(request.query);
-          const lexical = request.query.trim().length > 0;
-          const order = lexical
-            ? "rank DESC, session_id, seq"
-            : "time DESC, session_id, seq DESC";
-          // Eligible messages come from the lightest message relation the predicates
-          // allow; session predicates narrow them through one `session_details` scan
-          // only when the filters name a session field.
-          const eligible = `SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq,coalesce(m.timestamp,m.received_at) AS time
+        const attempt = (scope: number | null) =>
+          this.dependencies.readers.read(caller, async (client) => {
+            const params = new Parameters();
+            const plan = await filterSql(client, request.filters, params);
+            const context = scope === null ? request.context : 0;
+            // A bounded attempt resolves its session set with one light session_details
+            // scan; the same array then bounds both message scans by primary key.
+            const scoped =
+              scope === null
+                ? null
+                : (
+                    await client.query<{ session_id: string }>(
+                      `SELECT s.session_id AS session_id FROM api_ro.session_details s WHERE ${andSql(plan.session)} ORDER BY s.last_activity_at DESC,s.session_id DESC LIMIT ${params.add(scope, "UInt32")}`,
+                      params.values,
+                    )
+                  ).rows.map((row) => row.session_id);
+            const scopeParam = scoped
+              ? params.add(scoped, "Array(UUID)")
+              : null;
+            const sessionScope = scopeParam
+              ? `m.session_id IN ${scopeParam}`
+              : plan.session.length
+                ? `m.session_id IN (SELECT s.session_id FROM api_ro.session_details s WHERE ${andSql(plan.session)})`
+                : null;
+            const query = params.add(request.query);
+            const lexical = request.query.trim().length > 0;
+            const order = lexical
+              ? "rank DESC, session_id, seq"
+              : "time DESC, session_id, seq DESC";
+            // Eligible messages come from the lightest message relation the predicates
+            // allow; session predicates narrow them through one `session_details` scan
+            // only when the filters name a session field.
+            const eligible = `SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq,coalesce(m.timestamp,m.received_at) AS time
             FROM api_ro.${plan.messageView} m
-            WHERE ${andSql([
-              ...plan.message,
-              ...(plan.session.length
-                ? [
-                    `m.session_id IN (SELECT s.session_id FROM api_ro.session_details s WHERE ${andSql(plan.session)})`,
-                  ]
-                : []),
-            ])} AND ${lexical ? "m.searchable" : "m.kind!='THINKING'"}`;
-          const lexicalMatches = `SELECT e.*,l.rank FROM eligible e
-            JOIN api_ro.search_messages(q=${query}) l USING(session_id,seq)`;
-          const candidates = vector
-            ? `WITH eligible AS (${eligible}), lexical_matches AS (${lexicalMatches}), lexical AS (
+            WHERE ${andSql([...plan.message, ...(sessionScope ? [sessionScope] : [])])} AND ${lexical ? "m.searchable" : "m.kind!='THINKING'"}`;
+            // The text scan is a hash-join side and reads the whole organization unless a
+            // WHERE on the parameterized view bounds it; a session set there reaches the
+            // base scan's primary-key condition (verified with EXPLAIN indexes=1).
+            const textMatches = scopeParam
+              ? `(SELECT * FROM api_ro.search_messages(q=${query}) WHERE session_id IN ${scopeParam})`
+              : `api_ro.search_messages(q=${query})`;
+            const lexicalMatches = `SELECT e.*,l.rank FROM eligible e
+            JOIN ${textMatches} l USING(session_id,seq)`;
+            const candidates = vector
+              ? `WITH eligible AS (${eligible}), lexical_matches AS (${lexicalMatches}), lexical AS (
                 SELECT message_id,row_number() OVER(ORDER BY rank DESC,session_id,seq) AS position FROM lexical_matches
               ), vector_candidates AS (
                 SELECT c.message_id AS message_id,e.session_id AS session_id,min(cosineDistance(c.embedding,${params.add(vector, "Array(Float32)")})) AS distance
@@ -262,62 +290,63 @@ export class SearchService {
                   UNION ALL SELECT message_id,1.0/(60+position) AS score FROM semantic
                 ) GROUP BY message_id
               ) SELECT e.message_id AS message_id,e.session_id AS session_id,e.seq AS seq,e.time AS time,f.rank AS rank FROM fused f JOIN eligible e USING(message_id)`
-            : `WITH eligible AS (${eligible}) ${lexical ? lexicalMatches : "SELECT *,toFloat64(0) AS rank FROM eligible"}`;
-          // The totals are window aggregates of the same candidate scan, taken before
-          // the per-session cap, the cursor and the limit cut the page.
-          const totalParameters = { ...params.values };
-          const continuation = after
-            ? lexical
-              ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
-              : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
-            : "true";
-          const result = await client.query(
-            `WITH candidates AS (${candidates}), ranked AS (
+              : `WITH eligible AS (${eligible}) ${lexical ? lexicalMatches : "SELECT *,toFloat64(0) AS rank FROM eligible"}`;
+            // The totals are window aggregates of the same candidate scan, taken before
+            // the per-session cap, the cursor and the limit cut the page.
+            const totalParameters = { ...params.values };
+            const continuation = after
+              ? lexical
+                ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
+                : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
+              : "true";
+            const result = await client.query(
+              `WITH candidates AS (${candidates}), ranked AS (
               SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session,
                 count() OVER () AS total_hits,uniqExact(session_id) OVER () AS total_sessions FROM candidates
             ) SELECT session_id,seq,rank,time,total_hits,total_sessions FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
               ORDER BY ${order} LIMIT ${params.add(request.limit + 1, "UInt32")}`,
-            params.values,
-          );
-          const hits = result.rows.map((row) =>
-            positionSchema.parse({
-              ...pickSchema(wireRow(row), positionSchema),
-              strategy: vector ? "rrf" : "lexical",
-            }),
-          );
-          // A continuation past the last hit carries no aggregate; only then is a count
-          // of the candidates (with no window) needed to state the totals.
-          const first = result.rows[0];
-          const counts = first
-            ? { sessions: first.total_sessions, hits: first.total_hits }
-            : after
-              ? (
-                  await client.query(
-                    `WITH candidates AS (${candidates}) SELECT uniqExact(session_id) AS sessions,count() AS hits FROM candidates`,
-                    totalParameters,
-                  )
-                ).rows[0]
-              : { sessions: 0, hits: 0 };
-          const total = searchTotalSchema.parse({
-            sessions: Number(counts?.sessions ?? 0),
-            hits: Number(counts?.hits ?? 0),
-          });
-          const output: SearchOutput = {
-            blocks: [],
-            cursor: null,
-            truncated_response: false,
-            total,
-          };
-          const windows: Window[] = [];
-          const headers = new Map<string, SearchHeader>();
-          const pageHits = hits.slice(0, request.limit);
-          const ids = [...new Set(pageHits.map((hit) => hit.session_id))];
-          // Fetch all context and headers in two ClickHouse queries and the tree roots
-          // from control, together, for the whole page.
-          const [neighbours, values, links] = await Promise.all([
-            ids.length
-              ? client.query(
-                  `WITH ordered AS (
+              params.values,
+            );
+            const hits = result.rows.map((row) =>
+              positionSchema.parse({
+                ...pickSchema(wireRow(row), positionSchema),
+                strategy: vector ? "rrf" : "lexical",
+              }),
+            );
+            // A continuation past the last hit carries no aggregate; only then is a count
+            // of the candidates (with no window) needed to state the totals.
+            const first = result.rows[0];
+            const counts = first
+              ? { sessions: first.total_sessions, hits: first.total_hits }
+              : after
+                ? (
+                    await client.query(
+                      `WITH candidates AS (${candidates}) SELECT uniqExact(session_id) AS sessions,count() AS hits FROM candidates`,
+                      totalParameters,
+                    )
+                  ).rows[0]
+                : { sessions: 0, hits: 0 };
+            const total = searchTotalSchema.parse({
+              sessions: Number(counts?.sessions ?? 0),
+              hits: Number(counts?.hits ?? 0),
+            });
+            const output: SearchOutput = {
+              blocks: [],
+              cursor: null,
+              truncated_response: false,
+              total,
+              partial: scoped ? { sessions_searched: scoped.length } : null,
+            };
+            const windows: Window[] = [];
+            const headers = new Map<string, SearchHeader>();
+            const pageHits = hits.slice(0, request.limit);
+            const ids = [...new Set(pageHits.map((hit) => hit.session_id))];
+            // Fetch all context and headers in two ClickHouse queries and the tree roots
+            // from control, together, for the whole page.
+            const [neighbours, values, links] = await Promise.all([
+              ids.length
+                ? client.query(
+                    `WITH ordered AS (
               SELECT message_id,session_id,seq,role,kind,tool_name,tool_use_id,payload_bytes,
                 row_number() OVER(PARTITION BY session_id ORDER BY seq) AS ordinal
               FROM api_ro.message_metadata WHERE session_id IN {ids:Array(UUID)} AND kind!='THINKING'
@@ -328,118 +357,138 @@ export class SearchService {
             FROM ordered o JOIN anchors a ON o.session_id=a.session_id
             WHERE o.ordinal+{context:UInt32}>=a.ordinal AND o.ordinal<=a.ordinal+{context:UInt32}
             ORDER BY o.session_id,a.seq,o.ordinal`,
-                  {
-                    ids,
-                    anchor_ids: pageHits.map((hit) => hit.session_id),
-                    anchor_seqs: pageHits.map((hit) => hit.seq),
-                    context: request.context,
-                  },
-                )
-              : Promise.resolve({ rows: [] }),
-            ids.length
-              ? client.query(
-                  "SELECT session_id,parent_relation,agent_type,parent_tool_use_id,title,harness,model,repo_name,branch,user_email,started_at FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}",
-                  { ids },
-                )
-              : Promise.resolve({ rows: [] }),
-            sessionLinks(client.control, caller, ids),
-          ]);
-          for (const row of values.rows)
-            headers.set(
-              String(row.session_id),
-              searchHeaderSchema.parse(
-                compactMetadata(
-                  {
-                    ...wireRow(row),
-                    root_session_id:
-                      links.get(String(row.session_id))?.root_session_id ??
-                      String(row.session_id),
-                  },
-                  ["title", "model", "repo_name", "branch", "agent_type"],
-                ),
-              ),
-            );
-          const contextByAnchor = new Map<string, Record<string, unknown>[]>();
-          for (const row of neighbours.rows) {
-            const anchor = `${String(row.session_id)}:${String(Number(row.anchor_seq))}`;
-            const rows = contextByAnchor.get(anchor) ?? [];
-            rows.push(row);
-            contextByAnchor.set(anchor, rows);
-          }
-          const payloadBatches = messagePayloadBatches(
-            neighbours.rows,
-            2 * 1024 * 1024,
-          );
-          const excerpts = new Map<unknown, Excerpt>();
-          async function ensureExcerpts(
-            rows: readonly Record<string, unknown>[],
-          ) {
-            while (rows.some((row) => !excerpts.has(row.message_id))) {
-              const batch = payloadBatches.next();
-              if (batch.done)
-                throw new Error("The published search context is unavailable.");
-              const metadata = new Map(
-                batch.value.map((row) => [row.message_id, row]),
-              );
-              for (const payload of await readMessagePayloads(
-                client,
-                batch.value,
-              )) {
-                const row = metadata.get(payload.message_id);
-                excerpts.set(
-                  payload.message_id,
-                  excerpt(
-                    messageText({ ...payload, kind: row?.kind }),
-                    request.query,
+                    {
+                      ids,
+                      anchor_ids: pageHits.map((hit) => hit.session_id),
+                      anchor_seqs: pageHits.map((hit) => hit.seq),
+                      context,
+                    },
+                  )
+                : Promise.resolve({ rows: [] }),
+              ids.length
+                ? client.query(
+                    "SELECT session_id,parent_relation,agent_type,parent_tool_use_id,title,harness,model,repo_name,branch,user_email,started_at FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}",
+                    { ids },
+                  )
+                : Promise.resolve({ rows: [] }),
+              sessionLinks(client.control, caller, ids),
+            ]);
+            for (const row of values.rows)
+              headers.set(
+                String(row.session_id),
+                searchHeaderSchema.parse(
+                  compactMetadata(
+                    {
+                      ...wireRow(row),
+                      root_session_id:
+                        links.get(String(row.session_id))?.root_session_id ??
+                        String(row.session_id),
+                    },
+                    ["title", "model", "repo_name", "branch", "agent_type"],
                   ),
+                ),
+              );
+            const contextByAnchor = new Map<
+              string,
+              Record<string, unknown>[]
+            >();
+            for (const row of neighbours.rows) {
+              const anchor = `${String(row.session_id)}:${String(Number(row.anchor_seq))}`;
+              const rows = contextByAnchor.get(anchor) ?? [];
+              rows.push(row);
+              contextByAnchor.set(anchor, rows);
+            }
+            const payloadBatches = messagePayloadBatches(
+              neighbours.rows,
+              2 * 1024 * 1024,
+            );
+            const excerpts = new Map<unknown, Excerpt>();
+            async function ensureExcerpts(
+              rows: readonly Record<string, unknown>[],
+            ) {
+              while (rows.some((row) => !excerpts.has(row.message_id))) {
+                const batch = payloadBatches.next();
+                if (batch.done)
+                  throw new Error(
+                    "The published search context is unavailable.",
+                  );
+                const metadata = new Map(
+                  batch.value.map((row) => [row.message_id, row]),
                 );
+                for (const payload of await readMessagePayloads(
+                  client,
+                  batch.value,
+                )) {
+                  const row = metadata.get(payload.message_id);
+                  excerpts.set(
+                    payload.message_id,
+                    excerpt(
+                      messageText({ ...payload, kind: row?.kind }),
+                      request.query,
+                    ),
+                  );
+                }
               }
             }
-          }
-          let consumed: Position | null = null;
-          for (const hit of pageHits) {
-            const rows =
-              contextByAnchor.get(`${hit.session_id}:${String(hit.seq)}`) ?? [];
-            const ordinal = Number(rows[0]?.anchor_ordinal);
-            if (!rows.length || !headers.has(hit.session_id)) continue;
-            await ensureExcerpts(rows);
-            windows.push({
-              hit,
-              first: Math.max(1, ordinal - request.context),
-              last: ordinal + request.context,
-              rows,
-            });
-            const blocks = groupWindows(windows).flatMap((group) => {
-              const header = group[0] && headers.get(group[0].hit.session_id);
-              return header ? [blockFor(group, header, excerpts)] : [];
-            });
-            const candidate: SearchOutput = {
-              blocks,
-              cursor: this.dependencies.cursors.encode(binding, hit),
-              truncated_response: false,
-              total,
-            };
-            if (!fitsToolBudget(candidate, formatSearch)) {
-              windows.pop();
-              output.truncated_response = true;
-              break;
+            let consumed: Position | null = null;
+            for (const hit of pageHits) {
+              const rows =
+                contextByAnchor.get(`${hit.session_id}:${String(hit.seq)}`) ??
+                [];
+              const ordinal = Number(rows[0]?.anchor_ordinal);
+              if (!rows.length || !headers.has(hit.session_id)) continue;
+              await ensureExcerpts(rows);
+              windows.push({
+                hit,
+                first: Math.max(1, ordinal - context),
+                last: ordinal + context,
+                rows,
+              });
+              const blocks = groupWindows(windows).flatMap((group) => {
+                const header = group[0] && headers.get(group[0].hit.session_id);
+                return header ? [blockFor(group, header, excerpts)] : [];
+              });
+              const candidate: SearchOutput = {
+                blocks,
+                cursor: this.dependencies.cursors.encode(binding, hit),
+                truncated_response: false,
+                total,
+                partial: output.partial,
+              };
+              if (!fitsToolBudget(candidate, formatSearch)) {
+                windows.pop();
+                output.truncated_response = true;
+                break;
+              }
+              output.blocks = blocks;
+              consumed = hit;
             }
-            output.blocks = blocks;
-            consumed = hit;
-          }
-          const more = output.truncated_response || hits.length > request.limit;
-          output.cursor =
-            more && consumed
-              ? this.dependencies.cursors.encode(binding, consumed)
-              : null;
-          if (more && !consumed && hits.length)
-            throw new ServiceError(
-              413,
-              "SEARCH_BLOCK_TOO_LARGE",
-              "The session metadata exceeds the response limit. Use SQL to select the fields you need.",
-            );
-          return searchOutputSchema.parse(output);
-        });
+            const more =
+              output.truncated_response || hits.length > request.limit;
+            // A bounded page has no continuation: its set is not the query's, and the
+            // note tells the agent to narrow the filters instead.
+            output.cursor =
+              more && consumed && !scoped
+                ? this.dependencies.cursors.encode(binding, consumed)
+                : null;
+            if (more && !consumed && hits.length)
+              throw new ServiceError(
+                413,
+                "SEARCH_BLOCK_TOO_LARGE",
+                "The session metadata exceeds the response limit. Use SQL to select the fields you need.",
+              );
+            return searchOutputSchema.parse(output);
+          });
+        try {
+          return await attempt(null);
+        } catch (error) {
+          // One bounded attempt after a time limit (§7.5). The scan cost does not depend on
+          // context or limit, so the same shape is not retried; a first page over the most
+          // recently active matching sessions is returned as a partial result instead.
+          if (after || traceReadFailure(error)?.code !== "READ_TIME_LIMIT")
+            throw error;
+          return attempt(PARTIAL_SEARCH_SESSIONS);
+        }
       },
       {
         describeResult: (result) => ({
@@ -448,6 +497,7 @@ export class SearchService {
             .filter((message) => message.hit).length,
           truncated_response: result.truncated_response,
           total: result.total,
+          partial: result.partial,
         }),
         describeResources: (result) => [
           ...new Set(result.blocks.map((block) => block.session_id)),

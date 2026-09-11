@@ -118,6 +118,7 @@ const search: SearchOutput = {
   cursor: "next-search-page",
   truncated_response: true,
   total: { sessions: 4, hits: 12 },
+  partial: null,
 };
 describe("shared text and structured formatters", () => {
   it("formats search blocks with exact session/sequence identities, hit markers, and continuation", () => {
@@ -193,8 +194,19 @@ describe("shared text and structured formatters", () => {
         cursor: null,
         truncated_response: false,
         total: { sessions: 0, hits: 0 },
+        partial: null,
       }).text,
     ).toBe("0 hits in 0 sessions");
+    // A bounded page after a time limit (R-SRCH-16) says what it covered, right after the totals.
+    const partial = formatSearch({
+      ...search,
+      cursor: null,
+      partial: { sessions_searched: 50 },
+    }).text.split("\n\n");
+    expect(partial[1]).toBe(
+      "Partial result: the full search exceeded the read time limit, so this page covers the 50 most recently active sessions that match the filters. Narrow with filters (repo_name, since, until, user_email) to search the rest.",
+    );
+    expect(partial.some((line) => line.startsWith("cursor:"))).toBe(false);
   });
   // @req R-GET-03 @req R-GET-06
   it("includes every header fact an agent uses, nullable usage, thinking, and message continuation", () => {

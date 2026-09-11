@@ -92,6 +92,12 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
   });
   const text = [
     formatSearchTotal(result.total),
+    // A bounded page after a time limit says what it covered and how to reach the rest.
+    ...(result.partial
+      ? [
+          `Partial result: the full search exceeded the read time limit, so this page covers the ${String(result.partial.sessions_searched)} most recently active sessions that match the filters. Narrow with filters (repo_name, since, until, user_email) to search the rest.`,
+        ]
+      : []),
     ...blocks,
     ...(result.cursor === null
       ? []

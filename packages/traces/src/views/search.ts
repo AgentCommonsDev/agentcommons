@@ -1,5 +1,5 @@
 import { sqlIdentifier, sqlString } from "../client.js";
-import { traceView, type TraceViewDefinition } from "./base.js";
+import { traceScopeSql, traceView, type TraceViewDefinition } from "./base.js";
 
 /**
  * English inflection rules applied in order to every lowercase token, identically on the
@@ -42,25 +42,30 @@ export function searchTermsSql(expression: string): string {
 
 export function searchViews(database: string): TraceViewDefinition[] {
   const db = sqlIdentifier(database);
-  const terms = searchTermsSql("search_text");
+  // The normalized tokens of every row are the stored `search_terms` column (computed once
+  // at write time by the same expression; see `searchTermsStatements` in migrate.ts), so a
+  // search costs one tokenization per row, never the inflection regexes.
+  const terms = "search_terms";
   // The scalar subquery makes the normalized needle a native constant for the text index;
   // assumeNotNull strips the Nullable wrapper every release gives scalar subqueries, which
   // tokens() rejects on ClickHouse 26.2 (ClickHouse Cloud) and tolerates on 26.8.
   const query = `assumeNotNull((SELECT ${searchTermsSql("{q:String}")}))`;
   // Match history through the text index, then require the latest published row. Filtering before
   // the latest-version check would resurrect a previous edit that still contains the query.
+  // The organization predicate narrows the scan to the caller's primary-key range; the row
+  // policy fences everything else.
   return [
     traceView(
       "search_messages",
       `SELECT session_id,seq,
         multiIf(role='USER',1.0,kind='TEXT',0.4,kind='TOOL_USE',0.2,0.1)
         * arrayCount(token -> has(tokens(${query}),token),tokens(${terms}))
-        / (1 + log(1 + length(tokens(search_text)))) AS rank
+        / (1 + log(1 + length(tokens(${terms})))) AS rank
       FROM ${db}.messages FINAL
-      WHERE searchable AND NOT deleted AND notEmpty(tokens(${query}))
+      WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted AND notEmpty(tokens(${query}))
         AND hasAllTokens(${terms},${query})
         AND (message_id,revision) IN (
-          SELECT message_id,max(revision) FROM ${db}.messages GROUP BY message_id
+          SELECT message_id,max(revision) FROM ${db}.messages WHERE organization_id=${traceScopeSql.organization} GROUP BY message_id
         )`,
     ),
     traceView(

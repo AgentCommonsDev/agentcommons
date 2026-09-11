@@ -2036,13 +2036,16 @@ it("maps trace read limits and busy databases to stable retryable codes on searc
   const requestId = randomUUID();
   const scoped = (): ServiceContext => ({ ...context(), requestId });
   try {
-    failing(
-      new ClickHouseError({
-        code: "159",
-        type: "TIMEOUT_EXCEEDED",
-        message: "Timeout exceeded: elapsed 5.01 s (query: SELECT secret)",
-      }),
-    );
+    // A first-page search makes one bounded attempt after a time limit (R-SRCH-16), so
+    // the documented failure needs both reads to time out.
+    for (let attempt = 0; attempt < 2; attempt += 1)
+      failing(
+        new ClickHouseError({
+          code: "159",
+          type: "TIMEOUT_EXCEEDED",
+          message: "Timeout exceeded: elapsed 5.01 s (query: SELECT secret)",
+        }),
+      );
     const timedOut: unknown = await search
       .execute(scoped(), { query: "circuit breaker", context: 0 })
       .catch((error: unknown) => error);

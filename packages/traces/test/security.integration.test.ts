@@ -1290,6 +1290,8 @@ it("uses the shared standard-function text index on 100000 rows and matches infl
   const table = `ac_trace.index_probe_${randomUUID().replaceAll("-", "")}`;
   const terms = searchTermsSql("search_text");
   try {
+    // The normalizer runs once per row at write time into the stored `search_terms`
+    // column; the index covers that column, so no search evaluates the regexes per row.
     const indexes = await native.query({
       query:
         "SELECT expr FROM system.data_skipping_indices WHERE database='ac_trace' AND table='messages' AND name='message_terms'",
@@ -1298,11 +1300,22 @@ it("uses the shared standard-function text index on 100000 rows and matches infl
     const definition = z
       .array(z.object({ expr: z.string() }))
       .parse(await indexes.json());
-    expect(definition).toHaveLength(1);
-    // ClickHouse Cloud locks experimental NLP functions off; the index must not need them.
-    expect(definition[0]?.expr).not.toContain("stem(");
-    expect(definition[0]?.expr).toContain("replaceRegexpOne(");
-    expect(definition[0]?.expr).toContain("lowerUTF8(search_text)");
+    expect(definition).toEqual([{ expr: "search_terms" }]);
+    const stored = await native.query({
+      query:
+        "SELECT default_kind,default_expression FROM system.columns WHERE database='ac_trace' AND table='messages' AND name='search_terms'",
+      format: "JSONEachRow",
+    });
+    const [column] = z
+      .array(
+        z.object({ default_kind: z.string(), default_expression: z.string() }),
+      )
+      .parse(await stored.json());
+    expect(column?.default_kind).toBe("MATERIALIZED");
+    // ClickHouse Cloud locks experimental NLP functions off; the column must not need them.
+    expect(column?.default_expression).not.toContain("stem(");
+    expect(column?.default_expression).toContain("replaceRegexpOne(");
+    expect(column?.default_expression).toContain("lowerUTF8(search_text)");
     const inflections = await native.query({
       query: `SELECT ${searchTermsSql("{inflected:String}")} AS inflected,${searchTermsSql("{base:String}")} AS base`,
       query_params: {
@@ -1318,12 +1331,12 @@ it("uses the shared standard-function text index on 100000 rows and matches infl
     expect(normalized?.inflected).toBe(normalized?.base);
     expect(normalized?.base).toContain("ts2322 libssl so 3 pend batch json");
     await native.command({
-      query: `CREATE TABLE ${table} (id UInt64,revision Int64,search_text String,INDEX message_terms ${terms} TYPE text(tokenizer=splitByNonAlpha)) ENGINE=ReplacingMergeTree ORDER BY (id,revision)`,
+      query: `CREATE TABLE ${table} (id UInt64,revision Int64,search_text String,search_terms String MATERIALIZED ${terms},INDEX message_terms search_terms TYPE text(tokenizer=splitByNonAlpha)) ENGINE=ReplacingMergeTree ORDER BY (id,revision)`,
     });
     await native.command({
       query: `INSERT INTO ${table} SELECT number,1,if(number%1000=0,'raresttoken running tests',concat('ordinary text ',toString(number))) FROM numbers(100000)`,
     });
-    const query = `SELECT id FROM ${table} FINAL WHERE hasAllTokens(${terms},(SELECT ${searchTermsSql("'raresttoken runs'")}))`;
+    const query = `SELECT id FROM ${table} FINAL WHERE hasAllTokens(search_terms,(SELECT ${searchTermsSql("'raresttoken runs'")}))`;
     const explanation = await native.query({
       query: `EXPLAIN indexes=1 ${query}`,
       format: "JSONEachRow",
@@ -1333,8 +1346,7 @@ it("uses the shared standard-function text index on 100000 rows and matches infl
       .parse(await explanation.json())
       .map((value) => value.explain)
       .join("\n");
-    expect(plan).toContain("Name: message_terms");
-    expect(plan).toContain("__text_index_message_terms");
+    expect(plan).toContain("message_terms");
     const result = await native.query({ query, format: "JSONEachRow" });
     const matches = z
       .array(

@@ -1235,8 +1235,13 @@ Input (`packages/core/schemas/search.ts`):
 - Pipeline: shared structured filters → native ClickHouse text-index candidates → latest
   published message identity. Query and indexed text use native lowercase tokenization
   and the shared English inflection rule table of §7.1; no experimental ClickHouse
-  function is involved, so the same DDL runs self-hosted and on ClickHouse Cloud. Every
-  query token must match; punctuation separates tokens. The search box is a text query, with structured filters for conditions; SQL
+  function is involved, so the same DDL runs self-hosted and on ClickHouse Cloud. The
+  normalizer runs once per row at write time: `ac_trace.messages.search_terms` is a stored
+  (MATERIALIZED) column of the normalized tokens, the `message_terms` text index covers
+  that column, and `search_messages` filters and ranks over it, so a search tokenizes each
+  row once and never evaluates the inflection regexes per row per query (ADR 0074; on the
+  hosted corpus that per-row evaluation cost 27–31 s of work for 5.7 M tokens behind the
+  5 s reader limit). Every query token must match; punctuation separates tokens. The search box is a text query, with structured filters for conditions; SQL
   uses native ClickHouse syntax. PostgreSQL websearch operators are superseded by ADR0047.
   Rank is weighted matching-token frequency divided by `1 + log(1 + token_count)`;
   weights are user text 1.0, assistant text 0.4, tool input 0.2 and tool result 0.1.
@@ -1370,7 +1375,16 @@ QUERY_MEMORY_LIMIT` and `400 QUERY_RESULT_LIMIT`.
    `TIMEOUT_EXCEEDED`, or the read budget around it) is `READ_TIME_LIMIT` (retry; narrow
    the time range or filters; for text search run `sql` over `search_messages(q=…)`);
    the memory limit is `READ_MEMORY_LIMIT` and the result limit `READ_RESULT_LIMIT`
-   (narrow the range); a PostgreSQL lock or statement timeout, serialization failure,
+   (narrow the range). A first-page `search` whose read hits the time limit makes one
+   bounded second attempt in a fresh fenced read before failing: the same query and
+   filters over the 50 most recently active matching sessions (one `session_details`
+   scan resolves the set; the array bounds the metadata scan and, as a `WHERE` on
+   `search_messages`, the text scan by primary key), `context` 0, no cursor; its result
+   carries `partial: { sessions_searched }` and the text rendering says what the page
+   covered and how to narrow. The same shape is never retried: the scan cost does not
+   depend on `context` or `limit`, and the fenced budget leaves no room for it.
+   Continuation pages and a failing bounded attempt surface `READ_TIME_LIMIT` (ADR 0074);
+   a PostgreSQL lock or statement timeout, serialization failure,
    deadlock or exhausted pool during the read is `READ_BUSY` (retry); an unreachable,
    cancelled or saturated trace database is `TRACE_QUERY_UNAVAILABLE`. A caller's own
    SQL (`sql`, dashboard tiles) keeps `400 QUERY_*` for what only the caller can fix

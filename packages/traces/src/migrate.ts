@@ -80,6 +80,60 @@ const columns = (fields: Record<string, string>) =>
   Object.entries(fields)
     .map(([name, type]) => `${sqlIdentifier(name)} ${type}`)
     .join(",");
+/** Column of `messages` holding the inflection-normalized search tokens, computed once per row at write time. */
+const SEARCH_TERMS_COLUMN = "search_terms";
+/** Name of the text index over that column. */
+const SEARCH_TERMS_INDEX = "message_terms";
+const countSchema = z.array(z.object({ n: z.coerce.number() }));
+/**
+ * The normalized search terms of every message as a stored column plus its text index.
+ * The normalizer (`searchTermsSql`, eight regex replacements per token) used to be the
+ * indexed expression and the predicate `search_messages` evaluated per row on every
+ * search: 27-31 s of work for 5.7 M tokens on two threads behind the 5 s reader limit.
+ * As a MATERIALIZED column it runs once per inserted row; `search_messages` reads the
+ * column and the index covers it. Backfills (`MATERIALIZE COLUMN` / `MATERIALIZE INDEX`)
+ * run only when this migration created the column or the index, so re-running it is free.
+ */
+async function searchTermsStatements(
+  client: ReturnType<typeof createTraceClient>,
+  database: string,
+): Promise<void> {
+  const db = sqlIdentifier(database);
+  const count = async (sql: string) => {
+    const result = await client.query({ query: sql, format: "JSONEachRow" });
+    return countSchema.parse(await result.json())[0]?.n ?? 0;
+  };
+  const expression = searchTermsSql("search_text");
+  const column = sqlIdentifier(SEARCH_TERMS_COLUMN);
+  const hadColumn = await count(
+    `SELECT count() AS n FROM system.columns WHERE database=${sqlString(database)} AND table='messages' AND name=${sqlString(SEARCH_TERMS_COLUMN)}`,
+  );
+  await client.command({
+    query: `ALTER TABLE ${db}.messages ADD COLUMN IF NOT EXISTS ${column} String MATERIALIZED ${expression}`,
+  });
+  if (!hadColumn)
+    await client.command({
+      query: `ALTER TABLE ${db}.messages MATERIALIZE COLUMN ${column}`,
+    });
+  // An index over the old expression (earlier releases) is replaced by one over the column.
+  const staleIndex = await count(
+    `SELECT count() AS n FROM system.data_skipping_indices WHERE database=${sqlString(database)} AND table='messages' AND name=${sqlString(SEARCH_TERMS_INDEX)} AND expr!=${sqlString(SEARCH_TERMS_COLUMN)}`,
+  );
+  if (staleIndex)
+    await client.command({
+      query: `ALTER TABLE ${db}.messages DROP INDEX IF EXISTS ${SEARCH_TERMS_INDEX}`,
+    });
+  const hadIndex = await count(
+    `SELECT count() AS n FROM system.data_skipping_indices WHERE database=${sqlString(database)} AND table='messages' AND name=${sqlString(SEARCH_TERMS_INDEX)}`,
+  );
+  await client.command({
+    query: `ALTER TABLE ${db}.messages ADD INDEX IF NOT EXISTS ${SEARCH_TERMS_INDEX} ${column} TYPE text(tokenizer=splitByNonAlpha)`,
+  });
+  if (!hadIndex)
+    await client.command({
+      query: `ALTER TABLE ${db}.messages MATERIALIZE INDEX ${SEARCH_TERMS_INDEX}`,
+    });
+}
 export async function migrateTraces(
   config: TraceMigrationConfig,
 ): Promise<void> {
@@ -130,9 +184,7 @@ export async function migrateTraces(
     await command(
       `CREATE MATERIALIZED VIEW IF NOT EXISTS ${db}.capture_session_identity TO ${db}.session_identities AS SELECT organization_id,session_id FROM ${db}.sessions`,
     );
-    await command(
-      `ALTER TABLE ${db}.messages ADD INDEX IF NOT EXISTS message_terms ${searchTermsSql("search_text")} TYPE text(tokenizer=splitByNonAlpha)`,
-    );
+    await searchTermsStatements(client, config.database);
     for (const [name, table] of Object.entries(traceTables))
       if (table.vector)
         await command(

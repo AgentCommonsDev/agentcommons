@@ -13672,13 +13672,37 @@
                       ],
                       "additionalProperties": false,
                       "description": "Totals over every hit the query and filters match under the caller's visibility, not only this page"
+                    },
+                    "partial": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "sessions_searched": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "How many of the most recently active matching sessions this bounded page searched"
+                            }
+                          },
+                          "required": [
+                            "sessions_searched"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Set when the full search exceeded the read time limit and this page searched only the most recently active matching sessions; null for a complete search. Narrow the filters to search the rest."
                     }
                   },
                   "required": [
                     "blocks",
                     "cursor",
                     "truncated_response",
-                    "total"
+                    "total",
+                    "partial"
                   ],
                   "additionalProperties": false
                 }

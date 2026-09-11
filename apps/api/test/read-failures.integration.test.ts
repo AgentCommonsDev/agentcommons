@@ -123,6 +123,16 @@ it("answers a ClickHouse time limit on list, get, search and sql with 503 READ_T
   ];
   for (const [name, read] of reads) {
     failNextRead(timeLimit());
+    if (name === "search") {
+      // A first-page search answers one time limit with a bounded partial page
+      // (R-SRCH-16); only a second time limit is the documented 503 below.
+      const partial = await read();
+      expect(partial.statusCode).toBe(200);
+      expect(partial.json()).toMatchObject({
+        partial: { sessions_searched: expect.any(Number) as number },
+      });
+      failNextRead(timeLimit()).mockRejectedValueOnce(timeLimit());
+    }
     const response = await read();
     expect(`${name} ${String(response.statusCode)}`).toBe(`${name} 503`);
     expect(response.headers["retry-after"]).toBe("5");
@@ -139,6 +149,7 @@ it("answers a ClickHouse time limit on list, get, search and sql with 503 READ_T
     ["sql", { sql: "SELECT count() FROM sessions" }],
   ] as const) {
     failNextRead(timeLimit());
+    if (name === "search") failNextRead(timeLimit());
     const failure = await callTool(name, args);
     expect(failure.code, name).toBe("READ_TIME_LIMIT");
     expect(failure.message).toContain("search_messages(q=");

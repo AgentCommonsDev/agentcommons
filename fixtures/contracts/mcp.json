@@ -2195,7 +2195,8 @@
     "total": {
       "sessions": 1,
       "hits": 1
-    }
+    },
+    "partial": null
   },
   "get": {
     "header": {

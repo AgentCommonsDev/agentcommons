@@ -375,6 +375,16 @@ export const searchOutputSchema = z.strictObject({
   total: searchTotalSchema.describe(
     "Totals over every hit the query and filters match under the caller's visibility, not only this page",
   ),
+  partial: z
+    .strictObject({
+      sessions_searched: nonnegativeIntegerSchema.describe(
+        "How many of the most recently active matching sessions this bounded page searched",
+      ),
+    })
+    .nullable()
+    .describe(
+      "Set when the full search exceeded the read time limit and this page searched only the most recently active matching sessions; null for a complete search. Narrow the filters to search the rest.",
+    ),
 });
 export type SearchTotal = z.infer<typeof searchTotalSchema>;
 export type SearchFilters = z.infer<typeof searchFiltersSchema>;

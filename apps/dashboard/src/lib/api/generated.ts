@@ -3776,6 +3776,11 @@ export interface operations {
               /** @description Matching messages before the per-session cap and paging */
               hits: number;
             };
+            /** @description Set when the full search exceeded the read time limit and this page searched only the most recently active matching sessions; null for a complete search. Narrow the filters to search the rest. */
+            partial: {
+              /** @description How many of the most recently active matching sessions this bounded page searched */
+              sessions_searched: number;
+            } | null;
           };
         };
       };
