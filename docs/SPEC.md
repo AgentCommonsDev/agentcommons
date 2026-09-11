@@ -1574,7 +1574,25 @@ impersonate a user session.
 operation or protocol rejection has one audit row. SDK schema/transport rejections
 and unsupported methods are audited before any response bytes; audit failure returns
 503 instead of an unaudited protocol response. Clients may cache `tools/list`; nothing
-depends on re-listing. A tool failure is an `isError` result whose text is the same
+depends on re-listing.
+
+Handshakes are not operations (ADR 0073). An MCP message that invokes no tool
+(`initialize`, `notifications/initialized`, `ping`, `tools/list` and every protocol
+rejection, such as Claude Code's `server/discover` probe) is audited once per identical
+handshake per window, where identity is the API key, the client program (`User-Agent`),
+the action, the method and the status. The first handshake of a window writes its row at
+once; repeats inside the window are counted in the process and write nothing; the
+handshake that opens the next window carries `repeats` and `repeats_since` in its detail.
+Two harnesses sharing an installation key differ in `User-Agent` and keep separate rows.
+The window is `MCP_HANDSHAKE_WINDOW_SECONDS` (default 300; `0` audits every handshake).
+Every `tools/call` writes exactly one row for the operation it performed (`search`, `get`,
+`sql`, ..., or `mcp.call` when the call failed), and a `tools/list` that fails is audited
+per event. Measured on a client that reconnected every 2.4 s for five minutes (the
+Gemini Code Assist agent's crash-restart loop, Appendix A): 125 handshakes wrote 375 rows (4,500 per hour, the production figure) with the window off
+and 3 rows (36 per hour) with the default window, and process CPU per handshake fell from
+125 ms to 100 ms.
+
+A tool failure is an `isError` result whose text is the same
 `{ code, message, detail }` the REST route would answer, so an agent sees the §7.5 read
 codes (`READ_TIME_LIMIT`, `READ_BUSY`, …) with their hint and `retry_after`, the
 `QUERY_*` codes for its own SQL, and `OPERATION_FAILED` only for an unexpected failure;
@@ -1910,7 +1928,8 @@ organization, so agent reads can be attributed to the session active on that mac
 (redacted; ≤ 8 KB). Written in the mutation transaction for writes, before the response
 for reads; authentication failures audited (rejections and `503 AUTH_UNAVAILABLE` alike,
 as `auth.failure` with the status and code, §9.2); health and static assets not. Retention
-`AUDIT_RETENTION_DAYS` (default 365). Append-only otherwise.
+`AUDIT_RETENTION_DAYS` (default 365). Append-only otherwise. MCP handshake rows fold per
+window (§8.1, ADR 0072); operation rows never do.
 Failures before an organization can be authenticated have a null organization and are
 visible only to instance operations, never through organization audit queries. All
 identified operations, including membership and invitation changes, carry their scope.
@@ -3026,6 +3045,16 @@ contract is identical to 2.1.263 with one addition: `PreToolUse`, `PostToolUse`,
 still `other` in `-p` mode and the subagent path convention is unchanged. Unknown fields pass
 through the hook schemas, so no normalizer change was needed.
 
+**Gemini Code Assist 2.75.0 restart loop, 2026-09-11.** The code-oss extension
+`google.geminicodeassist` spawns `agent/a2a-server.mjs`, whose startup runs a
+`discover_tools` phase (3 to 4 s: `initialize` and `tools/list` against every entry in
+`~/.gemini/settings.json` `mcpServers`, including the `agentcommons` HTTP entry) before its
+Google `onboardUser` call; when that call fails (`429 RESOURCE_EXHAUSTED` or
+`UNSUPPORTED_CLIENT`) the agent exits 1 and the extension respawns it at once, with no
+backoff: 571 starts in 46 minutes on one extension host, 2,299 in 170 minutes on another,
+one handshake per 2.4 s from the machine. Each start is a new process, so no transport
+feature could have kept the connection; handshake rows fold per window (§8.1, ADR 0073).
+
 **Claude Code 2.1.265 MCP tool loading, 2026-09-09.** With tool search on (the default),
 Claude Code defers every MCP tool behind its built-in `ToolSearch` regardless of catalog
 size: a `--print` session against a one-tool HTTP server (about 300 bytes of schema)
@@ -3037,7 +3066,8 @@ the field into the entry the CLI writes (§6.1 step 4) and the canary requires t
 AgentCommons call to be direct. Claude Code 2.1.265 also opens each connection with a
 `server/discover` request carrying `MCP-Protocol-Version: 2026-07-28`; SDK 1.30.0 answers
 400 for the unsupported version and Claude falls back to `initialize` with 2025-11-25,
-leaving one `mcp.protocol` 400 audit row per connection before the catalog listing.
+leaving one `mcp.protocol` 400 audit row per connection before the catalog listing (one
+per handshake window since ADR 0073).
 
 **Claude Code 2.1.263 end-to-end canary, 2026-09-08** (`-p` session that read, edited and
 committed a file, ran shell commands and spawned an `Explore` subagent; every header
@@ -3304,6 +3334,7 @@ ADR 0036 for live methods, successful/rejected captures, and projection rules.
 | `TRUST_PROXY` | ALB CIDRs | trusted proxy chain |
 | `REDACTION_EXTRA_PATTERNS` | `[]` | seeds each organization's `RedactionPolicy` rows |
 | `AUDIT_RETENTION_DAYS` | `365` | |
+| `MCP_HANDSHAKE_WINDOW_SECONDS` | `300` | identical MCP handshakes from one key and client write one audit row per window (§8.1, ADR 0073); `0` audits every handshake |
 | `EMBEDDINGS_ENABLED`, `EMBEDDINGS_PROVIDER`, `EMBEDDINGS_MODEL`, `EMBEDDINGS_DIMENSIONS`, `EMBEDDINGS_DAILY_TOKEN_BUDGET` | `false`, `openai`, `text-embedding-3-small`, `1024`, `5000000` | §11 |
 | `SEARCH_CONTEXT_DEFAULT`, `SEARCH_LIMIT_DEFAULT` | `1`, `5` | |
 | `LOG_LEVEL` | `info` | |

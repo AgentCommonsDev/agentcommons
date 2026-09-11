@@ -218,13 +218,40 @@ export function toolFromRoute(
     format: formatJson,
   });
 }
+/**
+ * A handshake is an MCP message that invokes no tool: `initialize`, `notifications/initialized`,
+ * `ping`, `tools/list` and every protocol rejection. Identical handshakes from one key and
+ * one client program write one audit row per window; the row that opens the next window
+ * carries the count folded since the previous row (§8.1, ADR 0073).
+ */
+interface HandshakeWindow {
+  /** When the window closes and the next identical handshake writes a row again. */
+  until: number;
+  /** Identical handshakes folded into this window after the row that opened it. */
+  repeats: number;
+  /** When the row that opened the window was written. */
+  opened: string;
+}
+/** Bound on remembered windows before expired ones are pruned. */
+const HANDSHAKE_WINDOWS_LIMIT = 4096;
+
 export class McpService {
   /** The static catalog: each definition with the `Tool` it is listed as, built once. */
   private readonly tools: readonly { definition: Definition; tool: Tool }[];
+  private readonly handshakes = new Map<string, HandshakeWindow>();
+  private readonly now: () => number;
   constructor(
     private readonly services: Services,
     features: RouteFeatures,
+    /** `handshakeWindowMs` 0 audits every handshake; `now` is the clock, injectable for tests. */
+    private readonly options: {
+      handshakeWindowMs: number;
+      now?: () => number;
+    } = {
+      handshakeWindowMs: 0,
+    },
   ) {
+    this.now = options.now ?? Date.now;
     const definitions: Definition[] = [
       define({
         name: "search",
@@ -492,6 +519,51 @@ export class McpService {
       )
       .map(({ tool }) => tool);
   }
+  /**
+   * Whether this handshake writes its audit row now. Identity is the key, the client
+   * program (`User-Agent`), the action, the method and the status: one client repeating
+   * its connection is the storm being folded, two harnesses sharing an installation key
+   * are not. The first handshake of a window writes at once; repeats inside the window
+   * are counted; the handshake that opens the next window reports them (`repeats`, and
+   * `repeats_since`, when the previous row was written). A window that no later handshake
+   * closes reports nothing: the count exists only in this process.
+   */
+  private handshake(
+    context: ServiceContext,
+    action: string,
+    method: string,
+    statusCode: number,
+  ): Partial<{ repeats: number; repeats_since: string }> | null {
+    if (this.options.handshakeWindowMs <= 0) return {};
+    const identity = [
+      context.caller?.apiKeyId ?? context.ip ?? "",
+      context.userAgent ?? "",
+      action,
+      method,
+      String(statusCode),
+    ].join("\u0000");
+    const now = this.now();
+    const open = this.handshakes.get(identity);
+    if (open && now < open.until) {
+      open.repeats += 1;
+      return null;
+    }
+    if (this.handshakes.size >= HANDSHAKE_WINDOWS_LIMIT)
+      for (const [key, window] of this.handshakes)
+        if (window.until <= now) this.handshakes.delete(key);
+    this.handshakes.set(identity, {
+      until: now + this.options.handshakeWindowMs,
+      repeats: 0,
+      opened: new Date(now).toISOString(),
+    });
+    return open && open.repeats > 0
+      ? { repeats: open.repeats, repeats_since: open.opened }
+      : {};
+  }
+  /**
+   * The catalog for the caller; `audit` is null when the row was folded into the key's open
+   * handshake window (§8.1). Failures are audited every time.
+   */
   list(context: ServiceContext) {
     return auditedOperation(
       this.services.audit,
@@ -500,16 +572,28 @@ export class McpService {
       async () => {
         const current = await this.current(context);
         const tools = this.catalog(current.caller);
+        const folded = this.handshake(
+          current,
+          "mcp.tools.list",
+          "tools/list",
+          200,
+        );
         return {
           result: { tools },
-          audit: await this.services.audit.write(current, {
-            action: "mcp.tools.list",
-            detail: { tool_names: tools.map((tool) => tool.name) },
-          }),
+          audit: folded
+            ? await this.services.audit.write(current, {
+                action: "mcp.tools.list",
+                detail: {
+                  tool_names: tools.map((tool) => tool.name),
+                  ...folded,
+                },
+              })
+            : null,
         };
       },
     );
   }
+  /** Audits a protocol message that invoked no tool, folded per handshake window (§8.1). */
   async control(
     context: ServiceContext,
     method: string,
@@ -518,10 +602,17 @@ export class McpService {
       protocolError: { code: number; message: string } | null;
     },
   ): Promise<void> {
+    const folded = this.handshake(
+      context,
+      "mcp.protocol",
+      method,
+      outcome.statusCode,
+    );
+    if (!folded) return;
     await this.services.audit.write(context, {
       action: "mcp.protocol",
       statusCode: outcome.statusCode,
-      detail: { method, protocol_error: outcome.protocolError },
+      detail: { method, protocol_error: outcome.protocolError, ...folded },
     });
   }
   async call(

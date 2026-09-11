@@ -247,7 +247,13 @@ export async function createApp(options: {
   };
   registerApiRoutes(app, services, features);
   registerAuthRoutes(app, services.auth, env.PUBLIC_URL);
-  registerMcpRoutes(app, new McpService(services, features), limit);
+  registerMcpRoutes(
+    app,
+    new McpService(services, features, {
+      handshakeWindowMs: env.MCP_HANDSHAKE_WINDOW_SECONDS * 1000,
+    }),
+    limit,
+  );
   if (options.static !== false)
     await registerStaticRoutes(app, {
       publicUrl: env.PUBLIC_URL,

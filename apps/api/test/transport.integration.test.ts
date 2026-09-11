@@ -8,6 +8,9 @@ import { OrganizationEmbeddingsService } from "../src/services/organization-embe
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { gzipSync } from "node:zlib";
 import type { FastifyInstance } from "fastify";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import {
   dashboardSaveToolInputSchema,
@@ -49,7 +52,7 @@ import { SessionEventsService } from "../src/services/session-events.js";
 import { HealthService } from "../src/services/health.js";
 import type { Services } from "../src/routes/services.js";
 import { checkMcpFixture } from "./mcp-fixtures.js";
-import { logCapture, mcpClient } from "./app.js";
+import { logCapture, mcpClient, startApp } from "./app.js";
 import { testEnvelope, textRecord } from "./envelopes.js";
 import {
   provisionOrganization,
@@ -1105,6 +1108,111 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
       })
     ).statusCode,
   ).toBe(401);
+});
+
+// @req R-MCP-14 @req R-AUD-01
+it("folds identical MCP handshakes from one key and client into one audit row per window while every tool call is audited", async () => {
+  // A five-second window so the test observes both sides of it; production uses 300 s.
+  const folded = await startApp(
+    database,
+    { MCP_HANDSHAKE_WINDOW_SECONDS: "5" },
+    { listen: true },
+  );
+  defer(() => folded.close());
+  // A fresh organization: earlier tests in this file demote the primary owner.
+  const handshake = await provisionOrganization(
+    database,
+    "transport-handshake",
+  );
+  const created = await database.auth.createKey(handshake.owner, {
+    name: "handshake",
+    permissions: { sessions: ["read"] },
+  });
+  const rows = (action?: string) =>
+    database.prisma.auditEvent.findMany({
+      where: {
+        apiKeyId: created.result.metadata.id,
+        ...(action ? { action } : {}),
+      },
+      orderBy: { ts: "asc" },
+      select: { action: true, statusCode: true, detail: true },
+    });
+  const connect = async (userAgent?: string) => {
+    const client = new Client({ name: "handshake-test", version: "1" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${folded.address}/mcp`), {
+        requestInit: {
+          headers: {
+            authorization: `Bearer ${created.result.key}`,
+            ...(userAgent ? { "user-agent": userAgent } : {}),
+          },
+        },
+      }) as Transport,
+    );
+    await client.listTools();
+    return client;
+  };
+  // The same client program reconnecting three times inside the window: one row each
+  // for initialize, notifications/initialized and tools/list.
+  for (let index = 0; index < 3; index += 1) await (await connect()).close();
+  const first = await rows();
+  expect(
+    first.map((row) => [
+      row.action,
+      z.object({ method: z.string().optional() }).parse(row.detail).method,
+    ]),
+  ).toEqual([
+    ["mcp.protocol", "initialize"],
+    ["mcp.protocol", "notifications/initialized"],
+    ["mcp.tools.list", undefined],
+  ]);
+  expect(first.every((row) => !("repeats" in (row.detail as object)))).toBe(
+    true,
+  );
+  // Another harness on the same installation key keeps its own handshake rows.
+  await (await connect("other-harness/1.0")).close();
+  expect((await rows()).length).toBe(6);
+  // Tool calls are operations audited as what they did (`search`, never folded): three
+  // calls, three rows, inside the same window.
+  const caller = await connect();
+  for (let index = 0; index < 3; index += 1)
+    await caller.callTool({
+      name: "search",
+      arguments: { query: "handshake window" },
+    });
+  await caller.close();
+  expect((await rows("search")).length).toBe(3);
+  expect((await rows()).length).toBe(9);
+  // The handshake that opens the next window reports what the last one folded.
+  await new Promise((resolve) => setTimeout(resolve, 5200));
+  await (await connect()).close();
+  const listed = await rows("mcp.tools.list");
+  expect(listed.length).toBe(3);
+  const opened = z
+    .object({
+      tool_names: z.array(z.string()),
+      repeats: z.number().int(),
+      repeats_since: z.iso.datetime(),
+    })
+    .parse(listed.at(-1)?.detail);
+  // Three list handshakes were folded after the row that opened the first window: two
+  // reconnects plus the caller's own connection.
+  expect(opened.repeats).toBe(3);
+  expect(opened.tool_names).toEqual([...readToolNames]);
+  const initialized = await rows("mcp.protocol");
+  expect(
+    initialized
+      .filter(
+        (row) =>
+          z.object({ method: z.string() }).parse(row.detail).method ===
+          "initialize",
+      )
+      .map(
+        (row) =>
+          z.object({ repeats: z.number().optional() }).parse(row.detail)
+            .repeats,
+      ),
+  ).toEqual([undefined, undefined, 3]);
 });
 
 // @req R-RED-08

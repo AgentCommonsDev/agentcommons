@@ -79,6 +79,14 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
         ),
       EMAIL_TRANSPORT: emailTransportSchema.default("none"),
       AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
+      // Identical MCP handshakes from one key and client write one audit row per window
+      // (§8.1, ADR 0073); 0 writes every handshake.
+      MCP_HANDSHAKE_WINDOW_SECONDS: z.coerce
+        .number()
+        .int()
+        .min(0)
+        .max(86_400)
+        .default(300),
       EMBEDDINGS_ENABLED: boolean.default(false),
       EMBEDDINGS_PROVIDER: z.enum(["openai", "fake"]).default("openai"),
       // Both values are fixed by the deployment (§11); the variables exist so a
