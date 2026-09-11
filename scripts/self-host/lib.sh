@@ -149,19 +149,134 @@ release_order() {
   }
   if [ "$pulled_seconds" -gt "$running_seconds" ]; then echo newer; else echo older; fi
 }
+# api_base: the base URL of the local API on the port Compose publishes (127.0.0.1:3000 by
+# default). Readiness and the post-deploy self-check reach the stack over loopback only.
+api_base() {
+  local address
+  address=$(compose port api 3000 2>/dev/null | head -n 1 || true)
+  printf 'http://%s' "${address:-127.0.0.1:3000}"
+}
 # wait_ready: polls /ready on the published API port until it answers or the attempts run out.
 wait_ready() {
-  local address url
-  address=$(compose port api 3000 2>/dev/null | head -n 1 || true)
-  url="http://${address:-127.0.0.1:3000}/ready"
+  local base
+  base=$(api_base)
   for _ in $(seq 1 "$ready_attempts"); do
-    curl -fsS --max-time 10 "$url" >/dev/null 2>&1 && return 0
+    curl -fsS --max-time 10 "$base/ready" >/dev/null 2>&1 && return 0
     sleep "$ready_interval"
   done
-  echo "The API did not become ready at $url." >&2
+  echo "The API did not become ready at $base/ready." >&2
   compose ps >&2 || true
   compose logs --tail 50 api >&2 || true
   return 1
+}
+# verify_deploy [EXPECTED_VERSION] [EXPECTED_IMAGE]: after the stack is up, prove the local
+# API actually serves this release, so a release or update that came up broken or stale fails
+# loudly instead of being reported as a success. It exists because of the 2026-09-11
+# incidents that nothing caught: a stale hook bundle served for hours after a downgrade, and
+# a ~20 s window in which /hook/manifest.json was empty and POST /mcp failed during an API
+# swap. Localhost only, no secrets printed, a few seconds. It asserts, in order:
+#   1. /ready answers 200 within the bounded wait_ready poll;
+#   2. GET /hook/manifest.json is a valid, non-empty manifest whose bundle downloads and
+#      whose sha256 matches what the manifest declares;
+#   3. the running API reports EXPECTED_VERSION (the intended commit; skipped when empty or
+#      "development") and runs EXPECTED_IMAGE (the intended image id; skipped when empty),
+#      so a floating tag that served an older image than the release intended is caught;
+#   4. a POST /mcp initialize handshake returns a JSON body that is a JSON-RPC message (200)
+#      or the unauthenticated bearer challenge (401) rather than a 5xx, a 404 from a missing
+#      route, or an empty body, proving the MCP transport is serving.
+# Returns non-zero with a one-line reason on the first failed assertion. Call it inside an
+# `if` (set -e is suspended there, as with stack_up) so every explicit return is honoured.
+verify_deploy() {
+  local expect_version=${1:-} expect_image=${2:-}
+  local base manifest manifest_version manifest_url declared_sha bundle_ref bundle_file bundle_sha
+  local running_ver running_img mcp_file mcp_code mcp_body
+
+  wait_ready || return 1
+  base=$(api_base)
+
+  manifest=$(curl -fsS --max-time 10 "$base/hook/manifest.json" 2>/dev/null) || {
+    echo "verify: GET /hook/manifest.json failed; the API is not serving the hook manifest." >&2
+    return 1
+  }
+  manifest_version=$(printf '%s' "$manifest" | jq -er '.version' 2>/dev/null) || {
+    echo "verify: /hook/manifest.json is empty or not a valid manifest." >&2
+    return 1
+  }
+  manifest_url=$(printf '%s' "$manifest" | jq -er '.url' 2>/dev/null) || {
+    echo "verify: /hook/manifest.json has no bundle url." >&2
+    return 1
+  }
+  declared_sha=$(printf '%s' "$manifest" | jq -er '.sha256' 2>/dev/null) || {
+    echo "verify: /hook/manifest.json has no bundle sha256." >&2
+    return 1
+  }
+  case $manifest_url in
+  http://* | https://*) bundle_ref=$manifest_url ;;
+  *) bundle_ref="$base$manifest_url" ;;
+  esac
+  bundle_file=$(mktemp)
+  if ! curl -fsS --max-time 20 -o "$bundle_file" "$bundle_ref" 2>/dev/null; then
+    rm -f "$bundle_file"
+    echo "verify: the hook bundle $manifest_url the manifest points to is not fetchable." >&2
+    return 1
+  fi
+  bundle_sha=$(sha256sum "$bundle_file" | cut -d' ' -f1)
+  rm -f "$bundle_file"
+  if [ "$bundle_sha" != "$declared_sha" ]; then
+    echo "verify: the hook bundle sha256 $bundle_sha does not match the manifest ($declared_sha)." >&2
+    return 1
+  fi
+
+  if [ -n "$expect_version" ] && [ "$expect_version" != development ]; then
+    running_ver=$(running_version)
+    if [ "$running_ver" != "$expect_version" ]; then
+      echo "verify: the API reports version $running_ver, not the deployed $expect_version." >&2
+      return 1
+    fi
+  fi
+  if [ -n "$expect_image" ]; then
+    running_img=$(running_image)
+    if [ "$running_img" != "$expect_image" ]; then
+      echo "verify: the API runs image ${running_img:-none}, not the deployed $expect_image." >&2
+      return 1
+    fi
+  fi
+
+  mcp_file=$(mktemp)
+  mcp_code=$(curl -sS -o "$mcp_file" -w '%{http_code}' --max-time 10 -X POST "$base/mcp" \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"post-deploy-verify","version":"0"}}}' 2>/dev/null)
+  mcp_body=$(cat "$mcp_file" 2>/dev/null || true)
+  rm -f "$mcp_file"
+  case ${mcp_code:-000} in
+  5??)
+    echo "verify: POST /mcp returned HTTP $mcp_code." >&2
+    return 1
+    ;;
+  *000 | "")
+    echo "verify: POST /mcp did not connect." >&2
+    return 1
+    ;;
+  esac
+  if [ -z "$mcp_body" ]; then
+    echo "verify: POST /mcp returned an empty body." >&2
+    return 1
+  fi
+  if ! printf '%s' "$mcp_body" | jq -e . >/dev/null 2>&1; then
+    echo "verify: POST /mcp did not return JSON." >&2
+    return 1
+  fi
+  if [ "$mcp_code" = 200 ]; then
+    printf '%s' "$mcp_body" | jq -e 'has("jsonrpc") and (has("result") or has("error"))' >/dev/null 2>&1 || {
+      echo "verify: POST /mcp answered 200 without a JSON-RPC result." >&2
+      return 1
+    }
+  elif [ "$mcp_code" != 401 ]; then
+    echo "verify: POST /mcp answered HTTP $mcp_code, not an MCP handshake." >&2
+    return 1
+  fi
+
+  echo "Verified $base: /ready ok, hook $manifest_version bundle sha matches, MCP serving (HTTP $mcp_code), running $(running_version)."
 }
 # logged COMMAND...: runs the command, appending its output to $stack_log when one is set.
 stack_log=

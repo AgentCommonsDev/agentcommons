@@ -2910,7 +2910,21 @@ file. `AGENTCOMMONS_IMAGE` naming a `sha-` tag or a digest is a pin: that image 
 installed as configured, older or not. Otherwise the updater tags the running image
 `agentcommons:previous`, starts the stack (migration before API), waits for `/ready`, and
 on failure restores the previous image with `--no-deps`, exits non-zero and holds that
-release until a newer one is published. `--now` forces a check regardless of
+release until a newer one is published. A start alone is not a success: both paths then run
+a post-deploy self-check (`verify_deploy` in `scripts/self-host/lib.sh`) against the local
+stack before reporting ready, so a release that comes up broken or stale fails loudly
+instead of being served silently (the 2026-09-11 incidents: a stale hook bundle served for
+hours after a downgrade, and a ~20 s window where `/hook/manifest.json` was empty and
+`POST /mcp` failed during an API swap). It asserts `/ready` answers 200 within the bounded
+wait, `/hook/manifest.json` is a valid non-empty manifest whose bundle downloads and whose
+sha256 matches, and a `POST /mcp` `initialize` handshake returns a JSON-RPC body (200) or
+the unauthenticated bearer challenge (401) rather than a 5xx, a 404 or an empty body; the
+single-node apply additionally asserts the running API reports the deployed commit and runs
+the image it just pulled or built (a floating tag that resolved to an older image is
+caught). A failed check exits non-zero with a one-line reason and no secrets: the apply
+refuses to announce readiness, and the updater rolls back to the previous image and records
+`last_result=rolled-back` with the held `failed_image`, so `--status` and Admin → Status
+show a failed self-check. `--now` forces a check regardless of
 `AUTO_UPDATE`; `--status` prints the running version, the configured image (marked when
 pinned) and the pulled image, both release stamps, and the last result. Every run
 records its outcome in `/var/lib/agentcommons/update-state`: `last_check` on every timer

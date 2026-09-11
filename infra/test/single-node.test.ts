@@ -346,6 +346,11 @@ describe("single-node resource contract", () => {
     expect(apply).toContain("build=${AGENTCOMMONS_BUILD:-false}");
     expect(apply).toContain("--build) build=true ;;");
     expect(apply).toContain('stack_up "$mode" "$log"');
+    // A start alone is not a success: the apply runs the post-deploy self-check against the
+    // deployed commit and image before announcing readiness (R-INF-15).
+    expect(apply).toContain(
+      'verify_deploy "$AGENTCOMMONS_VERSION" "$(local_image "$(configured_image)")"',
+    );
     expect(apply).not.toContain("--build --remove-orphans");
     expect(apply).toContain("/opt/agentcommons/agentcommons-update.sh");
     expect(apply).toContain('agentcommons-update.timer" /etc/systemd/system/');
@@ -429,6 +434,7 @@ describe("single-node resource contract", () => {
       "lock_stack()",
       "configured_image()",
       "wait_ready()",
+      "verify_deploy()",
       "stack_up()",
       "compose pull --quiet api",
       "compose up -d --no-build --remove-orphans",

@@ -1,5 +1,6 @@
 // @req R-INF-09
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -60,10 +61,50 @@ case "$*" in
 esac
 exit 0
 `;
+// After a successful start the updater runs verify_deploy, which curls /ready, the hook
+// manifest, its bundle and a POST /mcp handshake. The fake serves all four from environment
+// variables, emulating -o FILE, -w %{http_code} and -f, while still failing /ready by exit
+// code (the rollback scenarios toggle FAKE_READY_FILE) exactly as the old one-line fake did.
 const fakeCurl = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$FAKE_LOG.curl"
-[ "$(cat "$FAKE_READY_FILE")" = 1 ]
+out=""; want_code=0; fail=0; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -w) [ "$2" = '%{http_code}' ] && want_code=1; shift 2 ;;
+    -X) shift 2 ;;
+    -H | --data | --data-raw | --data-binary | --max-time | --connect-timeout) shift 2 ;;
+    http://* | https://*) url="$1"; shift ;;
+    -*f*) fail=1; shift ;;
+    -*) shift ;;
+    *) shift ;;
+  esac
+done
+emit() { if [ -n "$out" ]; then printf '%s' "$1" >"$out"; else printf '%s' "$1"; fi; }
+code=200; body=""
+case "$url" in
+  */ready) if [ "$(cat "$FAKE_READY_FILE")" != 1 ]; then code=503; else body='{"status":"ok"}'; fi ;;
+  */hook/manifest.json) body="$FAKE_MANIFEST" ;;
+  */hook/*/hook.js) body="$FAKE_BUNDLE" ;;
+  */mcp) code="\${FAKE_MCP_CODE:-401}"; body="\${FAKE_MCP_BODY:-}"; [ -n "$body" ] || body='{"code":"BEARER_REQUIRED","message":"bearer"}' ;;
+  *) code=404 ;;
+esac
+emit "$body"
+[ "$want_code" = 1 ] && printf '%s' "$code"
+if [ "$fail" = 1 ]; then case "$code" in 4* | 5*) exit 22 ;; esac; fi
+exit 0
 `;
+// The hook bundle verify_deploy downloads and the manifest that declares its digest; the
+// version matches FAKE_VERSION so the served release lines up with the running container.
+const hookBundle = "// agentcommons hook bundle bytes";
+const hookSha = createHash("sha256").update(hookBundle).digest("hex");
+const hookManifest = JSON.stringify({
+  version: "0123456789ab",
+  sha256: hookSha,
+  url: "/hook/0123456789ab/hook.js",
+  extensionSha256: "0".repeat(64),
+  extensionUrl: "/hook/0123456789ab/pi-extension.mjs",
+});
 
 /** An image's release stamp: the OCI revision and created labels; an omitted field is a missing label. */
 interface Release {
@@ -86,6 +127,11 @@ interface Scenario {
   ready?: boolean;
   upFails?: boolean;
   pullFails?: boolean;
+  /** Override what the fake API serves the post-deploy self-check that follows a start. */
+  manifest?: string;
+  bundle?: string;
+  mcpCode?: string;
+  mcpBody?: string;
 }
 // The production incident of 2026-09-11 in miniature: the host ran a hand-built 048d978
 // while the public :stable tag still held the first CI image, 84f9941.
@@ -160,6 +206,10 @@ function fixture(env = "AUTO_UPDATE=true\nPUBLIC_URL=http://localhost:3000\n") {
         FAKE_VERSION: "0123456789ab",
         FAKE_UP_FAIL: scenario.upFails ? "1" : "0",
         FAKE_PULL_FAIL: scenario.pullFails ? "1" : "0",
+        FAKE_MANIFEST: scenario.manifest ?? hookManifest,
+        FAKE_BUNDLE: scenario.bundle ?? hookBundle,
+        FAKE_MCP_CODE: scenario.mcpCode ?? "",
+        FAKE_MCP_BODY: scenario.mcpBody ?? "",
         ...scenario.env,
       },
     });
@@ -288,7 +338,15 @@ describe("self-host updater", () => {
     expect(updated.docker).not.toContain(
       "compose up -d --no-build --no-deps api",
     );
-    expect(updated.curl.at(-1)).toContain("http://127.0.0.1:3000/ready");
+    // Start waits for /ready, then the post-deploy self-check curls /ready, the hook
+    // manifest and its bundle, and posts an MCP handshake before the update is recorded.
+    expect(
+      updated.curl.some((line) => line.includes("http://127.0.0.1:3000/ready")),
+    ).toBe(true);
+    expect(
+      updated.curl.some((line) => line.includes("/hook/manifest.json")),
+    ).toBe(true);
+    expect(updated.curl.some((line) => line.includes("/mcp"))).toBe(true);
     const state = updated.state();
     expect(state).toContain("last_result=updated");
     expect(state).toContain("previous_image=sha256:aaa");
@@ -539,6 +597,49 @@ describe("self-host updater", () => {
     expect(newer.status, newer.stderr).toBe(0);
     expect(newer.state()).toContain("last_result=updated");
     expect(newer.state()).toContain("failed_image=\n");
+  });
+  // @req R-INF-15
+  it("rolls back and holds the release when the new image comes up but fails the post-deploy self-check", () => {
+    const { run } = fixture();
+    // The image starts and /ready answers, but MCP returns a 5xx: the post-deploy check
+    // fails, so the release is rolled back and held exactly like one that never came up.
+    const failed = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:ccc",
+      mcpCode: "500",
+    });
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain("failed its post-deploy self-check");
+    expect(failed.stderr).toContain("restoring the previous image");
+    expect(failed.stderr).toContain("Rolled back to");
+    const order = (line: string) => failed.docker.indexOf(line);
+    expect(order("compose up -d --no-build --no-deps api")).toBeGreaterThan(
+      order("compose up -d --no-build --remove-orphans"),
+    );
+    // A failed self-check leaves no new image serving and is not counted as a success.
+    expect(failed.docker).not.toContain("image prune -f");
+    expect(failed.state()).toContain("last_result=rolled-back");
+    expect(failed.state()).toContain("failed_image=sha256:ccc");
+    // Held next hour, then a newer release that passes its self-check clears the hold.
+    const held = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:ccc",
+      mcpCode: "500",
+    });
+    expect(held.stdout).toContain("Skipping");
+    expect(held.state()).toContain("last_result=skipped");
+    const newer = run([], { running: "sha256:aaa", pulled: "sha256:ddd" });
+    expect(newer.status, newer.stderr).toBe(0);
+    expect(newer.state()).toContain("last_result=updated");
+    // A stale hook bundle whose sha256 does not match the manifest fails the same way.
+    const stale = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:eee",
+      bundle: "a stale hook bundle that does not match the manifest sha",
+    });
+    expect(stale.status).toBe(1);
+    expect(stale.stderr).toContain("failed its post-deploy self-check");
+    expect(stale.state()).toContain("last_result=rolled-back");
   });
   it("rolls back when the migration or start fails, and reports a failed pull without touching the stack", () => {
     const { run } = fixture();

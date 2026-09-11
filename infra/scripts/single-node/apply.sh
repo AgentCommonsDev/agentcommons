@@ -124,4 +124,13 @@ fi
   -c "file:$app/infra/compose/cloudwatch-agent.json" >>"$log" 2>&1
 docker image prune -f >/dev/null
 compose ps
+# Post-deploy self-check: the stack is up, so prove it actually serves this release before
+# reporting success. A pulled floating tag that resolved to a stale image, or an API swap
+# that left the hook manifest empty or MCP failing, fails here with a one-line reason instead
+# of being announced as ready (the 2026-09-11 incidents). The expected version and image are
+# what this apply intended: the release commit and the image Compose just pulled or built.
+if ! verify_deploy "$AGENTCOMMONS_VERSION" "$(local_image "$(configured_image)")"; then
+  echo "Post-deploy verification failed; $(setting PUBLIC_URL) is not serving this release." >&2
+  exit 1
+fi
 echo "AgentCommons $(running_version) is ready at $(setting PUBLIC_URL); automatic updates: $(setting AUTO_UPDATE)"

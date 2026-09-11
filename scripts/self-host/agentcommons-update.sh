@@ -165,7 +165,18 @@ fi
 [ -z "$before" ] || docker tag "$before" "$previous_tag"
 record_state "last_result=updating" "previous_image=$before" "last_image=$after"
 echo "Updating to $image ($after) from ${before:-no running image}."
-if stack_up start; then
+# The new image must both come up and pass the post-deploy self-check before the update is
+# recorded as a success. A release that starts but serves a broken or stale hook bundle or a
+# failing MCP endpoint is treated exactly like one that never became ready: rolled back to
+# the previous image, recorded as a failed release and held until a newer one is published,
+# so the timer never leaves a broken new image serving (the 2026-09-11 incidents).
+failure=
+if ! stack_up start; then
+  failure="did not become ready"
+elif ! verify_deploy; then
+  failure="came up but failed its post-deploy self-check"
+fi
+if [ -z "$failure" ]; then
   record_outcome updated "updated_at=$now" "failed_image="
   docker image prune -f >/dev/null 2>&1 || true
   echo "Updated to $(running_version)."
@@ -175,10 +186,10 @@ fi
 record_state "last_result=failed" "failed_image=$after" "failed_at=$now"
 if [ -z "$before" ]; then
   record_outcome failed
-  echo "The new release did not become ready and there is no previous image to restore." >&2
+  echo "The new release $failure and there is no previous image to restore." >&2
   exit 1
 fi
-echo "The new release did not become ready; restoring the previous image." >&2
+echo "The new release $failure; restoring the previous image." >&2
 # The shell variable outranks the empty AGENTCOMMONS_IMAGE in .env; --no-deps keeps the new
 # release's migration from running again. Database migrations are not rolled back.
 if AGENTCOMMONS_IMAGE=$previous_tag compose up -d --no-build --no-deps api && wait_ready; then
