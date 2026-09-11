@@ -129,3 +129,31 @@ Verified by an integration test that storms `initialize` from one `User-Agent` p
 budget while a fresh client with another `User-Agent` completes `initialize`, `tools/list`
 and `search` on the same key, and by the limiter unit test for every category's identity.
 No setting was added; the maxima are constants like the other categories.
+
+## Amendment 2026-09-11: the `GET`/`DELETE` /mcp 405 is answered by the route, not audited
+
+Decision 1 folds every protocol rejection _inside a `POST`_ (an unsupported MCP method, a
+malformed body) through the handshake window, because those are parsed JSON-RPC messages on
+the authenticated transport. A `GET` or `DELETE` on `/mcp` is a different, pre-handshake
+case: it is an unauthenticated HTTP-method probe of the optional standalone SSE stream and
+session teardown that a stateless Streamable HTTP transport does not offer. 405 is the
+compliant answer; there is no key, no `User-Agent` handshake identity, and no operation to
+fold.
+
+That 405 was throwing a `ServiceError` from the route into the generic app-level error
+handler, whose `path === "/mcp"` arm wrote one `request.failure` row per probe with no
+organization or key. On the hosted instance (2026-09-11) this was about 1,800 rows/hour
+(5,068 since 18:00, user agent `node`): once-per-session for a well-behaved Streamable HTTP
+client such as Claude Code, and constantly for the crash-looping Gemini Code Assist agent
+of the main decision, each restart re-probing the stream. The rows are protocol plumbing
+that scales with the number of clients and represent no operation an operator reads back.
+
+The `GET`/`DELETE` `/mcp` route now answers 405 itself (`Allow: POST`, the same
+`{code:"METHOD_NOT_ALLOWED", …}` body) instead of throwing, so it never reaches the audited
+failure path and writes no row. This is option (a) of the same class as this ADR: a
+capability probe is not a failed operation. Scope is strict — only the MCP endpoint's
+unsupported-method probe changes. Every genuine 4xx/5xx on real API routes, every `POST
+/mcp` failure (a missing bearer, a rejected body, an auth-store outage → 503), and the
+handshake folding of decision 2 are all unchanged. Expected effect: the ~1,800
+`request.failure` rows/hour from `GET /mcp` fall to zero, while a real Claude Code session's
+`POST` handshake still folds and its `tools/call` rows are still one each.

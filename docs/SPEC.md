@@ -1600,11 +1600,14 @@ impersonate a user session.
 
 `POST /mcp`, the official `WebStandardStreamableHTTPServerTransport` with its
 `@hono/node-server` Node bridge, stateless (`GET`/`DELETE` → 405), raw request via
-`reply.hijack()`. Bearer API key. The SDK response is retained until the logical
-operation or protocol rejection has one audit row. SDK schema/transport rejections
-and unsupported methods are audited before any response bytes; audit failure returns
-503 instead of an unaudited protocol response. Clients may cache `tools/list`; nothing
-depends on re-listing.
+`reply.hijack()`. Bearer API key. A `GET` or `DELETE` on `/mcp` probes the optional
+standalone SSE stream and session teardown this stateless transport does not offer; the
+route answers 405 directly and writes no audit row, because a capability probe before any
+handshake is not an operation (ADR 0073), and no `POST` failure audit is affected. Within
+a `POST`, the SDK response is retained until the logical operation or protocol rejection
+has one audit row. SDK schema/transport rejections and unsupported MCP methods are audited
+before any response bytes; audit failure returns 503 instead of an unaudited protocol
+response. Clients may cache `tools/list`; nothing depends on re-listing.
 
 Handshakes are not operations (ADR 0073). An MCP message that invokes no tool
 (`initialize`, `notifications/initialized`, `ping`, `tools/list` and every protocol

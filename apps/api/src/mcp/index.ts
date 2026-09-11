@@ -40,8 +40,18 @@ export function registerMcpRoutes(
     method: ["GET", "DELETE"],
     url: "/mcp",
     handler: (_request, reply) => {
+      // A GET or DELETE on /mcp probes the optional standalone SSE stream and the session
+      // teardown that this stateless transport does not offer; 405 is the compliant answer
+      // (§8.1). It is a capability probe before any handshake, not a failed operation, so
+      // it writes no audit row: the transport answers here rather than throwing into the
+      // audited failure path in app.ts, the same class as a folded handshake (ADR 0073).
       reply.header("Allow", "POST");
-      throw new ServiceError(405, "METHOD_NOT_ALLOWED", "Use POST for MCP.");
+      return reply.code(405).send(
+        errorSchema.parse({
+          code: "METHOD_NOT_ALLOWED",
+          message: "Use POST for MCP.",
+        }),
+      );
     },
   });
   app.post(

@@ -1110,6 +1110,36 @@ it("uses the official stateless MCP client with permission-filtered tools, struc
   ).toBe(401);
 });
 
+// @req R-MCP-01 @req R-AUD-01
+it("answers GET and DELETE on /mcp with 405 from the route and writes no request.failure audit row, while a POST failure is still audited", async () => {
+  const failures = () =>
+    database.prisma.auditEvent.count({ where: { action: "request.failure" } });
+  const before = await failures();
+  // The unauthenticated capability probe of the standalone SSE stream and session
+  // teardown this stateless transport does not offer: 405 from the route, not an operation.
+  for (const method of ["GET", "DELETE"] as const) {
+    const probe = await app.inject({ method, url: "/mcp" });
+    expect(probe.statusCode).toBe(405);
+    expect(probe.headers["allow"]).toBe("POST");
+    expect(probe.json()).toEqual({
+      code: "METHOD_NOT_ALLOWED",
+      message: "Use POST for MCP.",
+    });
+  }
+  // No audit row for either probe: it never reaches the audited failure path.
+  expect(await failures()).toBe(before);
+  // A genuine POST failure on the same endpoint is still audited, proving the scope is
+  // strictly the unsupported-method probe.
+  const unauthorized = await app.inject({
+    method: "POST",
+    url: "/mcp",
+    headers: { "content-type": "application/json" },
+    payload: { jsonrpc: "2.0", id: 1, method: "tools/list" },
+  });
+  expect(unauthorized.statusCode).toBe(401);
+  expect(await failures()).toBe(before + 1);
+});
+
 // @req R-MCP-14 @req R-AUD-01
 it("folds identical MCP handshakes from one key and client into one audit row per window while every tool call is audited", async () => {
   // A five-second window so the test observes both sides of it; production uses 300 s.
