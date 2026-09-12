@@ -317,6 +317,22 @@ stack_revision() {
   fi
   printf '%s' "$revision"
 }
+# prune_build_leftovers: after an on-host build, trims the BuildKit cache to the most
+# recently used layers and drops dangling images (the local image a rebuild just replaced).
+# Nothing here is used again once the built image runs, and left alone it fills the root
+# volume: on the hosted instance the cache held 32 GB (27 GB unused) and 4 GB of dangling
+# images on a 58 GB disk that had reached 100% on 2026-09-12. The kept amount is
+# AGENTCOMMONS_BUILD_CACHE_KEEP (default 4GB) so a rebuild of a similar commit stays fast.
+# A prune failure is reported and does not fail the deploy.
+prune_build_leftovers() {
+  local keep=${AGENTCOMMONS_BUILD_CACHE_KEEP:-4GB} flag=--keep-storage
+  # Docker 28 renamed --keep-storage to --max-used-space and hid the old spelling.
+  if docker builder prune --help 2>/dev/null | grep -q -- --max-used-space; then flag=--max-used-space; fi
+  logged docker builder prune --force "$flag" "$keep" ||
+    echo "The build cache could not be pruned; the deploy continues. Run 'docker builder prune' by hand." >&2
+  logged docker image prune --force ||
+    echo "Dangling images could not be pruned; the deploy continues. Run 'docker image prune' by hand." >&2
+}
 # stack_up MODE [LOG]: MODE pull fetches the configured image, build builds it from the
 # checkout, start uses what is already present. Then starts every service (the migration
 # runs before the API), waits for /ready and reloads Caddy when it is part of the stack so
@@ -340,6 +356,7 @@ stack_up() {
     [ -n "$revision" ] || echo "No commit is known for this checkout: the updater will hold the image it builds until a release is installed by hand." >&2
     logged compose build --build-arg "AGENTCOMMONS_VERSION=$version" \
       --build-arg "AGENTCOMMONS_REVISION=$revision" --build-arg "AGENTCOMMONS_CREATED=$created" api || return 1
+    prune_build_leftovers
     ;;
   start) ;;
   *)

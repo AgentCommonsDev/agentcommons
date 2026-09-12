@@ -21,6 +21,9 @@ const fakeDocker = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$FAKE_LOG"
 case "$*" in
 "compose build --build-arg "*" api") ;;
+"builder prune --help") echo "      --max-used-space bytes   Maximum amount of disk space allowed to keep for cache" ;;
+"builder prune --force --max-used-space "*) ;;
+"image prune --force") ;;
 "compose up -d --no-build --remove-orphans") ;;
 "compose port api 3000") echo 127.0.0.1:3000 ;;
 "compose config --services") printf 'api\\ndb\\nmigrate\\n' ;;
@@ -93,6 +96,45 @@ const buildArg = (docker: string[], name = "AGENTCOMMONS_VERSION") =>
 const rfc3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
 describe("on-host image builds stamp AGENTCOMMONS_VERSION", () => {
+  // @req R-INF-12
+  it("prunes the build cache and dangling images once the image is built, before the stack starts, and keeps deploying when a prune fails", () => {
+    const { build, stack } = fixture();
+    const run = build({ AGENTCOMMONS_BUILD_CACHE_KEEP: "2GB" });
+    expect(run.status, run.stderr).toBe(0);
+    const calls = run.docker.filter((line) => line.length > 0);
+    const built = calls.findIndex((line) => line.startsWith("compose build"));
+    const cache = calls.indexOf("builder prune --force --max-used-space 2GB");
+    const images = calls.indexOf("image prune --force");
+    const started = calls.indexOf("compose up -d --no-build --remove-orphans");
+    expect(built).toBeGreaterThanOrEqual(0);
+    expect(cache).toBeGreaterThan(built);
+    expect(images).toBeGreaterThan(cache);
+    expect(started).toBeGreaterThan(images);
+    // The default keeps 4GB; an older Docker without --max-used-space gets --keep-storage.
+    expect(build().docker).toContain(
+      "builder prune --force --max-used-space 4GB",
+    );
+    writeFileSync(
+      join(stack, "..", "bin", "docker"),
+      fakeDocker
+        .replace(
+          '"builder prune --help") echo "      --max-used-space bytes   Maximum amount of disk space allowed to keep for cache" ;;',
+          '"builder prune --help") echo "      --keep-storage bytes   Amount of disk space to keep for cache" ;;',
+        )
+        .replace(
+          '"builder prune --force --max-used-space "*) ;;',
+          '"builder prune --force --keep-storage "*) echo "prune failed" >&2; exit 1 ;;',
+        ),
+      { mode: 0o755 },
+    );
+    const older = build();
+    expect(older.status, older.stderr).toBe(0);
+    expect(older.docker).toContain("builder prune --force --keep-storage 4GB");
+    expect(older.stderr).toContain(
+      "The build cache could not be pruned; the deploy continues.",
+    );
+    expect(older.docker).toContain("compose up -d --no-build --remove-orphans");
+  });
   it("uses the exported version when the caller set one", () => {
     const { build } = fixture();
     const run = build({ AGENTCOMMONS_VERSION: "abcdef123456" });

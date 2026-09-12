@@ -2897,7 +2897,9 @@ Stack config becomes SSM SecureString parameters that only the instance role rea
 bucket and applies it through SSM Run Command (pull of the published image, or an on-host
 build with `--build` that stamps `AGENTCOMMONS_VERSION` from the archive's `.commit` file,
 else the checkout's git HEAD, else `development`, printing the value it used, plus the
-revision and created release labels the updater compares; both
+revision and created release labels the updater compares, then prunes the BuildKit cache to
+`AGENTCOMMONS_BUILD_CACHE_KEEP` (default 4GB) and dangling images so repeated on-host builds
+cannot fill the root volume; both
 migrations, API restart behind Caddy, whose `reverse_proxy` holds a request whose dial
 fails and retries it every 250 ms for up to 45 s (`lb_try_duration`) so the container swap
 delays hook uploads and MCP handshakes instead of failing them, then a Caddy reload through
