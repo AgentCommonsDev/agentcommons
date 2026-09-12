@@ -97,7 +97,9 @@ model RedactionEvent {
 /// Where one receipt's redactions landed: a row per (receipt, policy, message) with the
 /// message's projected position, or a null seq for hits on session metadata (git fields,
 /// context, header text). `run_id` names the rescan that applied it, null at capture. Rows
-/// hang off the per-policy counter and go with it (policy deletion, purge). No redacted text.
+/// hang off the per-policy counter and go with it (policy deletion, purge). The secret is
+/// never stored: a row keeps only a masked preview, a salted fingerprint and the match
+/// length, derived from the match at redaction (ADR 0076).
 model RedactionHit {
   organizationId String         @map("organization_id")
   id             String         @id @db.Uuid
@@ -109,10 +111,14 @@ model RedactionHit {
   seq            Int?
   count          Int
   redactedAt     DateTime       @map("redacted_at") @db.Timestamptz
+  maskedPreview  String?        @map("masked_preview")
+  fingerprint    String?
+  matchLength    Int?           @map("match_length")
 
   @@index([organizationId, redactedAt])
   @@index([organizationId, runId, sessionId])
   @@index([ingestBatchId, sessionId, policyId])
+  @@index([organizationId, policyId, fingerprint])
   @@map("redaction_hit")
 }
 

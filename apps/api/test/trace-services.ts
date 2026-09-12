@@ -1,5 +1,13 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { configureRedactionSamples } from "@agentcommons/core";
+import { redactionFingerprint } from "../src/services/redaction-fingerprint.js";
 import { waitForTracePublication } from "../../../packages/traces/test/support.js";
+
+// Integration tests build redactors the same way the server does, so they must record the
+// ledger's masked preview, fingerprint and length. A fixed secret keeps fingerprints stable.
+configureRedactionSamples({
+  fingerprint: redactionFingerprint("trace-services-fingerprint-secret"),
+});
 import type { EmbeddingService } from "../src/embeddings/service.js";
 import type { Prisma, PrismaClient } from "@agentcommons/db";
 import type { TraceScope } from "@agentcommons/traces";

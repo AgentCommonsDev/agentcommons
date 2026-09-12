@@ -505,6 +505,10 @@ export class TraceProjectionService {
             policyId: hit.policyId,
             count: hit.count,
             redactedAt: rescannedAt,
+            // A rescan re-redacts metadata from its own text, so its hit keeps a real sample.
+            preview: hit.sample?.preview ?? null,
+            fingerprint: hit.sample?.fingerprint ?? null,
+            length: hit.sample?.length ?? null,
           });
     }
     const projection = projectTrace(

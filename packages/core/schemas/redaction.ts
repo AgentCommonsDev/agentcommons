@@ -33,6 +33,19 @@ export const redactionHitSchema = z.strictObject({
   policy_name: z.string().nullable(),
   seq: nonnegativeIntegerSchema.nullable(),
   count: nonnegativeIntegerSchema,
+  /**
+   * A masked slice of the matched value that reveals at most its first and last few
+   * characters, and nothing at all for a short value. Never the secret. Null on rows from
+   * before this was recorded and on a capture-time metadata hit (§5.3, ADR 0076).
+   */
+  masked_preview: z.string().nullable(),
+  /**
+   * Salted, non-reversible fingerprint of the matched value; the same secret shows the same
+   * fingerprint across sessions, so an admin can see one key recur. Null when unrecorded.
+   */
+  fingerprint: z.string().nullable(),
+  /** Length of the matched value in characters, or null when unrecorded. */
+  match_length: nonnegativeIntegerSchema.nullable(),
   redacted_at: utcDateTimeSchema,
 });
 export const redactionHitSortKeys = ["redacted_at", "count", "seq"] as const;
@@ -122,6 +135,12 @@ export const redactionSummaryOutputSchema = z.strictObject({
       enabled: z.boolean(),
       count: nonnegativeIntegerSchema,
       sessions: nonnegativeIntegerSchema,
+      /**
+       * Distinct fingerprints recorded for this policy: how many different secrets it caught.
+       * A lower bound, since a message with two different secrets of one policy keeps one
+       * representative fingerprint (§5.3, ADR 0076).
+       */
+      distinct_secrets: nonnegativeIntegerSchema,
     }),
   ),
   runs: z.strictObject({

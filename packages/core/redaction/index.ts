@@ -7,9 +7,17 @@ import { pattern, preinstalledRules } from "./rules.js";
 import type { JsonValue } from "../schemas/common.js";
 import { protocolValue, type RedactionStructure } from "./structure.js";
 import { storageText } from "./storage-text.js";
+import {
+  buildSample,
+  defaultSampleConfig,
+  preferSample,
+  type RedactionSample,
+  type RedactionSampleConfig,
+} from "./preview.js";
 export * from "./structure.js";
 export * from "./context.js";
 export * from "./observations.js";
+export * from "./preview.js";
 
 export * from "./policy.js";
 export * from "./sanitize.js";
@@ -21,6 +29,11 @@ export interface RedactionCount {
   policyId: string;
   name: string;
   count: number;
+  /**
+   * Identifying metadata for one representative match of this policy, present only when the
+   * process has sample capture configured (the server). Never the matched text itself.
+   */
+  sample?: RedactionSample;
 }
 export interface RedactionResult<T> {
   value: T;
@@ -45,8 +58,16 @@ export class Redactor {
   private readonly valuePatterns: Config;
   private readonly replacements: readonly string[];
   private readonly memo = new Map<string, RedactionResult<string>>();
+  private readonly sampleConfig: RedactionSampleConfig;
 
-  constructor(rows: readonly RedactionPolicy[] = []) {
+  constructor(
+    rows: readonly RedactionPolicy[] = [],
+    options: { sample?: RedactionSampleConfig } = {},
+  ) {
+    // `undefined` takes the process default (off, unless the server configured it); an
+    // explicit value (including null) overrides it, so a caller can force capture on or off.
+    this.sampleConfig =
+      options.sample === undefined ? defaultSampleConfig() : options.sample;
     const policies = composePolicies(rows);
     this.policies = new Map(policies.map((policy) => [policy.name, policy]));
     this.replacements = [
@@ -193,6 +214,9 @@ export class Redactor {
       return pieces;
     });
     const counts = new Map<string, RedactionCount>();
+    // The most identifying matched value seen for each policy in this scan, by length; only
+    // its derived sample is kept once the scan ends, never the value.
+    const representative = new Map<string, string>();
     let cursor = 0;
     let output = "";
     for (const range of actionable) {
@@ -204,7 +228,20 @@ export class Redactor {
       const count = counts.get(policyId);
       if (count) count.count++;
       else counts.set(policyId, { policyId, name: range.name, count: 1 });
+      // Only when sample capture is on is the matched value ever read out of the string.
+      if (this.sampleConfig) {
+        const matched = value.slice(range.start, range.end);
+        const held = representative.get(policyId);
+        if (held === undefined || matched.length > held.length)
+          representative.set(policyId, matched);
+      }
     }
+    if (this.sampleConfig)
+      for (const count of counts.values()) {
+        const matched = representative.get(count.policyId);
+        if (matched !== undefined)
+          count.sample = buildSample(matched, this.sampleConfig);
+      }
     return {
       value: storageText(output + value.slice(cursor)),
       counts: [...counts.values()],
@@ -221,8 +258,11 @@ export class Redactor {
       const result = await this.text(text, prefix);
       for (const count of result.counts) {
         const current = counts.get(count.policyId);
-        if (current) current.count += count.count;
-        else counts.set(count.policyId, { ...count });
+        if (current) {
+          current.count += count.count;
+          const merged = preferSample(current.sample, count.sample);
+          if (merged) current.sample = merged;
+        } else counts.set(count.policyId, { ...count });
       }
       return result.value;
     };

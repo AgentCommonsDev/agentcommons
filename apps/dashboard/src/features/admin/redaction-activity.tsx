@@ -107,7 +107,31 @@ const policyColumns: ColumnDef<PolicyHits>[] = [
     size: 100,
     cell: ({ row }) => number(row.original.sessions),
   },
+  {
+    accessorKey: "distinct_secrets",
+    header: text.distinctSecrets,
+    size: 130,
+    cell: ({ row }) => number(row.original.distinct_secrets),
+  },
 ];
+/** A hit's masked preview: a bounded slice of the value, or a dash when none was recorded. */
+function Preview({ value }: { value: string | null }) {
+  return (
+    <span className="font-mono text-xs break-all">
+      {value ?? text.sampleNone}
+    </span>
+  );
+}
+/** The salted fingerprint, shortened; the full digest is on the title so equal secrets are visible. */
+function Fingerprint({ value }: { value: string | null }) {
+  if (value === null)
+    return <span className="text-muted">{text.sampleNone}</span>;
+  return (
+    <span className="font-mono text-xs" title={text.fingerprintTitle(value)}>
+      {value.slice(0, 12)}
+    </span>
+  );
+}
 /** Totals, recent windows, the run tally and the per-policy table from one summary read. */
 export function RedactionSummary({ live }: { live: boolean }) {
   const { organization } = useWorkspace();
@@ -563,6 +587,30 @@ export function RecentRedactions({
       size: 150,
       cell: ({ row }) =>
         row.original.policy_name ?? copy.app.common.unavailable,
+    },
+    {
+      accessorKey: "masked_preview",
+      header: text.preview,
+      enableSorting: false,
+      size: 150,
+      cell: ({ row }) => <Preview value={row.original.masked_preview} />,
+    },
+    {
+      accessorKey: "fingerprint",
+      header: text.fingerprintColumn,
+      enableSorting: false,
+      size: 130,
+      cell: ({ row }) => <Fingerprint value={row.original.fingerprint} />,
+    },
+    {
+      accessorKey: "match_length",
+      header: text.lengthColumn,
+      enableSorting: false,
+      size: 80,
+      cell: ({ row }) =>
+        row.original.match_length === null
+          ? text.sampleNone
+          : number(row.original.match_length),
     },
     {
       accessorKey: "source",

@@ -7960,6 +7960,7 @@ export interface operations {
               enabled: boolean;
               count: number;
               sessions: number;
+              distinct_secrets: number;
             }[];
             runs: {
               total: number;
@@ -8048,6 +8049,9 @@ export interface operations {
               policy_name: string | null;
               seq: number | null;
               count: number;
+              masked_preview: string | null;
+              fingerprint: string | null;
+              match_length: number | null;
               /** Format: date-time */
               redacted_at: string;
             }[];

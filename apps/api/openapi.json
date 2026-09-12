@@ -26598,6 +26598,11 @@
                             "type": "integer",
                             "minimum": 0,
                             "maximum": 9007199254740991
+                          },
+                          "distinct_secrets": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
                           }
                         },
                         "required": [
@@ -26606,7 +26611,8 @@
                           "kind",
                           "enabled",
                           "count",
-                          "sessions"
+                          "sessions",
+                          "distinct_secrets"
                         ],
                         "additionalProperties": false
                       }
@@ -26926,6 +26932,30 @@
                             "minimum": 0,
                             "maximum": 9007199254740991
                           },
+                          "masked_preview": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "fingerprint": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "match_length": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "redacted_at": {
                             "type": "string",
                             "format": "date-time",
@@ -26942,6 +26972,9 @@
                           "policy_name",
                           "seq",
                           "count",
+                          "masked_preview",
+                          "fingerprint",
+                          "match_length",
                           "redacted_at"
                         ],
                         "additionalProperties": false

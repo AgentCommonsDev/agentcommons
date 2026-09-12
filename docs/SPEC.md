@@ -597,18 +597,32 @@ rows in the publish transaction, for accepts and rescans alike. Rows hang off th
 counter (`ON DELETE CASCADE`): deleting a policy or purging a session removes them with
 the counters, and a hit whose counter is gone by publish time is dropped as the counter
 was. Each rescan target also records the redactions the run applied to it
-(`redaction_run_session.redaction_count`), so a run lists the sessions it changed. No
-redacted text is stored anywhere in the ledger. Admin reads, each one audited and one
+(`redaction_run_session.redaction_count`), so a run lists the sessions it changed. The
+secret itself is never stored; in its place each row keeps identifying metadata derived
+from the match at the moment of redaction, so an admin can recognize and rotate a leaked
+key without the value being re-persisted (ADR 0076): a `masked_preview` that shows at most
+the first four and last four characters around a fixed mask, and only when those are below
+a quarter of the value, so a short value reveals nothing; a salted `fingerprint`
+(HMAC-SHA256 of the NFC-normalized value under the server secret, the same value
+fingerprinting alike across sessions so one key's spread is visible, not reversible); and
+the `match_length`. These are stored as typed columns, not as redacted free text, and pass
+no free-text redaction path. A row keeps one representative match — the longest — so a hit
+folding several matches of one policy keeps the more identifying of them (a message with
+two different values of one policy keeps one representative, a documented lower bound on the
+distinct-secret count). The capture path's metadata remainder is a subtraction across
+policies with no single value, so its preview and fingerprint are null; a rescan re-derives
+metadata hits from their own text and does attach a sample. Admin reads, each one audited and one
 scan per relation (§7.6): `GET /admin/redaction/summary` (totals and distinct sessions
 from the counters, 7- and 30-day windows from receipt arrival and target checkpoint
-times split into capture and rescan, per-policy counts, the run tally), `GET
+times split into capture and rescan, per-policy counts with the distinct-secret count per
+policy from a grouped scan of the fingerprints, the run tally), `GET
 /admin/redaction/rescan` (runs with progress and changed-session counts), `GET
 /admin/redaction/rescan/:id/sessions` (a run's targets, changed ones by default) and
 `GET /admin/redaction/hits` (the ledger newest first, filterable by run, session, policy,
 source and `q`, a case-insensitive match of 1 to 200 characters on the applying policy's
 name, resolved as a semi-join in the same statement; sorts on `redacted_at`, `count` and
-`seq`; offset cursors with `LIMIT n+1` for the next-page flag; CSV); the Redaction page
-shows them (§10).
+`seq`; offset cursors with `LIMIT n+1` for the next-page flag; each row carrying the masked
+preview, fingerprint and length; CSV); the Redaction page shows them (§10).
 
 **Sensitive files.** Tool results whose input path matches `**/.env*`, `**/*.pem`,
 `**/*.key`, `**/id_rsa*`, `**/credentials*`, `**/.npmrc`, `**/.netrc` are replaced
@@ -2460,11 +2474,13 @@ only), Keys, Audit (filters, CSV), Moderation
 state as columns and filters, the matching count and paging to the end; visibility and
 purge with reason, §9.5), Redaction (policies, test, rescan progress, and the
 ledger of §5.3: totals with 7- and 30-day windows split into capture and rescan, counts
-per policy, each rescan run expanding to the sessions it changed with their counts and
-the messages redacted in each, and the recent redactions as a server-paginated list sorted
-by time, count or position, filtered by policy, source, session, run and policy-name search
-with the filters kept in the URL and exported as CSV, every session and message a
-link to `/app/sessions/:id#<seq>`; counts and positions only, never redacted text), Status and
+and distinct-secret counts per policy, each rescan run expanding to the sessions it changed
+with their counts and the messages redacted in each, and the recent redactions as a
+server-paginated list sorted by time, count or position, filtered by policy, source,
+session, run and policy-name search with the filters kept in the URL and exported as CSV,
+each row showing the masked preview, the short fingerprint and the length beside its
+session and message link to `/app/sessions/:id#<seq>`; the secret itself is never stored,
+only the bounded preview and the fingerprint), Status and
 Settings. **Status** covers operational health only: ingest per day, capture failures,
 redaction hits, queue depth, embedding backlog and spend, as charts and tables, with
 date/repository filters for historical health; current queue/spend snapshots remain

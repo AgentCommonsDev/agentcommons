@@ -168,8 +168,17 @@ export function snapshotUnchanged(
   );
 }
 
+/**
+ * Identifying metadata for one representative matched value, derived at redaction and stored
+ * in place of the secret (§5.3, ADR 0076). Null on a capture-time metadata remainder hit.
+ */
+interface RedactionHitSample {
+  preview: string | null;
+  fingerprint: string | null;
+  length: number | null;
+}
 /** One policy's hits on one stored record, or on session metadata when `recordId` is null. */
-export interface RecordedRedaction {
+export interface RecordedRedaction extends RedactionHitSample {
   recordId: string | null;
   ingestBatchId: string;
   policyId: string;
@@ -177,7 +186,7 @@ export interface RecordedRedaction {
   redactedAt: Date;
 }
 /** A `redaction_hit` row before it is written: the message position is resolved. */
-export interface RedactionHitInput {
+export interface RedactionHitInput extends RedactionHitSample {
   ingestBatchId: string;
   policyId: string;
   seq: number | null;
@@ -207,14 +216,24 @@ export function attributeRedactionHits(
       hit.recordId === null ? null : (firstSeq.get(hit.recordId) ?? null);
     const key = `${hit.ingestBatchId}\0${hit.policyId}\0${String(seq)}`;
     const current = merged.get(key);
-    if (current) current.count += hit.count;
-    else
+    if (current) {
+      current.count += hit.count;
+      // Keep the more identifying sample when hits fold together: the longer matched value.
+      if ((hit.length ?? -1) > (current.length ?? -1)) {
+        current.preview = hit.preview;
+        current.fingerprint = hit.fingerprint;
+        current.length = hit.length;
+      }
+    } else
       merged.set(key, {
         ingestBatchId: hit.ingestBatchId,
         policyId: hit.policyId,
         seq,
         count: hit.count,
         redactedAt: hit.redactedAt,
+        preview: hit.preview,
+        fingerprint: hit.fingerprint,
+        length: hit.length,
       });
   }
   return [...merged.values()];
@@ -270,6 +289,9 @@ export async function redactTraceSnapshot(
         ingestBatchId: original.ingestBatchId,
         policyId: hit.policyId,
         count: hit.count,
+        preview: hit.sample?.preview ?? null,
+        fingerprint: hit.sample?.fingerprint ?? null,
+        length: hit.sample?.length ?? null,
       });
   }
   const normalizerContext = await context(control.normalizerContext);

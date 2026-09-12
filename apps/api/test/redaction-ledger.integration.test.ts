@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { PREVIEW_MASK } from "@agentcommons/core";
 import { startTraceDatabase } from "../../../packages/traces/test/support.js";
 import { traceServices, waitForJob } from "./trace-services.js";
 import { provisionMember, provisionOrganization, releaser } from "./support.js";
@@ -126,6 +127,9 @@ it("records where each capture-time redaction landed, per message, and reports t
     enabled: true,
     count: 3,
     sessions: 1,
+    // Two distinct fingerprints: `ledger-secret-1` and the representative of message #2,
+    // where two different values fold to one row and keep the longer (the first, on a tie).
+    distinct_secrets: 2,
   });
   expect(summary.runs).toEqual({ total: 0, active: 0, failed: 0 });
 
@@ -328,4 +332,74 @@ it("records a rescan's hits under its run with the session's count, lists the se
   expect(summary.last_7_days.rescan).toBe(5);
   expect(summary.runs).toEqual({ total: 1, active: 0, failed: 0 });
   expect(services.errors).toEqual([]);
+});
+
+// @req R-RED-12
+it("stores a masked preview, a salted fingerprint and the length for each hit, never the secret, and fingerprints one key the same across sessions", async () => {
+  const secret = "ghp_" + "A".repeat(36); // 40 characters
+  const saved = await policies.save(organization.owner, null, {
+    name: "github-pat",
+    kind: "REGEX",
+    pattern: "ghp_[A-Za-z0-9]{36}",
+    flags: "g",
+    enabled: true,
+  });
+  const policyId = saved.result.id;
+  const first = await publish([`token ${secret} committed`]);
+  const second = await publish([`again ${secret} elsewhere`]);
+
+  const firstHits = await hitsOf(first.sessionId);
+  const secondHits = await hitsOf(second.sessionId);
+  const firstHit = firstHits.find((hit) => hit.policyId === policyId);
+  const secondHit = secondHits.find((hit) => hit.policyId === policyId);
+  // Identifying metadata is present: a preview that reveals only the bounded ends, the
+  // exact length, and a 64-hex salted fingerprint.
+  expect(firstHit?.maskedPreview).toBe("ghp_" + PREVIEW_MASK + "AAAA");
+  expect(firstHit?.matchLength).toBe(40);
+  expect(firstHit?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  // The same key in two sessions carries the same fingerprint, so its spread is visible.
+  expect(secondHit?.fingerprint).toBe(firstHit?.fingerprint);
+  expect(secondHit?.maskedPreview).toBe(firstHit?.maskedPreview);
+
+  // The raw secret appears in nothing that was persisted: not the ledger rows, not the
+  // stored message, not any audit detail.
+  expect(JSON.stringify([firstHit, secondHit])).not.toContain(secret);
+  const firstMessages = await services.messages(
+    organizationId,
+    first.sessionId,
+  );
+  expect(firstMessages[0]?.content).toBe(
+    "token [REDACTED:github-pat] committed",
+  );
+  expect(JSON.stringify(firstMessages)).not.toContain(secret);
+  const audits = await database.prisma.auditEvent.findMany({
+    where: { organizationId },
+  });
+  expect(JSON.stringify(audits)).not.toContain(secret);
+
+  // The per-policy summary counts one distinct secret across the two sessions.
+  const summary = (await policies.summary(organization.owner)).result;
+  const row = summary.by_policy.find((policy) => policy.policy_id === policyId);
+  expect(row).toMatchObject({
+    count: 2,
+    sessions: 2,
+    distinct_secrets: 1,
+  });
+
+  // The ledger read surfaces the same fields to admins, and still nothing revealing.
+  const listed = (
+    await policies.hits(organization.owner, {
+      filters: { session_id: first.sessionId, policy_id: policyId },
+    })
+  ).result;
+  expect(listed.items[0]).toMatchObject({
+    masked_preview: "ghp_" + PREVIEW_MASK + "AAAA",
+    fingerprint: firstHit?.fingerprint,
+    match_length: 40,
+  });
+  expect(JSON.stringify(listed)).not.toContain(secret);
+
+  await policies.remove(organization.owner, policyId, {
+    reason: "Masked preview test cleanup",
+  });
 });

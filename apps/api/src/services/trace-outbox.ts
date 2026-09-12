@@ -34,6 +34,12 @@ export const outboxRedactionSchema = z.strictObject({
   recordId: z.uuid().nullable(),
   policyId: z.uuid(),
   count: z.number().int().positive(),
+  // Identifying metadata for a representative match, never the secret. Defaulted so rows
+  // queued before these fields existed still parse; null on metadata remainder hits, which
+  // are computed by subtraction and carry no single value (§5.3, ADR 0076).
+  preview: z.string().nullable().default(null),
+  fingerprint: z.string().nullable().default(null),
+  length: z.number().int().nonnegative().nullable().default(null),
 });
 export const traceOutboxPayloadSchema = z.strictObject({
   envelope: ingestEnvelopeSchema,

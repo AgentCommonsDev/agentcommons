@@ -14,7 +14,11 @@ import { SimilarService } from "./services/similar.js";
 import { pathToFileURL } from "node:url";
 import { PrismaClient } from "@agentcommons/db";
 import { z } from "zod";
-import { policyDefinitionSchema } from "@agentcommons/core";
+import {
+  configureRedactionSamples,
+  policyDefinitionSchema,
+} from "@agentcommons/core";
+import { redactionFingerprint } from "./services/redaction-fingerprint.js";
 import { createApp } from "./app.js";
 import { environment, type Env } from "./env.js";
 import { AuthService } from "./services/auth.js";
@@ -39,6 +43,12 @@ export async function createRuntime(env: Env) {
   const extras = z
     .array(policyDefinitionSchema)
     .parse(JSON.parse(env.REDACTION_EXTRA_PATTERNS));
+  // Every redactor this process builds records a masked preview, a salted fingerprint and
+  // the length for each hit, so the redaction ledger can identify a leaked secret without
+  // ever storing it (§5.3, ADR 0076).
+  configureRedactionSamples({
+    fingerprint: redactionFingerprint(env.BETTER_AUTH_SECRET),
+  });
   const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
   const readers = new TraceReaders(env.clickhouse, prisma, {
     embeddings: env.EMBEDDINGS_ENABLED,

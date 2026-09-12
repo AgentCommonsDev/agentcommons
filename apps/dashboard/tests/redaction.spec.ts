@@ -188,6 +188,20 @@ test("Redaction activity: counts, rescan runs with the sessions they changed, an
     await expect(tableRow(hits, before).first()).toContainText(
       text.sources.rescan,
     );
+    // @req R-RED-12 The ledger identifies the secret without storing it: the columns and the
+    // never-stored copy are present, and the row shows a masked preview, not the canary.
+    await expect(hits).toContainText(text.preview);
+    await expect(hits).toContainText(text.fingerprintColumn);
+    await expect(hits).toContainText(text.lengthColumn);
+    await expect(
+      page.getByText(/the secret itself is never stored/i).first(),
+    ).toBeVisible();
+    await expect(captureRow).toContainText("CANA");
+    await expect(captureRow).not.toContainText(`CANARY_${stamp}`);
+    // The per-policy table reports how many distinct secrets the policy caught.
+    await expect(page.getByTestId("admin-redaction-by-policy")).toContainText(
+      text.distinctSecrets,
+    );
     await expectNoHorizontalOverflow(page);
     await accessible(page);
     // The message link opens the session at the redacted message.

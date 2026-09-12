@@ -351,6 +351,9 @@ export class IngestService {
               recordId: record.id,
               policyId: hit.policyId,
               count: hit.count,
+              preview: hit.sample?.preview ?? null,
+              fingerprint: hit.sample?.fingerprint ?? null,
+              length: hit.sample?.length ?? null,
             });
           sanitized.push(sanitizeSourceRecord(redacted.value));
         }
@@ -688,8 +691,18 @@ export class IngestService {
           );
         for (const [policyId, total] of counts) {
           const rest = total.count - (attributed.get(policyId) ?? 0);
+          // A metadata remainder is a subtraction across policies, not one value, so it
+          // carries no preview or fingerprint; a rescan re-derives metadata hits from their
+          // own text and does attach one (§5.3, ADR 0076).
           if (rest > 0)
-            recorded.push({ recordId: null, policyId, count: rest });
+            recorded.push({
+              recordId: null,
+              policyId,
+              count: rest,
+              preview: null,
+              fingerprint: null,
+              length: null,
+            });
         }
         const outbox = await tx.traceOutbox.create({
           data: {

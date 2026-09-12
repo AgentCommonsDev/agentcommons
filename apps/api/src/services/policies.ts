@@ -137,6 +137,10 @@ const windowRowSchema = z.strictObject({
   last_7: z.number().int().nonnegative(),
   last_30: z.number().int().nonnegative(),
 });
+const distinctSecretRowSchema = z.strictObject({
+  policy_id: z.uuid(),
+  distinct_secrets: z.number().int().nonnegative(),
+});
 export class PolicyService {
   constructor(
     private readonly dependencies: {
@@ -378,8 +382,9 @@ export class PolicyService {
         const now = Date.now();
         const since7 = new Date(now - 7 * DAY_MS);
         const since30 = new Date(now - 30 * DAY_MS);
-        const [ledger, captured, rescanned, runs] = await Promise.all([
-          prisma.$queryRaw<unknown[]>`
+        const [ledger, captured, rescanned, runs, distinct] = await Promise.all(
+          [
+            prisma.$queryRaw<unknown[]>`
             SELECT p.id AS policy_id, p.name, p.kind::text AS kind, p.enabled,
                    coalesce(sum(e.count), 0)::int AS count,
                    count(DISTINCT e.session_id)::int AS sessions
@@ -388,23 +393,37 @@ export class PolicyService {
             WHERE p.organization_id = ${organizationId}
             GROUP BY GROUPING SETS ((p.id, p.name, p.kind, p.enabled), ())
             ORDER BY count DESC, p.name ASC`,
-          prisma.$queryRaw<unknown[]>`
+            prisma.$queryRaw<unknown[]>`
             SELECT coalesce(sum(redaction_count) FILTER (WHERE received_at >= ${since7}), 0)::int AS last_7,
                    coalesce(sum(redaction_count), 0)::int AS last_30
             FROM trace_receipt
             WHERE organization_id = ${organizationId} AND received_at >= ${since30}`,
-          prisma.$queryRaw<unknown[]>`
+            prisma.$queryRaw<unknown[]>`
             SELECT coalesce(sum(redaction_count) FILTER (WHERE processed_at >= ${since7}), 0)::int AS last_7,
                    coalesce(sum(redaction_count), 0)::int AS last_30
             FROM redaction_run_session
             WHERE organization_id = ${organizationId} AND processed_at >= ${since30}`,
-          prisma.redactionRun.groupBy({
-            by: ["state"],
-            where: { organizationId },
-            _count: { _all: true },
-          }),
-        ]);
+            prisma.redactionRun.groupBy({
+              by: ["state"],
+              where: { organizationId },
+              _count: { _all: true },
+            }),
+            // How many distinct secrets each policy caught, from an index-only grouped scan
+            // of the fingerprints (§5.3, ADR 0076). One scan of the ledger, no per-row work.
+            prisma.$queryRaw<unknown[]>`
+            SELECT policy_id, count(DISTINCT fingerprint)::int AS distinct_secrets
+            FROM redaction_hit
+            WHERE organization_id = ${organizationId} AND fingerprint IS NOT NULL
+            GROUP BY policy_id`,
+          ],
+        );
         const rows = z.array(redactionLedgerRowSchema).parse(ledger);
+        const distinctSecrets = new Map(
+          z
+            .array(distinctSecretRowSchema)
+            .parse(distinct)
+            .map((row) => [row.policy_id, row.distinct_secrets]),
+        );
         const total = rows.find((row) => row.policy_id === null);
         const capture = windowRowSchema.parse(captured[0]);
         const rescan = windowRowSchema.parse(rescanned[0]);
@@ -434,6 +453,7 @@ export class PolicyService {
               enabled: row.enabled,
               count: row.count,
               sessions: row.sessions,
+              distinct_secrets: distinctSecrets.get(row.policy_id ?? "") ?? 0,
             })),
           runs: {
             total: runCount(["queued", "running", "completed", "failed"]),
@@ -660,6 +680,9 @@ export class PolicyService {
             policy_name: names.get(hit.policyId) ?? null,
             seq: hit.seq,
             count: hit.count,
+            masked_preview: hit.maskedPreview,
+            fingerprint: hit.fingerprint,
+            match_length: hit.matchLength,
             redacted_at: hit.redactedAt.toISOString(),
           })),
           cursor: page.cursor,
@@ -777,6 +800,10 @@ export async function persistRedactionHits(
       seq: hit.seq,
       count: hit.count,
       redactedAt: hit.redactedAt,
+      // Identifying metadata derived at redaction, never the secret (§5.3, ADR 0076).
+      maskedPreview: hit.preview,
+      fingerprint: hit.fingerprint,
+      matchLength: hit.length,
     }));
   if (rows.length) await tx.redactionHit.createMany({ data: rows });
 }

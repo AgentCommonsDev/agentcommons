@@ -2,7 +2,7 @@
 export const redactionActivityCopy = {
   title: "Redaction activity",
   description:
-    "How often the policies fired, in which sessions and on which messages. Counts only. Redacted text is never shown.",
+    "How often the policies fired, in which sessions and on which messages. The full secret is never stored. Each hit keeps a masked preview and a salted fingerprint, enough to spot and rotate a leaked key.",
   total: "Redactions",
   sessionOne: "session",
   sessionMany: "sessions",
@@ -15,11 +15,12 @@ export const redactionActivityCopy = {
     `${active} running, ${failed} failed`,
   byPolicy: "By policy",
   byPolicyDescription:
-    "Redactions counted for each policy since it was created. Deleting a policy removes its counts.",
+    "Redactions counted for each policy since it was created, and how many distinct secrets it caught. Deleting a policy removes its counts.",
   policy: "Policy",
   kind: "Kind",
   sessions: "Sessions",
   redactions: "Redactions",
+  distinctSecrets: "Distinct secrets",
   noPolicyHits: "No policy has matched yet",
   noPolicyHitsHint: "Counts appear as captures arrive or after a rescan.",
   rescans: "Rescans",
@@ -48,7 +49,12 @@ export const redactionActivityCopy = {
   openSession: "Open session",
   recent: "Recent redactions",
   recentDescription:
-    "Every redaction, newest first, with the session and the message it landed on. Filter by policy, source, session or rescan run. The CSV export carries the filtered rows.",
+    "Every redaction, newest first, with the session and the message it landed on. Each row shows a masked preview and a fingerprint; the secret itself is never stored. Filter by policy, source, session or rescan run. The CSV export carries the filtered rows.",
+  preview: "Preview",
+  fingerprintColumn: "Fingerprint",
+  lengthColumn: "Length",
+  sampleNone: "—",
+  fingerprintTitle: (full: string) => `Fingerprint ${full}`,
   time: "Time",
   messageColumn: "Message",
   source: "Source",
