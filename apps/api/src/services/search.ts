@@ -1,5 +1,5 @@
 import type { EmbeddingService } from "../embeddings/service.js";
-import { formatSearch } from "@agentcommons/core/format";
+import { formatSearch, searchNextStep } from "@agentcommons/core/format";
 import {
   createSearchInputSchema,
   searchOutputSchema,
@@ -330,12 +330,16 @@ export class SearchService {
               sessions: Number(counts?.sessions ?? 0),
               hits: Number(counts?.hits ?? 0),
             });
+            // A page with no hit carries its next step where the model reads it (ADR
+            // 0078); a bounded page keeps its own note instead.
+            const next = scoped ? null : searchNextStep(request, total.hits);
             const output: SearchOutput = {
               blocks: [],
               cursor: null,
               truncated_response: false,
               total,
               partial: scoped ? { sessions_searched: scoped.length } : null,
+              next,
             };
             const windows: Window[] = [];
             const headers = new Map<string, SearchHeader>();
@@ -454,6 +458,7 @@ export class SearchService {
                 truncated_response: false,
                 total,
                 partial: output.partial,
+                next,
               };
               if (!fitsToolBudget(candidate, formatSearch)) {
                 windows.pop();

@@ -1289,7 +1289,13 @@ truncated, truncated_fields }], truncated_fields }`,
   whole query under the caller's visibility, counted over the same filtered candidate
   set as the page before the per-session cap, the cursor and `limit`, in the same read
   callback as the page so the two never drift apart. The text rendering opens with
-  `N hits in M sessions` from these totals.
+  `N hits in M sessions` from these totals. `next` (string | null): on a complete page
+  with no hit, one sentence naming what to try, shaped by the call that missed (a query
+  over two words loses its common words, filters are named as the thing to check, the
+  exact repository names come from `repos`, an empty query with filters widens them);
+  null when the page has hits or is a bounded page. Claude Code hands its model the
+  structured result, not the text, so the step is a field of the output and the text
+  form prints the same sentence as `Next: …` (ADR 0078).
   `content` is a match-centered excerpt (~300 chars around the first match; tool text
   300 chars); when it is an excerpt, `content_range` gives its `{start, end, total}` in
   UTF-8 bytes of the full content (the unit `get` cursors use) and the text rendering

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatGet, formatMessage, formatSearch, formatSql } from "./index.js";
+import {
+  formatGet,
+  formatMessage,
+  formatSearch,
+  formatSql,
+  searchNextStep,
+} from "./index.js";
 import {
   messageSchema,
   type GetOutput,
@@ -119,6 +125,7 @@ const search: SearchOutput = {
   truncated_response: true,
   total: { sessions: 4, hits: 12 },
   partial: null,
+  next: null,
 };
 describe("shared text and structured formatters", () => {
   it("formats search blocks with exact session/sequence identities, hit markers, and continuation", () => {
@@ -195,8 +202,22 @@ describe("shared text and structured formatters", () => {
         truncated_response: false,
         total: { sessions: 0, hits: 0 },
         partial: null,
+        next: null,
       }).text,
     ).toBe("0 hits in 0 sessions");
+    // A page with no hit prints its next step right after the totals (R-SRCH-17).
+    expect(
+      formatSearch({
+        blocks: [],
+        cursor: null,
+        truncated_response: false,
+        total: { sessions: 0, hits: 0 },
+        partial: null,
+        next: "No indexed message contains every word of the query.",
+      }).text,
+    ).toBe(
+      "0 hits in 0 sessions\n\nNext: No indexed message contains every word of the query.",
+    );
     // A bounded page after a time limit (R-SRCH-16) says what it covered, right after the totals.
     const partial = formatSearch({
       ...search,
@@ -314,5 +335,38 @@ describe("shared text and structured formatters", () => {
       "2 rows (capped). Add LIMIT/OFFSET to page.",
     );
     expect(formatted.text).toContain("truncated_cells: [[0,1]]");
+  });
+});
+
+describe("search next step", () => {
+  // @req R-SRCH-17
+  it("names the shorter query, the filters to check or the sql that lists what is indexed, only for a page with no hit", () => {
+    expect(searchNextStep({ query: "payments retry" }, 3)).toBeNull();
+    const long = searchNextStep(
+      { query: "judge verbalization attempt classify launch" },
+      0,
+    );
+    expect(long).toContain("every word");
+    expect(long).toContain("2 rarest words");
+    expect(long).not.toContain("repo_name");
+    const filtered = searchNextStep(
+      { query: "blog post", filters: { repo_name: "acme/site" } },
+      0,
+    );
+    expect(filtered).toContain("Retry without the filters");
+    expect(filtered).toContain("SELECT * FROM repos");
+    expect(filtered).not.toContain("2 rarest words");
+    const both = searchNextStep(
+      { query: "one two three", filters: { role: ["USER"] } },
+      0,
+    );
+    expect(both).toContain("2 rarest words");
+    expect(both).toContain("Then check them");
+    const bare = searchNextStep({ query: "blog" }, 0);
+    expect(bare).toContain("synonym");
+    expect(bare).toContain("FROM sessions ORDER BY started_at DESC LIMIT 20");
+    expect(
+      searchNextStep({ query: "  ", filters: { repo_name: "empty" } }, 0),
+    ).toContain("No visible session matches these filters");
   });
 });

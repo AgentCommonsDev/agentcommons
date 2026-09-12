@@ -3798,6 +3798,8 @@ export interface operations {
               /** @description How many of the most recently active matching sessions this bounded page searched */
               sessions_searched: number;
             } | null;
+            /** @description What to try when this page has no hit: the shorter query, the filter to drop or the sql that lists the indexed repositories; null when the page has hits */
+            next: string | null;
           };
         };
       };

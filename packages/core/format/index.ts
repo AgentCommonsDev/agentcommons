@@ -4,6 +4,8 @@ export {
   spawnPlacements,
 } from "./session-navigation.js";
 export type { SpawnedRun } from "./session-navigation.js";
+export { searchNextStep } from "./search-next.js";
+export type { SearchNextInput } from "./search-next.js";
 import type { SearchOutput } from "../schemas/search.js";
 import type { GetOutput, Message, SessionHeader } from "../schemas/get.js";
 import type { SqlOutput } from "../schemas/sql.js";
@@ -98,6 +100,8 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
           `Partial result: the full search exceeded the read time limit, so this page covers the ${String(result.partial.sessions_searched)} most recently active sessions that match the filters. Narrow with filters (repo_name, since, until, user_email) to search the rest.`,
         ]
       : []),
+    // A page with no hit says what to try next (ADR 0078); the JSON carries the same field.
+    ...(result.next === null ? [] : [`Next: ${result.next}`]),
     ...blocks,
     ...(result.cursor === null
       ? []

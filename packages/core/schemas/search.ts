@@ -385,6 +385,12 @@ export const searchOutputSchema = z.strictObject({
     .describe(
       "Set when the full search exceeded the read time limit and this page searched only the most recently active matching sessions; null for a complete search. Narrow the filters to search the rest.",
     ),
+  next: z
+    .string()
+    .nullable()
+    .describe(
+      "What to try when this page has no hit: the shorter query, the filter to drop or the sql that lists the indexed repositories; null when the page has hits",
+    ),
 });
 export type SearchTotal = z.infer<typeof searchTotalSchema>;
 export type SearchFilters = z.infer<typeof searchFiltersSchema>;

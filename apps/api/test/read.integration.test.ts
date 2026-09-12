@@ -1260,7 +1260,7 @@ describe("read services on ClickHouse", () => {
     );
     expect(formatGet(got.result).text).toContain("reuses_made: 0");
   });
-  // @req R-DASH-37
+  // @req R-DASH-37 @req R-SRCH-17
   it("reports session, message and hit totals over the whole visible set beside every page", async () => {
     const filters = { repo_name: "host/team/repo" };
     type Listed = {
@@ -1335,10 +1335,15 @@ describe("read services on ClickHouse", () => {
       (await find(context(), { cursor: found.result.cursor })).result.total,
     ).toEqual(found.result.total);
     expect((await find(admin)).result.total).toEqual({ sessions: 3, hits: 6 });
-    expect((await find(context("org-b"))).result.total).toEqual({
-      sessions: 0,
-      hits: 0,
-    });
+    // A page with hits carries no next step; a page without one says what to try,
+    // shaped by the call (two words with filters: check the filters) (R-SRCH-17).
+    expect(found.result.next).toBeNull();
+    const missed = await find(context("org-b"));
+    expect(missed.result.total).toEqual({ sessions: 0, hits: 0 });
+    expect(missed.result.next).toContain("Retry without the filters");
+    expect(formatSearch(missed.result).text).toBe(
+      `0 hits in 0 sessions\n\nNext: ${missed.result.next ?? ""}`,
+    );
     // An empty query counts the non-thinking messages of the matching sessions.
     expect(
       (
