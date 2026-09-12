@@ -2,7 +2,10 @@
 
 Date: 2026-09-10
 Status: Accepted. Supersedes ADR 0034 (transcript tool-name classification); builds on
-ADR 0060 (attributed reads materialized by the audit projection).
+ADR 0060 (attributed reads materialized by the audit projection). Note 2026-09-12: the 916
+reads this ADR's context counted were `sql` calls posted by `curl`, fanned out by the
+window rule; ADR 0060's amendment credits one session per read and only MCP calls after the
+key's handshake, so the tile now reflects agent calls.
 
 ## Context
 

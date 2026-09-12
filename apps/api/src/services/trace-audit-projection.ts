@@ -56,6 +56,7 @@ export class TraceAuditProjectionService {
         | "appendAudit"
         | "appendSessionReads"
         | "backfillCompleted"
+        | "clearSessionReads"
         | "completeBackfill"
       >;
       readers: Pick<TraceReaders, "read">;
@@ -190,8 +191,10 @@ export class TraceAuditProjectionService {
   }
 
   /**
-   * Derives `session_reads` once from the audit history retained when the table was
-   * introduced (ADR 0060); flushes keep it current afterwards. Rows are idempotent, so a
+   * Derives `session_reads` once per attribution rule from the retained audit history
+   * (ADR 0060): each organization's stored rows are cleared and written again under the
+   * current `attributed_reads`, so a rule change corrects what an earlier rule credited;
+   * flushes keep the table current afterwards. Clearing and the rows are idempotent, so a
    * run that fails part-way simply repeats at the next maintenance tick.
    */
   async backfill(): Promise<void> {
@@ -209,6 +212,7 @@ export class TraceAuditProjectionService {
       });
       if (!page.length) break;
       for (const organization of page) {
+        await traces.clearSessionReads(organization.id);
         attributed += await this.copyAttributedReads(organization.id, null);
         organizations += 1;
       }

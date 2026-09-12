@@ -1,7 +1,9 @@
 import { sqlIdentifier, sqlString } from "../client.js";
 import { controlTableSql } from "../control.js";
 import {
+  attributedReadRule,
   attributedReadSql,
+  handshakeSql,
   NO_TARGET_SESSION_ID,
   searchReadActions,
   SESSION_READS_TABLE,
@@ -69,16 +71,26 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
  LEFT ANY JOIN visible_sessions top_result ON top_result.session_id=${auditTarget("top_session_id")} AND top_result.purged_at IS NULL
  WHERE a.status_code BETWEEN 200 AND 299 AND a.action IN ('search','get','sql') AND (a.action!='get' OR target.session_id IS NOT NULL) AND (${admin} OR a.action='get')`,
   );
-  // An audit read credited to the session active on the calling installation (ADR 0060).
-  // This is the one definition of an attribution: the audit projection worker reads it for
-  // the rows it just projected and copies them into `session_reads`; every caller-facing
-  // reuse relation aggregates that table instead of re-deriving the graph.
+  // An audit read credited to one session (ADR 0060, amended 2026-09-12): among the
+  // sessions on the calling installation active at the read or observed within ten minutes
+  // after it, the one whose hook observation (`metrics_active_windows.active_from`: its
+  // start, a lifecycle or a sync receipt) is nearest to the read, and only once the same
+  // key has completed the MCP handshake on that installation, so a raw tools/call posted by
+  // curl is not agent reuse. One row per audit id. This is the one definition of an
+  // attribution: the audit projection worker reads it for the rows it just projected and
+  // copies them into `session_reads`; every caller-facing reuse relation aggregates that
+  // table instead of re-deriving the graph.
   const noTarget = `toUUID(${sqlString(NO_TARGET_SESSION_ID)})`;
+  const distance = `abs(dateDiff('second',w.active_from,a.ts))`;
   add(
     "attributed_reads",
-    `SELECT DISTINCT a.audit_id AS audit_id,w.session_id AS session_id,a.ts AS read_at,a.action AS action,if(a.action='get',${auditTarget("session_id")},${noTarget}) AS target_session_id,a.user_id AS reader_user_id,a.user_email AS reader_email,s.harness AS reader_harness
- FROM api_ro.audit_base a JOIN api_ro.metrics_active_windows w ON w.installation_id=a.installation_id AND a.ts>=w.active_from AND a.ts<w.active_to JOIN ${projection} s ON s.session_id=w.session_id
- WHERE ${attributedReadSql("a")}`,
+    `SELECT a.audit_id AS audit_id,argMin(w.session_id,${distance}) AS session_id,a.ts AS read_at,a.action AS action,if(a.action='get',${auditTarget("session_id")},${noTarget}) AS target_session_id,a.user_id AS reader_user_id,a.user_email AS reader_email,argMin(s.harness,${distance}) AS reader_harness
+ FROM api_ro.audit_base a
+ JOIN (SELECT h.installation_id AS installation_id,h.api_key_id AS api_key_id,min(h.ts) AS first_ts FROM api_ro.audit_base h WHERE ${handshakeSql("h")} GROUP BY h.installation_id,h.api_key_id) k ON k.installation_id=a.installation_id AND k.api_key_id=a.api_key_id
+ JOIN api_ro.metrics_active_windows w ON w.installation_id=a.installation_id AND a.ts>=w.active_from-INTERVAL ${String(attributedReadRule.observationAfterSeconds)} SECOND AND a.ts<w.active_to
+ JOIN ${projection} s ON s.session_id=w.session_id
+ WHERE ${attributedReadSql("a")} AND a.ts>=k.first_ts
+ GROUP BY a.audit_id,a.ts,a.action,target_session_id,a.user_id,a.user_email`,
   );
   // Native row policies fence organization, retention and source/target visibility; the
   // organization predicate only narrows the scan to the caller's primary-key range.

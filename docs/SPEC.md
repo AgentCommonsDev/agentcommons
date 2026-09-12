@@ -2043,10 +2043,10 @@ the first accepted ingest can attribute its own audit row. Cookie operations, ke
 no accepted ingest, and historical rows without attribution have null installation ids.
 The composite installation foreign key prevents cross-organization attribution. The audit
 projection worker, which copies audit rows into ClickHouse, also credits each successful
-key-authenticated MCP/REST `search`, `get` or `sql` row to the sessions active on its
-installation at that instant and stores those `session_reads` rows in the same flush; the
-reuse relations of §10 read them (ADR 0060). A one-time backfill derives the rows for the
-audit history retained when the table is introduced and records completion.
+key-authenticated MCP `search`, `get` or `sql` row to the one session nearest it on its
+installation (§10) and stores that `session_reads` row in the same flush; the reuse
+relations of §10 read them (ADR 0060). A backfill named for the attribution rule clears
+and derives the rows for the retained audit history once and records completion.
 
 ### 9.4 Public exposure
 
@@ -2586,9 +2586,8 @@ one row per captured session: `session_id`, `started_at`, `repo_name`, `harness`
 `sessions` view and the `get` header carry the same `agentcommons_search_calls` per
 session, and the Sessions page filters and sorts on it (§7.6). A call is a
 `search` or `sql` row of `session_reads` credited to the session (ADR 0060, ADR 0067): a
-successful key-authenticated MCP/REST call made while the session was active on the
-calling installation, the same attribution that defines reuse. `get` reads are reuse, not
-search. Transcript tool names play no part, so the count does not depend on how the MCP
+successful key-authenticated MCP tool call credited to the session by the one attribution
+that also defines reuse (below). `get` reads are reuse, not search. Transcript tool names play no part, so the count does not depend on how the MCP
 server is aliased in a harness; the metric appears when the audit projection flushes.
 Repeat calls are those after the first. Selection uses the session's start time. Dashboard
 tiles count the selected sessions and the sessions with at least one call; the Usage API
@@ -2601,15 +2600,20 @@ saved time or causation. The exact transcript tool-identity classification and t
 identities remain the normalizers' contract.
 
 Reuse has one canonical `api_ro.reuse_edges` relation, shared by weekly, session and member
-aggregates. It is materialized, not derived on read (ADR 0060): the audit projection worker
-credits each successful key-authenticated MCP/REST `search`, `get` or `sql` audit row to the
-sessions active on its installation at that instant, as `api_ro.metrics_active_windows`
-defines activity, and stores one `session_reads` row per pair in the same flush that
-projects the audit row; `reuse_edges` is the `get` rows whose target is another session,
-and `session_reuse`, `sessions.reuse_count`, `member_impact`, the `metrics_reuse_*` flags
-and memory-assisted attribution aggregate those rows. An edge therefore appears when the
-projection flushes, and a window is judged from the receipts known at that time. A
-one-time backfill derives the rows for retained audit history and records its completion.
+aggregates. It is materialized, not derived on read (ADR 0060, amended 2026-09-12): the
+audit projection worker credits each successful key-authenticated MCP `search`, `get` or
+`sql` audit row to exactly one session, the session on the calling installation whose
+hook observation (its start, a lifecycle or a sync receipt, as `api_ro.metrics_active_windows`
+records them) is nearest to the read, among the sessions active at the read or observed
+within ten minutes after it, and only once the same key has completed the MCP handshake
+(`mcp.tools.list`) on that installation, so a raw `tools/call` posted by curl or a script
+and REST reads are not agent reuse; it stores one `session_reads` row per read in the same
+flush that projects the audit row. `reuse_edges` is the `get` rows whose target is another
+session, and `session_reuse`, `sessions.reuse_count`, `member_impact`, the `metrics_reuse_*`
+flags and memory-assisted attribution aggregate those rows. An edge therefore appears when
+the projection flushes, and a window is judged from the receipts known at that time. A
+backfill named for the rule (`session_reads_v2`) clears each organization's rows and
+derives them again from retained audit history once, then records its completion.
 Native row policies on the table require the caller's organization, audit retention, and a
 published, unpurged, caller-visible source and target, so both reading and read sessions
 must be caller-visible and nonpurged. Only

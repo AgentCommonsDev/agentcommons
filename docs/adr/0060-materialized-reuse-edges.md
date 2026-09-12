@@ -2,7 +2,8 @@
 
 Date: 2026-09-10
 Status: Accepted. Refines ADR 0047 ("Reuse analytics enumerate published native sessions");
-the reuse semantics of spec §10 are unchanged.
+the reuse semantics of spec §10 are unchanged. Amended 2026-09-12 (decision 2, below): one
+session per read, MCP only, after the key's handshake.
 
 ## Context
 
@@ -88,3 +89,37 @@ The internal helper views this ADR introduced (`session_reads_base`, `reuse_edge
 `session_reads` once; the target owner comes from the sessions table, not a dictionary. The
 migration drops the retired views. Semantics, columns and the `session_reads` table are
 unchanged (ADR 0062 records the control-read mechanism).
+
+## Amendment 2026-09-12: one session per read, after the handshake
+
+Measured on the hosted instance (organization `zpghl`, 14 days): 158 attributed audit rows
+had become 928 `session_reads` rows over 20 sessions, because decision 2 credited a read to
+every session whose active window contained it, and a developer machine keeps many Claude
+Desktop sessions open at once (windows of 454 sessions overlapped one read). 152 of the 158
+were `sql` calls posted to `/mcp` by `curl` from a machine whose Claude Code registration
+still carried the placeholder key: manual reads, counted as the agents' reuse in ADR 0067
+and ADR 0071. Decision 2 is amended:
+
+- **One session per read.** `attributed_reads` credits a read to the session on the
+  calling installation whose hook observation (`metrics_active_windows.active_from`: its
+  start, a lifecycle or a sync receipt) is nearest to the read, among sessions active at the
+  read or observed within ten minutes after it. The reading session's own hooks fire around
+  the call, so the nearest observation names it: on the production sample the rule agreed
+  with the transcripts' own `mcp__agentcommons__*` tool calls in 8 of 8 reads, where "most
+  recent observation before the read" agreed in 7.
+- **MCP tool calls, after the handshake.** `attributedReadRule.transports` is `["mcp"]`,
+  and a read counts only once the same key completed `mcp.tools.list` (200) on the same
+  installation. A real MCP client always handshakes before `tools/call`; curl and scripts
+  do not. REST reads by key are not agent reuse.
+- **Re-derived once per rule.** The backfill name carries the rule (`session_reads_v2`);
+  when the marker is missing, maintenance clears each organization's `session_reads` rows
+  (a synchronous `ALTER TABLE … DELETE`, the writer's existing grant) and derives them
+  again from the retained audit history. On the production sample the table goes from 928
+  rows over 20 sessions to 9 rows over 6 sessions (7 `search`, 2 `sql`), each on the session
+  that made the call.
+- Cost: `attributed_reads` reads `audit_base` twice (the reads and the grouped handshakes);
+  it is the worker path, bounded to the flush's audit ids or the one-time derivation, not a
+  session read path. The row policies and every consuming view are unchanged.
+- Residual ambiguity: two sessions on one machine whose hooks fire within the same seconds
+  of a read can still be confused; the transcript's own tool-call record would settle it and
+  is the improvement to measure next, not to ship unmeasured.

@@ -185,7 +185,11 @@ async function credit(
   await db.traces.appendSessionReads(rows);
   return rows;
 }
-/** A successful key-authenticated MCP call audited from the envelope's installation at `time`. */
+/**
+ * A successful key-authenticated MCP call audited from the envelope's installation at
+ * `time`, preceded by the key's MCP handshake there (R-AUD-05: a call without one is not
+ * agent reuse).
+ */
 async function agentCall(
   context: ServiceContext,
   input: IngestEnvelope,
@@ -194,6 +198,28 @@ async function agentCall(
   target?: string,
 ) {
   const caller = requireCaller(context);
+  const handshake = await db.prisma.auditEvent.create({
+    data: {
+      organizationId: caller.organizationId,
+      id: randomUUID(),
+      ts: new Date(time.getTime() - 1000),
+      requestId: randomUUID(),
+      userId: caller.userId,
+      apiKeyId: caller.apiKeyId,
+      installationId: input.installationId,
+      authMethod: "key",
+      ip: "fixture",
+      transport: "mcp",
+      action: "mcp.tools.list",
+      statusCode: 200,
+      durationMs: 1,
+      resourceIds: [],
+      detail: {},
+    },
+  });
+  await db.prisma.traceAuditOutbox.create({
+    data: { auditId: handshake.id },
+  });
   const row = await db.prisma.auditEvent.create({
     data: {
       organizationId: caller.organizationId,

@@ -625,6 +625,18 @@ export class TraceRepository {
         format: "JSONEachRow",
       });
   }
+  /**
+   * Removes an organization's stored attributions so a derivation under a changed rule
+   * writes the corrected set; synchronous, like the purge mutations.
+   */
+  async clearSessionReads(organizationId: string): Promise<void> {
+    await this.client.command({
+      query: `ALTER TABLE ${sqlIdentifier(this.config.database)}.${sqlIdentifier(SESSION_READS_TABLE)} DELETE WHERE organization_id={organization:String}`,
+      query_params: { organization: z.string().min(1).parse(organizationId) },
+      clickhouse_settings: { mutations_sync: "2" },
+      abort_signal: AbortSignal.timeout(30000),
+    });
+  }
   /** Whether the named one-time derivation has run to completion on this corpus. */
   async backfillCompleted(name: string): Promise<boolean> {
     const result = await queryTrace(

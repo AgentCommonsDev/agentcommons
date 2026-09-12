@@ -99,7 +99,7 @@ it("rolls back audit and outbox together and gives concurrent publishers disjoin
   for (const row of events) expect(await stored(row.id)).toHaveLength(1);
 });
 // @req R-AUD-05 @req R-GET-04 @req R-DASH-17
-it("credits projected reads to the sessions active on the calling installation and backfills retained history once", async () => {
+it("credits each projected read to the one session nearest it on the calling installation, only after the key's MCP handshake, and re-derives retained history once per rule", async () => {
   const fixtures = new TraceFixtures(db);
   defer(() => fixtures.close());
   const metrics = new MetricsFixtures(db, fixtures);
@@ -128,10 +128,43 @@ it("credits projected reads to the sessions active on the calling installation a
     end: metricsAt(7, 8),
     repo: "prior",
   });
-  /** A successful key-authenticated MCP read from the source's installation at `time`. */
+  // A second session on the same installation, started while the source is active and
+  // observed again at 9:44, so a read at 9:45 is nearest to it and one at 9:30 is not.
+  const sibling = await metrics.session(org.context, {
+    start: metricsAt(7, 9, 41),
+    end: metricsAt(7, 12),
+    repo: "sibling",
+    installationId: source.installationId,
+  });
+  await metrics.receipt(sibling, {
+    behavior: "start",
+    sentAt: metricsAt(7, 9, 41),
+    sourcePos: 0,
+    control: true,
+  });
+  await metrics.receipt(sibling, {
+    behavior: "sync",
+    sentAt: metricsAt(7, 9, 44),
+    sourcePos: 3,
+  });
+  await metrics.receipt(sibling, {
+    behavior: "end",
+    sentAt: metricsAt(7, 12),
+    sourcePos: 10,
+    control: true,
+  });
+  /**
+   * A successful key-authenticated read from the source's installation at `time`; MCP
+   * from the caller's key unless told otherwise.
+   */
   async function read(
     time: Date,
-    options: { action?: "get" | "search"; queue?: boolean } = {},
+    options: {
+      action?: "get" | "search" | "mcp.tools.list";
+      queue?: boolean;
+      transport?: "mcp" | "rest";
+      apiKeyId?: string;
+    } = {},
   ) {
     const action = options.action ?? "get";
     const row = await db.prisma.auditEvent.create({
@@ -141,11 +174,11 @@ it("credits projected reads to the sessions active on the calling installation a
         ts: time,
         requestId: randomUUID(),
         userId: caller.userId,
-        apiKeyId: caller.apiKeyId,
+        apiKeyId: options.apiKeyId ?? caller.apiKeyId,
         installationId: source.installationId,
         authMethod: "key",
         ip: "fixture",
-        transport: "mcp",
+        transport: options.transport ?? "mcp",
         action,
         statusCode: 200,
         durationMs: 1,
@@ -188,9 +221,18 @@ it("credits projected reads to the sessions active on the calling installation a
     });
     return response.json<Record<string, unknown>>();
   }
+  // The key's MCP handshake on this installation; reads before it are not agent calls.
+  const early = await read(metricsAt(7, 9, 5), { action: "search" });
+  await read(metricsAt(7, 9, 6), { action: "mcp.tools.list" });
   const inside = await read(metricsAt(7, 9, 30));
-  const outside = await read(metricsAt(7, 11));
-  const search = await read(metricsAt(7, 9, 31), { action: "search" });
+  const outside = await read(metricsAt(7, 13));
+  const search = await read(metricsAt(7, 9, 29), { action: "search" });
+  const rest = await read(metricsAt(7, 9, 32), { transport: "rest" });
+  const stranger = await read(metricsAt(7, 9, 33), {
+    apiKeyId: randomUUID(),
+  });
+  // Both windows hold 9:45; the sibling's 9:44 receipt is the nearest observation.
+  const shared = await read(metricsAt(7, 9, 45), { action: "search" });
   await drainTraceAudit(projection);
   expect(await storedReads(inside.id)).toEqual([
     { session_id: source.id, target_session_id: target.id, action: "get" },
@@ -203,6 +245,17 @@ it("credits projected reads to the sessions active on the calling installation a
       action: "search",
     },
   ]);
+  expect(await storedReads(shared.id)).toEqual([
+    {
+      session_id: sibling.id,
+      target_session_id: NO_TARGET_SESSION_ID,
+      action: "search",
+    },
+  ]);
+  // Before the handshake, over REST, or from a key that never handshook: not credited.
+  expect(await storedReads(early.id)).toEqual([]);
+  expect(await storedReads(rest.id)).toEqual([]);
+  expect(await storedReads(stranger.id)).toEqual([]);
   const views = await db.traceReaders.read(caller, async (client) => ({
     edges: (
       await client.query(
@@ -243,13 +296,39 @@ it("credits projected reads to the sessions active on the calling installation a
   ]);
   expect(views.flags).toEqual([{ reused: 1, memory_assisted: 1 }]);
   // A deployment that projected audit rows before session_reads existed holds them in the
-  // native audit copy without attribution; maintenance derives those rows exactly once.
-  const historical = await read(metricsAt(7, 9, 45), { queue: false });
+  // native audit copy without attribution; maintenance derives those rows exactly once
+  // per rule, clearing what an earlier rule credited: a fanned-out row for the shared
+  // read disappears while the flush's rows are written again.
+  const historical = await read(metricsAt(7, 9, 20), { queue: false });
   await db.traces.appendAudit([projected(historical)]);
+  await db.traces.appendSessionReads([
+    {
+      organization_id: caller.organizationId,
+      session_id: source.id,
+      audit_id: shared.id,
+      read_at: shared.ts,
+      action: "search",
+      target_session_id: NO_TARGET_SESSION_ID,
+      reader_user_id: caller.userId,
+      reader_email: org.email,
+      reader_harness: "CLAUDE_CODE",
+    },
+  ]);
+  expect((await storedReads(shared.id)).length).toBe(2);
   expect(await db.traces.backfillCompleted(SESSION_READS_BACKFILL)).toBe(false);
   await projection.backfill();
   expect(await storedReads(historical.id)).toEqual([
     { session_id: source.id, target_session_id: target.id, action: "get" },
+  ]);
+  expect(await storedReads(inside.id)).toEqual([
+    { session_id: source.id, target_session_id: target.id, action: "get" },
+  ]);
+  expect(await storedReads(shared.id)).toEqual([
+    {
+      session_id: sibling.id,
+      target_session_id: NO_TARGET_SESSION_ID,
+      action: "search",
+    },
   ]);
   expect(await db.traces.backfillCompleted(SESSION_READS_BACKFILL)).toBe(true);
   const later = await read(metricsAt(7, 9, 50), { queue: false });
