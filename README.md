@@ -4,10 +4,10 @@
 
 <h1 align="center">AgentCommons</h1>
 
-<p align="center">Shared history, governance, and observability for your team's coding agents.</p>
+<p align="center">Your coding agents search the team's past sessions before they change code.</p>
 
 <p align="center">
-  <a href="#get-your-team-started">Install</a> ·
+  <a href="#get-started">Install</a> ·
   <a href="docs/README.md">Docs</a>
 </p>
 
@@ -17,12 +17,84 @@
   <a href="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/live-canary.yml"><img src="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/live-canary.yml/badge.svg" alt="Live harness canary status"></a>
 </p>
 
-AgentCommons keeps sessions from Claude Code, Codex, Gemini CLI, and pi searchable
-in one place. People and agents search the same history, so nobody repeats an
-investigation. Dashboards and SQL show what every agent did. Redaction, visibility,
-purge, and audit rules apply once across the organization. Teams and their agents get
-more effective because nobody repeats work, leaders see what agents are doing, and
-admins enforce controls once for everyone.
+AgentCommons records every Claude Code, Codex, Gemini CLI and pi session on your team's
+machines into one searchable index. People search it in a dashboard. Agents search the
+same index over MCP, so an agent about to fix a test can first read the session where a
+teammate's agent fixed the same test last week. Failed attempts and abandoned approaches
+rarely reach a pull request; the index keeps them.
+
+## How it works
+
+1. **Record.** A hook in each coding tool ships the transcript to your server: prompts,
+   thinking, tool calls, tool output and subagent runs. The server redacts secrets before
+   it stores anything.
+2. **Search.** Teammates search prompts, decisions and tool output across every tool, open
+   the source session, and query all of it with SQL and dashboards.
+3. **Recall.** Agents get three MCP tools, `search`, `get` and `sql`, and a standing
+   instruction in their global and repository instructions files to search before changing
+   code. In Claude Code, Codex and Gemini CLI the hook also names earlier sessions on the
+   same repository when a prompt matches one; Claude Code and Gemini CLI get an overview
+   of the newest ones at session start.
+
+AgentCommons links a session to the earlier sessions it reads, so Home shows how much
+prior work is reused and each session page lists the later sessions that read it.
+
+## Get started
+
+1. Sign in and create or join your organization. It needs only a name.
+2. Open **Install**, create a key for your machine and run the one-line command in a
+   terminal with Node.js 20 or newer. It installs the capture hook for every coding tool on
+   the machine and registers the `agentcommons` MCP server for Claude Code, Codex and Gemini
+   CLI with the same key; pi reaches the same tools through its extension. Codex asks you to
+   trust the hooks once. Installed hooks update themselves after a server upgrade, so run
+   the installer again only on a new machine or for a new key.
+3. Start a coding session. It appears on the Install page within seconds and stays under
+   **Sessions**.
+4. Ask your agent whether anyone has worked on the problem before. It answers from
+   `search`, `get` and `sql`.
+
+The installer writes the search-first instruction into each tool's global instructions
+file on that machine. The first captured session in a checkout writes the same block into
+the repository's `AGENTS.md` and links `CLAUDE.md` and `GEMINI.md` to it; commit those
+files so teammates' agents read it with or without the install. To add the block before
+the first session, run `node ~/.agentcommons/hook.js guidance --repo .` in the checkout.
+`--off` keeps a repository out. `guidance.auto: false` in `~/.agentcommons/config.json` or
+`AGENTCOMMONS_GUIDANCE_AUTO=0` turns the automatic write off for a machine.
+
+A machine without the hook can still give its agents the tools:
+
+```bash
+claude mcp add -s user -t http agentcommons https://your-server/mcp -H "Authorization: Bearer <key>"
+codex mcp add agentcommons --url https://your-server/mcp --bearer-token-env-var AGENTCOMMONS_API_KEY
+```
+
+Gemini CLI takes an `mcpServers` entry in its settings. The **API reference** page in the
+app documents the same routes over REST.
+
+## What you get
+
+- **Search across tools.** Prompts, decisions and tool output from Claude Code, Codex,
+  Gemini CLI and pi in one list, with filters and match counts.
+- **Session pages.** The transcript with thinking, tool calls and subagent runs nested
+  under the call that spawned them, the later sessions that read it, and a CSV export.
+- **SQL and dashboards.** ClickHouse SQL over read-only views of sessions, messages, files
+  and tools, with completions and a schema briefing to paste into your assistant. Home is
+  the organization's default dashboard; each data tile is a query, and members add
+  dashboards in the editor or through MCP.
+- **Agent tools.** `search`, `get` and `sql` over MCP by default. Dashboard tools appear
+  when a key grants the `dashboards` group. A second server, `agentcommons-admin`, gives an
+  agent with a management key the administration tools for members, keys, redaction,
+  session visibility and installations.
+- **Isolation and audit.** Native ClickHouse row policies enforce organization
+  boundaries, visibility and purge on the tables themselves. Every operation writes one
+  audit row.
+- **Redaction.** Runs before every write, from shipped rules plus your own regex and
+  secretlint policies, with a full rescan. The ledger keeps a masked preview and a salted
+  fingerprint per hit, never the value, so an admin can recognize and rotate a leaked key.
+- **Administration.** Members, keys and Google sign-in domains. Hide or purge sessions.
+  See each machine's hook status.
+- **Yours to run.** One Docker Compose host, signed images from CI, an hourly updater with
+  rollback, and hooks that update themselves.
 
 ## See it
 
@@ -31,7 +103,7 @@ admins enforce controls once for everyone.
   <img src="docs/assets/screenshots/home-light.png" alt="The Team overview dashboard seen by an admin: captured sessions, sessions that searched, sessions reusing prior work and the reuse rate as stat tiles, a weekly reuse rate chart, a donut of sessions by coding tool, sessions per day and the most active repositories." width="100%">
 </picture>
 
-<p align="center"><sub><b>Home, as an admin.</b> The organization's default dashboard. Every tile is a SQL query over the captured sessions, and members can add their own dashboards.</sub></p>
+<p align="center"><sub><b>Home, as an admin.</b> Captured sessions, sessions that searched, and the reuse rate. Each data tile is a SQL query over the captured sessions.</sub></p>
 
 <table>
   <tr>
@@ -40,14 +112,14 @@ admins enforce controls once for everyone.
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/sessions-dark.png">
         <img src="docs/assets/screenshots/sessions-light.png" alt="The Sessions list seen by an admin: full-text search over messages, filters, a count of matching sessions and messages, one row per captured session with its title, coding tool, repository and branch, user, start time, message count and status, and the Organization admin section in the sidebar." width="100%">
       </picture>
-      <p align="center"><sub><b>Sessions, as an admin.</b> Search prompts, decisions and tool output across every coding tool, or browse each captured session. Admins also see the Organization section: people, keys, audit log, moderation, redaction, status and settings.</sub></p>
+      <p align="center"><sub><b>Sessions, as an admin.</b> Full-text search over every tool's sessions, with filters and counts. Admins also see the Organization section.</sub></p>
     </td>
     <td width="50%" valign="top">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/session-dark.png">
         <img src="docs/assets/screenshots/session-light.png" alt="One session page: header with coding tool, model, user and repository, a Download CSV action, the sessions that reused it, and the transcript with a subagent run expanded inline under the Agent call that spawned it." width="100%">
       </picture>
-      <p align="center"><sub><b>Session, as a member.</b> The transcript with thinking, tool calls and a subagent run nested under the call that spawned it. The header lists later sessions that read this one.</sub></p>
+      <p align="center"><sub><b>Session, as a member.</b> The transcript with a subagent run nested under the call that spawned it. The header lists the later sessions that read this one.</sub></p>
     </td>
   </tr>
   <tr>
@@ -56,84 +128,24 @@ admins enforce controls once for everyone.
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/sql-dark.png">
         <img src="docs/assets/screenshots/sql-light.png" alt="The SQL page: a schema explorer of read-only views, an editor with a query grouping sessions by repository and coding tool, and the result table." width="100%">
       </picture>
-      <p align="center"><sub><b>SQL, as a member.</b> ClickHouse SQL over read-only views of sessions, messages, files and tools, with completions and a schema briefing your assistant can use.</sub></p>
+      <p align="center"><sub><b>SQL, as a member.</b> ClickHouse SQL over read-only views, with a schema explorer and completions.</sub></p>
     </td>
     <td width="50%" valign="top">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/install-dark.png">
         <img src="docs/assets/screenshots/install-light.png" alt="The Install page: a form to create a key for a machine, a picker for an existing key, per-tool notes, and the one-line install command with the key masked." width="100%">
       </picture>
-      <p align="center"><sub><b>Install, as a member.</b> Create a key for the machine and run one command. It installs the capture hook for every coding tool and connects the agents over MCP.</sub></p>
+      <p align="center"><sub><b>Install, as a member.</b> Create a key for the machine and run one command.</sub></p>
     </td>
   </tr>
 </table>
 
-## History, governance, and observability
+## Run it yourself
 
-- **Find prior work.** Search prompts, decisions, and tool calls across Claude Code, Codex, Gemini CLI, and pi sessions. Agents search through MCP; people search in the app.
-- **Follow the evidence.** Open the source session, its subagent runs, and the later sessions that read it.
-- **See what agents do.** Home is your organization's default dashboard, and you can add more in the visual editor or through MCP. The SQL page queries every session with completions, live diagnostics, and a schema briefing you can copy for your assistant.
-- **Control access.** Manage members, keys, and Google sign-in domains. Redact secrets before storage, add custom policies, hide or purge sessions, review the audit log, and check each machine's hook status.
-
-Your history stays with your team when you change tools or model vendors.
-Versioned `AGENTS.md`, `CLAUDE.md`, and skills capture your instructions; session
-history supplies the evidence behind them.
-
-## Get your team started
-
-1. Sign in and create or join your organization. A new organization needs only a name.
-2. Open **Install**. Create a key for your machine and copy the command. Run it in a
-   terminal with Node.js 20 or newer; it installs the capture hook for every coding tool
-   on that machine. Codex asks you to trust the hooks once. Installed hooks update
-   themselves within an hour of a server upgrade, so re-run the installer only on a new
-   machine or for a new key.
-3. Start a coding session. It appears on the Install page within seconds and stays under
-   **Sessions**. **Home** shows captured sessions, search use, reuse, and the charts your
-   team adds.
-4. Ask your agent: “Has anyone already worked on this problem?” The installer also
-   connects Claude Code, Codex, and Gemini CLI on that machine to AgentCommons over MCP
-   with the same key, so the agent can search before it starts. By default the agent gets
-   three read tools: search, open a source session, and run SQL. Dashboard tools appear
-   only when the key grants the `dashboards` tool group. pi reaches the same tools through
-   its AgentCommons extension.
-
-The install writes search-first guidance into each tool's global instructions file on
-that machine. The first captured session in a checkout adds the same block to the
-repository's AGENTS.md and links CLAUDE.md and GEMINI.md to it. Commit those files so
-teammates' agents read the guidance, with or without the install. To add it before the
-first session, run `node ~/.agentcommons/hook.js guidance --repo .` in the checkout, or
-copy the block from the Install page. To keep a repository out, run the same command with
-`--off`. To turn the automatic write off for a machine, set `guidance.auto` to `false` in
-`~/.agentcommons/config.json` or export `AGENTCOMMONS_GUIDANCE_AUTO=0`. Hooked sessions
-also get a one-line reminder every 25 prompts saying how many earlier sessions touch the
-repository, so the agent searches before it edits.
-
-If the installer did not detect a tool, or a machine has no hook, add the server by hand:
-
-```bash
-claude mcp add -s user -t http agentcommons https://your-server/mcp -H "Authorization: Bearer <key>"
-codex mcp add agentcommons --url https://your-server/mcp --bearer-token-env-var AGENTCOMMONS_API_KEY
-```
-
-Gemini CLI takes an `mcpServers` entry in its settings. **API reference** in the app
-documents the same REST routes.
-
-Codex needs no trust prompt for MCP servers. The one-time trust prompt covers hooks only.
-In scripts, run `codex exec` with stdin closed (`codex exec "…" < /dev/null`), or it waits
-on "Reading additional input from stdin…" until the timeout. Verified on 2026-09-10 with
-Codex 0.153.4 and Claude Code 2.1.266 against a hosted instance.
-
-SaaS plans start with **1,000 captured records/month free**. **Pro is $100/month**
-with 10,000 included records and configured usage charges; embeddings add
-**$50/month** plus indexed-message usage. Enterprise teams can schedule a demo
-when a calendar is configured. Operators can run this offering themselves; no
-public hosted launch is implied.
-
-## Run it for your team
-
-Clone the repository, copy `.env.example` to `.env`, set `PUBLIC_URL`, the PostgreSQL and
-ClickHouse passwords, and `BETTER_AUTH_SECRET`, and point the database URLs at host `db`
-as the comments describe. Then start the published image and create an owner:
+You need Docker and a host with a public hostname. Clone the repository, copy
+`.env.example` to `.env`, set `PUBLIC_URL`, the PostgreSQL and ClickHouse passwords and
+`BETTER_AUTH_SECRET`, and point the database URLs at host `db` as the comments describe.
+Then start the published image and create an owner:
 
 ```bash
 docker compose pull
@@ -141,15 +153,14 @@ docker compose up -d
 docker compose exec api pnpm db:seed --admin you@example.com --organization your-team --name "Your team"
 ```
 
-The seed prints a setup link. Open it, set your password, and continue with **Install**.
-For HTTPS on one host, add `docker-compose.caddy.yml` (set
-`COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml` in `.env`): Caddy obtains the
-certificate for `PUBLIC_URL` and proxies to the API.
+The seed prints a setup link. Open it, set your password and continue with **Install**.
+For HTTPS on one host, add `docker-compose.caddy.yml` to `COMPOSE_FILE` in `.env`; Caddy
+obtains the certificate for `PUBLIC_URL` and proxies to the API.
 
-Every commit on `main` that passes CI is published as
+CI publishes every passing commit on `main` as
 `ghcr.io/agentcommonsdev/agentcommons:stable` for amd64 and arm64, signed with Sigstore.
-Install the updater once so the host picks releases up on its own; it checks hourly,
-migrates the databases, restarts the API, and puts the previous image back if the new one
+Install the updater once and the host picks up releases on its own. It checks hourly,
+migrates the databases, restarts the API and puts the previous image back if the new one
 does not become ready:
 
 ```bash
@@ -159,45 +170,34 @@ sudo systemctl enable --now agentcommons-update.timer
 ```
 
 Add `docker-compose.updater.yml` to `COMPOSE_FILE` so Admin → Status shows the updater's
-last check and result.
-The updater only moves forward. Each release image carries its commit and build time, and
-the updater holds when the tag offers an older build, a rebuild of the running commit, or
-an image without those stamps; Admin → Status shows both releases and the reason. An image
-you built yourself with `docker compose build` has no stamp, so run `docker compose pull`
-and `docker compose up -d` once to move to the published release.
-The unit expects the checkout at `/opt/agentcommons/app`; change `AGENTCOMMONS_APP_DIR`
-with `systemctl edit agentcommons-update.service` if yours lives elsewhere. Set
-`AUTO_UPDATE=false` in `.env` to stop automatic updates at any time, and run
-`agentcommons-update.sh --now` to update by hand or `--status` to see the running version.
-To stay on one release, set `AGENTCOMMONS_IMAGE` to its `sha-` tag, shown on Admin →
-Status, and run `docker compose up -d`.
-To run PostgreSQL elsewhere (a managed service, another host), set
-`AGENTCOMMONS_DATABASE=external`, add `docker-compose.external-database.yml` to
-`COMPOSE_FILE`, and point the three database URLs at that server;
-`scripts/self-host/migrate-database.sh copy` moves an existing bundled database there and
-`verify` compares the row counts. On AWS the `database` stack setting in `infra/` provisions
-Aurora PostgreSQL Serverless v2 for the single-node deployment; see
-[infra/OPERATIONS.md](infra/OPERATIONS.md).
-Customer instances keep public discovery disabled. Operators can enable hosted signup
-and billing with `INSTANCE_MODE=saas`; see [environment settings](.env.example) for
-email, Stripe, and plans. AWS deployment uses Pulumi from `infra/`.
+last check and result. The unit expects the checkout at `/opt/agentcommons/app`; set
+`AGENTCOMMONS_APP_DIR` with `systemctl edit agentcommons-update.service` if yours lives
+elsewhere. `AUTO_UPDATE=false` in `.env` stops automatic updates;
+`agentcommons-update.sh --now` updates by hand and `--status` shows the running release.
+[infra/OPERATIONS.md](infra/OPERATIONS.md) covers the rest: pinning a release, the
+updater's forward-only rule, an external PostgreSQL (`AGENTCOMMONS_DATABASE=external`), and
+AWS deployment with Pulumi from `infra/`, including Aurora for the single-node stack.
+
+`INSTANCE_MODE=saas` turns on public signup, Stripe billing and the Free and Pro plans
+described in [.env.example](.env.example). Operators run this mode themselves; no public
+hosted launch is implied.
 
 For local development, see [Contributing](CONTRIBUTING.md) and the
-[configuration guide](docs/SPEC.md#appendix-b-configuration).
+[configuration reference](docs/SPEC.md#appendix-b-configuration).
 
-## Why shared history matters
+## Why a separate system
 
 [Claude Tag](https://support.claude.com/en/articles/15594475-what-is-claude-tag) and
-[OpenTag](https://www.tryopentag.com/) bring shared context into chat.
-[Shopify's River](https://shopify.engineering/under-the-river) leaves searchable
-public Slack transcripts that teams use to improve skills and prompts.
-AgentCommons applies that idea to coding work in terminals, IDEs, and CI, where
-failed experiments and decisions often never reach a pull request. It works the same
-across Claude Code, Codex, Gemini CLI, and pi, and with any tool that can call MCP or
-REST, so a team can change chat apps or agent harnesses and keep its history.
+[OpenTag](https://www.tryopentag.com/) bring shared context into chat, and
+[Shopify's River](https://shopify.engineering/under-the-river) leaves searchable Slack
+transcripts that teams mine for skills and prompts. Coding agents work in terminals, IDEs
+and CI, so a bot in Slack or one vendor's session memory misses most of the work and ties
+the record to that vendor. AgentCommons indexes the work where it happens, across four
+coding tools and anything that can call MCP or REST, so a team can change chat apps or
+coding tools and keep its history.
 
-Pre-release. See [verification](docs/VERIFICATION.md) for completed tests and live
-capture checks. AgentCommons records and indexes sessions. It does not block tool
-calls or detect suspicious behavior.
+AgentCommons is pre-release. It records and indexes sessions; it does not block tool calls
+or detect suspicious behavior. [Verification](docs/VERIFICATION.md) lists the completed
+tests and live capture checks.
 
 [Spec](docs/SPEC.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
