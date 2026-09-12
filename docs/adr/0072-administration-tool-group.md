@@ -116,3 +116,38 @@ server belongs on its own admin page.
   The installer's `agentcommons` entry keeps `alwaysLoad: true` for the default catalog
   (§6.1 step 4). The budgets of decision 5 are unchanged; the "administrator install's key"
   measurement is a management key's.
+
+## Amendment (2026-09-12): the management server is administration-only
+
+The first amendment gave the management key `sessions: [read]`, `tools: [dashboards,
+administration]` and `admin: ["*"]`. That made `agentcommons-admin` list `search`, `get`, `sql`
+and the five dashboard tools alongside the administration tools, so an admin who installed both
+servers saw `search`, `get` and `sql` twice and had two catalogs offering the same read tools.
+The user asked for a clean, non-overlapping split.
+
+`managementPermissions` becomes `{ admin: ["*"], tools: ["administration"] }`: no `sessions`
+grant, no `dashboards`. No schema change is needed. `keyPermissionsSchema` already makes
+`sessions` optional and still requires `admin: ["*"]` whenever `tools` includes
+`administration`; the catalog gate already keys `search`/`get`/`sql` on `sessions:read` and the
+dashboard tools on the `dashboards` group, so dropping both removes them from the management
+catalog. The standing admin tools (`set_visibility`, `purge`, `audit`, `status`) and the derived
+`admin_*` tools stay, because each is gated on admin authority alone and
+`requirePermission("admin")` checks admin authority, not `sessions:read`; no administration tool
+needs a read grant to function.
+
+The two servers are now a clean split with no shared tool:
+
+- `agentcommons` (everyday, everyone): `search`, `get`, `sql` — the default catalog, unchanged,
+  installed by the normal `install.sh`.
+- `agentcommons-admin` (owners and admins): the administration tools only — `set_visibility`,
+  `purge`, `audit`, `status`, and one `admin_<resource>_<verb>` per active `/admin` route.
+
+The management catalog therefore drops the three read tools and five dashboard tools from
+decision 5's "admin with administration" measurement, so it is smaller than before and stays
+well under the 40 KB administration budget. The Management MCP page (§10) and its copy say to
+keep both installed: `agentcommons` for searching prior work, `agentcommons-admin` for managing
+the organization; the everyday `agentcommons` server comes from the normal install. The
+transport contract fixture still documents the complete catalog and the `administration` group,
+so it is unchanged; the transport test adds a case asserting the management key's `tools/list`
+is exactly the administration tools, with `search`, `get`, `sql` and the dashboard tools
+absent.

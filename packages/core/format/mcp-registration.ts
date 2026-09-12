@@ -3,10 +3,11 @@ import { shellQuote } from "./install.js";
 
 /**
  * The management server (ADR 0072, amendment): a second MCP registration, `agentcommons-admin`,
- * whose key carries `sessions:read`, `admin:*` and both tool groups, so an agent can manage
- * members, keys, redaction, moderation, dashboards and installations while the everyday
- * `agentcommons` server keeps `search`, `get` and `sql`. The dashboard's Management MCP page
- * (§10) renders these; the installer never writes them and never marks them always-loaded.
+ * whose key carries `admin:*` and the `administration` tool group only, so its catalog is the
+ * administration tools alone (the standing admin tools plus the derived `admin_*` tools) and
+ * never overlaps the everyday `agentcommons` server, which keeps `search`, `get` and `sql`.
+ * The dashboard's Management MCP page (§10) renders these; the installer never writes them and
+ * never marks them always-loaded.
  */
 export const managementServerName = "agentcommons-admin";
 /** Codex reads its bearer token from the environment; a second variable keeps the standard key's. */
@@ -17,10 +18,13 @@ export const managementKeyVariable = "AGENTCOMMONS_ADMIN_API_KEY";
  * entries with this token so a reader can paste their saved key into it.
  */
 export const managementKeyPlaceholder = "YOUR_ADMIN_KEY";
-/** What a management key grants: reads, both tool groups and admin (§9.2); never ingest. */
+/**
+ * What a management key grants: admin authority and the `administration` tool group only
+ * (§9.2). No `sessions` grant and no `dashboards`, so its catalog is the administration tools
+ * alone and never lists `search`, `get`, `sql` or the dashboard tools; never ingest.
+ */
 export const managementPermissions = {
-  sessions: ["read"],
-  tools: ["dashboards", "administration"],
+  tools: ["administration"],
   admin: ["*"],
 } as const satisfies KeyPermissions;
 export type ManagementHarness = "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI";

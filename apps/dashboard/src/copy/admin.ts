@@ -90,7 +90,7 @@ export const adminCopy = {
   mcp: {
     title: "Management MCP",
     description:
-      "A second MCP server, agentcommons-admin, lets an agent manage this organization: members, keys, redaction, moderation, dashboards and installations. Its key carries Read, Admin and the dashboard and administration tool groups; the everyday agentcommons server keeps search, get and sql.",
+      "agentcommons-admin is a second MCP server for managing this organization: members, keys, redaction, session visibility and installations. The everyday agentcommons server searches prior work with search, get and sql. Keep both installed.",
     create: {
       title: "Create management key",
       description:
@@ -103,7 +103,7 @@ export const adminCopy = {
     register: {
       title: "Register the server",
       description:
-        "Add the entry to each coding tool you administer from. Claude Code loads this server behind tool search, so the 36 tools cost context only when the agent looks for them.",
+        "Add the entry to each coding tool you administer from. Claude Code loads this server behind tool search, so its tools cost context only when the agent looks for them.",
       file: (path: string) => `Add to ${path}`,
       codexShell:
         "Codex reads the key from the environment. Add this line to your shell startup file and open a new terminal.",

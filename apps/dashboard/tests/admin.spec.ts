@@ -261,7 +261,7 @@ test("Management MCP: an owner creates a management key, sees the three registra
   await expect(
     reference.getByTestId("management-reference-CLAUDE_CODE-content"),
   ).toContainText(managementKeyPlaceholder);
-  // The key carries reads, both tool groups and admin, and the list shows it.
+  // The key carries admin and the administration group only, and the list shows it.
   const listed = z
     .object({
       items: z.array(
@@ -282,9 +282,10 @@ test("Management MCP: an owner creates a management key, sees the three registra
         )
       ).json(),
     );
+  // Admin-only: the management key grants the administration tools and nothing else, so its
+  // catalog never overlaps the everyday agentcommons server's search, get and sql.
   expect(listed.items.find((key) => key.name === name)?.permissions).toEqual({
-    sessions: ["read"],
-    tools: ["dashboards", "administration"],
+    tools: ["administration"],
     admin: ["*"],
   });
   expect(

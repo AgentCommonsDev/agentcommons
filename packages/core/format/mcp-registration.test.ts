@@ -53,10 +53,10 @@ describe("management server registration", () => {
       if (entry.shell !== null)
         expect(entry.shell).not.toContain(managementKeyPlaceholder);
     }
-    // Reads, both tool groups and admin, and the shared schema accepts the pair.
+    // Admin and the administration group only (no reads, no dashboards); the shared schema
+    // accepts the pair.
     expect(keyPermissionsSchema.parse(managementPermissions)).toEqual({
-      sessions: ["read"],
-      tools: ["dashboards", "administration"],
+      tools: ["administration"],
       admin: ["*"],
     });
   });

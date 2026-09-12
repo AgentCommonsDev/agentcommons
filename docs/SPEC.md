@@ -1767,10 +1767,12 @@ instead of inlining the style allowlist once per series. Every call is still par
 strict shared schema, so validation is unchanged. No advertised schema contains `$ref` or
 recursion, which the Gemini API rejects. The `administration` group is the exception to the
 small catalog and is never granted by default: an admin key with it lists under 40 KB, and
-a management key (both groups) under 48 KB (measured 2026-09-11: 32,132 and 40,305 bytes,
-ADR 0072). A management key is registered as a second server, `agentcommons-admin`, from
-the Management MCP page (§8.4, §10) without `alwaysLoad`, so Claude Code loads its catalog
-through tool search and the everyday `agentcommons` entry keeps the default catalog. The
+the complete catalog (both groups) under 48 KB (measured 2026-09-11: 32,132 and 40,305 bytes,
+ADR 0072). The management key carries `administration` alone — no `sessions`, no `dashboards`
+— so its catalog is the administration tools without the read or dashboard tools (ADR 0072
+amendment, 2026-09-12). It registers as a second server, `agentcommons-admin`, from the
+Management MCP page (§8.4, §10) without `alwaysLoad`, so Claude Code loads its catalog through
+tool search and the everyday `agentcommons` entry keeps the default catalog. The
 contract test measures all five catalogs.
 
 ### 8.3 Global agent instructions
@@ -1844,10 +1846,12 @@ the tools only through `ToolSearch`, so the model never sees the governing sente
 before it decides whether to look for prior work.
 
 **Management server.** Administration is a second registration, `agentcommons-admin`, never
-the installer's entry (ADR 0072, amendment). Its key carries `sessions: [read]`, `admin: ["*"]`
-and `tools: [dashboards, administration]` (§9.2), so an agent can manage members, keys,
-redaction, moderation, dashboards and installations while the everyday `agentcommons` server
-keeps `search`, `get` and `sql`. The Management MCP page (§10) creates the key and renders the
+the installer's entry (ADR 0072, amendment). Its key carries `admin: ["*"]` and
+`tools: [administration]` (§9.2) and nothing else, so its catalog is the administration tools
+alone (`set_visibility`, `purge`, `audit`, `status` and one `admin_*` per active `/admin`
+route) and never overlaps the everyday `agentcommons` server, which keeps `search`, `get` and
+`sql`. An agent uses `agentcommons-admin` to manage members, keys, redaction, session
+visibility and installations. The Management MCP page (§10) creates the key and renders the
 entries from one formatter (`packages/core/format/mcp-registration.ts`): `claude mcp add -s
 user -t http agentcommons-admin <URL>/mcp --header 'Authorization: Bearer ac_…'`; the Codex
 `[mcp_servers.agentcommons-admin]` block with `bearer_token_env_var =
@@ -1855,8 +1859,8 @@ user -t http agentcommons-admin <URL>/mcp --header 'Authorization: Bearer ac_…
 `AGENTCOMMONS_API_KEY` is untouched; the Gemini `mcpServers.agentcommons-admin` entry with
 `httpUrl` and the literal `Authorization` header. The shapes are the installer's under another
 name (a hook unit test pins them) and never carry `alwaysLoad`: Claude Code loads the
-management catalog behind tool search, so its 36 tools cost context only when the agent looks
-for them. `pi` has no second registration; its extension bridges whatever the installation
+management catalog behind tool search, so its administration tools cost context only when the
+agent looks for them. `pi` has no second registration; its extension bridges whatever the installation
 key lists.
 
 pi has no MCP client by design, so the installed capture extension is also its tool
@@ -2499,8 +2503,9 @@ reuse or outcome panels.
 **Management MCP** (`/app/admin/mcp`, owners and admins; members get no navigation entry and
 the admin access message) sets up the `agentcommons-admin` server of §8.4: two sentences on
 what it is, a "Create management key" form (name; the key is created through the same
-`POST /me/keys` service and audit as Keys with `sessions: [read]`, `tools: [dashboards,
-administration]`, `admin: ["*"]`; the secret shows once, followed by the Claude Code command,
+`POST /me/keys` service and audit as Keys with `tools: [administration]`, `admin: ["*"]` (no
+`sessions`, no `dashboards`, so the management catalog never overlaps the everyday server); the
+secret shows once, followed by the Claude Code command,
 the Codex `config.toml` block with its `export` line and the Gemini `settings.json` entry, each
 with a copy button, the key literal in the Claude Code and Gemini entries and `alwaysLoad` in
 none), and the organization's management keys: the All keys table (`GET /admin/keys`) with

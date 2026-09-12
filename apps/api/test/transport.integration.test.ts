@@ -52,6 +52,7 @@ import { SessionEventsService } from "../src/services/session-events.js";
 import { HealthService } from "../src/services/health.js";
 import type { Services } from "../src/routes/services.js";
 import { checkMcpFixture } from "./mcp-fixtures.js";
+import { managementPermissions } from "@agentcommons/core/format/mcp-registration";
 import { logCapture, mcpClient, startApp } from "./app.js";
 import { testEnvelope, textRecord } from "./envelopes.js";
 import {
@@ -874,6 +875,49 @@ it("derives the administration tools from the admin routes and gates them by gro
       data: { role: "owner" },
     });
   }
+});
+
+// @req R-DASH-43
+// @req R-MCP-13
+it("registers agentcommons-admin as an admin-only server whose catalog is the administration tools alone, with no search, get, sql or dashboard tools", async () => {
+  const administration = administrationToolNames({
+    embeddings: false,
+    saas: false,
+    domainEnrollment: domainEnrollmentEnabled(env.auth),
+  });
+  // The clean two-server split (ADR 0072 amendment): the management key grants admin
+  // authority and the administration group only, nothing that the everyday server carries.
+  expect(managementPermissions).toStrictEqual({
+    tools: ["administration"],
+    admin: ["*"],
+  });
+  const managementKey = (
+    await database.auth.createKey(organization.owner, {
+      name: "management server",
+      permissions: { tools: ["administration"], admin: ["*"] },
+    })
+  ).result.key;
+  const client = await mcpClient(address, managementKey, {
+    name: "management-server-test",
+    defer,
+  });
+  const names = (await client.listTools()).tools.map((tool) => tool.name);
+  // Only the administration tools: the standing admin tools plus the derived admin_* tools.
+  expect(names).toEqual([...adminToolNames, ...administration]);
+  // No overlap with the everyday agentcommons server, whatever a cached client remembers.
+  for (const read of readToolNames) expect(names).not.toContain(read);
+  for (const dashboard of dashboardToolNames)
+    expect(names).not.toContain(dashboard);
+  // An administration tool runs; a read tool the key does not grant is refused on call.
+  expect(
+    (await client.callTool({ name: "admin_members_list", arguments: {} }))
+      .isError,
+  ).not.toBe(true);
+  const search = await client.callTool({
+    name: "search",
+    arguments: { query: "transport" },
+  });
+  expect(search.isError).toBe(true);
 });
 
 // @req R-MCP-01

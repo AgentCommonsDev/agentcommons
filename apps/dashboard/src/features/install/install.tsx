@@ -4,15 +4,7 @@ import {
   repositoryInstructions,
 } from "@agentcommons/core/format/install";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import {
-  ArrowRight,
-  Copy,
-  Download,
-  FileText,
-  Plug,
-  Radio,
-  RefreshCw,
-} from "lucide-react";
+import { ArrowRight, Copy, Radio } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { CodeBlock } from "../../components/app/markdown";
 import { QueryState, RequestError } from "../../components/app/states";
@@ -143,7 +135,7 @@ function Step({
   );
 }
 
-/** Four steps: create or pick a key, read what the installer does, run the command it unlocks, watch the first session arrive. */
+/** Four steps: create or pick a key, check the prerequisites and optional repository guidance, run the command it unlocks, watch the first session arrive. */
 export function Install() {
   const { organization, me } = useWorkspace();
   const refresh = useRefreshKeys(organization.id);
@@ -298,35 +290,6 @@ export function Install() {
           title={copy.install.prepare.title}
           description={copy.install.prepare.description}
         >
-          <ul className="grid gap-2 sm:grid-cols-2">
-            {(
-              [
-                ["hook", Download],
-                ["mcp", Plug],
-                ["guidance", FileText],
-                ["updates", RefreshCw],
-              ] as const
-            ).map(([key, Icon]) => (
-              <li
-                key={key}
-                className="flex items-start gap-3 rounded-md border border-line bg-surface px-3 py-2.5"
-              >
-                <Icon
-                  size={16}
-                  aria-hidden
-                  className="mt-0.5 shrink-0 text-accent"
-                />
-                <div className="min-w-0 text-sm">
-                  <p className="font-medium">
-                    {copy.install.prepare.does[key].title}
-                  </p>
-                  <p className="text-xs leading-relaxed text-muted">
-                    {copy.install.prepare.does[key].detail}
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ul>
           <div
             className="flex flex-col gap-2 rounded-md border border-line bg-surface px-3 py-2.5"
             data-testid="repository-guidance"

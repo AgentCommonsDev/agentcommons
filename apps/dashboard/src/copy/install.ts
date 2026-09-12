@@ -28,26 +28,6 @@ export const installCopy = {
     title: "Before you run it",
     description:
       "The machine needs Node.js 20 or newer and curl. One command does the rest; your repositories are not touched.",
-    does: {
-      hook: {
-        title: "Capture hook",
-        detail: "Claude Code, Codex, Gemini CLI and pi",
-      },
-      mcp: {
-        title: "MCP server",
-        detail:
-          "search, get and sql in Claude Code, Codex and Gemini CLI, and in pi through its extension. Dashboard tools need a key that grants them.",
-      },
-      guidance: {
-        title: "Search-first guidance",
-        detail:
-          "Added to each tool's global instructions: ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.gemini/GEMINI.md",
-      },
-      updates: {
-        title: "Self-check and updates",
-        detail: "Hooks update themselves from this server",
-      },
-    },
     repository: {
       title: "Guidance for a repository",
       description:
