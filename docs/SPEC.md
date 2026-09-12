@@ -2920,6 +2920,17 @@ stack topic. The rendered `.env` then names the cluster endpoint in the three
 migration's dependency on it. `pnpm db:migrate` bootstraps roles and schemas on a TLS-only
 PostgreSQL owned by a non-superuser, and ClickHouse (whose container sets `HOME` to a
 readable directory) reads the control tables and dictionaries over TLS.
+Every container that opens PostgreSQL connections (`clickhouse`, `api`, `migrate`) runs
+with bounded dead-peer detection (ADR 0077): the Compose sysctls
+`net.ipv4.tcp_keepalive_time=30`, `tcp_keepalive_intvl=10`, `tcp_keepalive_probes=3` and
+`tcp_retries2=6` make a peer that vanished without closing (a host package upgrade that
+restarts networking under the stack, a failover, a dropped path) fail its idle pooled
+connections within about a minute and its in-flight statements within about fifteen
+seconds, instead of the kernel defaults of two hours and about sixteen minutes. ClickHouse
+cannot apply `max_execution_time` while a control read is blocked in a socket, so without
+this bound one dead pool of sixteen connections holds the query slots and every read of
+the organization fails for the whole retransmission window (the 2026-09-12 06:52 to 08:16
+incident on the hosted instance).
 `scripts/self-host/migrate-database.sh` copies roles (from `pg_roles`, without passwords)
 and data (`pg_dump -Fc`, `pg_restore --no-owner --role`, one transaction) and compares row
 counts; `single-node/migrate-database.sh` performs the cutover and `--rollback`. ClickHouse

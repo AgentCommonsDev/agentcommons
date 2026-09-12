@@ -108,6 +108,35 @@ describe("Compose configuration", () => {
       ]),
     );
   });
+  // @req R-INF-16
+  it("bounds dead-peer detection on every container that talks to PostgreSQL, in the base stack and with the overrides", () => {
+    const sysctls = {
+      "net.ipv4.tcp_keepalive_time": "30",
+      "net.ipv4.tcp_keepalive_intvl": "10",
+      "net.ipv4.tcp_keepalive_probes": "3",
+      "net.ipv4.tcp_retries2": "6",
+    };
+    for (const files of [
+      ["docker-compose.yml"],
+      [
+        "docker-compose.yml",
+        "docker-compose.caddy.yml",
+        "docker-compose.external-database.yml",
+      ],
+    ]) {
+      const services = compose(
+        files,
+        files.length > 1
+          ? "CLICKHOUSE_POSTGRES_HOST=db.example.internal\n"
+          : "",
+      );
+      for (const service of ["clickhouse", "api", "migrate"])
+        expect(
+          services[service]?.sysctls,
+          `${service} in ${files.join(",")}`,
+        ).toEqual(sysctls);
+    }
+  });
   // @req R-INF-09
   it("runs the published release by default, pins another image through AGENTCOMMONS_IMAGE and documents the update settings", () => {
     const pinned = compose(

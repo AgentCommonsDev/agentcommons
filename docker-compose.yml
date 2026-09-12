@@ -3,11 +3,23 @@
 # docker-compose.caddy.yml adds HTTPS; docker-compose.clickhouse-cloud.yml moves the trace
 # store to ClickHouse Cloud; docker-compose.external-database.yml moves PostgreSQL to a
 # managed server such as Aurora (AGENTCOMMONS_DATABASE=external, ADR 0063).
+# Every container that talks to PostgreSQL detects a dead peer within about a minute
+# instead of the kernel defaults (two hours of keepalive idle, fifteen retransmissions or
+# about sixteen minutes for in-flight data). ADR 0077: on 2026-09-12 a host package upgrade
+# restarted networking under the stack; ClickHouse's pooled control-plane connections to
+# Aurora died silently and the next reads hung for the full retransmission limit, holding
+# the connection pool and the query slots so every read failed for sixteen minutes.
+x-dead-peer-detection: &dead-peer-detection
+  net.ipv4.tcp_keepalive_time: "30"
+  net.ipv4.tcp_keepalive_intvl: "10"
+  net.ipv4.tcp_keepalive_probes: "3"
+  net.ipv4.tcp_retries2: "6"
 x-application: &application
   image: ${AGENTCOMMONS_IMAGE:-ghcr.io/agentcommonsdev/agentcommons:stable}
   build: .
   env_file: .env
   init: true
+  sysctls: *dead-peer-detection
 
 services:
   db:
@@ -33,6 +45,7 @@ services:
       # offers TLS (a managed database, ADR 0063) libpq looks for a client certificate
       # there and fails on the unreadable /root. Its own directory is readable and empty.
       HOME: /var/lib/clickhouse
+    sysctls: *dead-peer-detection
     volumes:
       - agentcommons-traces:/var/lib/clickhouse
       - ./packages/traces/config/privacy.xml:/etc/clickhouse-server/config.d/privacy.xml:ro
