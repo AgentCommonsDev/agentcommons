@@ -63,7 +63,7 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
  target.session_id AS target_session_id,target.user_id AS target_user_id,target.repo_name AS repo_name,
  arrayFilter(x->x IN (SELECT session_id FROM ${projection} WHERE purged_at IS NULL),${resultIds}) AS result_session_ids,
  top_result.session_id AS top_session_id,top_result.user_id AS top_user_id,
- if(JSONType(a.detail,'result','hits') IN ('Int64','UInt64','Float64'),toDecimal256OrNull(JSONExtractRaw(a.detail,'result','hits'),0),NULL) AS hits
+ if(JSONType(a.detail,'result','hits') IN ('Int64','UInt64','Double'),toDecimal256OrNull(JSONExtractRaw(a.detail,'result','hits'),0),NULL) AS hits
  FROM api_ro.audit_base a
  LEFT ANY JOIN visible_sessions target ON a.action='get' AND target.session_id=${auditTarget("session_id")} AND target.purged_at IS NULL
  LEFT ANY JOIN visible_sessions top_result ON top_result.session_id=${auditTarget("top_session_id")} AND top_result.purged_at IS NULL

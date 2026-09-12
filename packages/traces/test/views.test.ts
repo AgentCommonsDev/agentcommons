@@ -147,3 +147,48 @@ describe("session relations read control once per query and scan each base table
       );
   });
 });
+
+// @req R-DASH-13
+describe("audit-derived metrics read JSON types by the names JSONType returns", () => {
+  // JSONType yields Enum8('Null','String','Array','Bool','Double','Int64','UInt64','Object').
+  // A name outside that set, such as 'Float64', never matches, silently drops the value and
+  // makes ClickHouse raise (and count) UNKNOWN_ELEMENT_OF_ENUM every time the view is
+  // analysed: 30 times on the hosted instance between 2026-09-09 and 2026-09-12, once per
+  // migration.
+  it("compares JSONType only against its enum elements", () => {
+    const elements = new Set([
+      "Null",
+      "String",
+      "Array",
+      "Bool",
+      "Double",
+      "Int64",
+      "UInt64",
+      "Object",
+    ]);
+    const comparisons = Object.entries(views).flatMap(([name, definition]) =>
+      [
+        ...definition.matchAll(
+          /JSONType\((?:[^()]|\([^()]*\))*\)\s*(?:=\s*'([A-Za-z0-9]+)'|IN\s*\(([^)]*)\))/g,
+        ),
+      ].map((match) => ({
+        view: name,
+        names:
+          match[1] !== undefined
+            ? [match[1]]
+            : ((match[2] ?? "")
+                .match(/'([^']*)'/g)
+                ?.map((quoted) => quoted.slice(1, -1)) ?? []),
+      })),
+    );
+    expect(comparisons.length).toBeGreaterThan(1);
+    for (const comparison of comparisons)
+      for (const typeName of comparison.names)
+        expect(elements.has(typeName), `${comparison.view}: ${typeName}`).toBe(
+          true,
+        );
+    expect(sql("metrics_reads")).toContain(
+      "JSONType(a.detail,'result','hits') IN ('Int64','UInt64','Double')",
+    );
+  });
+});
