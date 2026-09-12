@@ -16,7 +16,7 @@ import { SearchService } from "../src/services/search.js";
 import { provisionMember, provisionOrganization, releaser } from "./support.js";
 
 /**
- * The production search shape that timed out on 2026-09-11 (ADR 0073): a multi-word query
+ * The production search shape that timed out on 2026-09-11 (ADR 0074): a multi-word query
  * with a repository filter over a corpus of at least 40,000 messages whose search text is
  * about 500 bytes each, so the inflection normalizer has real work per row. The fixture is
  * 400 sessions across nine repositories, 100 messages each, ~80 tokens per message.
