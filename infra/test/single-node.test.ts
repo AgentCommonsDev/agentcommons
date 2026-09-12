@@ -193,6 +193,9 @@ describe("single-node resource contract", () => {
       "AGENTCOMMONS_PARAMETER_PATH='/agentcommons/zpghl/env'",
     );
     expect(script).toContain("infra/scripts/single-node/apply.sh");
+    expect(script).toContain(
+      "/etc/needrestart/conf.d/99-agentcommons-no-autorestart.conf",
+    );
     for (const value of [...Object.values(fixtureSecrets), googleSecret])
       expect(script).not.toContain(value);
   });
