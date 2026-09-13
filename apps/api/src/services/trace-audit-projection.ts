@@ -1,4 +1,4 @@
-import type { PrismaClient, ReadAuthority } from "@agentcommons/db";
+import type { PrismaClient } from "@agentcommons/db";
 import {
   isAttributableRead,
   SESSION_READS_BACKFILL,
@@ -7,7 +7,7 @@ import {
   type TraceRepository,
 } from "@agentcommons/traces";
 import { z } from "zod";
-import { operatorContext } from "../auth/bootstrap.js";
+import { operatorContext, workerCaller } from "../auth/bootstrap.js";
 import { auditedOperation, type AuditService } from "./audit.js";
 import { createPolicyCache } from "./policy-cache.js";
 import { jsonValueSchema } from "@agentcommons/core";
@@ -29,21 +29,6 @@ const attributedReadSchema = z.object({
 });
 const ATTRIBUTED_READS_SQL =
   "SELECT audit_id,session_id,read_at,action,target_session_id,reader_user_id,reader_email,reader_harness FROM api_ro.attributed_reads";
-
-/**
- * The reader a background worker uses for one organization: admin authority so private
- * sessions are attributed too, under the literal user `worker`. Rows it derives are read
- * back under each caller's own principal, whose row policies re-apply visibility.
- */
-function workerAuthority(organizationId: string): ReadAuthority {
-  return {
-    organizationId,
-    userId: "worker",
-    role: "owner",
-    permissions: { sessions: ["read"], admin: ["*"] },
-    authMethod: "key",
-  };
-}
 
 /** PostgreSQL owns audit history; this outbox maintains its bounded analytics projection. */
 export class TraceAuditProjectionService {
@@ -169,7 +154,7 @@ export class TraceAuditProjectionService {
     auditIds: readonly string[] | null,
   ): Promise<number> {
     const reads = await this.dependencies.readers.read(
-      workerAuthority(organizationId),
+      workerCaller(organizationId),
       async (client) =>
         z
           .array(attributedReadSchema)

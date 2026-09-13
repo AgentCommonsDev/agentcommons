@@ -2,6 +2,10 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { PrismaClient } from "@agentcommons/db";
 import {
+  callerContextSchema,
+  type CallerContext,
+} from "@agentcommons/core/schemas";
+import {
   createAuth,
   passwordSetupUrl,
   type AuthConfiguration,
@@ -53,6 +57,24 @@ export function workerActor(organizationId?: string): AuditActor {
 /** Audit actor for operator CLI commands and boot-time maintenance. */
 export function operatorActor(organizationId?: string): AuditActor {
   return systemActor("operator", organizationId);
+}
+
+/**
+ * The principal a background worker reads one organization's traces with: admin
+ * authority under the literal user `worker`, so the work depends on no person's
+ * membership or API key (ADR 0079). Its ClickHouse reader is fenced by the same native
+ * row policies as every caller; rows it derives are read back under each caller's own
+ * principal, and renders it produces are cached under the shared admin scope only.
+ */
+export function workerCaller(organizationId: string): CallerContext {
+  return callerContextSchema.parse({
+    organizationId,
+    userId: "worker",
+    role: "owner",
+    apiKeyId: null,
+    authMethod: "key",
+    permissions: { sessions: ["read"], admin: ["*"] },
+  });
 }
 
 export async function bootstrap(

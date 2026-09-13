@@ -914,7 +914,7 @@ it("caches saved dashboards per tile: an errored tile is returned but not cached
 });
 
 // @req R-DASH-35
-it("pre-renders the default and saved dashboards for callers who rendered one recently, replaces their cached tiles, skips a scope whose membership was removed and audits each run as the worker", async () => {
+it("pre-renders the admin scope under the worker and each recent member scope from membership alone, so a revoked key never stops the warming; a departed member is skipped with a 403 row and each run is audited as the worker", async () => {
   const viewer = await provisionMember(
     db,
     first.owner,
@@ -932,46 +932,80 @@ it("pre-renders the default and saved dashboards for callers who rendered one re
   expect(created.status, await created.clone().text()).toBe(200);
   const saved = dashboardSchema.parse(await created.json());
   const home = { id: builtinDashboardId, variables: {} };
-  // Both scopes become "recently active" through their dashboard.render audit rows.
+  // Every scope becomes "recently active" through dashboard.render rows made with API keys.
   const before = await render(viewer, home);
   expect(before.cached).toBe(false);
   expect((await render(departed, home)).cached).toBe(false);
+  await render(first, home);
   const viewerUserId = z.string().parse(viewer.owner.caller?.userId);
   const departedUserId = z.string().parse(departed.owner.caller?.userId);
   const organizationId = z.string().parse(first.owner.caller?.organizationId);
+  // The only key the viewer ever rendered with is revoked; a fresh one serves the checks.
+  const replacement = await db.auth.createKey(viewer.owner, {
+    name: "after rotation",
+    permissions: { sessions: ["read"] },
+  });
+  await db.auth.revokeKey(
+    viewer.owner,
+    z.string().parse(viewer.context.caller?.apiKeyId),
+    { reason: "rotated" },
+  );
   await db.prisma.member.updateMany({
     where: { userId: departedUserId },
     data: { removedAt: new Date() },
   });
+  const started = new Date();
 
   await runtime.jobs.prerenderDashboards();
 
   // The viewer's Home entry was replaced by a newer run, and the saved dashboard they
   // never opened is already cached with the default variables a page opens with.
-  const after = await render(viewer, home);
+  const rotated = { key: replacement.result.key, owner: viewer.owner };
+  const after = await render(rotated, home);
   expect(after.cached, "pre-rendered default").toBe(true);
   expect(after.rendered_at > before.rendered_at).toBe(true);
-  const savedRender = await render(viewer, { id: saved.id, variables: {} });
+  const savedRender = await render(rotated, { id: saved.id, variables: {} });
   expect(savedRender.cached, "pre-rendered saved dashboard").toBe(true);
   expect(savedRender.tiles.filter((tile) => tile.error !== null)).toEqual([]);
+  // The admin scope was rendered by the worker itself; the owner's Home opens from it.
+  const ownerRender = await render(first, home);
+  expect(ownerRender.cached, "pre-rendered admin scope").toBe(true);
+  expect(new Date(ownerRender.rendered_at) >= started).toBe(true);
   const detailSchema = z.object({
-    user_id: z.string(),
+    user_id: z.string().optional(),
     scope: z.string().optional(),
     skipped: z.string().optional(),
     dashboards: z.number().optional(),
+    tiles: z.number().optional(),
     errors: z.number().optional(),
   });
   const runs = (
     await db.prisma.auditEvent.findMany({
-      where: { action: "dashboard.prerender", organizationId },
+      where: {
+        action: "dashboard.prerender",
+        organizationId,
+        ts: { gte: started },
+      },
       orderBy: { ts: "asc" },
     })
   ).map((row) => ({ ...row, detail: detailSchema.parse(row.detail) }));
-  const forViewer = runs.filter((row) => row.detail.user_id === viewerUserId);
-  expect(forViewer).toHaveLength(1);
   // The shipped default plus every saved dashboard (earlier tests leave some behind);
   // the list holds two built-ins, of which only the default is pre-rendered.
-  const expectedDashboards = (await list(viewer)).items.length - 1;
+  const expectedDashboards = (await list(rotated)).items.length - 1;
+  const admin = runs.filter((row) => row.detail.scope === "admin");
+  expect(admin).toHaveLength(1);
+  expect(admin[0]).toMatchObject({
+    statusCode: 200,
+    authMethod: "worker",
+    userId: null,
+    apiKeyId: null,
+    detail: { dashboards: expectedDashboards, errors: 0 },
+  });
+  expect(admin[0]?.detail.user_id, "no person behind the admin scope").toBe(
+    undefined,
+  );
+  const forViewer = runs.filter((row) => row.detail.user_id === viewerUserId);
+  expect(forViewer).toHaveLength(1);
   expect(forViewer[0]).toMatchObject({
     statusCode: 200,
     authMethod: "worker",
@@ -985,6 +1019,9 @@ it("pre-renders the default and saved dashboards for callers who rendered one re
   });
   expect(forViewer[0]?.resourceIds).toEqual(
     expect.arrayContaining([builtinDashboardId, saved.id]),
+  );
+  expect(runs.filter((row) => row.detail.skipped === "KEY_REVOKED")).toEqual(
+    [],
   );
   const forDeparted = runs.filter(
     (row) => row.detail.user_id === departedUserId,

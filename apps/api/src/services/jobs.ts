@@ -40,7 +40,11 @@ import {
 } from "@agentcommons/core";
 import { reauthorizeJob } from "../auth/jobs.js";
 import { cookieCaller } from "../auth/identity.js";
-import { operatorContext, workerActor } from "../auth/bootstrap.js";
+import {
+  operatorContext,
+  workerActor,
+  workerCaller,
+} from "../auth/bootstrap.js";
 import { lockOrganization } from "./auth.js";
 import type { AuditService } from "./audit.js";
 import { renderScope, type DashboardService } from "./dashboards.js";
@@ -848,17 +852,20 @@ export class JobService implements AdminJobs {
     }
   }
   /**
-   * Pre-render the default and saved dashboards of every organization for each caller
-   * scope that rendered a dashboard in the last seven days, as recorded by its
-   * `dashboard.render` audit rows (§10). Each scope's membership and key are re-checked
-   * first; a scope that lost access is skipped and audited as such. One organization's
-   * failure never stops the run.
+   * Pre-render the default and saved dashboards of every organization that rendered a
+   * dashboard in the last seven days, as recorded by its `dashboard.render` audit rows
+   * (§10, ADR 0079). The shared admin scope runs under the worker principal, so it
+   * depends on no person's membership or key; each member scope (row policies show
+   * members their private sessions) runs as that member once their membership is
+   * re-checked, and a member who lost access is skipped and audited as such. An API key
+   * is a credential, not a scope: revoking one never stops the cache warming. One
+   * organization's failure never stops the run.
    */
   async prerenderDashboards(now = new Date()): Promise<void> {
     const { dashboards, prisma, audit } = this.dependencies;
     if (!dashboards) return;
     const viewers = await prisma.auditEvent.groupBy({
-      by: ["organizationId", "userId", "apiKeyId"],
+      by: ["organizationId", "userId"],
       where: {
         action: "dashboard.render",
         statusCode: 200,
@@ -871,22 +878,19 @@ export class JobService implements AdminJobs {
       _max: { ts: true },
       orderBy: [{ organizationId: "asc" }, { _max: { ts: "desc" } }],
     });
-    const rendered = new Map<string, Set<string>>();
-    for (const viewer of viewers) {
-      const { organizationId, userId, apiKeyId } = viewer;
+    const organizations = new Map<string, string[]>();
+    for (const { organizationId, userId } of viewers) {
       if (organizationId === null || userId === null) continue;
-      const scopes = rendered.get(organizationId) ?? new Set<string>();
-      rendered.set(organizationId, scopes);
-      if (scopes.size >= PRERENDER_SCOPES_PER_ORGANIZATION) continue;
+      const users = organizations.get(organizationId) ?? [];
+      users.push(userId);
+      organizations.set(organizationId, users);
+    }
+    for (const [organizationId, userIds] of organizations) {
+      const scopes = new Set<string>();
       const actor = workerActor(organizationId);
-      try {
-        const caller = await this.viewerCaller({
-          organizationId,
-          userId,
-          apiKeyId,
-        });
+      const run = async (caller: CallerContext, viewer: string | null) => {
         const scope = renderScope(caller);
-        if (scopes.has(scope)) continue;
+        if (scopes.has(scope)) return;
         scopes.add(scope);
         const summary = await dashboards.prerender(caller);
         await audit.write(operatorContext(), {
@@ -896,41 +900,49 @@ export class JobService implements AdminJobs {
           actor,
           detail: {
             scope,
-            user_id: userId,
-            api_key_id: apiKeyId,
+            ...(viewer === null ? {} : { user_id: viewer }),
             dashboards: summary.dashboards.length,
             tiles: summary.tiles,
             errors: summary.errors,
           },
         });
-      } catch (error) {
-        if (error instanceof ServiceError && error.statusCode === 403) {
-          await audit.write(operatorContext(), {
-            action: "dashboard.prerender",
-            statusCode: 403,
-            resourceType: "dashboard",
-            actor,
-            detail: {
-              user_id: userId,
-              api_key_id: apiKeyId,
-              skipped: error.code,
-            },
-          });
-          continue;
-        }
+      };
+      const failed = (error: unknown) => {
         this.dependencies.onError(
           new Error("A dashboard pre-render failed; the next run retries it.", {
             cause: error,
           }),
         );
+      };
+      // The admin scope first: Home for owners and admins, rendered by the worker itself.
+      await run(workerCaller(organizationId), null).catch(failed);
+      for (const userId of userIds) {
+        if (scopes.size >= PRERENDER_SCOPES_PER_ORGANIZATION) break;
+        try {
+          await run(
+            await this.memberCaller({ organizationId, userId }),
+            userId,
+          );
+        } catch (error) {
+          if (error instanceof ServiceError && error.statusCode === 403) {
+            await audit.write(operatorContext(), {
+              action: "dashboard.prerender",
+              statusCode: 403,
+              resourceType: "dashboard",
+              actor,
+              detail: { user_id: userId, skipped: error.code },
+            });
+            continue;
+          }
+          failed(error);
+        }
       }
     }
   }
-  /** The current authority of a caller seen in the audit log, or 403 when it lapsed. */
-  private async viewerCaller(viewer: {
+  /** A viewer seen in the audit log as a browser caller with their current membership role, or 403 when it lapsed. */
+  private async memberCaller(viewer: {
     organizationId: string;
     userId: string;
-    apiKeyId: string | null;
   }): Promise<CallerContext> {
     const context = await reauthorizeJob(
       this.dependencies.prisma,
@@ -938,18 +950,19 @@ export class JobService implements AdminJobs {
         ...operatorContext(),
         caller: callerContextSchema.parse({
           ...viewer,
-          // Placeholders: re-authorization reads the membership role and key permissions.
+          // Placeholder: re-authorization reads the membership role.
           role: "member",
-          authMethod: viewer.apiKeyId === null ? "cookie" : "key",
+          apiKeyId: null,
+          authMethod: "cookie",
           permissions: {},
         }),
       },
       this.dependencies.authConfiguration,
     );
-    const caller = requirePermission(context, "read");
-    return caller.authMethod === "cookie"
-      ? cookieCaller({ ...viewer, role: caller.role })
-      : caller;
+    return cookieCaller({
+      ...viewer,
+      role: requirePermission(context, "read").role,
+    });
   }
   async maintenance(now = new Date()): Promise<void> {
     await this.recoverTraceOutboxes();

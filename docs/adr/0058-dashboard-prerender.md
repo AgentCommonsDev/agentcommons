@@ -2,7 +2,9 @@
 
 Date: 2026-09-09
 Status: Accepted. Supersedes the render-cache sentence of ADR 0048 and of §10 as it stood
-("A hit is therefore always current"); the rest of ADR 0048 stands.
+("A hit is therefore always current"); the rest of ADR 0048 stands. Item 3 is amended by
+ADR 0079 (2026-09-13): the admin scope renders under the worker principal, member scopes
+follow membership alone, and API keys are not part of the job's actor set.
 
 ## Context
 

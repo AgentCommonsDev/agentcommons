@@ -2325,10 +2325,13 @@ error but never cached, so the next request retries it alone while the other til
 from the cache; `refresh: true` re-runs the requested tiles and replaces their entries; a
 save bumps the revision; inline definitions (editor previews) are never cached. A
 `dashboard-prerender` job runs at startup and at the top of every hour: for each
-organization it re-renders the default dashboard and every saved dashboard, with default
-variables, for up to 20 caller scopes that rendered a dashboard in the last seven days
-(taken from `dashboard.render` audit rows, most recently active first), re-validating each
-scope's membership and key and skipping, with a 403 audit row, those that lost access;
+organization whose members rendered a dashboard in the last seven days (taken from
+`dashboard.render` audit rows grouped by user, most recently active first) it re-renders
+the default dashboard and every saved dashboard with default variables, first for the
+shared admin scope under the worker principal (`workerCaller`: admin authority, no person,
+no key; ADR 0079), then for up to 20 scopes as each viewer's current membership role
+allows, re-validating membership only and skipping, with a 403 audit row, a viewer whose
+membership lapsed; API keys are credentials, not scopes, so a revoked key changes nothing;
 each scope's run is audited as `dashboard.prerender` by the worker actor, and one
 organization's failure does not stop the others. The response reports `rendered_at` (the
 oldest returned tile's run) and `cached` (true when no tile ran); the page shows when the
