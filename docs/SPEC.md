@@ -1170,13 +1170,16 @@ The cache is `tool-policy.json` in the data directory (`{ v, fetchedAt, revision
 `0600`), beside the recall and guidance caches. Only the uploader writes it, refreshing at
 most every five minutes from `GET /api/v1/tool-policy` (`{ enabled, rules, revision,
 updated_at }`); a failed refresh keeps the last-known policy. Hook mode reads it and never
-fetches; a missing or disabled policy allows every call. Because a blocked call fires no
-post-tool event, the pre-tool hook records each blocked or warned decision to a `0600`
-spool (`tool-policy/violations/`, the raw command, minted with a stable id) and kicks the
-uploader; the uploader flushes the spool to `POST /api/v1/tool-policy/violations` in one
-batch, and the server masks and fingerprints the command on receipt (§5.3), so redaction —
-and secretlint — stays out of the shim. A non-2xx leaves the spool for the next run; a
-persistently unreachable server trims the spool oldest-first to a bound.
+fetches; a missing or disabled policy allows every call. A blocked call fires no post-tool
+event and never reaches a transcript, so the pre-tool hook is its only source: it records
+each blocked (deny) decision to a `0600` spool (`tool-policy/violations/`, the raw command,
+minted with a stable id) and kicks the uploader, which flushes the spool to `POST
+/api/v1/tool-policy/violations` in one batch; the server masks and fingerprints the command
+on receipt (§5.3), so redaction — and secretlint — stays out of the shim. A warn runs, so
+it reaches the transcript and the server's ingest projection records it there; the hook
+enforces and surfaces the warn but does not spool it, so no warn is counted twice. A non-2xx
+leaves the spool for the next run; a persistently unreachable server trims it oldest-first
+to a bound.
 
 ---
 

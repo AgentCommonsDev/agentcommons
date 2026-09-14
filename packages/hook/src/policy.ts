@@ -124,13 +124,15 @@ export function decide(
 }
 
 /**
- * One blocked or warned decision, enqueued for the uploader. A blocked call fires no
- * post-tool event, so the transcript never carries it and the server's projection cannot
- * see it; the pre-tool hook records it here instead. The raw command is kept (in a 0600
- * file under the user's own data directory, exactly like the transcript spool the uploader
- * already holds); the server masks and fingerprints it on receipt, so redaction — and thus
- * secretlint — stays out of this bundle. `id` is the stable row id the server dedupes on,
- * so a re-flush after a lost acknowledgement never double-records.
+ * One BLOCKED decision, enqueued for the uploader. Only a deny is spooled: a blocked call
+ * fires no post-tool event, so the transcript never carries it and the server's projection
+ * cannot see it, making the pre-tool hook its only source. A warn runs, reaches the
+ * transcript, and is recorded there by the projection, so warns are enforced but never
+ * spooled — otherwise the same event would be counted twice. The raw command is kept (in a
+ * 0600 file under the user's own data directory, exactly like the transcript spool the
+ * uploader already holds); the server masks and fingerprints it on receipt, so redaction —
+ * and thus secretlint — stays out of this bundle. `id` is the stable row id the server
+ * dedupes on, so a re-flush after a lost acknowledgement never double-records.
  */
 export interface ToolPolicyDecisionRecord {
   id: string;
@@ -140,7 +142,7 @@ export interface ToolPolicyDecisionRecord {
   tool: string;
   command: string | null;
   ruleId: string | null;
-  decision: "deny" | "warn";
+  decision: "deny";
   severity: ToolPolicyDecision["severity"];
   matchedAt: string;
 }

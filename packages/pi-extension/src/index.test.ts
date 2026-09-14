@@ -504,8 +504,9 @@ it("enforces the tool policy in pi's tool_call handler: block, notify-and-allow,
     enforceToolCall(bashCall("echo fine"), fakeContext(quiet)),
   ).toBeUndefined();
   expect(quiet).not.toHaveBeenCalled();
-  // Both the block and the warn were spooled for the uploader.
-  expect(jsonFiles(violationDir(directory))).toHaveLength(2);
+  // Only the block was spooled: a warn runs and the server projects it from the transcript,
+  // so spooling it here would double-count it (deny-only telemetry).
+  expect(jsonFiles(violationDir(directory))).toHaveLength(1);
 
   // The global disable switch turns enforcement off even with a matching deny rule.
   vi.stubEnv("AGENTCOMMONS_DISABLE", "1");

@@ -338,17 +338,22 @@ export function enforceToolCall(
   const decision = decide(call, policy);
   if (decision.decision === "allow") return undefined;
   const reason = decision.reason ?? "Blocked by the organization tool policy.";
-  spoolDecision(directory, {
-    sessionId: context.sessionManager.getSessionId(),
-    harness: "PI",
-    tool: call.tool,
-    command: command === null ? null : command.slice(0, MAX_COMMAND),
-    ruleId: decision.matched_rule_id,
-    decision: decision.decision,
-    severity: decision.severity,
-    matchedAt: new Date().toISOString(),
-  });
-  if (decision.decision === "deny") return { block: true, reason };
+  if (decision.decision === "deny") {
+    // Deny-only telemetry: a blocked call reaches no transcript, so the hook is its only
+    // source; a warn runs and the server's projection records it, so spooling it here would
+    // double-count it.
+    spoolDecision(directory, {
+      sessionId: context.sessionManager.getSessionId(),
+      harness: "PI",
+      tool: call.tool,
+      command: command === null ? null : command.slice(0, MAX_COMMAND),
+      ruleId: decision.matched_rule_id,
+      decision: "deny",
+      severity: decision.severity,
+      matchedAt: new Date().toISOString(),
+    });
+    return { block: true, reason };
+  }
   try {
     context.ui.notify(reason, "warning");
   } catch {

@@ -271,6 +271,20 @@ it("spools a blocked decision with the raw command for the uploader and kicks it
   enforce(directory, config, "claude", payload("claude", "echo fine"));
   expect(child.spawn).not.toHaveBeenCalled();
   expect(jsonFiles(violationDir(directory))).toHaveLength(1); // unchanged
+
+  // A warn runs and reaches the transcript, so the server projects it; the hook does not
+  // spool it (deny-only telemetry, so a warn is never double-counted).
+  const warn = enforce(
+    directory,
+    config,
+    "claude",
+    payload("claude", "echo WARNME"),
+  );
+  expect(JSON.parse(warn.stdout)).toMatchObject({
+    hookSpecificOutput: { additionalContext: "Warned by test policy." },
+  });
+  expect(child.spawn).not.toHaveBeenCalled();
+  expect(jsonFiles(violationDir(directory))).toHaveLength(1); // still just the deny
 });
 
 // @req R-POL-09
@@ -344,7 +358,10 @@ it("flushes spooled decisions to the violations endpoint and clears them only on
   const { directory, config } = setup();
   writePolicy(directory, { enabled: true, rules: RULES });
   enforce(directory, config, "claude", payload("claude", "echo DENYME one"));
-  enforce(directory, config, "codex", payload("codex", "echo WARNME two"));
+  enforce(directory, config, "codex", payload("codex", "echo DENYME two"));
+  // A warn runs and is projected server-side, so the hook never spools it: the spool holds
+  // only the two denies.
+  enforce(directory, config, "gemini", payload("gemini", "echo WARNME three"));
   expect(jsonFiles(violationDir(directory))).toHaveLength(2);
 
   // A non-202 leaves the spool for the next run.
@@ -382,19 +399,15 @@ it("flushes spooled decisions to the violations endpoint and clears them only on
           tool: z.string(),
           command: z.string().nullable(),
           rule_id: z.string(),
-          decision: z.enum(["deny", "warn"]),
+          decision: z.literal("deny"),
           severity: z.string(),
           seq: z.null(),
           matched_at: z.string(),
         }),
       ),
     })
-    .parse(sent);
+    .parse(sent); // the `decision: z.literal("deny")` above rejects any spooled warn
   expect(parsed.violations).toHaveLength(2);
-  expect(parsed.violations.map((v) => v.decision).sort()).toEqual([
-    "deny",
-    "warn",
-  ]);
   expect(parsed.violations.some((v) => v.command === "echo DENYME one")).toBe(
     true,
   );

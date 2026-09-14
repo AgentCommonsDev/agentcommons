@@ -113,19 +113,24 @@ export function enforcePreTool(
         ? denyStdout(reason)
         : mapping.preTool.warn(reason),
     );
-    // Telemetry, after the decision is written: best effort, never awaited, never blocking.
-    spoolDecision(directory, {
-      sessionId: event.session_id,
-      harness: call.harness,
-      tool: call.tool,
-      command: command === null ? null : command.slice(0, MAX_SPOOL_COMMAND),
-      ruleId: decision.matched_rule_id,
-      decision: decision.decision,
-      severity: decision.severity,
-      matchedAt: new Date().toISOString(),
-    });
-    const path = statePath(directory, harness, event.session_id);
-    if (!liveOwner(ownerPath(path))) spawnUpload(config, executable, path);
+    // Telemetry is deny-only, after the decision is written: best effort, never awaited,
+    // never blocking. A blocked call reaches no transcript, so the hook is its only source;
+    // a warn runs and the server's projection records it from the transcript, so spooling a
+    // warn here would double-count it.
+    if (decision.decision === "deny") {
+      spoolDecision(directory, {
+        sessionId: event.session_id,
+        harness: call.harness,
+        tool: call.tool,
+        command: command === null ? null : command.slice(0, MAX_SPOOL_COMMAND),
+        ruleId: decision.matched_rule_id,
+        decision: "deny",
+        severity: decision.severity,
+        matchedAt: new Date().toISOString(),
+      });
+      const path = statePath(directory, harness, event.session_id);
+      if (!liveOwner(ownerPath(path))) spawnUpload(config, executable, path);
+    }
     return true;
   } catch {
     // The event was a pre-tool event this bundle could not evaluate: fail open (allow) and
