@@ -29,6 +29,7 @@ import { HARNESSES, type HarnessDefinition } from "./harnesses.js";
 import { spawnUpload } from "./hook.js";
 import { acquireLock, MAX_UPLOADER_MS, type Lock } from "./lock.js";
 import { note } from "./paths.js";
+import { flushToolPolicyViolations, refreshToolPolicy } from "./policy-sync.js";
 import { refreshRecallHint } from "./recall.js";
 import { hookIdentity, reconcileInstall, selfUpdate } from "./update.js";
 import {
@@ -96,6 +97,8 @@ interface UploadOptions {
   recall?: boolean;
   /** Write the §8.3 block into the session's repository once (§6.2); tests turn it off. */
   guidance?: boolean;
+  /** Refresh the cached tool policy and flush blocked/warned telemetry (§6.4); tests turn it off. */
+  policy?: boolean;
 }
 interface DrainResult {
   readonly children: readonly string[];
@@ -802,6 +805,15 @@ export async function upload(
       await selfUpdate(directory, executable, config, updateOptions);
       await reconcileInstall(directory, executable, config, updateOptions);
     }
+  }
+  // Tool policy (ADR 0080, §6.4), independent of any session state so a pre-tool hook's
+  // respawn refreshes and flushes even a session that never wrote a transcript: refresh the
+  // cached org policy the offline hook enforces, then send the spooled blocked/warned
+  // decisions. Both are throttled, best effort and never throw.
+  if (options.policy !== false) {
+    const policyOptions = options.fetch ? { fetch: options.fetch } : {};
+    await refreshToolPolicy(directory, config, policyOptions);
+    await flushToolPolicyViolations(directory, config, policyOptions);
   }
   // Covers a hook that published while the old owner was exiting. Hooks arriving
   // after this check see no owner and start their own uploader.

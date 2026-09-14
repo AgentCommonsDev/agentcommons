@@ -21,6 +21,21 @@ export const nativeHookSchema = z.looseObject({
   transcript_metadata: z.record(z.string(), z.json()).optional(),
 });
 export type NativeHook = z.infer<typeof nativeHookSchema>;
+/**
+ * A harness's pre-tool payload (ADR 0080): the fields the enforcement path reads to
+ * evaluate a call. `tool_input` is a loose bag — its `command` is a string for a shell
+ * tool and absent for an MCP call — so the command is extracted defensively, never assumed.
+ * Claude Code, Codex and Gemini CLI all name the tool `tool_name` and carry the shell
+ * command at `tool_input.command` (Appendix A, 2026-09-14), so one shape reads all three.
+ */
+export const preToolPayloadSchema = z.looseObject({
+  session_id: z.string().min(1),
+  cwd: z.string().min(1),
+  hook_event_name: z.string().min(1),
+  tool_name: z.string().min(1),
+  tool_input: z.record(z.string(), z.unknown()).optional(),
+});
+export type PreToolPayload = z.infer<typeof preToolPayloadSchema>;
 export type CliHarness = "claude" | "codex" | "gemini" | "pi";
 export type ReaderKind = "jsonl-append" | "json-document";
 export interface ChildSource {
@@ -42,7 +57,36 @@ export interface EventDefinition {
    * overview once per session, `prompt` for the per-prompt hint.
    */
   hint?: "start" | "prompt";
+  /**
+   * A pre-tool enforcement event (ADR 0080, §6.4): evaluated against the cached policy
+   * before the tool runs and never captured as a transcript record. `warn` renders this
+   * harness's warn-channel stdout when the decision is `warn`; a `deny` uses one shape for
+   * all shell harnesses (`{"decision":"block",…}`) and `allow` writes nothing.
+   */
+  preTool?: { warn(reason: string): string };
 }
+/**
+ * Warn-channel stdout per harness (Appendix A pre-tool contracts, 2026-09-14). A `warn`
+ * decision lets the tool run but surfaces the reason: Codex delivers it to the model as
+ * `additionalContext`, Gemini to the user as `systemMessage`, Claude Code on both channels.
+ */
+const claudePreToolWarn = (reason: string): string =>
+  JSON.stringify({
+    systemMessage: reason,
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext: reason,
+    },
+  });
+const codexPreToolWarn = (reason: string): string =>
+  JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext: reason,
+    },
+  });
+const geminiPreToolWarn = (reason: string): string =>
+  JSON.stringify({ systemMessage: reason });
 export interface HarnessDefinition {
   id: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
   reader: ReaderKind;
@@ -77,6 +121,9 @@ const shellEvents: Readonly<Record<string, EventDefinition>> = {
   // 2026-09-11); Codex documents no such output and overrides this entry below.
   SessionStart: { behavior: "start", always: true, hint: "start" },
   UserPromptSubmit: { behavior: "sync", always: true, hint: "prompt" },
+  // Claude Code uses `shellEvents` directly; Codex spreads it and overrides `PreToolUse`
+  // below with its own warn channel. The installer wires this event from the same table.
+  PreToolUse: { behavior: "sync", preTool: { warn: claudePreToolWarn } },
   PostToolUse: { behavior: "sync" },
   Stop: { behavior: "sync", always: true, settle: true },
   SubagentStart: { behavior: "sync", child: true, childBehavior: "start" },
@@ -174,6 +221,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     events: {
       ...shellEvents,
       SessionStart: { behavior: "start", always: true },
+      PreToolUse: { behavior: "sync", preTool: { warn: codexPreToolWarn } },
       SubagentStart: {
         behavior: "sync",
         child: true,
@@ -220,6 +268,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
       // history, or prepended to the prompt when non-interactive); canary-pending.
       SessionStart: { behavior: "start", always: true, hint: "start" },
       BeforeAgent: { behavior: "sync", always: true, hint: "prompt" },
+      BeforeTool: { behavior: "sync", preTool: { warn: geminiPreToolWarn } },
       AfterTool: { behavior: "sync" },
       AfterAgent: { behavior: "sync", always: true, settle: true },
       SessionEnd: { behavior: "end", always: true },

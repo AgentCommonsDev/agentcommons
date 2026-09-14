@@ -1,9 +1,16 @@
 import * as z from "zod";
 import { spawn } from "node:child_process";
+import type { ToolCall } from "../../core/schemas/tool-policy.js";
 import { disabled, type HookConfig } from "./config.js";
 import { hash } from "./files.js";
-import { HARNESSES, nativeHookSchema, type CliHarness } from "./harnesses.js";
+import {
+  HARNESSES,
+  nativeHookSchema,
+  preToolPayloadSchema,
+  type CliHarness,
+} from "./harnesses.js";
 import { liveOwner } from "./lock.js";
+import { decide, readCachedPolicy, spoolDecision } from "./policy.js";
 import { harnessIdentity } from "./process.js";
 import {
   ensureState,
@@ -54,6 +61,78 @@ export function recoverUpload(
   spawnUpload(config, executable, path);
   return path;
 }
+/** Longest command spooled with a decision; the server accepts and scans the same bound. */
+const MAX_SPOOL_COMMAND = 16_384;
+/** The one deny shape every shell harness honours (Appendix A, 2026-09-14): exit 0. */
+const denyStdout = (reason: string): string =>
+  JSON.stringify({ decision: "block", reason });
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+/**
+ * The pre-tool enforcement path (ADR 0080, §6.4). Returns true when the event is a
+ * pre-tool event and this call owns the response — the caller then emits nothing further.
+ * It is the hot path a shell harness blocks on before every tool call, so it stays local,
+ * offline and fast: parse, read the cached policy, evaluate, write the decision. The shell
+ * harnesses fail open on a slow or crashing hook, so any trouble after the event is
+ * recognised returns true (allow, capture nothing) rather than throwing. `deny` writes the
+ * one block shape all three honour; `warn` writes the harness's warn channel; `allow`
+ * writes nothing. A blocked call fires no post-tool event, so the decision is spooled here
+ * for the uploader to forward (never on the network on this path).
+ */
+export function enforcePreTool(
+  directory: string,
+  executable: string,
+  config: HookConfig,
+  harness: CliHarness,
+  input: unknown,
+): boolean {
+  const eventName =
+    isRecord(input) && typeof input.hook_event_name === "string"
+      ? input.hook_event_name
+      : null;
+  if (!eventName) return false;
+  const mapping = HARNESSES[harness].events[eventName];
+  if (!mapping?.preTool) return false;
+  try {
+    const event = preToolPayloadSchema.parse(input);
+    if (disabled(config, event.cwd)) return true;
+    const raw = event.tool_input?.command;
+    const command = typeof raw === "string" ? raw : null;
+    const call: ToolCall = {
+      harness: HARNESSES[harness].id,
+      tool: event.tool_name,
+      command,
+    };
+    const decision = decide(call, readCachedPolicy(directory));
+    if (decision.decision === "allow") return true;
+    const reason =
+      decision.reason ?? "Blocked by the organization tool policy.";
+    process.stdout.write(
+      decision.decision === "deny"
+        ? denyStdout(reason)
+        : mapping.preTool.warn(reason),
+    );
+    // Telemetry, after the decision is written: best effort, never awaited, never blocking.
+    spoolDecision(directory, {
+      sessionId: event.session_id,
+      harness: call.harness,
+      tool: call.tool,
+      command: command === null ? null : command.slice(0, MAX_SPOOL_COMMAND),
+      ruleId: decision.matched_rule_id,
+      decision: decision.decision,
+      severity: decision.severity,
+      matchedAt: new Date().toISOString(),
+    });
+    const path = statePath(directory, harness, event.session_id);
+    if (!liveOwner(ownerPath(path))) spawnUpload(config, executable, path);
+    return true;
+  } catch {
+    // The event was a pre-tool event this bundle could not evaluate: fail open (allow) and
+    // never fall through to capture it as a normal record.
+    return true;
+  }
+}
 export function recordHook(
   directory: string,
   executable: string,
@@ -64,7 +143,7 @@ export function recordHook(
   const event = nativeHookSchema.parse(input);
   const definition = HARNESSES[harness];
   const mapping = definition.events[event.hook_event_name];
-  if (!mapping || disabled(config, event.cwd)) return null;
+  if (!mapping || mapping.preTool || disabled(config, event.cwd)) return null;
   const path = statePath(directory, harness, event.session_id);
   const state = ensureState(
     path,

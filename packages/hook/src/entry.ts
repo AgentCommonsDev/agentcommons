@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { loadConfig, type HookConfig } from "./config.js";
 import { HARNESSES, cliHarnessSchema } from "./harnesses.js";
-import { recordHook, recoverUpload } from "./hook.js";
+import { enforcePreTool, recordHook, recoverUpload } from "./hook.js";
 import type { InstallOptions } from "./install.js";
 import { dataDirectory } from "./paths.js";
 import { promptHint } from "./recall.js";
@@ -22,6 +22,9 @@ async function main(): Promise<void> {
     try {
       input = JSON.parse(readFileSync(0, "utf8")) as unknown;
       config = loadConfig(directory);
+      // A pre-tool event is enforced against the cached policy and never captured (§6.4).
+      if (enforcePreTool(directory, executable, config, harness.data, input))
+        return;
       const path = recordHook(
         directory,
         executable,
