@@ -91,6 +91,9 @@ app documents the same routes over REST.
 - **Redaction.** Runs before every write, from shipped rules plus your own regex and
   secretlint policies, with a full rescan. The ledger keeps a masked preview and a salted
   fingerprint per hit, never the value, so an admin can recognize and rotate a leaked key.
+- **Tool policy.** Rules that block or flag a shell command or tool call before it runs,
+  across every coding tool. A preset of dangerous-command guardrails ships turned off. Turn
+  it on and every match is recorded with the command masked and fingerprinted, never raw.
 - **Administration.** Members, keys and Google sign-in domains. Hide or purge sessions.
   See each machine's hook status.
 - **Yours to run.** One Docker Compose host, signed images from CI, an hourly updater with
@@ -196,8 +199,8 @@ the record to that vendor. AgentCommons indexes the work where it happens, acros
 coding tools and anything that can call MCP or REST, so a team can change chat apps or
 coding tools and keep its history.
 
-AgentCommons is pre-release. It records and indexes sessions; it does not block tool calls
-or detect suspicious behavior. [Verification](docs/VERIFICATION.md) lists the completed
-tests and live capture checks.
+AgentCommons is pre-release. It records and indexes sessions, and an optional tool policy
+blocks or flags tool calls before they run. [Verification](docs/VERIFICATION.md) lists the
+completed tests and live capture checks.
 
 [Spec](docs/SPEC.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Apache 2.0](LICENSE)
