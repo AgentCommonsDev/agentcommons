@@ -16,6 +16,7 @@ export default defineConfig({
     "keys-sql.spec.ts",
     "admin.spec.ts",
     "redaction.spec.ts",
+    "tool-policy.spec.ts",
     "embeddings.spec.ts",
     "account.spec.ts",
     "visual.spec.ts",
