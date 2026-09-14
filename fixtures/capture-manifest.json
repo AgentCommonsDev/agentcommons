@@ -350,15 +350,17 @@
   {
     "source": [
       "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/codex-capture/hooks.jsonl",
-      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-codex-capture/hooks.jsonl"
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-codex-capture/hooks.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r3-codex-capture/hooks.jsonl"
     ],
     "destination": "fixtures/hooks/codex-0.153.4-tool-policy-events.jsonl",
     "jsonl": true,
     "sessionId": [
       "01a09f2e-9f06-7a13-a560-f66ca3e3eb33",
-      "01a09f31-09f6-74d1-8409-fa0dd00ccf9a"
+      "01a09f31-09f6-74d1-8409-fa0dd00ccf9a",
+      "01a09f42-37e9-75f2-ac44-5e8f4b2e8060"
     ],
-    "sha256": "0413f582d3ab376cd7b8aaba1ef7e030370723e3c663fe7e9c3f6d45cbe2ea84",
+    "sha256": "1d2f548a215f0bed4e1ba41387c27dca4569cce045a0cf333022942086821922",
     "redaction": {
       "engine": "production Redactor.json + @secretlint/core",
       "rules": [
@@ -368,16 +370,17 @@
       "matches": 0
     },
     "capturedAt": "2026-09-14",
-    "sourceSha256": "0413f582d3ab376cd7b8aaba1ef7e030370723e3c663fe7e9c3f6d45cbe2ea84"
+    "sourceSha256": "1d2f548a215f0bed4e1ba41387c27dca4569cce045a0cf333022942086821922"
   },
   {
     "source": [
       "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/codex-capture/decisions.jsonl",
-      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-codex-capture/decisions.jsonl"
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-codex-capture/decisions.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r3-codex-capture/decisions.jsonl"
     ],
     "destination": "fixtures/hooks/codex-0.153.4-tool-policy-decisions.jsonl",
     "jsonl": true,
-    "sha256": "eeceded08ef4704ad7b50d4ccad84f06e82f0f59623552cd18ef6785f7f269e5",
+    "sha256": "3560aa06367fa226e20062651012409f7d9cb8c932b0331fb2d95ae21053888d",
     "redaction": {
       "engine": "production Redactor.json + @secretlint/core",
       "rules": [
@@ -387,7 +390,7 @@
       "matches": 0
     },
     "capturedAt": "2026-09-14",
-    "sourceSha256": "eeceded08ef4704ad7b50d4ccad84f06e82f0f59623552cd18ef6785f7f269e5"
+    "sourceSha256": "3560aa06367fa226e20062651012409f7d9cb8c932b0331fb2d95ae21053888d"
   },
   {
     "source": [
@@ -395,7 +398,7 @@
     ],
     "destination": "fixtures/hooks/codex-0.153.4-tool-policy-outcomes.jsonl",
     "jsonl": true,
-    "sha256": "86f41a3811b0378578ce056072e60ebda7af1de589123b6479271fd12c58b6d9",
+    "sha256": "dc27a91515086c80c5bfb1da530ab7a77a24f184b0511f23735760cca4d438c0",
     "redaction": {
       "engine": "production Redactor.json + @secretlint/core",
       "rules": [
@@ -405,20 +408,22 @@
       "matches": 0
     },
     "capturedAt": "2026-09-14",
-    "sourceSha256": "86f41a3811b0378578ce056072e60ebda7af1de589123b6479271fd12c58b6d9"
+    "sourceSha256": "dc27a91515086c80c5bfb1da530ab7a77a24f184b0511f23735760cca4d438c0"
   },
   {
     "source": [
       "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/gemini-capture/hooks.jsonl",
-      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-gemini-capture/hooks.jsonl"
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-gemini-capture/hooks.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r3-gemini-capture/hooks.jsonl"
     ],
     "destination": "fixtures/hooks/gemini-cli-0.35.3-tool-policy-events.jsonl",
     "jsonl": true,
     "sessionId": [
       "0f02247d-c0b2-4fe8-8ff2-58d1f05facdf",
-      "cfb7eb06-0db8-4fbd-86a5-a3264f8f6a87"
+      "cfb7eb06-0db8-4fbd-86a5-a3264f8f6a87",
+      "c9013c6d-315b-447e-b215-b6b6288fbda5"
     ],
-    "sha256": "3e4e448ecb7f2c1a3a923a04f0bcdf0de48992645aed5c165a7efc9c716fca32",
+    "sha256": "e7bd87166809617ef63f2a8e114a1424c7cb96151daeea217c9fecb7dc451cf4",
     "redaction": {
       "engine": "production Redactor.json + @secretlint/core",
       "rules": [
@@ -428,16 +433,17 @@
       "matches": 0
     },
     "capturedAt": "2026-09-14",
-    "sourceSha256": "3e4e448ecb7f2c1a3a923a04f0bcdf0de48992645aed5c165a7efc9c716fca32"
+    "sourceSha256": "e7bd87166809617ef63f2a8e114a1424c7cb96151daeea217c9fecb7dc451cf4"
   },
   {
     "source": [
       "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/gemini-capture/decisions.jsonl",
-      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-gemini-capture/decisions.jsonl"
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-gemini-capture/decisions.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r3-gemini-capture/decisions.jsonl"
     ],
     "destination": "fixtures/hooks/gemini-cli-0.35.3-tool-policy-decisions.jsonl",
     "jsonl": true,
-    "sha256": "e74542544a9876aed5dbc276f8d18b72a79f165bf210ddeb2e75c682641c09df",
+    "sha256": "707cda324da4e37edb00fd4917d4faff41a4332377f64ccb3f46c521ad8b76f7",
     "redaction": {
       "engine": "production Redactor.json + @secretlint/core",
       "rules": [
@@ -447,7 +453,7 @@
       "matches": 0
     },
     "capturedAt": "2026-09-14",
-    "sourceSha256": "e74542544a9876aed5dbc276f8d18b72a79f165bf210ddeb2e75c682641c09df"
+    "sourceSha256": "707cda324da4e37edb00fd4917d4faff41a4332377f64ccb3f46c521ad8b76f7"
   },
   {
     "source": [
@@ -455,7 +461,7 @@
     ],
     "destination": "fixtures/hooks/gemini-cli-0.35.3-tool-policy-outcomes.jsonl",
     "jsonl": true,
-    "sha256": "91c80d854f145ba7f162b1851d067c6de06653a5ed231ec81b5d19b28fb6f731",
+    "sha256": "a836ffd07730bca3ef68c791e6c259983e1297f9510f6200f40b10cd6485ef62",
     "redaction": {
       "engine": "production Redactor.json + @secretlint/core",
       "rules": [
@@ -465,7 +471,7 @@
       "matches": 0
     },
     "capturedAt": "2026-09-14",
-    "sourceSha256": "91c80d854f145ba7f162b1851d067c6de06653a5ed231ec81b5d19b28fb6f731"
+    "sourceSha256": "a836ffd07730bca3ef68c791e6c259983e1297f9510f6200f40b10cd6485ef62"
   },
   {
     "source": [
