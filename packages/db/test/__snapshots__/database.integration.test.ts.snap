@@ -44,6 +44,12 @@ ALTER TABLE "redaction_policy" DROP CONSTRAINT "redaction_policy_organization";
 ALTER TABLE "redaction_run" DROP CONSTRAINT "redaction_run_organization_id_fkey";
 
 -- DropForeignKey
+ALTER TABLE "tool_policy" DROP CONSTRAINT "tool_policy_organization";
+
+-- DropForeignKey
+ALTER TABLE "tool_policy_violation" DROP CONSTRAINT "tool_policy_violation_organization";
+
+-- DropForeignKey
 ALTER TABLE "trace_outbox" DROP CONSTRAINT "trace_outbox_organization_id_session_id_fkey";
 
 -- DropForeignKey
