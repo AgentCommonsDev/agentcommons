@@ -354,7 +354,7 @@ export const adminCopy = {
     csvName: "tool-policy-rules.csv",
     ledgerTitle: "Violations",
     ledgerDescription:
-      "Every tool call a rule matched, newest first. The raw command is never stored: each row keeps a masked preview and a salted fingerprint, so the same command correlates across sessions.",
+      "Every tool call a rule matched, newest first. The raw command is never stored. Each row keeps a masked preview and a salted fingerprint, so the same command correlates across sessions.",
     neverStored:
       "The raw command is never stored, only a masked preview and a salted fingerprint.",
     time: "Time",
