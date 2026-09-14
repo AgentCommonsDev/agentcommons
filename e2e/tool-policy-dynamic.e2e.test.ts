@@ -261,8 +261,11 @@ describe("built shim bundle enforces the pre-tool veto contract", () => {
         name.endsWith(".json"),
       );
       expect(spooled.length).toBeGreaterThanOrEqual(1);
+      const [firstSpool] = spooled;
+      if (firstSpool === undefined)
+        throw new Error("expected a spooled violation");
       const parsedSpool = spoolSchema.parse(
-        JSON.parse(readFileSync(join(spoolDir, spooled[0]), "utf8")),
+        JSON.parse(readFileSync(join(spoolDir, firstSpool), "utf8")),
       );
       expect(parsedSpool.command).toBe(sentinel);
       expect(parsedSpool.ruleId ?? parsedSpool.rule_id).toBe(RULE_ID);
