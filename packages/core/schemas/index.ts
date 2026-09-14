@@ -13,3 +13,4 @@ export * from "./metrics.js";
 export * from "./billing.js";
 export * from "./embeddings.js";
 export * from "./dashboards.js";
+export * from "./tool-policy.js";

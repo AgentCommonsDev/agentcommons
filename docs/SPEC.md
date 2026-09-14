@@ -2233,6 +2233,38 @@ mobile, theme and accessibility requirements. Customer mode hides SaaS pricing a
 See ADR 0038. Deployment is still deferred; a local SaaS demo is a separate isolated
 runtime using private configuration, native auth and real supported-harness sessions.
 
+### 9.7 Tool and command policy
+
+A tool and command policy governs what a coding agent may do, enforced at the moment a
+tool runs and recorded for review (ADR 0080). A policy is organization-scoped data: an
+`enabled` flag and an ordered list of rules. Each rule matches a harness (or any), a tool
+name (a glob, so `Bash`, `run_shell_command`, `mcp__*`, or `*`), and, when it carries
+command patterns, a shell command; its action is `deny`, `warn`, or `allow` with a
+severity. One implementation reads the rules, `evaluateToolCall` in `packages/core/policy`,
+first-match-wins so an `allow` exception placed above a broad `deny` whitelists a call;
+when no rule matches, or the policy is disabled, the call is allowed. A policy only ever
+restricts.
+
+Enforcement lives in the shim. Before a tool runs, the pre-tool hook of each harness
+(Appendix A) evaluates the call against the policy synced to the machine and returns the
+decision: a `deny` blocks the tool and gives the model the reason, a `warn` lets it run
+with a note, an `allow` permits it. The three shell-hook harnesses fail open when a hook is
+slow, crashes, or errors, so the decision is a local, offline, few-millisecond read of a
+cached policy, never a network call; pi's extension fails closed. Because no post-tool
+event fires for a blocked call, the pre-tool hook itself emits the blocked telemetry.
+
+The server also evaluates captured sessions' tool calls and records each match as a
+governance violation: the session and message position, the matched rule, the decision and
+severity, whether it was enforced, and a masked preview plus salted fingerprint of the
+command rather than the command itself, so a flagged command that contains a secret is
+never stored raw (the redaction masked-preview and fingerprint of §5.3). Admins manage the
+policy and review violations on the dashboard and through the administration MCP tools.
+
+AgentCommons ships a default preset of high-value guardrails, recursive force-deletes,
+piping a download into a shell, force-pushing a protected branch, reading or writing
+credential and system files, and disabling safety guards, but the policy ships disabled: a
+fresh organization enforces nothing until an admin turns it on.
+
 ## 10. Dashboard
 
 The dashboard is one single-page application. Public pages (`/`, `/docs`, and `/blog` in

@@ -6,6 +6,7 @@
     "src/**/*.ts",
     "schemas/**/*.ts",
     "normalizers/**/*.ts",
+    "policy/**/*.ts",
     "redaction/**/*.ts",
     "format/**/*.ts",
     "metadata/**/*.ts",
