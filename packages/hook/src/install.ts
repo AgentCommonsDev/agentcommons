@@ -296,24 +296,62 @@ interface InstallResult {
   failures: InstallFailure[];
 }
 /**
- * Whether an install run must exit non-zero: a harness's own files could not be written,
- * or nothing was wired at all. A failed native registration alone is a notice, because
- * the entry the installer wrote is what the harness reads (§6.1 step 4).
+ * Whether an install run must exit non-zero: a harness's own files could not be written.
+ * A failed native registration alone is a notice, however many harnesses it touched,
+ * because the verified entry the installer wrote is what the harness reads (§6.1 step 4);
+ * a machine whose only CLI is `claude` is configured even when `claude mcp add` fails.
  */
-export const installFailed = ({
-  harnesses,
-  failures,
-}: InstallResult): boolean =>
-  failures.some((failure) => !failure.native) ||
-  (failures.length > 0 && failures.length === harnesses.length);
+export const installFailed = ({ failures }: InstallResult): boolean =>
+  failures.some((failure) => !failure.native);
 /** One line per failed harness, for stderr and `hook.log`. */
 export const installNotice = (failures: readonly InstallFailure[]): string =>
   failures
     .map(
       (failure) =>
-        `${failure.harness}: ${failure.message}${failure.native ? " The entry the installer wrote is in place." : ""}`,
+        `${failure.harness}: ${failure.message}${failure.native ? ` AgentCommons wrote the ${failure.harness} MCP entry itself, so recall works; \`${HARNESSES[failure.harness].binary} mcp list\` shows it.` : ""}`,
     )
     .join("\n");
+/** How long the harness CLI may take to register the server; the install path, never a hook. */
+const NATIVE_TIMEOUT_MS = 30000;
+/** The native CLI's exit status or signal and its first line of stderr, with the key masked. */
+function nativeFailureDetail(error: unknown, key: string): string {
+  const failure = z
+    .looseObject({
+      code: z.string().optional(),
+      status: z.number().nullable().optional(),
+      signal: z.string().nullable().optional(),
+      stderr: z.union([z.string(), z.instanceof(Uint8Array)]).optional(),
+    })
+    .safeParse(error).data;
+  if (!failure) return "did not finish";
+  const stderr = (
+    typeof failure.stderr === "string"
+      ? failure.stderr
+      : Buffer.from(failure.stderr ?? []).toString("utf8")
+  )
+    .split(key)
+    .join("ac_…")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  const reason =
+    failure.code === "ETIMEDOUT"
+      ? `did not finish within ${String(NATIVE_TIMEOUT_MS / 1000)} s`
+      : failure.code === "ENOENT"
+        ? "was not found on PATH"
+        : typeof failure.status === "number"
+          ? `exited with status ${String(failure.status)}`
+          : failure.signal
+            ? `was stopped by ${failure.signal}`
+            : "did not finish";
+  return stderr ? `${reason}: ${stderr.slice(0, 200)}` : reason;
+}
+/** The MCP entry a document at `path` carries for this server, for the post-write check. */
+function readEntry(format: ConfigFormat, path: string): unknown {
+  return objectSchema.parse(
+    (readConfig(format, path) ?? {})[format.mcpKey] ?? {},
+  )[MCP_NAME];
+}
 /** Wires (or unwires) one harness: hooks, instructions block and MCP entry. */
 function wireHarness(
   directory: string,
@@ -379,14 +417,23 @@ function wireHarness(
       };
       saveConfig(format, mcpPath, registrationConfig);
       try {
+        // stdin closed so the CLI can never wait on a terminal; stderr kept for the notice.
         execFileSync(definition.binary, nativeCommand, {
-          timeout: 10000,
-          stdio: "ignore",
+          timeout: NATIVE_TIMEOUT_MS,
+          stdio: ["ignore", "ignore", "pipe"],
+          encoding: "utf8",
         });
-      } catch {
+      } catch (error) {
+        // The installer's own entry is restored and read back before it is relied on: a
+        // restore that did not land is a real failure, not a notice.
         saveConfig(format, mcpPath, mcpConfig);
+        if (
+          JSON.stringify(readEntry(format, mcpPath)) !==
+          JSON.stringify(expected)
+        )
+          throw new Error(`The ${harness} MCP entry could not be written.`);
         throw new NativeRegistrationFailed(
-          `The ${harness} MCP registration failed.`,
+          `\`${definition.binary} ${nativeCommand.slice(0, 2).join(" ")}\` ${nativeFailureDetail(error, config.key)}.`,
         );
       }
       chmodSync(mcpPath, 0o600);

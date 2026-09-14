@@ -18,9 +18,13 @@ afterEach(() => {
 });
 /**
  * An isolated HOME (so the native registration path runs against it, never the real one)
- * and a PATH holding only a fake `claude` that exits with `claudeExit` and a fake `gemini`.
+ * and a PATH holding only a fake `claude` that prints `stderr` and exits with `claudeExit`,
+ * plus a fake `gemini` unless `gemini` is false.
  */
-function machine(claudeExit: number) {
+function machine(
+  claudeExit: number,
+  options: { gemini?: boolean; stderr?: string } = {},
+) {
   const directory = mkdtempSync(
     join(tmpdir(), "agentcommons-install-independence-"),
   );
@@ -28,12 +32,15 @@ function machine(claudeExit: number) {
   mkdirSync(bin);
   writeFileSync(
     join(bin, "claude"),
-    `#!/bin/sh\nexit ${String(claudeExit)}\n`,
+    `#!/bin/sh\n${options.stderr ? `echo '${options.stderr}' >&2\n` : ""}exit ${String(claudeExit)}\n`,
     {
       mode: 0o700,
     },
   );
-  writeFileSync(join(bin, "gemini"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  if (options.gemini !== false)
+    writeFileSync(join(bin, "gemini"), "#!/bin/sh\nexit 0\n", {
+      mode: 0o700,
+    });
   const home = join(directory, "home");
   mkdirSync(home);
   vi.stubEnv("PATH", bin);
@@ -80,13 +87,13 @@ describe("installer independence", () => {
     expect(result.failures).toEqual([
       {
         harness: "claude",
-        message: "The claude MCP registration failed.",
+        message: "`claude mcp add` exited with status 1.",
         native: true,
       },
     ]);
     expect(installFailed(result)).toBe(false);
     expect(installNotice(result.failures)).toBe(
-      "claude: The claude MCP registration failed. The entry the installer wrote is in place.",
+      "claude: `claude mcp add` exited with status 1. AgentCommons wrote the claude MCP entry itself, so recall works; `claude mcp list` shows it.",
     );
     // Gemini healed despite Claude failing first; Claude's file carries the installer's entry.
     expect(geminiEntry(home)).toEqual(HARNESSES.gemini.mcp(URL_, KEY));
@@ -119,15 +126,45 @@ describe("installer independence", () => {
     expect(installFailed(result)).toBe(true);
     expect(installNotice(result.failures).split("\n")).toHaveLength(2);
     expect(claudeEntry(home)).toEqual(HARNESSES.claude.mcp(URL_, KEY));
-    // A run in which every harness failed also fails, even when each failure was native.
-    expect(
-      installFailed({
-        harnesses: ["claude"],
-        failures: [{ harness: "claude", message: "x", native: true }],
-      }),
-    ).toBe(true);
     expect(
       installFailed({ harnesses: ["claude", "gemini"], failures: [] }),
     ).toBe(false);
+  });
+
+  // @req R-INST-02
+  it("a machine whose only CLI is claude is configured when `claude mcp add` fails: the literal-key entry is in place, the notice names the CLI's error without the key, and the run succeeds", () => {
+    // What a Mac reported: the CLI refused the add and the installer fell back to its own entry.
+    const { directory, home, config } = machine(1, {
+      gemini: false,
+      stderr: `Error: MCP server agentcommons already exists (header Authorization: Bearer ${KEY})`,
+    });
+    const result = install(directory, config, { noShellRc: true });
+    expect(result.harnesses).toEqual(["claude"]);
+    expect(result.failures).toEqual([
+      {
+        harness: "claude",
+        message:
+          "`claude mcp add` exited with status 1: Error: MCP server agentcommons already exists (header Authorization: Bearer ac_…).",
+        native: true,
+      },
+    ]);
+    // Every harness failed natively, yet nothing is broken: the run is a success with a notice.
+    expect(installFailed(result)).toBe(false);
+    const notice = installNotice(result.failures);
+    expect(notice).not.toContain(KEY);
+    expect(notice).toContain(
+      "AgentCommons wrote the claude MCP entry itself, so recall works",
+    );
+    expect(notice).not.toContain("could not configure");
+    // The fallback is the user-scope HTTP entry Claude Code reads: literal key, alwaysLoad.
+    expect(claudeEntry(home)).toEqual({
+      type: "http",
+      url: URL_,
+      headers: { Authorization: `Bearer ${KEY}` },
+      alwaysLoad: true,
+    });
+    expect(
+      readFileSync(join(home, ".claude", "settings.json"), "utf8"),
+    ).toContain("agentcommons-hook");
   });
 });

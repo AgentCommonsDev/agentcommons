@@ -109,13 +109,15 @@ async function main(): Promise<void> {
     } = await import("./install.js");
     const result = install(directory, config, options, mode === "uninstall");
     const names = result.harnesses;
-    // Every harness was attempted; the notice names the ones that did not finish. Only
-    // a harness whose files could not be written, or a run that wired nothing, fails.
-    if (result.failures.length)
-      process.stderr.write(`${installNotice(result.failures)}\n`);
+    // Every harness was attempted. Only a harness whose files could not be written fails
+    // the run; a native CLI registration that failed is a notice after the summary,
+    // because the harness reads the verified entry the installer wrote (§6.1 step 4).
+    const broken = result.failures.filter((failure) => !failure.native);
+    const notices = result.failures.filter((failure) => failure.native);
+    if (broken.length) process.stderr.write(`${installNotice(broken)}\n`);
     if (installFailed(result))
       throw new Error(
-        `AgentCommons could not configure ${result.failures.map((failure) => failure.harness).join(", ")}.`,
+        `AgentCommons could not configure ${broken.map((failure) => failure.harness).join(", ")}.`,
       );
     if (mode === "install") {
       // Self-update re-runs the installer with these flags after every swap (§6.2).
@@ -126,6 +128,7 @@ async function main(): Promise<void> {
     process.stdout.write(
       `${mode === "install" ? "Configured" : "Removed"} AgentCommons for ${names.join(", ") || "no detected harnesses"}.\n`,
     );
+    if (notices.length) process.stdout.write(`${installNotice(notices)}\n`);
     if (mode === "install") {
       const wired = names.map((name) => HARNESSES[name]);
       const files = instructionFiles(home ?? homedir(), names);
