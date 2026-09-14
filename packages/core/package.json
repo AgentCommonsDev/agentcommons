@@ -26,6 +26,7 @@
     "./format/mcp-registration": "./format/mcp-registration.ts",
     "./schemas/auth": "./schemas/auth.ts",
     "./schemas/dashboards": "./schemas/dashboards.ts",
+    "./schemas/tool-policy": "./schemas/tool-policy.ts",
     "./sql": "./sql.ts",
     "./dashboards": "./dashboards/index.ts"
   },

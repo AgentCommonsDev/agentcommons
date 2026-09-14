@@ -5,7 +5,7 @@ import type { z } from "zod";
 import type * as schemas from "@agentcommons/core/schemas";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
-import { toolPolicyViolationSortKeys } from "@agentcommons/core/schemas";
+import { toolPolicyViolationSortKeys } from "@agentcommons/core/schemas/tool-policy";
 import { dateTime } from "../../lib/display";
 import { paths } from "../../lib/routes";
 import { useWorkspace } from "../../components/app/workspace";
