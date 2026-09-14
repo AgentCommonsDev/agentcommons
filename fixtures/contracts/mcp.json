@@ -2220,6 +2220,227 @@
         "destructiveHint": false,
         "openWorldHint": false
       }
+    },
+    {
+      "name": "admin_tool_policy_get",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Read the organization's tool and command policy.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_tool_policy_set",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. Replace the organization's tool and command policy.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "default": false,
+            "type": "boolean"
+          },
+          "rules": {
+            "default": [],
+            "maxItems": 500,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "harnesses": {
+                  "default": [],
+                  "maxItems": 8,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "CLAUDE_CODE",
+                      "CODEX",
+                      "GEMINI_CLI",
+                      "PI"
+                    ]
+                  }
+                },
+                "tool": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "command_patterns": {
+                  "default": [],
+                  "maxItems": 32,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "substring",
+                          "regex"
+                        ]
+                      },
+                      "value": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 512
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "deny",
+                    "warn",
+                    "allow"
+                  ]
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "tool",
+                "action",
+                "severity"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "admin_tool_policy_violations_list",
+      "description": "Use this when the user asks to administer this organization: members, keys, redaction, moderation and installations. List recorded tool-policy violations: session, rule, decision, severity and time.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "default": null,
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "matched_at",
+              "seq"
+            ]
+          },
+          "order": {
+            "default": "desc",
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ]
+          },
+          "filters": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "session_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "projection",
+                  "hook"
+                ]
+              },
+              "harness": {
+                "type": "string",
+                "enum": [
+                  "CLAUDE_CODE",
+                  "CODEX",
+                  "GEMINI_CLI",
+                  "PI"
+                ]
+              },
+              "rule_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "decision": {
+                "type": "string",
+                "enum": [
+                  "deny",
+                  "warn",
+                  "allow"
+                ]
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "enforced": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     }
   ],
   "search": {

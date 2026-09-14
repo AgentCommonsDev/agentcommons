@@ -7,7 +7,6 @@ import {
   type ToolPolicyRule,
   toolPolicyDocumentSchema,
   toolPolicyReplaceInputSchema,
-  toolPolicySchema,
   toolPolicyViolationsInputSchema,
   toolPolicyViolationsOutputSchema,
   toolPolicyViolationsReportInputSchema,
@@ -15,6 +14,7 @@ import {
 } from "@agentcommons/core";
 import {
   commandFromToolInput,
+  defaultToolPolicy,
   evaluateToolCall,
   presetRules,
 } from "@agentcommons/core/policy";
@@ -41,7 +41,7 @@ export async function seedToolPolicy(
   tx: Prisma.TransactionClient,
   organizationId: string,
 ): Promise<number> {
-  const policy = toolPolicySchema.parse({});
+  const policy = defaultToolPolicy();
   const inserted = await tx.toolPolicy.createMany({
     data: [
       {
