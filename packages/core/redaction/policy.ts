@@ -57,6 +57,27 @@ function safeExpression(regex: RegExp): Safety {
 }
 
 /**
+ * The safety verdict for a candidate regular expression, reusing the exact ReDoS and
+ * empty-match analysis that guards saved redaction patterns (§5.3). `invalid` when the source
+ * and flags do not compile. The tool/command policy (ADR 0080) runs every user-supplied
+ * command regex through this before saving, so one implementation decides pattern safety for
+ * both features. `safe` is the only verdict a caller should accept.
+ */
+export type ExpressionSafety = "safe" | "unsafe" | "unknown" | "invalid";
+export function analyzeExpressionSafety(
+  source: string,
+  flags = "",
+): ExpressionSafety {
+  let regex: RegExp;
+  try {
+    regex = new RegExp(source, flags);
+  } catch {
+    return "invalid";
+  }
+  return safeExpression(regex);
+}
+
+/**
  * The structural definition of a policy without the backtracking analysis. Stored rows
  * were analysed when an admin saved them and the shipped patterns are verified by the
  * unit suite, so reads (session creation, rescans) never pay for `recheck` again.

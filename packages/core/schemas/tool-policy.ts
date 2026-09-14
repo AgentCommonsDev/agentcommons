@@ -1,7 +1,9 @@
 import { z } from "zod";
 import {
+  createListInputSchema,
   harnessSchema,
   nonnegativeIntegerSchema,
+  paginatedOutput,
   sessionIdSchema,
   utcDateTimeSchema,
 } from "./common.js";
@@ -86,6 +88,17 @@ export const toolPolicyDecisionSchema = z.strictObject({
 export type ToolPolicyDecision = z.output<typeof toolPolicyDecisionSchema>;
 
 /**
+ * How a violation was recorded: `projection` when the server evaluated a captured tool call
+ * from the transcript (detection, runs even while enforcement is off), `hook` when the shim's
+ * pre-tool gate reported a decision it made at the moment the tool ran (a blocked deny never
+ * reaches a transcript, so only the gate can report it).
+ */
+export const toolPolicyViolationSourceSchema = z.enum(["projection", "hook"]);
+export type ToolPolicyViolationSource = z.output<
+  typeof toolPolicyViolationSourceSchema
+>;
+
+/**
  * One policy violation recorded from a captured session (server wave). It never stores the
  * raw command: `masked_command` is the redaction masked preview and `fingerprint` the
  * salted hash, so the same flagged command correlates across sessions without the plaintext
@@ -94,15 +107,100 @@ export type ToolPolicyDecision = z.output<typeof toolPolicyDecisionSchema>;
 export const toolPolicyViolationSchema = z.strictObject({
   id: sessionIdSchema,
   session_id: sessionIdSchema,
+  source: toolPolicyViolationSourceSchema,
   seq: nonnegativeIntegerSchema.nullable(),
   harness: harnessSchema,
   tool: z.string(),
   rule_id: z.string().nullable(),
   decision: toolPolicyActionSchema,
   severity: toolPolicySeveritySchema.nullable(),
+  /** Whether the organization's policy was enabled when the call was recorded. */
   enforced: z.boolean(),
   masked_command: z.string().nullable(),
   fingerprint: z.string().nullable(),
   matched_at: utcDateTimeSchema,
 });
 export type ToolPolicyViolation = z.output<typeof toolPolicyViolationSchema>;
+
+// --- Server wave: admin management and shim sync request/response shapes ---
+
+/**
+ * The organization's policy as an admin reads it (`GET /admin/tool-policy`) and as the shim
+ * syncs it (`GET /tool-policy`, key-authenticated). `revision` bumps on every replace so the
+ * shim caches the document and re-parses only when it changes; the shim then evaluates
+ * offline with `evaluateToolCall`, and a disabled policy allows every call.
+ */
+export const toolPolicyDocumentSchema = z.strictObject({
+  enabled: z.boolean(),
+  rules: z.array(toolPolicyRuleSchema),
+  revision: nonnegativeIntegerSchema,
+  updated_at: utcDateTimeSchema,
+});
+export type ToolPolicyDocument = z.output<typeof toolPolicyDocumentSchema>;
+
+/**
+ * The replace body (`PUT /admin/tool-policy`): the whole policy an admin saves at once. The
+ * service safety-checks every user-supplied command regex with the redaction ReDoS analysis
+ * before the write and rejects an unsafe pattern with a 400.
+ */
+export const toolPolicyReplaceInputSchema = toolPolicySchema;
+export type ToolPolicyReplaceInput = z.output<
+  typeof toolPolicyReplaceInputSchema
+>;
+
+/** Sort and filter the recorded violations, newest match first by default. */
+export const toolPolicyViolationSortKeys = ["matched_at", "seq"] as const;
+export const toolPolicyViolationsInputSchema = createListInputSchema(
+  toolPolicyViolationSortKeys,
+).extend({
+  filters: z
+    .strictObject({
+      session_id: sessionIdSchema.optional(),
+      source: toolPolicyViolationSourceSchema.optional(),
+      harness: harnessSchema.optional(),
+      rule_id: z.string().min(1).max(64).optional(),
+      decision: toolPolicyActionSchema.optional(),
+      severity: toolPolicySeveritySchema.optional(),
+      enforced: z.boolean().optional(),
+    })
+    .default({}),
+});
+export const toolPolicyViolationsOutputSchema = paginatedOutput(
+  toolPolicyViolationSchema,
+);
+
+/**
+ * The pre-tool gate's telemetry (ADR 0080): a batch of decisions the shim made and spooled,
+ * flushed by its uploader (`POST /tool-policy/violations`, key-authenticated). A blocked deny
+ * emits no post-tool transcript event, so the gate is the only source for it. The raw command
+ * is sent for the server to mask and fingerprint on receipt with the redaction helpers; it is
+ * never stored raw. These are the decisions an enabled policy made, so the server records them
+ * as enforced.
+ */
+export const toolPolicyDecisionReportSchema = z.strictObject({
+  /**
+   * A stable client-generated id for this spooled decision, so a re-flush after a crash that
+   * lost the acknowledgement does not double-record it. Optional; the server assigns one when
+   * absent.
+   */
+  id: sessionIdSchema.optional(),
+  session_id: sessionIdSchema,
+  harness: harnessSchema,
+  tool: z.string().min(1).max(128),
+  /** The raw command the gate evaluated, or null for a tool without one. Masked on receipt. */
+  command: z.string().max(16_384).nullable().default(null),
+  rule_id: z.string().min(1).max(64),
+  decision: z.enum(["deny", "warn"]),
+  severity: toolPolicySeveritySchema,
+  seq: nonnegativeIntegerSchema.nullable().default(null),
+  matched_at: utcDateTimeSchema,
+});
+export type ToolPolicyDecisionReport = z.output<
+  typeof toolPolicyDecisionReportSchema
+>;
+export const toolPolicyViolationsReportInputSchema = z.strictObject({
+  violations: z.array(toolPolicyDecisionReportSchema).min(1).max(500),
+});
+export const toolPolicyViolationsReportOutputSchema = z.strictObject({
+  accepted: nonnegativeIntegerSchema,
+});

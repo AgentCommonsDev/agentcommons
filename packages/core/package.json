@@ -14,6 +14,7 @@
     "./schemas/ingest-context": "./schemas/ingest-context.ts",
     "./schemas/ingest": "./schemas/ingest.ts",
     "./normalizers": "./normalizers/index.ts",
+    "./policy": "./policy/index.ts",
     "./redaction": "./redaction/index.ts",
     "./format": "./format/index.ts",
     "./format/csv": "./format/csv.ts",

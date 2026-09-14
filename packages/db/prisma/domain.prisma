@@ -144,6 +144,49 @@ model RedactionPolicy {
   @@map("redaction_policy")
 }
 
+/// The organization's tool and command policy (ADR 0080): an `enabled` flag and the ordered
+/// rules as data, one row per organization. Seeded with the shipped preset disabled, so a
+/// fresh organization enforces nothing until an admin turns it on. The shim syncs this row
+/// and evaluates offline; `revision` bumps on every replace so the shim re-parses only on a
+/// change. No transcript text is stored here, only the rules an admin authored.
+model ToolPolicy {
+  organizationId String   @id @map("organization_id")
+  enabled        Boolean  @default(false)
+  rules          Json     @default("[]")
+  revision       Int      @default(0)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("tool_policy")
+}
+
+/// One tool-policy match recorded from a captured session (ADR 0080), mirroring the redaction
+/// ledger (§5.3). Detection runs even when enforcement is off, so `enforced` records whether
+/// the policy was enabled when the call was captured. The raw command is never stored: a row
+/// keeps only a masked preview and a salted fingerprint (the redaction samples of §5.3), plus
+/// the matched rule, decision and severity. Rows hang off the session and are replaced whole
+/// whenever it is re-projected, and go with the session on purge.
+model ToolPolicyViolation {
+  organizationId String   @map("organization_id")
+  id             String   @id @db.Uuid
+  sessionId      String   @map("session_id") @db.Uuid
+  source         String
+  seq            Int?
+  harness        Harness
+  tool           String
+  ruleId         String?  @map("rule_id")
+  decision       String
+  severity       String?
+  enforced       Boolean
+  maskedCommand  String?  @map("masked_command")
+  fingerprint    String?
+  matchedAt      DateTime @map("matched_at") @db.Timestamptz
+
+  @@index([organizationId, matchedAt])
+  @@index([organizationId, sessionId])
+  @@index([organizationId, ruleId, matchedAt])
+  @@map("tool_policy_violation")
+}
+
 model AuditEvent {
   organizationId  String?           @map("organization_id")
   id              String            @id @db.Uuid
