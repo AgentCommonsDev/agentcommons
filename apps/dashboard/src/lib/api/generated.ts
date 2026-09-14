@@ -531,6 +531,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/tool-policy": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read the caller organization's active tool and command policy for offline enforcement */
+    get: operations["get_tool_policy"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/tool-policy/violations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Report tool-policy decisions the pre-tool gate made */
+    post: operations["post_tool_policy_violations"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/admin/domains": {
     parameters: {
       query?: never;
@@ -937,6 +971,41 @@ export interface paths {
     };
     /** List the sessions a redaction rescan run changed, with counts */
     get: operations["get_admin_redaction_rescan_id_sessions"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/tool-policy": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read the organization's tool and command policy */
+    get: operations["get_admin_tool_policy"];
+    /** Replace the organization's tool and command policy */
+    put: operations["put_admin_tool_policy"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/admin/tool-policy/violations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List recorded tool-policy violations: session, rule, decision, severity and time */
+    get: operations["get_admin_tool_policy_violations"];
     put?: never;
     post?: never;
     delete?: never;
@@ -5900,6 +5969,151 @@ export interface operations {
       };
     };
   };
+  get_tool_policy: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            enabled: boolean;
+            rules: {
+              id: string;
+              description?: string;
+              /** @default [] */
+              harnesses: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+              tool: string;
+              /** @default [] */
+              command_patterns: {
+                /** @enum {string} */
+                kind: "substring" | "regex";
+                value: string;
+              }[];
+              /** @enum {string} */
+              action: "deny" | "warn" | "allow";
+              /** @enum {string} */
+              severity: "low" | "medium" | "high" | "critical";
+            }[];
+            revision: number;
+            /** Format: date-time */
+            updated_at: string;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  post_tool_policy_violations: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          violations: {
+            /** Format: uuid */
+            id?: string;
+            /** Format: uuid */
+            session_id: string;
+            /** @enum {string} */
+            harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+            tool: string;
+            /** @default null */
+            command?: string | null;
+            rule_id: string;
+            /** @enum {string} */
+            decision: "deny" | "warn";
+            /** @enum {string} */
+            severity: "low" | "medium" | "high" | "critical";
+            /** @default null */
+            seq?: number | null;
+            /** Format: date-time */
+            matched_at: string;
+          }[];
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            accepted: number;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
   get_admin_domains: {
     parameters: {
       query?: {
@@ -8320,6 +8534,265 @@ export interface operations {
               session_id: string;
               processed_at: string | null;
               redaction_count: number;
+            }[];
+            /** @default null */
+            cursor: string | null;
+          };
+          "text/csv": string;
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_tool_policy: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            enabled: boolean;
+            rules: {
+              id: string;
+              description?: string;
+              /** @default [] */
+              harnesses: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+              tool: string;
+              /** @default [] */
+              command_patterns: {
+                /** @enum {string} */
+                kind: "substring" | "regex";
+                value: string;
+              }[];
+              /** @enum {string} */
+              action: "deny" | "warn" | "allow";
+              /** @enum {string} */
+              severity: "low" | "medium" | "high" | "critical";
+            }[];
+            revision: number;
+            /** Format: date-time */
+            updated_at: string;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  put_admin_tool_policy: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          /** @default false */
+          enabled?: boolean;
+          /** @default [] */
+          rules?: {
+            id: string;
+            description?: string;
+            /** @default [] */
+            harnesses?: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+            tool: string;
+            /** @default [] */
+            command_patterns?: {
+              /** @enum {string} */
+              kind: "substring" | "regex";
+              value: string;
+            }[];
+            /** @enum {string} */
+            action: "deny" | "warn" | "allow";
+            /** @enum {string} */
+            severity: "low" | "medium" | "high" | "critical";
+          }[];
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            enabled: boolean;
+            rules: {
+              id: string;
+              description?: string;
+              /** @default [] */
+              harnesses: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+              tool: string;
+              /** @default [] */
+              command_patterns: {
+                /** @enum {string} */
+                kind: "substring" | "regex";
+                value: string;
+              }[];
+              /** @enum {string} */
+              action: "deny" | "warn" | "allow";
+              /** @enum {string} */
+              severity: "low" | "medium" | "high" | "critical";
+            }[];
+            revision: number;
+            /** Format: date-time */
+            updated_at: string;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_admin_tool_policy_violations: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+        sort?: "matched_at" | "seq";
+        order?: "asc" | "desc";
+        /** @description Response format: json, or csv for a text/csv export */
+        format?: "json" | "csv";
+        filters?: {
+          /** Format: uuid */
+          session_id?: string;
+          /** @enum {string} */
+          source?: "projection" | "hook";
+          /** @enum {string} */
+          harness?: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+          rule_id?: string;
+          /** @enum {string} */
+          decision?: "deny" | "warn" | "allow";
+          /** @enum {string} */
+          severity?: "low" | "medium" | "high" | "critical";
+          enforced?: boolean;
+        };
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            items: {
+              /** Format: uuid */
+              id: string;
+              /** Format: uuid */
+              session_id: string;
+              /** @enum {string} */
+              source: "projection" | "hook";
+              seq: number | null;
+              /** @enum {string} */
+              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              tool: string;
+              rule_id: string | null;
+              /** @enum {string} */
+              decision: "deny" | "warn" | "allow";
+              severity: ("low" | "medium" | "high" | "critical") | null;
+              enforced: boolean;
+              masked_command: string | null;
+              fingerprint: string | null;
+              /** Format: date-time */
+              matched_at: string;
             }[];
             /** @default null */
             cursor: string | null;

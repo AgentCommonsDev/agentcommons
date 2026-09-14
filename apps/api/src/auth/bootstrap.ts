@@ -14,6 +14,7 @@ import {
 import { authEnvironment } from "./environment.js";
 import { membershipTransaction } from "./transaction.js";
 import { seedPolicies } from "../services/policies.js";
+import { seedToolPolicy } from "../services/tool-policy.js";
 import { AuditService, type AuditActor } from "../services/audit.js";
 import { ServiceError, type ServiceContext } from "../services/context.js";
 
@@ -140,6 +141,7 @@ export async function bootstrap(
         body: { email: user.email, redirectTo: passwordSetupUrl(config) },
       });
     await seedPolicies(tx, organization.id, user.id);
+    await seedToolPolicy(tx, organization.id);
     const audit = await audits.write(
       operatorContext(),
       {

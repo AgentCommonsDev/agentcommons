@@ -10,6 +10,7 @@ import { createAuth, type AuthConfiguration } from "./config.js";
 import { identityFromHeaders, type AuthIdentity } from "./identity.js";
 import { membershipTransaction } from "./transaction.js";
 import { seedPolicies } from "../services/policies.js";
+import { seedToolPolicy } from "../services/tool-policy.js";
 import { auditedOperation, type AuditService } from "../services/audit.js";
 import { ServiceError, type ServiceContext } from "../services/context.js";
 
@@ -140,6 +141,7 @@ export function onboard(
             });
           }
           await seedPolicies(tx, organizationId, user.id);
+          await seedToolPolicy(tx, organizationId);
           created = true;
         }
         await native.api.setActiveOrganization({

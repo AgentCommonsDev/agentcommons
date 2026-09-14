@@ -10,6 +10,7 @@ import type { SessionService } from "../services/session.js";
 import type { QueryService } from "../services/query.js";
 import type { IngestService } from "../services/ingest.js";
 import type { PolicyService } from "../services/policies.js";
+import type { ToolPolicyService } from "../services/tool-policy.js";
 import type { HealthService } from "../services/health.js";
 import type { AuditService } from "../services/audit.js";
 import type { AdminService } from "../services/admin.js";
@@ -29,6 +30,7 @@ export interface Services {
   query: QueryService;
   ingest: IngestService;
   policies: PolicyService;
+  toolPolicy: ToolPolicyService;
   health: HealthService;
   audit: AuditService;
   admin: AdminService;

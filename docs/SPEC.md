@@ -2265,6 +2265,31 @@ piping a download into a shell, force-pushing a protected branch, reading or wri
 credential and system files, and disabling safety guards, but the policy ships disabled: a
 fresh organization enforces nothing until an admin turns it on.
 
+The policy is one document per organization in the PostgreSQL control plane: the `enabled`
+flag, the ordered rules, and a `revision` that bumps on every replace. A fresh organization
+is seeded with the preset present and `enabled` false, the way redaction policies are
+seeded. Admins read it at `GET /admin/tool-policy` and replace it whole at
+`PUT /admin/tool-policy` (effective admin authority, organization-scoped, one AuditEvent per
+change), both also exposed as `admin_tool_policy_*` MCP tools (ADR 0072). A replace
+safety-checks every user-supplied command regex with the same ReDoS and empty-match analysis
+redaction patterns use and rejects an unsafe pattern with a 400; the shipped preset patterns
+are hand-vetted and scan-bounded and are exempt. The shim reads the caller organization's
+active policy at `GET /tool-policy` under its own key, the way it fetches the recall hint,
+caches it by `revision`, and evaluates offline.
+
+Violations are recorded two ways, mirroring the redaction ledger and never storing the raw
+command. During trace projection the server evaluates every captured tool call against the
+organization's rules and records each deny or warn match as a `projection` violation; this
+runs even while the policy is disabled (`enforced` records whether it was enabled), so an
+organization sees what a policy would catch before turning it on, and a re-projection
+replaces a session's projected violations. Because a blocked deny is vetoed before it runs
+and reaches no transcript, the pre-tool gate reports its decisions to
+`POST /tool-policy/violations` under the ingest credential; the server masks and fingerprints
+the raw command on receipt and stores it as a `hook` violation with `enforced` true,
+idempotent on a client-supplied id. Admins review violations at
+`GET /admin/tool-policy/violations` (paged, filterable, CSV) and its `admin_tool_policy_*`
+MCP tool. Purging a session removes its violations.
+
 ## 10. Dashboard
 
 The dashboard is one single-page application. Public pages (`/`, `/docs`, and `/blog` in

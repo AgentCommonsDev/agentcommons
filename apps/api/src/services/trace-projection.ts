@@ -12,6 +12,11 @@ import { reauthorizeJob } from "../auth/jobs.js";
 import type { IdentityPolicy } from "../auth/config.js";
 import { requirePermission, ServiceError } from "./context.js";
 import { persistRedactionCounts, persistRedactionHits } from "./policies.js";
+import {
+  persistToolPolicyViolations,
+  projectToolPolicyViolations,
+  type ProjectedViolation,
+} from "./tool-policy.js";
 import { posix } from "node:path";
 import { v7 as uuidv7 } from "uuid";
 import type { z } from "zod";
@@ -33,6 +38,7 @@ import {
   truncateUtf8,
   redactNormalizerContext,
   canonicalIdentity,
+  toolPolicySchema,
   type IngestEnvelope,
   type Redactor,
 } from "@agentcommons/core";
@@ -73,6 +79,13 @@ interface Build {
   files: TraceFileDelta[];
   /** Where this plan's redactions landed, per message (§5.3); written with the control row. */
   hits: RedactionHitInput[];
+  /**
+   * Tool-policy matches derived from this projection (§9.7, ADR 0080), replacing the session's
+   * projection-sourced violations on publish; null when no projection ran, so existing rows are
+   * left untouched. `violationsEnforced` records whether the policy was enabled.
+   */
+  violations: ProjectedViolation[] | null;
+  violationsEnforced: boolean;
 }
 /** Rows written to the sink per statement. */
 const SINK_BATCH = 500;
@@ -627,6 +640,15 @@ export class TraceProjectionService {
       ))
     )
       return null;
+    // Tool-policy detection (§9.7): evaluate the projection's tool calls against the
+    // organization's rules and record the matches on publish, even while enforcement is off.
+    const policyRow = await this.dependencies.prisma.toolPolicy.findUnique({
+      where: { organizationId },
+    });
+    const toolPolicy = toolPolicySchema.parse({
+      enabled: policyRow?.enabled ?? false,
+      rules: policyRow?.rules ?? [],
+    });
     return {
       target,
       snapshot,
@@ -635,13 +657,30 @@ export class TraceProjectionService {
       messages,
       files,
       hits: attributeRedactionHits(recorded, projection?.messages ?? []),
+      violations: projection
+        ? projectToolPolicyViolations(
+            toolPolicy.rules,
+            snapshot.harness,
+            projection.messages,
+          )
+        : null,
+      violationsEnforced: toolPolicy.enabled,
     };
   }
   /** Commit the built generation on the control row, if the lease still holds. */
   private async publish(plan: Plan, build: Build): Promise<void> {
     const { organizationId, sessionId } = plan;
-    const { target, snapshot, rewritten, projection, messages, files, hits } =
-      build;
+    const {
+      target,
+      snapshot,
+      rewritten,
+      projection,
+      messages,
+      files,
+      hits,
+      violations,
+      violationsEnforced,
+    } = build;
     await this.dependencies.prisma.$transaction(async (tx) => {
       await lockSession(tx, organizationId, sessionId);
       const current = await tx.traceSessionControl.findUniqueOrThrow({
@@ -675,6 +714,14 @@ export class TraceProjectionService {
         plan.rescan?.runId ?? null,
         hits,
       );
+      if (violations !== null)
+        await persistToolPolicyViolations(
+          tx,
+          organizationId,
+          sessionId,
+          violationsEnforced,
+          violations,
+        );
       await tx.traceSessionControl.update({
         where: { organizationId_id: { organizationId, id: sessionId } },
         data: {

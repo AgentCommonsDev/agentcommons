@@ -283,6 +283,7 @@ export class AdminService {
         let manifest = current.purgeManifest;
         if (!current.purgedAt) {
           const redactions = await tx.redactionEvent.deleteMany({ where });
+          await tx.toolPolicyViolation.deleteMany({ where });
           await tx.traceOutbox.deleteMany({ where });
           const revision = current.acceptedRevision + 1n;
           manifest = {

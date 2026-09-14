@@ -34,7 +34,7 @@ export function registerApiRoutes(
   });
   const runtime = (): Services => requireServices(services);
   function route<B extends z.ZodType, Q extends z.ZodType, P extends z.ZodType>(
-    method: "GET" | "POST" | "PATCH" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     summary: string,
     contract: {
@@ -551,6 +551,26 @@ export function registerApiRoutes(
       output: schema.apiKeyRevealOutputSchema,
     },
     (ctx, input) => runtime().auth.revealKey(ctx, input.params.id),
+  );
+  route(
+    "GET",
+    "/tool-policy",
+    "Read the caller organization's active tool and command policy for offline enforcement",
+    { ...read, output: schema.toolPolicyDocumentSchema },
+    (ctx) => runtime().toolPolicy.active(ctx),
+  );
+  route(
+    "POST",
+    "/tool-policy/violations",
+    "Report tool-policy decisions the pre-tool gate made",
+    {
+      ...read,
+      body: schema.toolPolicyViolationsReportInputSchema,
+      output: schema.toolPolicyViolationsReportOutputSchema,
+      status: 202,
+      rate: "ingest",
+    },
+    (ctx, input) => runtime().toolPolicy.report(ctx, input.body),
   );
   // The admin routes are data (`admin-routes.ts`): REST registers each active one here and
   // the MCP catalog derives the `administration` tools from the same table (ADR 0072).

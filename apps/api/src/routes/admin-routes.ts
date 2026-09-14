@@ -29,7 +29,7 @@ export interface AdminRoute<
   Q extends RouteObject = RouteObject,
   B extends z.ZodType = z.ZodType,
 > {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: `/admin${string}`;
   summary: string;
   params?: P;
@@ -418,6 +418,39 @@ export const adminRoutes: readonly AdminRoute[] = [
     tool: "admin_rescan_start",
     readOnly: false,
     execute: (services, ctx, input) => services.admin.rescan(ctx, input.body),
+  }),
+  adminRoute({
+    method: "GET",
+    path: "/admin/tool-policy",
+    summary: "Read the organization's tool and command policy",
+    output: schema.toolPolicyDocumentSchema,
+    tool: "admin_tool_policy_get",
+    readOnly: true,
+    execute: (services, ctx) => services.toolPolicy.get(ctx),
+  }),
+  adminRoute({
+    method: "PUT",
+    path: "/admin/tool-policy",
+    summary: "Replace the organization's tool and command policy",
+    body: schema.toolPolicyReplaceInputSchema,
+    output: schema.toolPolicyDocumentSchema,
+    tool: "admin_tool_policy_set",
+    readOnly: false,
+    execute: (services, ctx, input) =>
+      services.toolPolicy.replace(ctx, input.body),
+  }),
+  adminRoute({
+    method: "GET",
+    path: "/admin/tool-policy/violations",
+    summary:
+      "List recorded tool-policy violations: session, rule, decision, severity and time",
+    query: schema.toolPolicyViolationsInputSchema,
+    output: schema.toolPolicyViolationsOutputSchema,
+    csv: true,
+    tool: "admin_tool_policy_violations_list",
+    readOnly: true,
+    execute: (services, ctx, input) =>
+      services.toolPolicy.violations(ctx, input.query),
   }),
 ];
 /** The admin routes a running instance registers and lists: every one whose feature is active. */

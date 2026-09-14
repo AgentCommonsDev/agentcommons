@@ -26,6 +26,7 @@ import { AuditService } from "./services/audit.js";
 import { MembershipService } from "./services/membership.js";
 import { CursorCodec } from "./services/cursor.js";
 import { PolicyService, seedPolicies } from "./services/policies.js";
+import { ToolPolicyService, seedToolPolicy } from "./services/tool-policy.js";
 import { SearchService } from "./services/search.js";
 import { QueryService } from "./services/query.js";
 import { SessionService } from "./services/session.js";
@@ -73,6 +74,19 @@ export async function createRuntime(env: Env) {
               resourceIds: [organization.id],
               actor: operatorActor(organization.id),
               detail: { inserted_count: inserted },
+            },
+            tx,
+          );
+        const toolPolicySeeded = await seedToolPolicy(tx, organization.id);
+        if (toolPolicySeeded > 0)
+          await audit.write(
+            operatorContext(),
+            {
+              action: "tool_policy.seed",
+              resourceType: "organization",
+              resourceIds: [organization.id],
+              actor: operatorActor(organization.id),
+              detail: { inserted_count: toolPolicySeeded },
             },
             tx,
           );
@@ -181,6 +195,7 @@ export async function createRuntime(env: Env) {
         traces: jobs,
       }),
       policies: new PolicyService({ prisma, audit, cursors, cache: policies }),
+      toolPolicy: new ToolPolicyService({ prisma, audit, cursors }),
       admin: new AdminService({
         prisma,
         readers,

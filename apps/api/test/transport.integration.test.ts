@@ -46,6 +46,7 @@ import { SessionService } from "../src/services/session.js";
 import { BillingService } from "../src/services/billing.js";
 import { QueryService } from "../src/services/query.js";
 import { PolicyService } from "../src/services/policies.js";
+import { ToolPolicyService } from "../src/services/tool-policy.js";
 import { CursorCodec } from "../src/services/cursor.js";
 import { AdminService } from "../src/services/admin.js";
 import { SessionEventsService } from "../src/services/session-events.js";
@@ -140,6 +141,11 @@ beforeAll(async () => {
     query,
     ingest: native.ingest,
     policies: new PolicyService({ ...deps, cache: database.policies }),
+    toolPolicy: new ToolPolicyService({
+      prisma: database.prisma,
+      audit: database.audit,
+      cursors,
+    }),
     health: new HealthService(database.prisma, database.traces),
     audit: database.audit,
     admin: new AdminService({

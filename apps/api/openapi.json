@@ -20396,6 +20396,442 @@
         }
       }
     },
+    "/api/v1/tool-policy": {
+      "get": {
+        "operationId": "get_tool_policy",
+        "summary": "Read the caller organization's active tool and command policy for offline enforcement",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "rules": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                          },
+                          "description": {
+                            "type": "string",
+                            "maxLength": 200
+                          },
+                          "harnesses": {
+                            "default": [],
+                            "maxItems": 8,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "CLAUDE_CODE",
+                                "CODEX",
+                                "GEMINI_CLI",
+                                "PI"
+                              ]
+                            }
+                          },
+                          "tool": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "command_patterns": {
+                            "default": [],
+                            "maxItems": 32,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "substring",
+                                    "regex"
+                                  ]
+                                },
+                                "value": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "value"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "deny",
+                              "warn",
+                              "allow"
+                            ]
+                          },
+                          "severity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "critical"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "harnesses",
+                          "tool",
+                          "command_patterns",
+                          "action",
+                          "severity"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "rules",
+                    "revision",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tool-policy/violations": {
+      "post": {
+        "operationId": "post_tool_policy_violations",
+        "summary": "Report tool-policy decisions the pre-tool gate made",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "violations": {
+                    "minItems": 1,
+                    "maxItems": 500,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "harness": {
+                          "type": "string",
+                          "enum": [
+                            "CLAUDE_CODE",
+                            "CODEX",
+                            "GEMINI_CLI",
+                            "PI"
+                          ]
+                        },
+                        "tool": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "command": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 16384
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "rule_id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "decision": {
+                          "type": "string",
+                          "enum": [
+                            "deny",
+                            "warn"
+                          ]
+                        },
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high",
+                            "critical"
+                          ]
+                        },
+                        "seq": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "matched_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                        }
+                      },
+                      "required": [
+                        "session_id",
+                        "harness",
+                        "tool",
+                        "rule_id",
+                        "decision",
+                        "severity",
+                        "matched_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "violations"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accepted": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "accepted"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/domains": {
       "get": {
         "operationId": "get_admin_domains",
@@ -27817,6 +28253,901 @@
                           "session_id",
                           "processed_at",
                           "redaction_count"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "cursor": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "cursor"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/tool-policy": {
+      "get": {
+        "operationId": "get_admin_tool_policy",
+        "summary": "Read the organization's tool and command policy",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "rules": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                          },
+                          "description": {
+                            "type": "string",
+                            "maxLength": 200
+                          },
+                          "harnesses": {
+                            "default": [],
+                            "maxItems": 8,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "CLAUDE_CODE",
+                                "CODEX",
+                                "GEMINI_CLI",
+                                "PI"
+                              ]
+                            }
+                          },
+                          "tool": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "command_patterns": {
+                            "default": [],
+                            "maxItems": 32,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "substring",
+                                    "regex"
+                                  ]
+                                },
+                                "value": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "value"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "deny",
+                              "warn",
+                              "allow"
+                            ]
+                          },
+                          "severity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "critical"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "harnesses",
+                          "tool",
+                          "command_patterns",
+                          "action",
+                          "severity"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "rules",
+                    "revision",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "put_admin_tool_policy",
+        "summary": "Replace the organization's tool and command policy",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "rules": {
+                    "default": [],
+                    "maxItems": 500,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        "harnesses": {
+                          "default": [],
+                          "maxItems": 8,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "CLAUDE_CODE",
+                              "CODEX",
+                              "GEMINI_CLI",
+                              "PI"
+                            ]
+                          }
+                        },
+                        "tool": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "command_patterns": {
+                          "default": [],
+                          "maxItems": 32,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "substring",
+                                  "regex"
+                                ]
+                              },
+                              "value": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "value"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "deny",
+                            "warn",
+                            "allow"
+                          ]
+                        },
+                        "severity": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high",
+                            "critical"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "tool",
+                        "action",
+                        "severity"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "rules": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                          },
+                          "description": {
+                            "type": "string",
+                            "maxLength": 200
+                          },
+                          "harnesses": {
+                            "default": [],
+                            "maxItems": 8,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "CLAUDE_CODE",
+                                "CODEX",
+                                "GEMINI_CLI",
+                                "PI"
+                              ]
+                            }
+                          },
+                          "tool": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "command_patterns": {
+                            "default": [],
+                            "maxItems": 32,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "substring",
+                                    "regex"
+                                  ]
+                                },
+                                "value": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "value"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "action": {
+                            "type": "string",
+                            "enum": [
+                              "deny",
+                              "warn",
+                              "allow"
+                            ]
+                          },
+                          "severity": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "critical"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "harnesses",
+                          "tool",
+                          "command_patterns",
+                          "action",
+                          "severity"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "revision": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "rules",
+                    "revision",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "detail": {
+                      "$ref": "#/components/schemas/JsonValue"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/tool-policy/violations": {
+      "get": {
+        "operationId": "get_admin_tool_policy_violations",
+        "summary": "List recorded tool-policy violations: session, rule, decision, severity and time",
+        "parameters": [
+          {
+            "schema": {
+              "default": 50,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": null,
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "matched_at",
+                "seq"
+              ]
+            },
+            "in": "query",
+            "name": "sort",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": "desc",
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "in": "query",
+            "name": "order",
+            "required": false
+          },
+          {
+            "schema": {
+              "default": "json",
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ]
+            },
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "description": "Response format: json, or csv for a text/csv export"
+          },
+          {
+            "schema": {
+              "default": {},
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "projection",
+                    "hook"
+                  ]
+                },
+                "harness": {
+                  "type": "string",
+                  "enum": [
+                    "CLAUDE_CODE",
+                    "CODEX",
+                    "GEMINI_CLI",
+                    "PI"
+                  ]
+                },
+                "rule_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "decision": {
+                  "type": "string",
+                  "enum": [
+                    "deny",
+                    "warn",
+                    "allow"
+                  ]
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical"
+                  ]
+                },
+                "enforced": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            },
+            "in": "query",
+            "name": "filters",
+            "required": false
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "session_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "projection",
+                              "hook"
+                            ]
+                          },
+                          "seq": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "harness": {
+                            "type": "string",
+                            "enum": [
+                              "CLAUDE_CODE",
+                              "CODEX",
+                              "GEMINI_CLI",
+                              "PI"
+                            ]
+                          },
+                          "tool": {
+                            "type": "string"
+                          },
+                          "rule_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "decision": {
+                            "type": "string",
+                            "enum": [
+                              "deny",
+                              "warn",
+                              "allow"
+                            ]
+                          },
+                          "severity": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "low",
+                                  "medium",
+                                  "high",
+                                  "critical"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "enforced": {
+                            "type": "boolean"
+                          },
+                          "masked_command": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "fingerprint": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "matched_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "session_id",
+                          "source",
+                          "seq",
+                          "harness",
+                          "tool",
+                          "rule_id",
+                          "decision",
+                          "severity",
+                          "enforced",
+                          "masked_command",
+                          "fingerprint",
+                          "matched_at"
                         ],
                         "additionalProperties": false
                       }
