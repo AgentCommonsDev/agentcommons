@@ -21,7 +21,14 @@ const time = timeOf();
 const repo =
   "(empty({repo:Array(String)}) OR repo_name IN {repo:Array(String)})";
 const scope = `${time} AND ${repo}`;
-export const dashboardScopeSql = { time, repo, scope };
+/**
+ * Root sessions only: `parent_session_id` is the caller-visible parent, null for a root.
+ * Every tile that counts or lists sessions uses it, so the dashboard agrees with the
+ * Sessions list (`roots_only`); subagent, fork and spawned runs count inside their root.
+ * Sums of messages, tool calls and tokens stay over every session, child runs included.
+ */
+const rootScope = `${scope} AND parent_session_id IS NULL`;
+export const dashboardScopeSql = { time, repo, scope, rootScope };
 /** Display name of the member who ran a session, falling back to the email address. */
 const person = "coalesce(nullIf(user_name,''),user_email)";
 // Per-person tiles rank people with window functions over one aggregate so `sessions`
@@ -34,14 +41,15 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
   {
     id: "captured_sessions",
     title: "Captured sessions",
-    description: "How many sessions were recorded in the selected window.",
+    description:
+      "How many sessions were recorded in the selected window; subagent runs count inside their root session.",
     variables: standard,
     tile: {
       id: "captured_sessions",
       type: "stat",
       title: "Captured sessions",
       layout: layout(3, 2),
-      sql: `SELECT count() AS value FROM sessions WHERE ${scope}`,
+      sql: `SELECT count() AS value FROM sessions WHERE ${rootScope}`,
       unit: "count",
     },
   },
@@ -56,7 +64,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "stat",
       title: "Sessions that searched",
       layout: layout(3, 2),
-      sql: `SELECT countIf(agentcommons_search_calls > 0) AS value FROM metrics_search_sessions WHERE ${scope}`,
+      sql: `SELECT countIf(agentcommons_search_calls > 0) AS value FROM metrics_search_sessions WHERE ${rootScope}`,
       unit: "count",
     },
   },
@@ -70,7 +78,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "stat",
       title: "Sessions reusing prior work",
       layout: layout(3, 2),
-      sql: `SELECT countIf(reused) AS value FROM metrics_reuse_sessions WHERE ${scope}`,
+      sql: `SELECT countIf(reused) AS value FROM metrics_reuse_sessions WHERE ${rootScope}`,
       unit: "count",
     },
   },
@@ -84,7 +92,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "stat",
       title: "Reuse rate",
       layout: layout(3, 2),
-      sql: `SELECT toFloat64(countIf(reused)) / nullIf(count(), 0) AS value FROM metrics_reuse_sessions WHERE ${scope}`,
+      sql: `SELECT toFloat64(countIf(reused)) / nullIf(count(), 0) AS value FROM metrics_reuse_sessions WHERE ${rootScope}`,
       unit: "ratio",
     },
   },
@@ -132,7 +140,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Sessions per day",
       layout: layout(8, 5),
-      sql: `SELECT toDate(started_at) AS day, harness, count() AS sessions FROM sessions WHERE ${scope} GROUP BY day, harness ORDER BY day`,
+      sql: `SELECT toDate(started_at) AS day, harness, count() AS sessions FROM sessions WHERE ${rootScope} GROUP BY day, harness ORDER BY day`,
       series_by: "harness",
       chart: {
         series: [
@@ -154,7 +162,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Sessions by coding tool",
       layout: layout(4, 5),
-      sql: `SELECT harness AS name, count() AS value FROM sessions WHERE ${scope} GROUP BY harness ORDER BY value DESC`,
+      sql: `SELECT harness AS name, count() AS value FROM sessions WHERE ${rootScope} GROUP BY harness ORDER BY value DESC`,
       chart: {
         series: [
           {
@@ -177,7 +185,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Most used tools",
       layout: layout(5, 6),
-      sql: `SELECT t.tool_name AS tool, count() AS sessions FROM session_tools t JOIN sessions s ON s.session_id = t.session_id WHERE ${timeOf("s.")} AND (empty({repo:Array(String)}) OR s.repo_name IN {repo:Array(String)}) GROUP BY tool ORDER BY sessions DESC LIMIT 12`,
+      sql: `SELECT t.tool_name AS tool, count() AS sessions FROM session_tools t JOIN sessions s ON s.session_id = t.session_id WHERE ${timeOf("s.")} AND (empty({repo:Array(String)}) OR s.repo_name IN {repo:Array(String)}) AND s.parent_session_id IS NULL GROUP BY tool ORDER BY sessions DESC LIMIT 12`,
       chart: {
         series: [{ type: "bar", encode: { x: "sessions", y: "tool" } }],
         xAxis: { type: "value" },
@@ -195,7 +203,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "table",
       title: "Most active repositories",
       layout: layout(4, 5),
-      sql: `SELECT repo_name, count() AS sessions, uniqExact(user_id) AS people, countIf(reuse_count > 0) AS reused FROM sessions WHERE ${scope} AND repo_name IS NOT NULL GROUP BY repo_name ORDER BY sessions DESC LIMIT 10`,
+      sql: `SELECT repo_name, count() AS sessions, uniqExact(user_id) AS people, countIf(reuse_count > 0) AS reused FROM sessions WHERE ${rootScope} AND repo_name IS NOT NULL GROUP BY repo_name ORDER BY sessions DESC LIMIT 10`,
     },
   },
   {
@@ -208,7 +216,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "table",
       title: "Most reused sessions",
       layout: layout(7, 6),
-      sql: `SELECT session_id, title, user_email, repo_name, reuse_count, started_at FROM sessions WHERE ${scope} AND reuse_count > 0 ORDER BY reuse_count DESC, started_at DESC LIMIT 10`,
+      sql: `SELECT session_id, title, user_email, repo_name, reuse_count, started_at FROM sessions WHERE ${rootScope} AND reuse_count > 0 ORDER BY reuse_count DESC, started_at DESC LIMIT 10`,
     },
   },
   {
@@ -263,7 +271,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Sessions per person",
       layout: layout(6, 6),
-      sql: `SELECT ${person} AS person, count() AS sessions FROM sessions WHERE ${scope} GROUP BY person ORDER BY sessions DESC, person LIMIT 15`,
+      sql: `SELECT ${person} AS person, count() AS sessions FROM sessions WHERE ${rootScope} GROUP BY person ORDER BY sessions DESC, person LIMIT 15`,
       chart: {
         series: [{ type: "bar", encode: { x: "sessions", y: "person" } }],
         xAxis: { type: "value" },
@@ -302,7 +310,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "table",
       title: "Activity per person",
       layout: layout(6, 6),
-      sql: `SELECT ${person} AS person, count() AS sessions, sum(message_count) AS messages, sum(tool_call_count) AS tool_calls, sum(input_tokens + output_tokens) AS tokens, uniqExact(repo_name) AS repositories, max(last_activity_at) AS last_active FROM sessions WHERE ${scope} GROUP BY person ORDER BY sessions DESC, person LIMIT 50`,
+      sql: `SELECT ${person} AS person, countIf(parent_session_id IS NULL) AS sessions, sum(message_count) AS messages, sum(tool_call_count) AS tool_calls, sum(input_tokens + output_tokens) AS tokens, uniqExact(repo_name) AS repositories, max(last_activity_at) AS last_active FROM sessions WHERE ${scope} GROUP BY person ORDER BY sessions DESC, person LIMIT 50`,
     },
   },
   {
@@ -316,7 +324,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Sessions per day by person",
       layout: layout(8, 5),
-      sql: `SELECT day, if(rank <= 8, who, 'Other') AS person, sum(n) AS sessions FROM (SELECT day, who, n, dense_rank() OVER (ORDER BY total DESC, who) AS rank FROM (SELECT day, who, n, sum(n) OVER (PARTITION BY who) AS total FROM (SELECT toDate(started_at) AS day, ${person} AS who, count() AS n FROM sessions WHERE ${scope} GROUP BY day, who))) GROUP BY day, person ORDER BY day, person`,
+      sql: `SELECT day, if(rank <= 8, who, 'Other') AS person, sum(n) AS sessions FROM (SELECT day, who, n, dense_rank() OVER (ORDER BY total DESC, who) AS rank FROM (SELECT day, who, n, sum(n) OVER (PARTITION BY who) AS total FROM (SELECT toDate(started_at) AS day, ${person} AS who, count() AS n FROM sessions WHERE ${rootScope} GROUP BY day, who))) GROUP BY day, person ORDER BY day, person`,
       series_by: "person",
       chart: {
         series: [
@@ -338,7 +346,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "table",
       title: "Repositories per person",
       layout: layout(6, 6),
-      sql: `SELECT person, repo_name, sessions, last_session FROM (SELECT ${person} AS person, repo_name, count() AS sessions, max(started_at) AS last_session, row_number() OVER (PARTITION BY person ORDER BY count() DESC, repo_name) AS repo_rank FROM sessions WHERE ${scope} AND repo_name IS NOT NULL GROUP BY person, repo_name) WHERE repo_rank <= 3 ORDER BY person, sessions DESC LIMIT 60`,
+      sql: `SELECT person, repo_name, sessions, last_session FROM (SELECT ${person} AS person, repo_name, count() AS sessions, max(started_at) AS last_session, row_number() OVER (PARTITION BY person ORDER BY count() DESC, repo_name) AS repo_rank FROM sessions WHERE ${rootScope} AND repo_name IS NOT NULL GROUP BY person, repo_name) WHERE repo_rank <= 3 ORDER BY person, sessions DESC LIMIT 60`,
     },
   },
   {
@@ -352,7 +360,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Average session duration",
       layout: layout(6, 6),
-      sql: `SELECT ${person} AS person, avg(duration_seconds) AS avg_seconds FROM sessions WHERE ${scope} GROUP BY person ORDER BY avg_seconds DESC, person LIMIT 15`,
+      sql: `SELECT ${person} AS person, avg(duration_seconds) AS avg_seconds FROM sessions WHERE ${rootScope} GROUP BY person ORDER BY avg_seconds DESC, person LIMIT 15`,
       unit: "seconds",
       chart: {
         series: [{ type: "bar", encode: { x: "avg_seconds", y: "person" } }],
@@ -371,7 +379,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "chart",
       title: "Coding tools per person",
       layout: layout(4, 5),
-      sql: `SELECT who AS person, harness, n AS sessions FROM (SELECT who, harness, n, total, dense_rank() OVER (ORDER BY total DESC, who) AS rank FROM (SELECT who, harness, n, sum(n) OVER (PARTITION BY who) AS total FROM (SELECT ${person} AS who, harness, count() AS n FROM sessions WHERE ${scope} GROUP BY who, harness))) WHERE rank <= 10 ORDER BY total DESC, person, harness`,
+      sql: `SELECT who AS person, harness, n AS sessions FROM (SELECT who, harness, n, total, dense_rank() OVER (ORDER BY total DESC, who) AS rank FROM (SELECT who, harness, n, sum(n) OVER (PARTITION BY who) AS total FROM (SELECT ${person} AS who, harness, count() AS n FROM sessions WHERE ${rootScope} GROUP BY who, harness))) WHERE rank <= 10 ORDER BY total DESC, person, harness`,
       series_by: "harness",
       chart: {
         series: [
@@ -397,7 +405,7 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
       type: "table",
       title: "Recent sessions",
       layout: layout(6, 6),
-      sql: `SELECT session_id, title, user_email, repo_name, harness, started_at FROM sessions WHERE ${scope} ORDER BY started_at DESC LIMIT 20`,
+      sql: `SELECT session_id, title, user_email, repo_name, harness, started_at FROM sessions WHERE ${rootScope} ORDER BY started_at DESC LIMIT 20`,
     },
   },
   {

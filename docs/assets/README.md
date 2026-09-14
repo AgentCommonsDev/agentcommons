@@ -42,7 +42,9 @@ arrival, so the script sets display names, the organization name and each sessio
 `ended_at`/`last_activity_at` with psql on the fixture's PostgreSQL container, and removes
 the fixture's own control session. Captured on 2026-09-12 with Playwright Chromium at
 1440 × 900 and a device scale factor of 2, once with `agentcommons-theme=dark` and once
-with `light`. Home and Sessions are captured as the admin; the session page, SQL and
+with `light`; Home was recaptured on 2026-09-14 after the dashboard started counting root
+sessions only (the Explore subagent run counts inside its session), so it shows 27
+captured sessions. Home and Sessions are captured as the admin; the session page, SQL and
 Install as a member. Every image is a viewport capture cut at the last element boundary
 that fits (a tile row, a table row, an install step) except the session transcript, which
 is a full-page capture cut after the expanded subagent run. Images are scaled to 2000 px

@@ -129,11 +129,13 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
   // policy already drops gets of hidden targets).
   add(
     "metrics_reuse_sessions",
-    `SELECT s.session_id AS session_id,s.organization_id AS organization_id,s.started_at AS started_at,s.repo_name AS repo_name,s.user_id AS user_id,s.installation_id AS installation_id,toUInt8(coalesce(f.reused,0)) AS reused,toUInt8(coalesce(f.cross_user_reused,0)) AS cross_user_reused,if(${admin},toUInt8(coalesce(f.memory_assisted,0)),NULL) AS memory_assisted FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,max(${edgeCondition("r")}) AS reused,maxIf(coalesce(t.user_id,'')!=r.reader_user_id,${edgeCondition("r")}) AS cross_user_reused,toUInt8(1) AS memory_assisted FROM (${reads}) r LEFT ANY JOIN (${owners}) t ON t.session_id=r.target_session_id GROUP BY r.session_id) f ON f.session_id=s.session_id WHERE s.purged_at IS NULL`,
+    `SELECT s.session_id AS session_id,s.organization_id AS organization_id,s.started_at AS started_at,s.repo_name AS repo_name,s.user_id AS user_id,s.installation_id AS installation_id,s.parent_session_id AS parent_session_id,toUInt8(coalesce(f.reused,0)) AS reused,toUInt8(coalesce(f.cross_user_reused,0)) AS cross_user_reused,if(${admin},toUInt8(coalesce(f.memory_assisted,0)),NULL) AS memory_assisted FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,max(${edgeCondition("r")}) AS reused,maxIf(coalesce(t.user_id,'')!=r.reader_user_id,${edgeCondition("r")}) AS cross_user_reused,toUInt8(1) AS memory_assisted FROM (${reads}) r LEFT ANY JOIN (${owners}) t ON t.session_id=r.target_session_id GROUP BY r.session_id) f ON f.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
+  // Root sessions only, like the dashboard's reuse-rate tile: a subagent run counts inside
+  // the session that spawned it.
   add(
     "metrics_reuse_weekly",
-    `SELECT toDate(toStartOfWeek(started_at,1,'UTC')) AS week,count() AS sessions,countIf(reused) AS reuse_sessions,countIf(cross_user_reused) AS cross_user_reuse_sessions,toFloat64(countIf(reused))/nullIf(count(),0) AS reuse_rate,toFloat64(countIf(cross_user_reused))/nullIf(count(),0) AS cross_user_reuse_rate FROM api_ro.metrics_reuse_sessions GROUP BY week`,
+    `SELECT toDate(toStartOfWeek(started_at,1,'UTC')) AS week,count() AS sessions,countIf(reused) AS reuse_sessions,countIf(cross_user_reused) AS cross_user_reuse_sessions,toFloat64(countIf(reused))/nullIf(count(),0) AS reuse_rate,toFloat64(countIf(cross_user_reused))/nullIf(count(),0) AS cross_user_reuse_rate FROM api_ro.metrics_reuse_sessions WHERE parent_session_id IS NULL GROUP BY week`,
   );
   add(
     "metrics_health",
@@ -204,7 +206,7 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
   // part, so the count does not depend on how a user aliased the MCP server.
   add(
     "metrics_search_sessions",
-    `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,s.harness AS harness,s.user_id AS user_id,coalesce(t.calls,toUInt64(0)) AS agentcommons_search_calls,greatest(toInt64(coalesce(t.calls,0))-1,0) AS repeat_agentcommons_search_calls FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,count() AS calls FROM (${reads}) r WHERE r.action IN (${searchReadActions.map(sqlString).join(",")}) GROUP BY r.session_id) t ON t.session_id=s.session_id WHERE s.purged_at IS NULL`,
+    `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,s.harness AS harness,s.user_id AS user_id,s.parent_session_id AS parent_session_id,coalesce(t.calls,toUInt64(0)) AS agentcommons_search_calls,greatest(toInt64(coalesce(t.calls,0))-1,0) AS repeat_agentcommons_search_calls FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,count() AS calls FROM (${reads}) r WHERE r.action IN (${searchReadActions.map(sqlString).join(",")}) GROUP BY r.session_id) t ON t.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
   // One pass over the stored reads for the `sessions` columns they feed: every read is
   // credited to the session that made it ('out': its search/sql calls and the distinct

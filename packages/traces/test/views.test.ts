@@ -192,3 +192,16 @@ describe("audit-derived metrics read JSON types by the names JSONType returns", 
     );
   });
 });
+
+// @req R-DASH-47
+describe("adoption and reuse metrics can be scoped to root sessions", () => {
+  it("expose the projection's parent_session_id and the weekly trend counts roots only", () => {
+    for (const name of ["metrics_search_sessions", "metrics_reuse_sessions"])
+      expect(sql(name), name).toContain(
+        "s.parent_session_id AS parent_session_id",
+      );
+    expect(sql("metrics_reuse_weekly")).toContain(
+      "FROM api_ro.metrics_reuse_sessions WHERE parent_session_id IS NULL GROUP BY week",
+    );
+  });
+});

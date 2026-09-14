@@ -107,7 +107,15 @@ function tileRows(
     ),
   );
 }
-async function ingestSession(remoteUrl: string, by: Ingester = first) {
+/**
+ * One ended session with two messages and one tool call; `parentOf` makes it a subagent
+ * run of the session with that harness id, which the dashboard counts inside its root.
+ */
+async function ingestSession(
+  remoteUrl: string,
+  by: Ingester = first,
+  options: { harnessSessionId?: string; parentOf?: string } = {},
+) {
   const records = [
     {
       type: "user",
@@ -141,10 +149,20 @@ async function ingestSession(remoteUrl: string, by: Ingester = first) {
     by.context,
     testEnvelope({
       behavior: "end",
-      nativeEvent: "SessionEnd",
+      nativeEvent: options.parentOf ? "SubagentStop" : "SessionEnd",
+      ...(options.harnessSessionId
+        ? { harnessSessionId: options.harnessSessionId }
+        : {}),
       context: {
         installation: { hostname: "dashboard-fixture" },
         git: { root: "/repo", remoteUrl, branch: "main", head: "abc123" },
+        parentHint: options.parentOf
+          ? {
+              harnessSessionId: options.parentOf,
+              relation: "SUBAGENT",
+              agentType: "Explore",
+            }
+          : null,
       },
       records: records.map((record, pos) =>
         sourceRecord(pos, record, record.uuid),
@@ -188,9 +206,17 @@ beforeAll(async () => {
 });
 afterAll(release);
 
-// @req R-DASH-15 @req R-DASH-16 @req R-DASH-25
+// @req R-DASH-15 @req R-DASH-16 @req R-DASH-25 @req R-DASH-47
 it("ships the built-in Team overview as the default and renders its tiles with typed time and repository variables over real trace data", async () => {
-  await ingestSession("git@github.com:acme/app.git");
+  const rootHarnessId = randomUUID();
+  await ingestSession("git@github.com:acme/app.git", first, {
+    harnessSessionId: rootHarnessId,
+  });
+  // A subagent run of that session: its messages and tool call are real work, but the
+  // dashboard counts it inside its root, as the Sessions list does (`roots_only`).
+  await ingestSession("git@github.com:acme/app.git", first, {
+    parentOf: rootHarnessId,
+  });
   const listed = await list(member);
   expect(listed.default_id).toBe(builtinDashboardId);
   expect(listed.items[0]).toMatchObject({
@@ -228,7 +254,30 @@ it("ships the built-in Team overview as the default and renders its tiles with t
   });
   expect(everything.tiles.filter((tile) => tile.error !== null)).toEqual([]);
   expect(everything.tiles).toHaveLength(10);
+  // One root, one child: every session count and list is 1, and the child's Read call
+  // does not make a second session for the tool.
   expect(tileValue(everything, "captured_sessions")).toBe("1");
+  expect(
+    tileRows(everything, "sessions_per_day").map((row) => [
+      row.harness,
+      num(row.sessions),
+    ]),
+  ).toEqual([["CLAUDE_CODE", 1]]);
+  expect(
+    tileRows(everything, "harness_share").map((row) => num(row.value)),
+  ).toEqual([1]);
+  expect(
+    tileRows(everything, "top_tools").map((row) => [
+      row.tool,
+      num(row.sessions),
+    ]),
+  ).toEqual([["Read", 1]]);
+  expect(
+    tileRows(everything, "top_repos").map((row) => [
+      row.repo_name,
+      num(row.sessions),
+    ]),
+  ).toEqual([["github.com/acme/app", 1]]);
   expect(everything.variables.time_range).toMatchObject({
     from: expect.stringMatching(/T00:00:00\.000Z$/) as unknown,
   });
@@ -284,7 +333,7 @@ it("ships the built-in Team overview as the default and renders its tiles with t
           type: "stat",
           title: "Fine",
           layout: { x: 3, y: 0, w: 3, h: 2 },
-          sql: "SELECT count() AS value FROM sessions",
+          sql: "SELECT count() AS value FROM sessions WHERE parent_session_id IS NULL",
           unit: "count",
         },
       ],
@@ -685,7 +734,8 @@ it("ships the built-in Team activity as a second read-only, non-default dashboar
   expect(Number(tileValue(rendered, "messages_total"))).toBeGreaterThanOrEqual(
     total * 2,
   );
-  expect(Number(tileValue(rendered, "tool_calls_total"))).toBe(total);
+  // Totals cover every session: the one subagent run adds its tool call, not a session.
+  expect(Number(tileValue(rendered, "tool_calls_total"))).toBe(total + 1);
 
   const activity = tileRows(rendered, "activity_per_person");
   expect(activity).toHaveLength(2);

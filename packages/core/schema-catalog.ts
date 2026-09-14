@@ -288,6 +288,8 @@ export const traceViewCatalog: Readonly<
       repo_name: repoOfSession,
       user_id: "Member who ran it",
       installation_id: "Machine it ran on",
+      parent_session_id:
+        "Parent session of a subagent, fork or spawned session; NULL for a root",
       reused: "1 when the session read at least one prior session",
       cross_user_reused: "1 when it read another member's session",
       memory_assisted:
@@ -303,6 +305,8 @@ export const traceViewCatalog: Readonly<
       repo_name: repoOfSession,
       harness: "Harness of the session",
       user_id: "Member who ran it",
+      parent_session_id:
+        "Parent session of a subagent, fork or spawned session; NULL for a root",
       agentcommons_search_calls:
         "search and sql calls credited to the session while active",
       repeat_agentcommons_search_calls: "Those calls after the first one",

@@ -786,9 +786,14 @@ mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add �
    through its own flag; a reconcile run (§6.2 **Reconfiguration**) rewrites an existing
    entry, so installed machines heal on their next hook run after a bundle swap; each
    harness is wired independently, so a `claude mcp add` that fails (the CLI missing
-   from the detached uploader's PATH) is reported as a notice while the Gemini and Codex
-   entries are still rewritten, and only a harness whose files could not be written, or a
-   run that wired nothing, exits non-zero; write the marker-delimited
+   from the detached uploader's PATH, a slow first start, a refused add) is reported as a
+   notice after the "Configured" summary while the Gemini and Codex entries are still
+   rewritten: the installer restores its own entry, reads it back to confirm it is in
+   place, and names the CLI's exit status or timeout (30 s) and first stderr line with the
+   key masked, saying that recall works because the harness reads that entry; a machine
+   whose only CLI failed natively is therefore configured, not failed, and `install` still
+   records its options and wiring for self-update. Only a harness whose files could not be
+   written (including an entry that did not land) exits non-zero; write the marker-delimited
    `AGENTCOMMONS_SERVER`/`AGENTCOMMONS_API_KEY` exports into `~/.bashrc`, `~/.zshrc` and,
    when fish is installed or configured, `~/.config/fish/config.fish` unless
    `--no-shell-rc` (Codex reads the key from the environment, so every login shell needs
@@ -2380,6 +2385,20 @@ prior work, and reuse rate, computed by
 stat tiles over `api_ro.sessions`, `api_ro.metrics_search_sessions` and
 `api_ro.metrics_reuse_sessions`. There is no dedicated Home API; the reuse, impact and gap
 relations remain available through `sql`, the metric API and dashboard tiles.
+
+**Sessions are root sessions.** Every shipped tile that counts or lists sessions counts
+root sessions only (`parent_session_id IS NULL`, the caller-visible parent, which is the
+predicate the Sessions list applies through `roots_only`), so the dashboard and the browse
+surface agree: a subagent, fork or spawned run counts inside the session that started it.
+This covers the four KPI tiles, sessions per day, harness share, top tools, top and
+per-person repositories, most reused and recent sessions, the per-person session, duration
+and coding-tool tiles, the `sessions` column of the activity table
+(`countIf(parent_session_id IS NULL)`) and the weekly reuse trend, whose
+`api_ro.metrics_reuse_weekly` view is root-scoped; `api_ro.metrics_search_sessions` and
+`api_ro.metrics_reuse_sessions` expose `parent_session_id` for it. Sums stay sums over every
+session, child runs included, because a subagent's work is the team's work: messages, tool
+calls, tokens per person and the activity table's message, tool-call and token columns, and
+active people counts everyone who ran any session.
 
 **Session detail** (`/app/sessions/:id`): a header that shows every field the `get`
 header carries with human labels and copyable ids; a Details panel with token totals,

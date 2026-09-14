@@ -14,6 +14,7 @@ import {
   builtinDashboard,
   builtinDashboards,
   dashboardParameterTypes,
+  dashboardScopeSql,
   dashboardTileTemplates,
   resolveDashboardVariables,
   standardDashboardVariables,
@@ -79,6 +80,51 @@ it("ships two valid built-in dashboards whose tile queries pass the guard with t
         ),
         template.id,
       ).toContain("SELECT");
+});
+
+// @req R-DASH-47
+it("counts and lists root sessions only, as the Sessions list does, while message, tool-call and token sums cover every session", () => {
+  const roots = "parent_session_id IS NULL";
+  expect(dashboardScopeSql.rootScope).toBe(
+    `${dashboardScopeSql.scope} AND ${roots}`,
+  );
+  const sql = (id: string): string => {
+    const tile = dashboardTileTemplates.find((item) => item.id === id)?.tile;
+    if (!tile || !("sql" in tile)) throw new Error(`Missing SQL tile ${id}`);
+    return tile.sql;
+  };
+  // Every tile whose rows or counts are sessions: one row or one count per root.
+  for (const id of [
+    "captured_sessions",
+    "search_sessions",
+    "reuse_sessions",
+    "reuse_rate",
+    "sessions_per_day",
+    "harness_share",
+    "top_repos",
+    "most_reused",
+    "recent_sessions",
+    "sessions_per_person",
+    "sessions_per_day_by_person",
+    "repos_per_person",
+    "duration_per_person",
+    "harness_per_person",
+  ])
+    expect(sql(id), id).toContain(` AND ${roots}`);
+  expect(sql("top_tools")).toContain(" AND s.parent_session_id IS NULL");
+  // The per-person table mixes both: root sessions, activity over every session.
+  expect(sql("activity_per_person")).toContain(`countIf(${roots}) AS sessions`);
+  expect(sql("activity_per_person")).not.toContain(` AND ${roots}`);
+  // Totals stay totals: a subagent run's messages, tool calls and tokens are real work.
+  for (const id of [
+    "messages_total",
+    "tool_calls_total",
+    "tokens_per_person",
+    "active_people",
+  ])
+    expect(sql(id), id).not.toContain("parent_session_id");
+  // The weekly trend view already scopes itself to roots (packages/traces analytics).
+  expect(sql("reuse_trend")).toContain("metrics_reuse_weekly");
 });
 
 // @req R-DASH-25 @req R-SQL-02
