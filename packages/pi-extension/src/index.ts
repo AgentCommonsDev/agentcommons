@@ -314,51 +314,47 @@ function commandOf(input: unknown): string | null {
     : null;
 }
 /**
- * Tool/command policy enforcement for pi (ADR 0080, §6.4). pi's extension is the veto point
- * a `tool_call` handler blocks from; unlike the shell harnesses it fails CLOSED on a thrown
- * handler, so this catches everything and returns `undefined` (allow) on any trouble —
- * enforcement bugs never halt the user's work. The decision is local and offline: read the
- * cached org policy and evaluate. `deny` returns `{ block, reason }`; `warn` lets the tool
- * run and tells the user (the extension has no channel to the model); `allow` returns
- * nothing. A blocked call is spooled for the uploader to forward, exactly as on the shell
- * side. Per-path `disabledPaths` is not read here (that would pull zod into this bundle);
- * `AGENTCOMMONS_DISABLE` still turns everything off, and capture keeps honouring both.
+ * Tool/command policy enforcement for pi (ADR 0080, §9.7). pi's extension is the veto point
+ * a `tool_call` handler blocks from, and unlike the three shell harnesses it fails CLOSED:
+ * a thrown handler blocks the call. The decision is local and offline: read the cached org
+ * policy and evaluate. No policy, a disabled policy or an `allow` returns `undefined` (the
+ * tool runs); those paths never throw (`readCachedPolicy` swallows every read error), so a
+ * healthy machine never blocks legitimate work. `deny` returns `{ block, reason }`; `warn`
+ * lets the tool run and tells the user (the extension has no channel to the model); a
+ * blocked or warned decision is spooled for the uploader to forward, exactly as on the
+ * shell side. Per-path `disabledPaths` is not read here (that would pull zod into this
+ * bundle); `AGENTCOMMONS_DISABLE` still turns everything off, and capture honours both.
  */
 export function enforceToolCall(
   event: ToolCallEvent,
   context: ExtensionContext,
 ): ToolCallEventResult | undefined {
+  if (process.env.AGENTCOMMONS_DISABLE === "1") return undefined;
+  const directory = dataDirectory();
+  const policy = readCachedPolicy(directory);
+  if (!policy) return undefined;
+  const command = commandOf(event.input);
+  const call: ToolCall = { harness: "PI", tool: event.toolName, command };
+  const decision = decide(call, policy);
+  if (decision.decision === "allow") return undefined;
+  const reason = decision.reason ?? "Blocked by the organization tool policy.";
+  spoolDecision(directory, {
+    sessionId: context.sessionManager.getSessionId(),
+    harness: "PI",
+    tool: call.tool,
+    command: command === null ? null : command.slice(0, MAX_COMMAND),
+    ruleId: decision.matched_rule_id,
+    decision: decision.decision,
+    severity: decision.severity,
+    matchedAt: new Date().toISOString(),
+  });
+  if (decision.decision === "deny") return { block: true, reason };
   try {
-    if (process.env.AGENTCOMMONS_DISABLE === "1") return undefined;
-    const directory = dataDirectory();
-    const policy = readCachedPolicy(directory);
-    if (!policy) return undefined;
-    const command = commandOf(event.input);
-    const call: ToolCall = { harness: "PI", tool: event.toolName, command };
-    const decision = decide(call, policy);
-    if (decision.decision === "allow") return undefined;
-    const reason =
-      decision.reason ?? "Blocked by the organization tool policy.";
-    spoolDecision(directory, {
-      sessionId: context.sessionManager.getSessionId(),
-      harness: "PI",
-      tool: call.tool,
-      command: command === null ? null : command.slice(0, MAX_COMMAND),
-      ruleId: decision.matched_rule_id,
-      decision: decision.decision,
-      severity: decision.severity,
-      matchedAt: new Date().toISOString(),
-    });
-    if (decision.decision === "deny") return { block: true, reason };
-    try {
-      context.ui.notify(reason, "warning");
-    } catch {
-      /* Print/RPC hosts expose no interactive UI; the tool still runs. */
-    }
-    return undefined;
+    context.ui.notify(reason, "warning");
   } catch {
-    return undefined; // Fail open: pi blocks on a throw, so enforcement must never throw.
+    /* Print/RPC hosts expose no interactive UI; the tool still runs. */
   }
+  return undefined;
 }
 export default async function agentcommons(pi: ExtensionAPI): Promise<void> {
   // pi has no global instructions file the installer could write; the same §8.3 guidance
