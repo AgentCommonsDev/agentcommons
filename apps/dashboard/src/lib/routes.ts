@@ -27,6 +27,7 @@ export const paths = {
     audit: "/app/admin/audit",
     moderation: "/app/admin/moderation",
     redaction: "/app/admin/redaction",
+    toolPolicy: "/app/admin/tool-policy",
     status: "/app/admin/status",
     settings: "/app/admin/settings",
   },

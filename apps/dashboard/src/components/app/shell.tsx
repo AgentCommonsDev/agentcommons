@@ -16,6 +16,7 @@ import {
   ScrollText,
   Search,
   Settings2,
+  ShieldAlert,
   ShieldCheck,
   Sliders,
   TerminalSquare,
@@ -105,6 +106,12 @@ const organizationNavigation: NavItem[] = [
     to: paths.admin.redaction,
     label: copy.app.navigation.redaction,
     icon: Sliders,
+  },
+  {
+    to: paths.admin.toolPolicy,
+    label: copy.app.navigation.toolPolicy,
+    icon: ShieldAlert,
+    match: (pathname) => pathname.startsWith(paths.admin.toolPolicy),
   },
   { to: paths.admin.status, label: copy.app.navigation.status, icon: Activity },
   {

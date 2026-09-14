@@ -22,6 +22,7 @@ export const appCopy = {
     audit: "Audit log",
     moderation: "Moderation",
     redaction: "Redaction",
+    toolPolicy: "Tool policy",
     status: "Status",
     settings: "Settings",
     api: "API reference",

@@ -115,6 +115,7 @@ export const redactionRunSessionSortKeys = [
   "redaction_count",
 ] as const;
 export const redactionHitSortKeys = ["redacted_at", "count", "seq"] as const;
+export const toolPolicyViolationSortKeys = ["matched_at", "seq"] as const;
 export const metricSortKeys = [
   "date",
   "metric",

@@ -65,6 +65,10 @@ const RedactionPage = lazyRouteComponent(
   () => import("./pages/admin/redaction"),
   "RedactionPage",
 );
+const ToolPolicyPage = lazyRouteComponent(
+  () => import("./pages/admin/tool-policy"),
+  "ToolPolicyPage",
+);
 const PersonPage = lazyRouteComponent(
   () => import("./pages/admin/user"),
   "PersonPage",
@@ -384,6 +388,23 @@ const adminRedactionRoute = createRoute({
     return <RedactionPage jobId={job} hitSearch={hitSearch} />;
   },
 });
+const adminToolPolicyRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/admin/tool-policy",
+  // The violations ledger keeps its filters in the URL, so a filtered ledger is a link.
+  validateSearch: optionalStrings(
+    "source",
+    "harness",
+    "decision",
+    "severity",
+    "enforced",
+    "session_id",
+    "rule_id",
+  ),
+  component: () => (
+    <ToolPolicyPage violationSearch={adminToolPolicyRoute.useSearch()} />
+  ),
+});
 const adminStatusRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/admin/status",
@@ -438,6 +459,7 @@ const routeTree = rootRoute.addChildren([
     adminAuditRoute,
     adminModerationRoute,
     adminRedactionRoute,
+    adminToolPolicyRoute,
     adminStatusRoute,
     adminSettingsRoute,
   ]),
