@@ -1145,6 +1145,39 @@ writing the §8.3 block into repositories, `1` forces it on; otherwise `guidance
 `config.json` decides). Installer `--config-home` selects an isolated native settings
 root for canaries without changing the user home; `--no-shell-rc` suppresses exports.
 
+### 6.5 Pre-tool policy enforcement
+
+The shim enforces the tool/command policy (§9.7, ADR 0080) before a tool runs, a third
+mode of hook mode alongside capture and the recall hint. The installer wires the pre-tool
+event of each harness from the same `HARNESSES` table it wires every other event from:
+`PreToolUse` for Claude Code and Codex, `BeforeTool` for Gemini CLI, and a `tool_call`
+handler in the pi extension. These entries carry the `agentcommons-hook` marker and are
+backed up and restored exactly like the capture hooks; a pre-tool event is never captured
+as a transcript record.
+
+On such an event the shim normalizes the call into the core `ToolCall` (the harness id, the
+tool name including its MCP form `mcp__server__tool`/`mcp_server_tool`, and the shell
+command when the payload carries one), evaluates it against the policy cached on the machine
+with `evaluateToolCall`, and writes the decision. The three shell harnesses share one deny
+shape, `{"decision":"block","reason":R}` at exit 0; `warn` uses each harness's channel
+(Codex `hookSpecificOutput.additionalContext`, Gemini `systemMessage`, Claude both), and
+`allow` writes nothing. pi's handler returns `{block:true,reason:R}` or notifies the user
+and returns nothing. This path is local and offline: the shell harnesses fail open on a
+slow or crashing hook, so it never touches the network and never reads more than the small
+cached policy.
+
+The cache is `tool-policy.json` in the data directory (`{ v, fetchedAt, revision, policy }`,
+`0600`), beside the recall and guidance caches. Only the uploader writes it, refreshing at
+most every five minutes from `GET /api/v1/tool-policy` (`{ enabled, rules, revision,
+updated_at }`); a failed refresh keeps the last-known policy. Hook mode reads it and never
+fetches; a missing or disabled policy allows every call. Because a blocked call fires no
+post-tool event, the pre-tool hook records each blocked or warned decision to a `0600`
+spool (`tool-policy/violations/`, the raw command, minted with a stable id) and kicks the
+uploader; the uploader flushes the spool to `POST /api/v1/tool-policy/violations` in one
+batch, and the server masks and fingerprints the command on receipt (§5.3), so redaction —
+and secretlint — stays out of the shim. A non-2xx leaves the spool for the next run; a
+persistently unreachable server trims the spool oldest-first to a bound.
+
 ---
 
 ## 7. Search, read, SQL (the backbone)

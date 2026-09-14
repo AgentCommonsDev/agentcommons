@@ -17,7 +17,14 @@ const child = vi.hoisted(() => ({
   unref: vi.fn(),
 }));
 vi.mock("node:child_process", () => ({ spawn: child.spawn }));
-import extension, { MCP_TOOL_PREFIX, hostVersion } from "./index.js";
+import extension, {
+  MCP_TOOL_PREFIX,
+  enforceToolCall,
+  hostVersion,
+} from "./index.js";
+import { writeAtomic, jsonFiles } from "../../hook/src/files.js";
+import { policyCachePath, violationDir } from "../../hook/src/policy.js";
+import type { ToolCallEvent } from "@mariozechner/pi-coding-agent";
 
 const HOST = "@mariozechner/pi-coding-agent";
 function fakeHost(root: string, version: string): string {
@@ -84,6 +91,7 @@ it("adds the global guidance to the system prompt, observes six native events, t
   await extension(api);
   expect([...callbacks.keys()]).toEqual([
     "before_agent_start",
+    "tool_call",
     "session_start",
     "input",
     "tool_result",
@@ -91,6 +99,9 @@ it("adds the global guidance to the system prompt, observes six native events, t
     "session_tree",
     "session_shutdown",
   ]);
+  // The tool_call handler is enforcement, not capture: with no cached policy it allows and
+  // spawns nothing. Removed here so the lifecycle loop below counts only the six observers.
+  callbacks.delete("tool_call");
   // The guidance block joins pi's system prompt; nothing else about the prompt changes.
   const prompt = callbacks.get("before_agent_start");
   expect(
@@ -357,7 +368,7 @@ it("registers nothing and keeps capture when the server is unreachable or reject
   const unreachable = bridgeApi();
   await extension(unreachable.api);
   expect(unreachable.tools.size).toBe(0);
-  expect(unreachable.on).toHaveBeenCalledTimes(7);
+  expect(unreachable.on).toHaveBeenCalledTimes(8);
   const rejected = await mcpServer(() => ({
     status: 401,
     body: { code: "INVALID_API_KEY", message: "The API key is invalid." },
@@ -416,5 +427,89 @@ it("registers nothing and keeps capture when the server is unreachable or reject
   const capture = bridgeApi();
   await extension(capture.api);
   expect(capture.tools.size).toBe(0);
-  expect(capture.on).toHaveBeenCalledTimes(7);
+  expect(capture.on).toHaveBeenCalledTimes(8);
+});
+
+/** A fake pi ExtensionContext for enforcement tests: records notifications, gives a session id. */
+function fakeContext(notify: (message: string, type?: string) => void) {
+  return {
+    ui: { notify },
+    hasUI: true,
+    cwd: "/tmp/repo",
+    sessionManager: { getSessionId: () => "pi-session" },
+  } as unknown as ExtensionContext;
+}
+const bashCall = (command: string): ToolCallEvent =>
+  ({
+    type: "tool_call",
+    toolCallId: "call_1",
+    toolName: "bash",
+    input: { command },
+  }) as unknown as ToolCallEvent;
+
+// @req R-POL-04 @req R-POL-06
+it("enforces the tool policy in pi's tool_call handler: block, notify-and-allow, allow, and offline", () => {
+  const directory = mkdtempSync(join(tmpdir(), "agentcommons-pi-policy-"));
+  vi.stubEnv("AGENTCOMMONS_DIR", directory);
+  const policy = {
+    v: 1,
+    fetchedAt: Date.now(),
+    revision: 1,
+    policy: {
+      enabled: true,
+      rules: [
+        {
+          id: "deny-me",
+          description: "Denied by test policy.",
+          harnesses: [],
+          tool: "*",
+          command_patterns: [{ kind: "substring", value: "DENYME" }],
+          action: "deny",
+          severity: "critical",
+        },
+        {
+          id: "warn-me",
+          description: "Warned by test policy.",
+          harnesses: [],
+          tool: "*",
+          command_patterns: [{ kind: "substring", value: "WARNME" }],
+          action: "warn",
+          severity: "medium",
+        },
+      ],
+    },
+  };
+  // No cache yet: everything is allowed.
+  expect(
+    enforceToolCall(bashCall("echo DENYME"), fakeContext(vi.fn())),
+  ).toBeUndefined();
+
+  writeAtomic(policyCachePath(directory), policy);
+  // Deny blocks in-process with the reason.
+  expect(
+    enforceToolCall(bashCall("echo DENYME"), fakeContext(vi.fn())),
+  ).toEqual({
+    block: true,
+    reason: "Denied by test policy.",
+  });
+  // Warn lets the tool run and notifies the user (pi has no model channel).
+  const notify = vi.fn();
+  expect(
+    enforceToolCall(bashCall("echo WARNME"), fakeContext(notify)),
+  ).toBeUndefined();
+  expect(notify).toHaveBeenCalledWith("Warned by test policy.", "warning");
+  // A clean command runs, no notification.
+  const quiet = vi.fn();
+  expect(
+    enforceToolCall(bashCall("echo fine"), fakeContext(quiet)),
+  ).toBeUndefined();
+  expect(quiet).not.toHaveBeenCalled();
+  // Both the block and the warn were spooled for the uploader.
+  expect(jsonFiles(violationDir(directory))).toHaveLength(2);
+
+  // The global disable switch turns enforcement off even with a matching deny rule.
+  vi.stubEnv("AGENTCOMMONS_DISABLE", "1");
+  expect(
+    enforceToolCall(bashCall("echo DENYME"), fakeContext(vi.fn())),
+  ).toBeUndefined();
 });
