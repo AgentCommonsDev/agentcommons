@@ -286,5 +286,226 @@
       ],
       "matches": 0
     }
+  },
+  {
+    "source": [
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/claude-capture/hooks.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-claude-capture/hooks.jsonl"
+    ],
+    "destination": "fixtures/hooks/claude-code-2.1.266-tool-policy-events.jsonl",
+    "jsonl": true,
+    "sessionId": [
+      "bdd7c9b1-8934-4bc2-926a-4673d5d46e9a",
+      "c83d632f-9ea7-4bbc-b8df-1a464b8f4258"
+    ],
+    "sha256": "2f6a125c020b50bec82a3bf40c519d754834b9a971456841ffed455686491bbd",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "2f6a125c020b50bec82a3bf40c519d754834b9a971456841ffed455686491bbd"
+  },
+  {
+    "source": [
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/claude-capture/decisions.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-claude-capture/decisions.jsonl"
+    ],
+    "destination": "fixtures/hooks/claude-code-2.1.266-tool-policy-decisions.jsonl",
+    "jsonl": true,
+    "sha256": "2352714a6f22bc6549f8b389dee7417f07ac92f554c2e9c195a8087b6f9d0456",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "2352714a6f22bc6549f8b389dee7417f07ac92f554c2e9c195a8087b6f9d0456"
+  },
+  {
+    "source": [
+      "native transcripts of the two sessions above"
+    ],
+    "destination": "fixtures/hooks/claude-code-2.1.266-tool-policy-outcomes.jsonl",
+    "jsonl": true,
+    "sha256": "87063a51215a739034c78d883a9343d321e5e35a821eb7fa612d58e23de4faf1",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "87063a51215a739034c78d883a9343d321e5e35a821eb7fa612d58e23de4faf1"
+  },
+  {
+    "source": [
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/codex-capture/hooks.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-codex-capture/hooks.jsonl"
+    ],
+    "destination": "fixtures/hooks/codex-0.153.4-tool-policy-events.jsonl",
+    "jsonl": true,
+    "sessionId": [
+      "01a09f2e-9f06-7a13-a560-f66ca3e3eb33",
+      "01a09f31-09f6-74d1-8409-fa0dd00ccf9a"
+    ],
+    "sha256": "0413f582d3ab376cd7b8aaba1ef7e030370723e3c663fe7e9c3f6d45cbe2ea84",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "0413f582d3ab376cd7b8aaba1ef7e030370723e3c663fe7e9c3f6d45cbe2ea84"
+  },
+  {
+    "source": [
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/codex-capture/decisions.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-codex-capture/decisions.jsonl"
+    ],
+    "destination": "fixtures/hooks/codex-0.153.4-tool-policy-decisions.jsonl",
+    "jsonl": true,
+    "sha256": "eeceded08ef4704ad7b50d4ccad84f06e82f0f59623552cd18ef6785f7f269e5",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "eeceded08ef4704ad7b50d4ccad84f06e82f0f59623552cd18ef6785f7f269e5"
+  },
+  {
+    "source": [
+      "native rollouts of the two sessions above"
+    ],
+    "destination": "fixtures/hooks/codex-0.153.4-tool-policy-outcomes.jsonl",
+    "jsonl": true,
+    "sha256": "86f41a3811b0378578ce056072e60ebda7af1de589123b6479271fd12c58b6d9",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "86f41a3811b0378578ce056072e60ebda7af1de589123b6479271fd12c58b6d9"
+  },
+  {
+    "source": [
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/gemini-capture/hooks.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-gemini-capture/hooks.jsonl"
+    ],
+    "destination": "fixtures/hooks/gemini-cli-0.35.3-tool-policy-events.jsonl",
+    "jsonl": true,
+    "sessionId": [
+      "0f02247d-c0b2-4fe8-8ff2-58d1f05facdf",
+      "cfb7eb06-0db8-4fbd-86a5-a3264f8f6a87"
+    ],
+    "sha256": "3e4e448ecb7f2c1a3a923a04f0bcdf0de48992645aed5c165a7efc9c716fca32",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "3e4e448ecb7f2c1a3a923a04f0bcdf0de48992645aed5c165a7efc9c716fca32"
+  },
+  {
+    "source": [
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/gemini-capture/decisions.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/r2-gemini-capture/decisions.jsonl"
+    ],
+    "destination": "fixtures/hooks/gemini-cli-0.35.3-tool-policy-decisions.jsonl",
+    "jsonl": true,
+    "sha256": "e74542544a9876aed5dbc276f8d18b72a79f165bf210ddeb2e75c682641c09df",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "e74542544a9876aed5dbc276f8d18b72a79f165bf210ddeb2e75c682641c09df"
+  },
+  {
+    "source": [
+      "toolCalls of the native transcript documents of the two sessions above"
+    ],
+    "destination": "fixtures/hooks/gemini-cli-0.35.3-tool-policy-outcomes.jsonl",
+    "jsonl": true,
+    "sha256": "91c80d854f145ba7f162b1851d067c6de06653a5ed231ec81b5d19b28fb6f731",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "91c80d854f145ba7f162b1851d067c6de06653a5ed231ec81b5d19b28fb6f731"
+  },
+  {
+    "source": [
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/pi-capture-r1/pi-events.jsonl",
+      "/tmp/claude-1000/-home-user-agentcommons/1b378b5a-8994-42fb-bb00-fe4ea02f08a1/scratchpad/tp/pi-capture/pi-events.jsonl"
+    ],
+    "destination": "fixtures/hooks/pi-0.73.1-tool-policy-events.jsonl",
+    "jsonl": true,
+    "sessionId": [
+      "01a09f31-1a46-74b2-a891-8af28f1f6411",
+      "01a09f33-3df0-7615-b6f0-719fab66990c"
+    ],
+    "sha256": "a1be571282970f4b4323b5554f3e606940cb9020f6d2037fd033c51c152d54b0",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "a1be571282970f4b4323b5554f3e606940cb9020f6d2037fd033c51c152d54b0"
+  },
+  {
+    "source": [
+      "native session files and the mock model's request log of the two sessions above"
+    ],
+    "destination": "fixtures/hooks/pi-0.73.1-tool-policy-outcomes.jsonl",
+    "jsonl": true,
+    "sha256": "4200272299da35a584d376e5fd5fc8bd74fa54b7b3c5b53662df54d2e8865235",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    },
+    "capturedAt": "2026-09-14",
+    "sourceSha256": "4200272299da35a584d376e5fd5fc8bd74fa54b7b3c5b53662df54d2e8865235"
   }
 ]

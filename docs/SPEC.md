@@ -3493,6 +3493,34 @@ are deduplicated by native identity. Actual failures retain their error result r
 than fabricated successful output. See `docs/tool-identity-capture-2026-09-08.md` and
 ADR 0036 for live methods, successful/rejected captures, and projection rules.
 
+**Pre-tool veto contracts, 2026-09-14** (`fixtures/hooks/*-tool-policy-{events,decisions,outcomes}.jsonl`,
+method and full table in `docs/tool-policy-capture-2026-09-14.md`). Each harness was driven
+live in an isolated configuration with a hook that dumped stdin and vetoed a `touch` by
+sentinel; the working directory after the run and the transcript's tool result are the proof.
+
+| harness             | pre-tool event                                    | block                                                                                                                                                                                                        | allow                                                                        | timeout / overrun                                                                                                     |
+| ------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Claude Code 2.1.266 | `PreToolUse` (built-in and `mcp__<server>__<tool>`) | stdout `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":R}}`, or `{"decision":"block","reason":R}`, exit 0; or exit 2 with R on stderr | exit 0, no stdout (or `permissionDecision:"allow"`)                          | `timeout` seconds (default 60); killed hook or exit 1 lets the tool run (`hook_cancelled` / `hook_non_blocking_error`) |
+| Codex 0.153.4       | `PreToolUse` (`Bash`, `mcp__<server>__<tool>`)    | same three forms; `deny` needs a non-empty reason                                                                                                                                                            | exit 0, no stdout; explicit allow/ask/approve are unsupported by the binary  | `timeout` seconds; killed hook or exit 1 lets the tool run, silently                                                  |
+| Gemini CLI 0.35.3   | `BeforeTool` (`run_shell_command`, `mcp_<server>_<tool>`, `mcp_context`) | stdout `{"decision":"deny","reason":R}` (alias `block`) exit 0; or exit 2 with R on stderr                                                                                                          | exit 0, no stdout (or `{"decision":"allow"}`)                                | `timeout` milliseconds (default 60000); timed-out hook or exit 1 lets the tool run with a warning                     |
+| pi 0.73.1           | extension `tool_call` (before execution)          | return `{ block: true, reason: R }`                                                                                                                                                                          | return `undefined`                                                           | none (awaited in-process); a throwing handler blocks the call                                                         |
+
+What the model sees: Claude a `tool_result` with `is_error: true` and R verbatim (exit 2:
+`PreToolUse:<tool> hook error: [<command>]: R`); Codex a `custom_tool_call_output` reading
+`Script error:\nCommand blocked by PreToolUse hook: R. Command: <cmd>` (`Tool call blocked by
+PreToolUse hook: R. Tool: <name>` for MCP); Gemini a `functionResponse.response.error` of R and
+`resultDisplay: "Tool execution blocked: R"`; pi a `toolResult` with `isError: true` and R. No
+post-tool event fires for a blocked call in any harness, and pi's `tool_result` does not fire
+either (`tool_execution_end` does, with `isError: true`). Claude Code, Codex and Gemini fail
+open on timeout, crash or malformed output, so a policy decision must be local and offline;
+`{"decision":"block","reason":R}` with exit 0 is the one stdout shape all three honored. pi is
+not detection-only: the installed extension is the veto point. Payload fields are those of the
+lifecycle captures above; Codex's embedded `pre-tool-use.command.input` schema requires
+`session_id, turn_id, transcript_path, cwd, hook_event_name, model, permission_mode, tool_name,
+tool_input, tool_use_id` (`exec-<uuid>`), and the shell command is `tool_input.command` in all
+three shell-hook harnesses.
+
+
 ## Appendix B. Configuration
 
 | variable                                                     | default                          | purpose                                                                                                                                        |
