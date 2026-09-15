@@ -99,15 +99,18 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
   {
     id: "reuse_trend",
     title: "Weekly reuse rate",
-    description: "Reuse rate and cross-user reuse rate per ISO week.",
+    description:
+      "Reuse rate and cross-user reuse rate by week over the selected window and repository.",
     variables: standard,
     tile: {
       id: "reuse_trend",
       type: "chart",
       title: "Weekly reuse rate",
-      description: "All repositories. Weeks start on Monday (UTC).",
+      description: "By week over the selected window. Weeks start on Monday.",
       layout: layout(8, 5),
-      sql: "SELECT week, reuse_rate, cross_user_reuse_rate FROM metrics_reuse_weekly WHERE week >= toDate({time_range_from:DateTime}) ORDER BY week",
+      // Bucketed from the same scanned view as the Reuse rate stat tile so the window and
+      // repository filters apply, rather than the unscoped org-wide `metrics_reuse_weekly`.
+      sql: `SELECT toStartOfWeek(started_at, 1) AS week, toFloat64(countIf(reused)) / nullIf(count(), 0) AS reuse_rate, toFloat64(countIf(cross_user_reused)) / nullIf(count(), 0) AS cross_user_reuse_rate FROM metrics_reuse_sessions WHERE ${rootScope} GROUP BY week ORDER BY week`,
       unit: "ratio",
       chart: {
         series: [

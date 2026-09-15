@@ -123,8 +123,11 @@ it("counts and lists root sessions only, as the Sessions list does, while messag
     "active_people",
   ])
     expect(sql(id), id).not.toContain("parent_session_id");
-  // The weekly trend view already scopes itself to roots (packages/traces analytics).
-  expect(sql("reuse_trend")).toContain("metrics_reuse_weekly");
+  // The reuse trend buckets the same scanned view as the Reuse rate stat tile, so it carries
+  // the window, repository and root-session scope rather than the unscoped weekly view.
+  expect(sql("reuse_trend")).toContain("metrics_reuse_sessions");
+  expect(sql("reuse_trend")).toContain("time_range_to");
+  expect(sql("reuse_trend")).toContain("parent_session_id IS NULL");
 });
 
 // @req R-DASH-25 @req R-SQL-02
