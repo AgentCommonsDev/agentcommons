@@ -24,8 +24,11 @@ const scope =
 /**
  * Every stat reads one aggregate row; the renderer runs identical tile SQL once per
  * request, so the six numbers cost one scan of `sessions`, and each stat picks its column.
+ * Session counts are roots only (`parent_session_id IS NULL`), matching the team dashboard's
+ * "Captured sessions" and the roots-only session list below on the same page; message and
+ * tool-call sums stay over every session, child runs included (templates.ts rootScope rule).
  */
-const activity = `SELECT count() AS sessions, sum(message_count) AS messages, sum(tool_call_count) AS tool_calls, countIf(agentcommons_search_calls > 0) AS searched, countIf(reuses_made > 0) AS reused, max(last_activity_at) AS last_active FROM sessions WHERE ${scope}`;
+const activity = `SELECT countIf(parent_session_id IS NULL) AS sessions, sum(message_count) AS messages, sum(tool_call_count) AS tool_calls, countIf(agentcommons_search_calls > 0 AND parent_session_id IS NULL) AS searched, countIf(reuses_made > 0 AND parent_session_id IS NULL) AS reused, max(last_activity_at) AS last_active FROM sessions WHERE ${scope}`;
 const stat = (
   id: string,
   title: string,
@@ -63,7 +66,7 @@ export const personDashboard: DashboardDefinition =
         type: "chart",
         title: "Coding tools",
         layout: { x: 6, y: 2, w: 6, h: 5 },
-        sql: `SELECT harness AS name, count() AS value FROM sessions WHERE ${scope} GROUP BY harness ORDER BY value DESC`,
+        sql: `SELECT harness AS name, count() AS value FROM sessions WHERE ${scope} AND parent_session_id IS NULL GROUP BY harness ORDER BY value DESC`,
         chart: {
           series: [
             {
@@ -80,7 +83,7 @@ export const personDashboard: DashboardDefinition =
         type: "table",
         title: "Repositories",
         layout: { x: 0, y: 4, w: 6, h: 5 },
-        sql: `SELECT repo_name, count() AS sessions, sum(message_count) AS messages, max(last_activity_at) AS last_active FROM sessions WHERE ${scope} AND repo_name IS NOT NULL GROUP BY repo_name ORDER BY sessions DESC, repo_name LIMIT 10`,
+        sql: `SELECT repo_name, countIf(parent_session_id IS NULL) AS sessions, sum(message_count) AS messages, max(last_activity_at) AS last_active FROM sessions WHERE ${scope} AND repo_name IS NOT NULL GROUP BY repo_name ORDER BY sessions DESC, repo_name LIMIT 10`,
       },
     ],
   });

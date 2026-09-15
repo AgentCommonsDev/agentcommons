@@ -181,7 +181,8 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
   {
     id: "top_tools",
     title: "Most used tools",
-    description: "Tool calls by tool name across the selected sessions.",
+    description:
+      "How many sessions used each tool, by tool name, in the selected window.",
     variables: standard,
     tile: {
       id: "top_tools",
