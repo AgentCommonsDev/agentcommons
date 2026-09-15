@@ -33,6 +33,10 @@ The fallback is deliberately narrow:
   the exact same result it did before. The change is additive.
 - A cursor continuation stays on the strategy that opened its page; a filter-only browse has
   no tokens to relax. Neither triggers the fallback.
+- It fires only for a multi-word query. For a single token the strict and session-level
+  matchers return the same sessions, so relaxing a one-word query would only add a second
+  scan and never recover a hit; the largest class of zero-hit searches is single distinctive
+  tokens absent from the corpus, which this correctly leaves alone.
 - With embeddings on, the strict lexical result is fused with the vector result first; the
   fallback runs only if that combined result is still empty, then re-fuses the session-level
   lexical result with the same (already computed) vector result.

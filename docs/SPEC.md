@@ -1315,8 +1315,8 @@ Input (`packages/core/schemas/search.ts`):
   row once and never evaluates the inflection regexes per row per query (ADR 0074; on the
   hosted corpus that per-row evaluation cost 27–31 s of work for 5.7 M tokens behind the
   5 s reader limit). Every query token must match one message; punctuation separates
-  tokens. When that strict match returns nothing on a first page of a lexical query, the
-  search retries once with a session-level matcher (ADR 0081): a session matches when its
+  tokens. When that strict match returns nothing on a first page of a multi-word lexical
+  query, the search retries once with a session-level matcher (ADR 0081): a session matches when its
   messages together carry every query token, so a natural-language query whose words are
   spread across a session still finds it. A search that already returned hits is untouched,
   a cursor continuation stays on its page's strategy, and a genuine miss stays empty. The search box is a text query, with structured filters for conditions; SQL

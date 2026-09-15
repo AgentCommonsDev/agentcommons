@@ -489,10 +489,12 @@ export class SearchService {
               );
             return searchOutputSchema.parse(output);
           });
-        // Relaxation only applies to a first page of a lexical query (ADR 0081): a cursor
-        // continuation stays on the strategy that opened the page, and a filter-only browse
-        // has no tokens to relax.
-        const relaxable = request.query.trim().length > 0 && !after;
+        // Relaxation only applies to a first page of a multi-word lexical query (ADR 0081):
+        // a cursor continuation stays on the strategy that opened the page, and for a single
+        // token the strict and session-level matchers return the same sessions, so relaxing
+        // it would only add a second scan and never recover a hit.
+        const relaxable =
+          !after && (request.query.match(/[\p{L}\p{N}_]+/gu)?.length ?? 0) >= 2;
         try {
           const strict = await attempt(null, false);
           if (!relaxable || strict.total.hits > 0) return strict;

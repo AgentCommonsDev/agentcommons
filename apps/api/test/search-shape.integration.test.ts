@@ -449,4 +449,10 @@ it("relaxes to session-level matching when the strict token match finds nothing,
     limit: 6,
   });
   expect(miss.result.total.hits).toBe(0);
+  // A single-token query never relaxes; an absent token stays empty either way.
+  const singleMiss = await search.execute(admin, {
+    query: "nonexistenttokenzzz",
+    limit: 6,
+  });
+  expect(singleMiss.result.total.hits).toBe(0);
 });
