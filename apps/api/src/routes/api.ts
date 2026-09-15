@@ -405,8 +405,14 @@ export function registerApiRoutes(
         let sequence = 0;
         for await (const event of stream.result.changes(controller.signal)) {
           if (controller.signal.aborted) break;
+          // The first block carries `retry: 5000` so the browser waits 5 s before reopening
+          // after a drop. Without it EventSource reconnects almost immediately, so a proxy
+          // that keeps cutting the stream becomes a reconnect storm (one runaway tab reopened
+          // this endpoint ~50k times in a day); 5 s bounds that while a healthy stream stays
+          // open.
+          const retry = sequence === 0 ? "retry: 5000\n" : "";
           const drained = reply.raw.write(
-            `id: ${String(++sequence)}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`,
+            `${retry}id: ${String(++sequence)}\nevent: session\ndata: ${JSON.stringify(event)}\n\n`,
           );
           if (!drained)
             await once(reply.raw, "drain", { signal: controller.signal });
