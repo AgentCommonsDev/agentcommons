@@ -272,6 +272,8 @@ export const sessionsCopy = {
       empty: "No file activity recorded",
       emptyHint:
         "File paths appear when the harness reports tool calls that read or edit files.",
+      capped:
+        "Showing the first 500 files by path; the Files count above is the total.",
       commits: "Observed commits",
       commitsEmpty: "No commits were observed during this session.",
       sha: "Commit",

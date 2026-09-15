@@ -176,6 +176,9 @@ export function FilesTab({ header }: { header: SessionHeader }) {
           </section>
         ))
       )}
+      {header.file_count > fileRows.length ? (
+        <p className="text-xs text-muted">{labels.capped}</p>
+      ) : null}
       <section className="flex flex-col gap-2">
         <h3 className="text-[13px] font-medium">{labels.commits}</h3>
         {commitRows.length === 0 ? (
