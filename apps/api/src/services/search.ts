@@ -231,7 +231,7 @@ export class SearchService {
             "SEARCH_RANKING_UNAVAILABLE",
             "The ranking provider is unavailable. Retry this page later.",
           );
-        const attempt = (scope: number | null) =>
+        const attempt = (scope: number | null, relaxed: boolean) =>
           this.dependencies.readers.read(caller, async (client) => {
             const params = new Parameters();
             const plan = await filterSql(client, request.filters, params);
@@ -269,9 +269,14 @@ export class SearchService {
             // The text scan is a hash-join side and reads the whole organization unless a
             // WHERE on the parameterized view bounds it; a session set there reaches the
             // base scan's primary-key condition (verified with EXPLAIN indexes=1).
+            // The relaxation fallback swaps in the session-level matcher (ADR 0081); the
+            // service runs it only after the strict matcher returns nothing.
+            const matcher = relaxed
+              ? "search_messages_session"
+              : "search_messages";
             const textMatches = scopeParam
-              ? `(SELECT * FROM api_ro.search_messages(q=${query}) WHERE session_id IN ${scopeParam})`
-              : `api_ro.search_messages(q=${query})`;
+              ? `(SELECT * FROM api_ro.${matcher}(q=${query}) WHERE session_id IN ${scopeParam})`
+              : `api_ro.${matcher}(q=${query})`;
             const lexicalMatches = `SELECT e.*,l.rank FROM eligible e
             JOIN ${textMatches} l USING(session_id,seq)`;
             const candidates = vector
@@ -484,15 +489,23 @@ export class SearchService {
               );
             return searchOutputSchema.parse(output);
           });
+        // Relaxation only applies to a first page of a lexical query (ADR 0081): a cursor
+        // continuation stays on the strategy that opened the page, and a filter-only browse
+        // has no tokens to relax.
+        const relaxable = request.query.trim().length > 0 && !after;
         try {
-          return await attempt(null);
+          const strict = await attempt(null, false);
+          if (!relaxable || strict.total.hits > 0) return strict;
+          // The strict matcher required every query token in one message and found nothing;
+          // retry once with the session-level matcher so words spread across a session match.
+          return await attempt(null, true);
         } catch (error) {
           // One bounded attempt after a time limit (§7.5). The scan cost does not depend on
           // context or limit, so the same shape is not retried; a first page over the most
           // recently active matching sessions is returned as a partial result instead.
           if (after || traceReadFailure(error)?.code !== "READ_TIME_LIMIT")
             throw error;
-          return attempt(PARTIAL_SEARCH_SESSIONS);
+          return attempt(PARTIAL_SEARCH_SESSIONS, false);
         }
       },
       {

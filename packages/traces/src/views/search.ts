@@ -50,22 +50,51 @@ export function searchViews(database: string): TraceViewDefinition[] {
   // assumeNotNull strips the Nullable wrapper every release gives scalar subqueries, which
   // tokens() rejects on ClickHouse 26.2 (ClickHouse Cloud) and tolerates on 26.8.
   const query = `assumeNotNull((SELECT ${searchTermsSql("{q:String}")}))`;
-  // Match history through the text index, then require the latest published row. Filtering before
-  // the latest-version check would resurrect a previous edit that still contains the query.
+  // A message's lexical rank: its role weight times how many of its tokens the query names,
+  // damped by the message length so a long message does not outrank a focused one. Shared by
+  // both matchers so the two views rank a hit identically.
+  const rank = `multiIf(role='USER',1.0,kind='TEXT',0.4,kind='TOOL_USE',0.2,0.1)
+        * arrayCount(token -> has(tokens(${query}),token),tokens(${terms}))
+        / (1 + log(1 + length(tokens(${terms}))))`;
+  // The latest published revision of each message; filtering before this check would
+  // resurrect a previous edit that still contains the query.
+  const latest = `(message_id,revision) IN (
+          SELECT message_id,max(revision) FROM ${db}.messages WHERE organization_id=${traceScopeSql.organization} GROUP BY message_id
+        )`;
+  // Match history through the text index, then require the latest published row.
   // The organization predicate narrows the scan to the caller's primary-key range; the row
   // policy fences everything else.
   return [
     traceView(
       "search_messages",
-      `SELECT session_id,seq,
-        multiIf(role='USER',1.0,kind='TEXT',0.4,kind='TOOL_USE',0.2,0.1)
-        * arrayCount(token -> has(tokens(${query}),token),tokens(${terms}))
-        / (1 + log(1 + length(tokens(${terms})))) AS rank
+      `SELECT session_id,seq,${rank} AS rank
       FROM ${db}.messages FINAL
       WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted AND notEmpty(tokens(${query}))
         AND hasAllTokens(${terms},${query})
-        AND (message_id,revision) IN (
-          SELECT message_id,max(revision) FROM ${db}.messages WHERE organization_id=${traceScopeSql.organization} GROUP BY message_id
+        AND ${latest}`,
+    ),
+    // The relaxation fallback (ADR 0081): a session matches when its messages together carry
+    // every query token, not one message alone, so a natural-language query whose words are
+    // spread across a session still finds it. The service runs this only when the strict
+    // matcher above returns nothing, so a search that already works is untouched. Every
+    // message carrying at least one query token is returned and ranked like a strict hit, so
+    // the block assembly, per-session cap and highlighting are identical.
+    traceView(
+      "search_messages_session",
+      `SELECT session_id,seq,${rank} AS rank
+      FROM ${db}.messages FINAL
+      WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted AND notEmpty(tokens(${query}))
+        AND hasAnyTokens(${terms},${query})
+        AND ${latest}
+        AND session_id IN (
+          SELECT session_id FROM ${db}.messages FINAL
+          WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted
+            AND hasAnyTokens(${terms},${query})
+            AND ${latest}
+          GROUP BY session_id
+          HAVING length(arrayDistinct(arrayFlatten(groupArray(
+            arrayFilter(token -> has(tokens(${terms}),token),tokens(${query}))
+          )))) = length(tokens(${query}))
         )`,
     ),
     traceView(

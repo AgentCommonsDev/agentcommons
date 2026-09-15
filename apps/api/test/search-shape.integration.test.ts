@@ -24,6 +24,9 @@ import { provisionMember, provisionOrganization, releaser } from "./support.js";
 const SESSIONS = 400;
 const MESSAGES_PER_SESSION = 100;
 const QUERY = "judge verbalization attempt classify launch";
+/** Two markers that share a session but never a message, for the relaxation fallback. */
+const SPLIT_A = "splitalphamarker";
+const SPLIT_B = "splitbetamarker";
 const VOCAB = [
   "the",
   "of",
@@ -129,6 +132,7 @@ let fixtures: TraceFixtures;
 let admin: ServiceContext;
 let member: ServiceContext;
 let search: SearchService;
+let splitSessionId: string;
 /** The next read fails with the given error before any query; null passes through. */
 let failNext: Error[] = [];
 let failingSearch: SearchService;
@@ -178,6 +182,21 @@ beforeAll(async () => {
     });
     sessions.push(id);
   }
+  // One session whose two query words never share a message (R-SRCH-18): the strict AND
+  // matcher finds nothing, the session-level fallback finds the session.
+  const split = await fixtures.sessionFor(admin, {
+    installationId: installations[0] ?? randomUUID(),
+    visibility: "PUBLIC",
+    fields: {
+      title: "Split recall session on repo-split",
+      repo_name: "github.com/acme/repo-split",
+      branch: "main",
+      message_count: 2,
+      started_at: new Date(Date.UTC(2026, 7, 20, 9)),
+      last_activity_at: new Date(Date.UTC(2026, 7, 20, 9, 30)),
+    },
+  });
+  splitSessionId = split.id;
   const writer = createTraceClient({
     url: db.traceConfig.url,
     database: db.traceConfig.database,
@@ -237,6 +256,36 @@ beforeAll(async () => {
       );
     }
     if (batch.length >= 5000) await flush();
+  }
+  await flush();
+  // The split session's two messages: one marker each, so no message carries both.
+  for (const [seq, marker] of [SPLIT_A, SPLIT_B].entries()) {
+    const at = new Date(Date.UTC(2026, 7, 20, 9, seq));
+    const text = `${sentence(20)} ${marker} ${sentence(20)}`;
+    batch.push(
+      validateTraceRow("messages", {
+        ...emptyTraceRow("messages"),
+        message_id: randomUUID(),
+        organization_id: owner.organizationId,
+        session_id: splitSessionId,
+        seq,
+        block_index: 0,
+        role: seq % 2 ? "ASSISTANT" : "USER",
+        kind: "TEXT",
+        tool_name: null,
+        tool_use_id: null,
+        content: text,
+        tool_input: "null",
+        search_text: text,
+        searchable: true,
+        timestamp: at,
+        received_at: at,
+        revision: "1",
+        generation: "0",
+        deleted: 0,
+        fingerprint: "a".repeat(64),
+      }),
+    );
   }
   await flush();
   await writer.close();
@@ -353,4 +402,51 @@ it("answers a timed-out first page with one bounded attempt over the most recent
     failingSearch.execute(admin, { query: QUERY, limit: 2 }),
   ).rejects.toMatchObject({ statusCode: 503, code: "READ_TIME_LIMIT" });
   expect(failNext).toEqual([]);
+});
+
+// @req R-SRCH-18
+it("relaxes to session-level matching when the strict token match finds nothing, within the reader limit", async () => {
+  // A single marker is in one message, so the strict matcher finds it.
+  const single = await search.execute(admin, { query: SPLIT_A, limit: 6 });
+  expect(single.result.total.hits).toBeGreaterThan(0);
+  // Both markers share the split session but never a message, so the strict AND matcher is
+  // empty and the service relaxes to the session-level matcher, which returns the session.
+  // The fallback scans more than the strict path, so it is measured as admin and member,
+  // alone and four at a time, against the reader limit like the incident shape.
+  const relaxedInput = { query: `${SPLIT_A} ${SPLIT_B}`, limit: 6 };
+  for (const [who, context] of [
+    ["admin", admin],
+    ["member", member],
+  ] as const) {
+    const relaxed = await timed(() => search.execute(context, relaxedInput));
+    expect(relaxed.value.result.total.sessions, who).toBe(1);
+    expect(
+      relaxed.value.result.blocks.map((block) => block.session_id),
+      who,
+    ).toContain(splitSessionId);
+    expect(relaxed.value.result.partial, who).toBeNull();
+    expect(relaxed.ms, `${who} relaxed search ms`).toBeLessThan(2500);
+    const started = performance.now();
+    await Promise.all(
+      Array.from({ length: 4 }, () => search.execute(context, relaxedInput)),
+    );
+    expect(
+      performance.now() - started,
+      `${who} four concurrent relaxed searches wall ms`,
+    ).toBeLessThan(4000);
+  }
+  // A page that already has hits does not relax: a strict multi-word query that matches
+  // returns its strict result unchanged.
+  const strict = await search.execute(admin, {
+    query: QUERY,
+    filters: { repo_name: "repo-3" },
+    limit: 6,
+  });
+  expect(strict.result.total.hits).toBeGreaterThan(50);
+  // A genuine miss stays empty: no session carries a token absent from the whole corpus.
+  const miss = await search.execute(admin, {
+    query: `${SPLIT_A} nonexistenttokenzzz`,
+    limit: 6,
+  });
+  expect(miss.result.total.hits).toBe(0);
 });

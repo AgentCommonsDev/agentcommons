@@ -1314,7 +1314,12 @@ Input (`packages/core/schemas/search.ts`):
   that column, and `search_messages` filters and ranks over it, so a search tokenizes each
   row once and never evaluates the inflection regexes per row per query (ADR 0074; on the
   hosted corpus that per-row evaluation cost 27–31 s of work for 5.7 M tokens behind the
-  5 s reader limit). Every query token must match; punctuation separates tokens. The search box is a text query, with structured filters for conditions; SQL
+  5 s reader limit). Every query token must match one message; punctuation separates
+  tokens. When that strict match returns nothing on a first page of a lexical query, the
+  search retries once with a session-level matcher (ADR 0081): a session matches when its
+  messages together carry every query token, so a natural-language query whose words are
+  spread across a session still finds it. A search that already returned hits is untouched,
+  a cursor continuation stays on its page's strategy, and a genuine miss stays empty. The search box is a text query, with structured filters for conditions; SQL
   uses native ClickHouse syntax. PostgreSQL websearch operators are superseded by ADR0047.
   Rank is weighted matching-token frequency divided by `1 + log(1 + token_count)`;
   weights are user text 1.0, assistant text 0.4, tool input 0.2 and tool result 0.1.
