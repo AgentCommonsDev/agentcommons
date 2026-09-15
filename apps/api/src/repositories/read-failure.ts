@@ -20,9 +20,14 @@ const busySqlStates = new Set([
   "53300",
   "57P03",
 ]);
-/** The same conditions when Prisma surfaces them as an unknown request error. */
+/**
+ * The same conditions when Prisma surfaces them as an unknown request error, plus the
+ * connection-drop shapes a control connection throws when the pool or the publication fence
+ * is exhausted under concurrency (a reset peer, a closed connection). These are server-side
+ * busy conditions a retry can outlive, not caller errors.
+ */
 const busyMessage =
-  /lock timeout|statement timeout|deadlock detected|too many clients|canceling statement|connection pool/i;
+  /lock timeout|statement timeout|deadlock detected|too many clients|canceling statement|connection pool|connection terminated|connection closed|connection reset|server (?:has )?closed the connection|econnreset|socket hang up/i;
 const rawFailureSchema = z.object({ code: z.string() });
 
 function retryable(
@@ -108,6 +113,17 @@ export function traceReadFailure(error: unknown): ServiceError | null {
     return null;
   }
   if (controlBusy(error))
+    return retryable(
+      "READ_BUSY",
+      "The database is busy. Retry in a moment.",
+      error,
+    );
+  // A control connection dropped under load (pool or fence exhaustion, a reset peer) can
+  // surface as a plain Error the Prisma wrappers miss, or as a transport error the
+  // ClickHouse client does not wrap in a ClickHouseError. It is a server-side busy
+  // condition, so it is retryable rather than an unexpected 500 (a concurrent tree open
+  // saturating the publication fence split into some recognized 503s and some 500s).
+  if (error instanceof Error && busyMessage.test(error.message))
     return retryable(
       "READ_BUSY",
       "The database is busy. Retry in a moment.",
