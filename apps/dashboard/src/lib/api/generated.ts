@@ -7347,6 +7347,8 @@ export interface operations {
         format?: "json" | "csv";
         filters?: {
           user_id?: string;
+          /** Format: email */
+          user_email?: string;
           api_key_id?: string;
           request_id?: string;
           resource_id?: string;

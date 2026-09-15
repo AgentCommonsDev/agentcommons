@@ -264,6 +264,8 @@ export const moderationOutputSchema = paginatedOutput(
 });
 export const auditFiltersSchema = z.strictObject({
   user_id: identityIdSchema.optional(),
+  /** Filter by the acting user's email, matching the email the audit list displays. */
+  user_email: emailSchema.optional(),
   api_key_id: identityIdSchema.optional(),
   request_id: identityIdSchema.optional(),
   resource_id: identityIdSchema.optional(),

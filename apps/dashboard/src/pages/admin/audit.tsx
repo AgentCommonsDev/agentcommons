@@ -26,7 +26,7 @@ import {
 
 type Transport = (typeof transportSchema.options)[number];
 type Filters = {
-  user_id?: string;
+  user_email?: string;
   api_key_id?: string;
   request_id?: string;
   resource_id?: string;
@@ -37,7 +37,7 @@ type Filters = {
   until?: string;
 };
 const textFields = [
-  "user_id",
+  "user_email",
   "api_key_id",
   "request_id",
   "resource_id",
@@ -48,7 +48,7 @@ type Draft = Record<
   string
 >;
 const emptyDraft: Draft = {
-  user_id: "",
+  user_email: "",
   api_key_id: "",
   request_id: "",
   resource_id: "",
@@ -232,7 +232,7 @@ export function AuditPage() {
                 label={
                   key === "resource_id"
                     ? text.resourceId
-                    : key === "user_id"
+                    : key === "user_email"
                       ? text.user
                       : fields[key]
                 }
@@ -242,7 +242,11 @@ export function AuditPage() {
                   <Input
                     {...props}
                     value={draft[key]}
-                    className={key === "action" ? "" : "font-mono text-xs"}
+                    className={
+                      key === "action" || key === "user_email"
+                        ? ""
+                        : "font-mono text-xs"
+                    }
                     onChange={(event) => {
                       set(key)(event.target.value);
                     }}

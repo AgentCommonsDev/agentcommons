@@ -556,10 +556,26 @@ export class AdminService {
             )[0]?.cutoff;
         if (!clock) throw new Error("The audit snapshot time is unavailable.");
         const f = request.filters;
+        // The list shows the acting user's email, so the filter accepts one; resolve it to
+        // the user id the audit rows store. An email that matches nobody yields no rows
+        // (an empty user id matches no event, since events without a user store null).
+        const emailUserId =
+          f.user_email === undefined
+            ? undefined
+            : ((
+                await this.dependencies.prisma.user.findFirst({
+                  where: { email: f.user_email },
+                  select: { id: true },
+                })
+              )?.id ?? "");
         const rows = await this.dependencies.prisma.auditEvent.findMany({
           where: {
             organizationId: caller.organizationId,
-            ...(f.user_id ? { userId: f.user_id } : {}),
+            ...(f.user_id
+              ? { userId: f.user_id }
+              : emailUserId !== undefined
+                ? { userId: emailUserId }
+                : {}),
             ...(f.api_key_id ? { apiKeyId: f.api_key_id } : {}),
             ...(f.request_id ? { requestId: f.request_id } : {}),
             ...(f.resource_id ? { resourceIds: { has: f.resource_id } } : {}),
