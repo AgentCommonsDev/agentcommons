@@ -176,6 +176,7 @@ export const sessionHeaderSchema = z.strictObject({
   repo_name: nullableTextSchema.describe(session("repo_name")),
   repo_url: nullableTextSchema.describe(session("repo_url")),
   branch: nullableTextSchema.describe(session("branch")),
+  observed_branches: z.array(z.string()).describe(session("observed_branches")),
   cwd_relative: nullableTextSchema.describe(session("cwd_relative")),
   start_commit: nullableTextSchema.describe(session("start_commit")),
   end_commit: nullableTextSchema.describe(session("end_commit")),
@@ -200,6 +201,9 @@ export const sessionHeaderSchema = z.strictObject({
   file_count: nonnegativeIntegerSchema.describe(session("file_count")),
   observed_commit_count: nonnegativeIntegerSchema.describe(
     session("observed_commit_count"),
+  ),
+  observed_branch_count: nonnegativeIntegerSchema.describe(
+    session("observed_branch_count"),
   ),
   reuse_count: nonnegativeIntegerSchema.describe(session("reuse_count")),
   agentcommons_search_calls: nonnegativeIntegerSchema.describe(

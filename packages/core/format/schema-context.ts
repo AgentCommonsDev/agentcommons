@@ -145,7 +145,7 @@ export function formatSchemaContext(schema: Schema): string {
   lines.push(
     "## Relationships",
     "",
-    "- Per-session views join `sessions` on `session_id`: `messages`, `session_files`, `session_tools`, `session_observed_commits`, `session_reuse`, and every `metrics_*` view that has a `session_id` column.",
+    "- Per-session views join `sessions` on `session_id`: `messages`, `session_files`, `session_tools`, `session_observed_commits`, `session_observed_branches`, `session_reuse`, and every `metrics_*` view that has a `session_id` column.",
     "- `messages` already carries `session_title`, `repo_name`, `branch` and `user_email`, so message queries often need no join.",
     ...(hasSearch
       ? [

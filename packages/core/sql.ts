@@ -11,6 +11,7 @@ export const traceViews = [
   "messages",
   "session_files",
   "session_observed_commits",
+  "session_observed_branches",
   "session_tools",
   "users",
   "installations",

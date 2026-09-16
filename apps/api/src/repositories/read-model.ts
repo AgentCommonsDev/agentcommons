@@ -185,8 +185,18 @@ export async function filterSql(
     }
     conditions.push(`s.repo_name IN ${params.add(names)}`);
   }
+  // A branch filter matches every branch the session worked on, not only the last one,
+  // so a session that switched to the named branch is found. New rows carry the whole set
+  // in observed_branches (which always includes the current branch); rows projected before
+  // observed_branches existed have an empty set, so the equality test on `branch` keeps
+  // them findable until they re-project.
+  if (filters.branch !== undefined) {
+    const branches = params.add(array(filters.branch), "Array(String)");
+    conditions.push(
+      `(hasAny(s.observed_branches,${branches}) OR s.branch IN ${branches})`,
+    );
+  }
   for (const key of [
-    "branch",
     "user_email",
     "session_id",
     "ingest_api_key_id",
@@ -379,6 +389,7 @@ function assembleHeader(
   for (const key of [
     "file_count",
     "observed_commit_count",
+    "observed_branch_count",
     ...AGGREGATE_COLUMNS,
     "child_count",
   ])
@@ -461,7 +472,11 @@ function boundedHeader(original: SessionHeader): SessionHeader {
     for (const field of fields) result[field] = bound(original[field], field);
     result.installation_hostname =
       bound(original.installation_hostname, "installation_hostname") ?? "";
-    for (const field of ["models_used", "tools_used"] as const) {
+    for (const field of [
+      "models_used",
+      "tools_used",
+      "observed_branches",
+    ] as const) {
       result[field] = original[field]
         .slice(0, 16)
         .map((value) => bound(value, field) ?? "");

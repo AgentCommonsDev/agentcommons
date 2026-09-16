@@ -15,6 +15,7 @@ export const sessionColumns = {
   repo_url: "Nullable(String)",
   repo_name: "Nullable(String)",
   branch: "Nullable(String)",
+  observed_branches: "Array(String)",
   start_commit: "Nullable(String)",
   end_commit: "Nullable(String)",
   observed_commits: "String",

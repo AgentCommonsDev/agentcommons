@@ -44,7 +44,9 @@ export const traceViewCatalog: Readonly<
       cwd_relative: "cwd relative to repo_root",
       repo_url: "Remote URL of the repository",
       repo_name: "Repository name such as owner/repo; joins repos.repo_name",
-      branch: "Git branch at session start",
+      branch: "Git branch last observed in the session",
+      observed_branches:
+        "Every distinct branch the session worked on, including switches; see session_observed_branches",
       start_commit: "HEAD SHA at session start",
       end_commit: "HEAD SHA at session end",
       observed_commits:
@@ -82,6 +84,7 @@ export const traceViewCatalog: Readonly<
       file_count: "Files read, edited, written or deleted; see session_files",
       duration_seconds: "Seconds from start to end or last activity",
       observed_commit_count: "Commits observed during the session",
+      observed_branch_count: "Distinct branches the session worked on",
       reuse_count: "Later sessions that read this one; see session_reuse",
       agentcommons_search_calls:
         "search and sql calls credited to the session while active",
@@ -146,6 +149,16 @@ export const traceViewCatalog: Readonly<
       subject: "Commit subject line",
       author: "Commit author",
       timestamp: "Commit time as git reported it (text)",
+    },
+  },
+  session_observed_branches: {
+    purpose:
+      "One row per session and distinct branch it worked on, including mid-session switches",
+    columns: {
+      organization_id: scoped,
+      session_id: sessionKey,
+      branch: "Branch name as the harness reported it",
+      ordinal: "Position in the session's first-seen branch order",
     },
   },
   session_tools: {

@@ -39,6 +39,7 @@ export const traceSessionSchema = z.object({
   repo_url: z.string().nullable(),
   repo_name: z.string().nullable(),
   branch: z.string().nullable(),
+  observed_branches: z.array(z.string()),
   start_commit: z.string().nullable(),
   end_commit: z.string().nullable(),
   observed_commits: jsonValueSchema,

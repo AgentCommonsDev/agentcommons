@@ -282,6 +282,7 @@ export const sessionsCopy = {
       when: "When",
       dirty: "Uncommitted files at end",
       diffStat: "Diff stat",
+      branches: "Branches worked on",
       operationsLabel: {
         read: "Read",
         write: "Written",

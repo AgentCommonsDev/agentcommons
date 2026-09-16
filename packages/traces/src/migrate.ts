@@ -178,6 +178,11 @@ export async function migrateTraces(
         `CREATE TABLE IF NOT EXISTS ${db}.${sqlIdentifier(name)} (${columns(table.columns)},revision Int64,generation Int64,deleted UInt8,fingerprint FixedString(64)) ENGINE=ReplacingMergeTree ORDER BY (${table.keys.map(sqlIdentifier).join(",")})`,
       );
     }
+    // Columns added to the schema after a table's first CREATE: the declarative CREATE above is
+    // a no-op on an existing table, so add them idempotently. Existing rows get the default.
+    await command(
+      `ALTER TABLE ${db}.sessions ADD COLUMN IF NOT EXISTS observed_branches Array(String) AFTER branch`,
+    );
     await command(
       `CREATE TABLE IF NOT EXISTS ${db}.session_identities (organization_id String,session_id UUID) ENGINE=ReplacingMergeTree ORDER BY(organization_id,session_id)`,
     );

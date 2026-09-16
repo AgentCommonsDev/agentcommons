@@ -46,6 +46,8 @@ export interface SessionDelta {
   entrypoint?: string;
   cwd?: string;
   branch?: string;
+  /** Every distinct branch the transcript records, in first-seen order; the last is `branch`. */
+  branchesObserved?: string[];
   repoUrl?: string;
   startCommit?: string;
   model?: string;

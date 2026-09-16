@@ -7,12 +7,18 @@ import { dateTime, number, operationLabel, textValue } from "../../lib/display";
 import type { SessionHeader } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import {
+  CopyButton,
   DefinitionList,
   LoadingState,
   RequestError,
 } from "../../components/app/states";
 import { Badge } from "../../components/ui/badge";
 import { EmptyState } from "../../components/ui/feedback";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "../../components/ui/menu";
 import {
   Table,
   TableBody,
@@ -23,6 +29,35 @@ import {
 } from "../../components/ui/table";
 
 const labels = copy.sessions.detail.files;
+/**
+ * A compact one-line summary of observed git values (branches, commits) that stays out of
+ * the way: the line is cut off with an ellipsis, hovering reveals the full list, and the
+ * copy button copies every value on its own line.
+ */
+function ObservedList({ items, empty }: { items: string[]; empty: string }) {
+  if (items.length === 0) return <span className="text-muted">{empty}</span>;
+  return (
+    <span className="flex min-w-0 items-center gap-1">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="min-w-0 flex-1 truncate font-mono text-xs">
+            {items.join(copy.app.common.separator)}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="start" className="max-w-sm">
+          <span className="flex flex-col gap-0.5">
+            {items.map((item) => (
+              <span key={item} className="font-mono text-xs break-all">
+                {item}
+              </span>
+            ))}
+          </span>
+        </TooltipContent>
+      </Tooltip>
+      <CopyButton value={items.join("\n")} />
+    </span>
+  );
+}
 const fileRow = z.tuple([z.string(), z.array(z.string())]);
 const commitRow = z.tuple([
   z.coerce.number(),
@@ -146,6 +181,15 @@ export function FilesTab({ header }: { header: SessionHeader }) {
             label: copy.app.fields.observed_commit_count,
             value: number(header.observed_commit_count),
           },
+          {
+            label: labels.branches,
+            value: (
+              <ObservedList
+                items={header.observed_branches}
+                empty={copy.app.common.unavailable}
+              />
+            ),
+          },
           { label: labels.dirty, value: number(dirty) },
           { label: labels.diffStat, value: diffText },
         ]}
@@ -180,7 +224,19 @@ export function FilesTab({ header }: { header: SessionHeader }) {
         <p className="text-xs text-muted">{labels.capped}</p>
       ) : null}
       <section className="flex flex-col gap-2">
-        <h3 className="text-[13px] font-medium">{labels.commits}</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="shrink-0 text-[13px] font-medium">{labels.commits}</h3>
+          {commitRows.length > 0 && (
+            <div className="min-w-0 flex-1">
+              <ObservedList
+                items={commitRows.map(
+                  ([, sha, subject]) => `${sha.slice(0, 10)} ${subject}`,
+                )}
+                empty={copy.app.common.unavailable}
+              />
+            </div>
+          )}
+        </div>
         {commitRows.length === 0 ? (
           <EmptyState compact title={labels.commitsEmpty} />
         ) : (

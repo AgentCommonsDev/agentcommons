@@ -619,16 +619,19 @@ export const codex = createNormalizer({
   },
   sessionDelta(records) {
     const delta: SessionDelta = {};
+    const branches = new Set<string>();
     for (const { payload: data } of records) {
       if (data.type !== "session_meta") continue;
       const native = object(data.payload);
       const git = object(native.git);
+      const branch = string(git.branch);
+      if (branch) branches.add(branch);
       assignPresent(delta, {
         harnessSessionId: string(native.id),
         harnessVersion: string(native.cli_version),
         entrypoint: string(native.entrypoint) ?? string(native.originator),
         cwd: string(native.cwd),
-        branch: string(git.branch),
+        branch,
         repoUrl: string(git.repository_url),
         startCommit: string(git.commit_hash),
         // Subagent threads have no human prompt; Codex names them by agent_path.
@@ -641,6 +644,7 @@ export const codex = createNormalizer({
       const time = timestamp(native.timestamp) ?? timestamp(data.timestamp);
       if (!delta.startedAt && time) delta.startedAt = time;
     }
+    if (branches.size) delta.branchesObserved = [...branches];
     return delta;
   },
   links(records) {

@@ -13468,7 +13468,7 @@
                             ]
                           },
                           "branch": {
-                            "description": "Git branch at session start",
+                            "description": "Git branch last observed in the session",
                             "type": [
                               "string",
                               "null"
@@ -14839,11 +14839,18 @@
                             ]
                           },
                           "branch": {
-                            "description": "Git branch at session start",
+                            "description": "Git branch last observed in the session",
                             "type": [
                               "string",
                               "null"
                             ]
+                          },
+                          "observed_branches": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Every distinct branch the session worked on, including switches; see session_observed_branches"
                           },
                           "cwd_relative": {
                             "description": "cwd relative to repo_root",
@@ -14976,6 +14983,12 @@
                             "minimum": 0,
                             "maximum": 9007199254740991,
                             "description": "Commits observed during the session"
+                          },
+                          "observed_branch_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Distinct branches the session worked on"
                           },
                           "reuse_count": {
                             "type": "integer",
@@ -15213,6 +15226,7 @@
                           "repo_name",
                           "repo_url",
                           "branch",
+                          "observed_branches",
                           "cwd_relative",
                           "start_commit",
                           "end_commit",
@@ -15229,6 +15243,7 @@
                           "tools_used",
                           "file_count",
                           "observed_commit_count",
+                          "observed_branch_count",
                           "reuse_count",
                           "agentcommons_search_calls",
                           "reuses_made",
@@ -15513,11 +15528,18 @@
                             ]
                           },
                           "branch": {
-                            "description": "Git branch at session start",
+                            "description": "Git branch last observed in the session",
                             "type": [
                               "string",
                               "null"
                             ]
+                          },
+                          "observed_branches": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Every distinct branch the session worked on, including switches; see session_observed_branches"
                           },
                           "cwd_relative": {
                             "description": "cwd relative to repo_root",
@@ -15650,6 +15672,12 @@
                             "minimum": 0,
                             "maximum": 9007199254740991,
                             "description": "Commits observed during the session"
+                          },
+                          "observed_branch_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991,
+                            "description": "Distinct branches the session worked on"
                           },
                           "reuse_count": {
                             "type": "integer",
@@ -15876,6 +15904,7 @@
                           "repo_name",
                           "repo_url",
                           "branch",
+                          "observed_branches",
                           "cwd_relative",
                           "start_commit",
                           "end_commit",
@@ -15892,6 +15921,7 @@
                           "tools_used",
                           "file_count",
                           "observed_commit_count",
+                          "observed_branch_count",
                           "reuse_count",
                           "agentcommons_search_calls",
                           "reuses_made",
@@ -16235,11 +16265,18 @@
                               ]
                             },
                             "branch": {
-                              "description": "Git branch at session start",
+                              "description": "Git branch last observed in the session",
                               "type": [
                                 "string",
                                 "null"
                               ]
+                            },
+                            "observed_branches": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "description": "Every distinct branch the session worked on, including switches; see session_observed_branches"
                             },
                             "cwd_relative": {
                               "description": "cwd relative to repo_root",
@@ -16372,6 +16409,12 @@
                               "minimum": 0,
                               "maximum": 9007199254740991,
                               "description": "Commits observed during the session"
+                            },
+                            "observed_branch_count": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991,
+                              "description": "Distinct branches the session worked on"
                             },
                             "reuse_count": {
                               "type": "integer",
@@ -16598,6 +16641,7 @@
                             "repo_name",
                             "repo_url",
                             "branch",
+                            "observed_branches",
                             "cwd_relative",
                             "start_commit",
                             "end_commit",
@@ -16614,6 +16658,7 @@
                             "tools_used",
                             "file_count",
                             "observed_commit_count",
+                            "observed_branch_count",
                             "reuse_count",
                             "agentcommons_search_calls",
                             "reuses_made",

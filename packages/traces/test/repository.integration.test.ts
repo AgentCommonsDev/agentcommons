@@ -70,6 +70,7 @@ function header(sessionId: string, messageCount: number): TraceSession {
     repo_url: null,
     repo_name: null,
     branch: null,
+    observed_branches: [],
     start_commit: null,
     end_commit: null,
     observed_commits: null,

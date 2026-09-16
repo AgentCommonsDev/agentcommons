@@ -133,6 +133,7 @@ let admin: ServiceContext;
 let member: ServiceContext;
 let search: SearchService;
 let splitSessionId: string;
+let switchSessionId: string;
 /** The next read fails with the given error before any query; null passes through. */
 let failNext: Error[] = [];
 let failingSearch: SearchService;
@@ -197,6 +198,22 @@ beforeAll(async () => {
     },
   });
   splitSessionId = split.id;
+  // A session that switched branches: its last branch is "main", but it also worked on
+  // "hotfix/switch" (R-SRCH-19). A branch filter must find it by the switched-to branch.
+  const switched = await fixtures.sessionFor(admin, {
+    installationId: installations[0] ?? randomUUID(),
+    visibility: "PUBLIC",
+    fields: {
+      title: "Branch switch session on repo-switch",
+      repo_name: "github.com/acme/repo-switch",
+      branch: "main",
+      observed_branches: ["main", "hotfix/switch"],
+      message_count: 1,
+      started_at: new Date(Date.UTC(2026, 7, 21, 9)),
+      last_activity_at: new Date(Date.UTC(2026, 7, 21, 9, 30)),
+    },
+  });
+  switchSessionId = switched.id;
   const writer = createTraceClient({
     url: db.traceConfig.url,
     database: db.traceConfig.database,
@@ -287,6 +304,31 @@ beforeAll(async () => {
       }),
     );
   }
+  // One searchable message so the switch session is anchorable by a filter-only browse.
+  batch.push(
+    validateTraceRow("messages", {
+      ...emptyTraceRow("messages"),
+      message_id: randomUUID(),
+      organization_id: owner.organizationId,
+      session_id: switchSessionId,
+      seq: 0,
+      block_index: 0,
+      role: "USER",
+      kind: "TEXT",
+      tool_name: null,
+      tool_use_id: null,
+      content: sentence(20),
+      tool_input: "null",
+      search_text: sentence(20),
+      searchable: true,
+      timestamp: new Date(Date.UTC(2026, 7, 21, 9)),
+      received_at: new Date(Date.UTC(2026, 7, 21, 9)),
+      revision: "1",
+      generation: "0",
+      deleted: 0,
+      fingerprint: "a".repeat(64),
+    }),
+  );
   await flush();
   await writer.close();
   const dependencies = {
@@ -455,4 +497,27 @@ it("relaxes to session-level matching when the strict token match finds nothing,
     limit: 6,
   });
   expect(singleMiss.result.total.hits).toBe(0);
+});
+
+// @req R-SRCH-19
+it("finds a session by every branch it worked on, not only its last one", async () => {
+  const anchor = (blocks: { session_id: string }[]) =>
+    blocks.map((block) => block.session_id);
+  // The switched-to branch, which is not the session's current `branch`, still finds it,
+  // and only it: no other seeded session worked on "hotfix/switch".
+  const bySwitch = await search.execute(admin, {
+    query: "",
+    filters: { branch: "hotfix/switch" },
+    limit: 10,
+  });
+  expect(anchor(bySwitch.result.blocks)).toEqual([switchSessionId]);
+  // The current branch finds it too; observed_branches always includes it. Scope to the
+  // session's own repository so the assertion does not depend on browse recency across the
+  // many other "main" sessions in the corpus.
+  const byCurrent = await search.execute(admin, {
+    query: "",
+    filters: { branch: "main", repo_name: "repo-switch" },
+    limit: 10,
+  });
+  expect(anchor(byCurrent.result.blocks)).toEqual([switchSessionId]);
 });

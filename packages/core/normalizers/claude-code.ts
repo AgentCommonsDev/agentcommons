@@ -249,14 +249,17 @@ export const claudeCode = createNormalizer({
   },
   sessionDelta(records) {
     const delta: SessionDelta = {};
+    const branches = new Set<string>();
     for (const { payload: data } of records) {
       if (!knownRecordTypes.has(string(data.type) ?? "")) continue;
+      const branch = branchName(data.gitBranch);
+      if (branch) branches.add(branch);
       assignPresent(delta, {
         harnessSessionId: string(data.sessionId),
         harnessVersion: string(data.version),
         entrypoint: string(data.entrypoint),
         cwd: string(data.cwd),
-        branch: branchName(data.gitBranch),
+        branch,
         title: string(data.aiTitle),
         agentType: string(data.agentType),
       });
@@ -271,6 +274,7 @@ export const claudeCode = createNormalizer({
       if (start && (!delta.startedAt || start < delta.startedAt))
         delta.startedAt = start;
     }
+    if (branches.size) delta.branchesObserved = [...branches];
     return delta;
   },
   links(records) {

@@ -577,6 +577,14 @@ export class TraceProjectionService {
           ? {}
           : snakeRepository(delta.repoUrl)),
         branch: delta.branch ?? header.branch,
+        // The hook-reported start branch (already in the header) unioned with every branch
+        // the transcript records, so a mid-session switch stays searchable. Distinct, first-seen.
+        observed_branches: [
+          ...new Set([
+            ...header.observed_branches,
+            ...(delta.branchesObserved ?? []),
+          ]),
+        ],
         harness_version: delta.harnessVersion ?? header.harness_version,
         entrypoint: delta.entrypoint ?? header.entrypoint,
         model: delta.model ?? null,
@@ -1229,6 +1237,7 @@ function initialHeader(
     repo_url: git?.remoteUrl ?? null,
     repo_name: git?.remoteUrl ?? null,
     branch: git?.branch ?? null,
+    observed_branches: git?.branch ? [git.branch] : [],
     start_commit: git?.head ?? null,
     end_commit: null,
     observed_commits: null,

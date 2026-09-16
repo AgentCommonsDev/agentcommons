@@ -187,10 +187,35 @@ describe("Claude Code normalization", () => {
     expect(delta.modelsUsed).toEqual(["claude-fable-5-1"]);
     expect(delta.model).toBe("claude-fable-5-1");
     expect(delta.branch).toBe("main");
+    // The detached-HEAD records contribute no branch, so only "main" is observed.
+    expect(delta.branchesObserved).toEqual(["main"]);
     // parent.jsonl was captured with a detached HEAD; the shim's git context wins.
-    expect(
-      claudeCode.sessionDelta(jsonl("claude-code/parent.jsonl")).branch,
-    ).toBeUndefined();
+    const parentDelta = claudeCode.sessionDelta(
+      jsonl("claude-code/parent.jsonl"),
+    );
+    expect(parentDelta.branch).toBeUndefined();
+    expect(parentDelta.branchesObserved).toBeUndefined();
+  });
+
+  it("collects every distinct branch a session switches through, newest last @req R-SRCH-19", () => {
+    const records = ["main", "main", "feature/x", "main"].map((branch, index) =>
+      source(
+        {
+          type: "user",
+          sessionId: "s1",
+          gitBranch: branch,
+          message: {
+            content: [{ type: "text", text: `msg ${String(index)}` }],
+          },
+        },
+        BigInt(index),
+      ),
+    );
+    const delta = claudeCode.sessionDelta(records);
+    // First-seen order, deduplicated; `branch` is the last one observed and is in the set.
+    expect(delta.branchesObserved).toEqual(["main", "feature/x"]);
+    expect(delta.branch).toBe("main");
+    expect(delta.branchesObserved).toContain(delta.branch);
   });
 
   // Captured live 2026-09-08: subagent transcripts append attachments stamped later

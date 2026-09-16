@@ -270,7 +270,8 @@ physical columns and native types are declared in `packages/traces/src/schema.ts
 | `userId`, `ingestApiKeyId`, `installationId`                   | owner from the first ingesting key                                                                                                                                                                                                                                                                          |
 | `cwd`, `repoRoot`, `cwdRelative`                               | `git rev-parse --show-toplevel` (worktree root); cwd relative to it                                                                                                                                                                                                                                         |
 | `repoUrl`, `repoName`                                          | normalized `host/org/repo` from `origin` with credentials and `.git` stripped; null outside a repo                                                                                                                                                                                                          |
-| `branch`, `startCommit`, `endCommit`                           | branch null when detached                                                                                                                                                                                                                                                                                   |
+| `branch`, `startCommit`, `endCommit`                           | branch null when detached; `branch` is the last one observed                                                                                                                                                                                                                                                |
+| `observedBranches`                                             | every distinct branch the transcript records (in first-seen order) unioned with the hook's start branch, so a mid-session switch stays searchable; the array always includes `branch` (ADR 0082)                                                                                                            |
 | `observedCommits`, `observedDiffStat`, `dirtyFileCount`        | observations at session end (`startCommit..endCommit`, `git diff --shortstat`); labeled _observed_, not attributed (§12)                                                                                                                                                                                    |
 | `model`, `modelsUsed`                                          |                                                                                                                                                                                                                                                                                                             |
 | `startedAt`, `endedAt`, `lastActivityAt`                       | `startedAt` uses the normalized source timestamp when available, otherwise first receipt time; publication synchronizes the compact control timestamp for tree ordering and cursors. `lastActivityAt` is server receipt time.                                                                               |
@@ -1260,7 +1261,10 @@ Input (`packages/core/schemas/search.ts`):
   `host/org/repo`, the `org/repo` pair an agent reads off a remote, or the bare repository
   name; the last two resolve through the `repos` view to the one repository whose name
   ends with them (400 `AMBIGUOUS_REPO` when several do; ADR 0070). `user_email` exact.
-  `ingest_api_key_id` exact (the key that uploaded the session; the Install page uses it
+  `branch` matches every branch the session worked on, not only its last one: a session
+  that switched branches is found by any of them (it tests `sessions.observed_branches`,
+  which always includes the current `branch`, and falls back to `branch` for rows projected
+  before the column existed; ADR 0082). `ingest_api_key_id` exact (the key that uploaded the session; the Install page uses it
   to list one machine's sessions, §10). `tool_name` matches tool-use/result messages themselves. `file_prefix` selects
   _sessions_ that touched the path. `file_operation` (`read`, `edit`, `write` or
   `delete`, the values normalizers record in `session_files.ops`) selects sessions where
@@ -1367,10 +1371,10 @@ lists `META` to read them, and the CSV export carries every kind because a file 
 context window. `seq` counts every kind, so a default read shows gaps where META records
 sit and `message_count` in the header still counts them. Returns a header with every session-level fact: `session_id`,
 `title`, `harness`, `harness_version`, `entrypoint`, `model`, `models_used`,
-`user_email`, `installation_id`, `installation_hostname`, `repo_name`, `repo_url`, `branch`, `cwd_relative`,
+`user_email`, `installation_id`, `installation_hostname`, `repo_name`, `repo_url`, `branch`, `observed_branches`, `cwd_relative`,
 `start_commit`, `end_commit`, `started_at`, `ended_at`, `status`, `visibility` (`PUBLIC`/`PRIVATE`), `end_reason`,
 `message_count`, `tool_call_count`, `input_tokens`, `output_tokens`, `tools_used`,
-`file_count`, `observed_commit_count`, `reuse_count`, `agentcommons_search_calls`, `reuses_made`, `agent_type`, `parent_tool_use_id`, `parent` ref and `children` refs
+`file_count`, `observed_commit_count`, `observed_branch_count`, `reuse_count`, `agentcommons_search_calls`, `reuses_made`, `agent_type`, `parent_tool_use_id`, `parent` ref and `children` refs
 that the caller may see (each ref carries `parent_tool_use_id`), `root_session_id`; then the selected messages in order, thinking and tool results included, each
 `content` bounded to a quarter of the page budget (META records to one thirty-second)
 with `content_cursor` for the rest, total page budget `page_bytes` (default 32 KB, so
@@ -4089,7 +4093,7 @@ the byte budgets of §8.2.
   },
   {
     "name": "sql",
-    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Answer questions search cannot, with one read-only ClickHouse SELECT over api_ro: who worked on a repository, which sessions touched a file, counts over time. Views: sessions (session metadata); messages (normalized messages); session_files (observed files: path, ops); session_observed_commits (commit observations); session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds. Example, the newest sessions of one repository: {\"sql\":\"SELECT session_id,title,started_at FROM sessions WHERE repo_name = 'github.com/acme/orders-api' ORDER BY started_at DESC LIMIT 20\"}.",
+    "description": "Use this to check prior work before changing code, and whenever the user asks about earlier sessions; run long investigations in a subagent that returns only findings with session ids. Answer questions search cannot, with one read-only ClickHouse SELECT over api_ro: who worked on a repository, which sessions touched a file, counts over time. Views: sessions (session metadata); messages (normalized messages); session_files (observed files: path, ops); session_observed_commits (commit observations); session_observed_branches; session_tools (tool counts); users (visible contributors); installations (visible devices); repos (visible repository counts); schema_columns (column descriptions); schema_functions (function descriptions). search_messages(q='words') returns uncapped session_id,seq,rank. Discover columns with SELECT * FROM schema_columns WHERE view_name = 'sessions' and every table function this organization can use with SELECT * FROM schema_functions. Limits: 500 rows, 5 seconds. Example, the newest sessions of one repository: {\"sql\":\"SELECT session_id,title,started_at FROM sessions WHERE repo_name = 'github.com/acme/orders-api' ORDER BY started_at DESC LIMIT 20\"}.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4386,6 +4390,10 @@ the byte budgets of §8.2.
               "type": "string",
               "minLength": 1
             },
+            "user_email": {
+              "type": "string",
+              "format": "email"
+            },
             "api_key_id": {
               "type": "string",
               "minLength": 1
@@ -4522,16 +4530,17 @@ session_id: 00000000-0000-4000-8000-000000000001 | title: Investigate the transp
 harness_version: null | entrypoint: null | model: null
 models_used: [] | user_email: transport-primary@example.com | installation_hostname: transport-fixture
 repo_name: github.com/rek7/agentcommons | repo_url: github.com/rek7/agentcommons | branch: main
-cwd_relative: . | start_commit: abc123 | end_commit: null
-started_at: 2026-09-07T01:00:00.000Z | ended_at: null | status: ACTIVE
-visibility: PUBLIC | purged_at: null | end_reason: null
-message_count: 1 | tool_call_count: 0 | input_tokens: 0
-output_tokens: 0 | tools_used: [] | file_count: 0
-observed_commit_count: 0 | reuse_count: 0 | agentcommons_search_calls: 0
-reuses_made: 0 | agent_type: null | parent_session_id: null
-parent_relation: null | parent_tool_use_id: null | parent: null
-children: [] | child_count: 0 | children_truncated: false
-truncated_fields: [] | root_session_id: 00000000-0000-4000-8000-000000000001
+observed_branches: ["main"] | cwd_relative: . | start_commit: abc123
+end_commit: null | started_at: 2026-09-07T01:00:00.000Z | ended_at: null
+status: ACTIVE | visibility: PUBLIC | purged_at: null
+end_reason: null | message_count: 1 | tool_call_count: 0
+input_tokens: 0 | output_tokens: 0 | tools_used: []
+file_count: 0 | observed_commit_count: 0 | observed_branch_count: 1
+reuse_count: 0 | agentcommons_search_calls: 0 | reuses_made: 0
+agent_type: null | parent_session_id: null | parent_relation: null
+parent_tool_use_id: null | parent: null | children: []
+child_count: 0 | children_truncated: false | truncated_fields: []
+root_session_id: 00000000-0000-4000-8000-000000000001
 
 seq 0 USER TEXT timestamp=2026-09-07T01:00:00.000Z model=null
 Investigate the transport session index

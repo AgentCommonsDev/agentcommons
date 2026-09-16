@@ -3791,7 +3791,7 @@ export interface operations {
               model: string | null;
               /** @description Repository name such as owner/repo; joins repos.repo_name */
               repo_name: string | null;
-              /** @description Git branch at session start */
+              /** @description Git branch last observed in the session */
               branch: string | null;
               /**
                * Format: email
@@ -4244,8 +4244,10 @@ export interface operations {
               repo_name: string | null;
               /** @description Remote URL of the repository */
               repo_url: string | null;
-              /** @description Git branch at session start */
+              /** @description Git branch last observed in the session */
               branch: string | null;
+              /** @description Every distinct branch the session worked on, including switches; see session_observed_branches */
+              observed_branches: string[];
               /** @description cwd relative to repo_root */
               cwd_relative: string | null;
               /** @description HEAD SHA at session start */
@@ -4287,6 +4289,8 @@ export interface operations {
               file_count: number;
               /** @description Commits observed during the session */
               observed_commit_count: number;
+              /** @description Distinct branches the session worked on */
+              observed_branch_count: number;
               /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
               /** @description search and sql calls credited to the session while active */
@@ -4453,8 +4457,10 @@ export interface operations {
               repo_name: string | null;
               /** @description Remote URL of the repository */
               repo_url: string | null;
-              /** @description Git branch at session start */
+              /** @description Git branch last observed in the session */
               branch: string | null;
+              /** @description Every distinct branch the session worked on, including switches; see session_observed_branches */
+              observed_branches: string[];
               /** @description cwd relative to repo_root */
               cwd_relative: string | null;
               /** @description HEAD SHA at session start */
@@ -4496,6 +4502,8 @@ export interface operations {
               file_count: number;
               /** @description Commits observed during the session */
               observed_commit_count: number;
+              /** @description Distinct branches the session worked on */
+              observed_branch_count: number;
               /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
               /** @description search and sql calls credited to the session while active */
@@ -4668,8 +4676,10 @@ export interface operations {
               repo_name: string | null;
               /** @description Remote URL of the repository */
               repo_url: string | null;
-              /** @description Git branch at session start */
+              /** @description Git branch last observed in the session */
               branch: string | null;
+              /** @description Every distinct branch the session worked on, including switches; see session_observed_branches */
+              observed_branches: string[];
               /** @description cwd relative to repo_root */
               cwd_relative: string | null;
               /** @description HEAD SHA at session start */
@@ -4711,6 +4721,8 @@ export interface operations {
               file_count: number;
               /** @description Commits observed during the session */
               observed_commit_count: number;
+              /** @description Distinct branches the session worked on */
+              observed_branch_count: number;
               /** @description Later sessions that read this one; see session_reuse */
               reuse_count: number;
               /** @description search and sql calls credited to the session while active */

@@ -50,6 +50,7 @@ const numberKeys = new Set([
   "output_tokens",
   "file_count",
   "observed_commit_count",
+  "observed_branch_count",
   "reuse_count",
   "agentcommons_search_calls",
   "reuses_made",

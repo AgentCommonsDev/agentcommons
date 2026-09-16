@@ -254,7 +254,7 @@ export function sessionDetailsSql(database: string): string {
     title: sessionColumns.title,
   });
   const parents = `SELECT session_id,title FROM (${titles}) UNION ALL SELECT session_id,NULL AS title FROM ${sqlIdentifier(database)}.session_identities FINAL WHERE organization_id=${org}`;
-  return `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,if(p.session_id IS NOT NULL,s.parent_tool_use_id,NULL) AS parent_tool_use_id,p.title AS parent_title,s.child_count AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count FROM (${sessionRelationSql(database, { skeleton: true, childCount: true, metadata: allMetadata })}) s LEFT ANY JOIN (${parents}) p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT session_id,count() AS file_count FROM (${latestRowsSql(database, "session_files")}) GROUP BY session_id) f ON f.session_id=s.session_id`;
+  return `SELECT ${publicFields},p.session_id AS parent_session_id,if(p.session_id IS NOT NULL,s.parent_relation,NULL) AS parent_relation,s.parent_native_ref AS parent_native_ref,if(p.session_id IS NOT NULL,s.parent_tool_use_id,NULL) AS parent_tool_use_id,p.title AS parent_title,s.child_count AS child_count,coalesce(f.file_count,0) AS file_count,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0 AS duration_seconds,JSONLength(s.observed_commits) AS observed_commit_count,length(s.observed_branches) AS observed_branch_count FROM (${sessionRelationSql(database, { skeleton: true, childCount: true, metadata: allMetadata })}) s LEFT ANY JOIN (${parents}) p ON p.session_id=s.parent_session_id LEFT ANY JOIN (SELECT session_id,count() AS file_count FROM (${latestRowsSql(database, "session_files")}) GROUP BY session_id) f ON f.session_id=s.session_id`;
 }
 
 export function baseViews(database: string): TraceViewDefinition[] {
@@ -326,6 +326,10 @@ export function baseViews(database: string): TraceViewDefinition[] {
     traceView(
       "session_observed_commits",
       `SELECT organization_id,session_id,ordinal,JSONExtractString(value,'sha') AS sha,JSONExtractString(value,'subject') AS subject,JSONExtractString(value,'author') AS author,JSONExtractString(value,'timestamp') AS timestamp FROM api_ro.session_base ARRAY JOIN JSONExtractArrayRaw(observed_commits) AS value,arrayEnumerate(JSONExtractArrayRaw(observed_commits)) AS ordinal`,
+    ),
+    traceView(
+      "session_observed_branches",
+      `SELECT organization_id,session_id,branch,ordinal FROM api_ro.session_base ARRAY JOIN observed_branches AS branch,arrayEnumerate(observed_branches) AS ordinal`,
     ),
   ];
 }
