@@ -212,7 +212,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     installNote:
       "Codex asks you to trust hooks on the next interactive launch.",
     shellExportNote:
-      "Open a new terminal before starting Codex so it reads the exported key.",
+      "Codex reads AGENTCOMMONS_API_KEY from the shell that starts it, so start it from a new terminal after installing. If its search tool reports the key is unset, run `echo $AGENTCOMMONS_API_KEY` in that shell; when it is empty, re-run the installer and open a new terminal.",
     configPath: [".codex", "config.toml"],
     instructionsPath: [".codex", "AGENTS.md"],
     repositoryInstructionsFile: "AGENTS.md",

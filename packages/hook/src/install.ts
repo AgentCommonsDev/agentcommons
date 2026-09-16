@@ -237,8 +237,23 @@ function saveConfig(
  * MCP server. The block is marker-delimited and replaced in place on every install.
  */
 function shellRcPaths(home: string): string[] {
+  // Interactive rc files cover a terminal-launched shell; the login files cover a login
+  // shell, which reads them instead. macOS Terminal starts a login bash that reads
+  // `.bash_profile`/`.profile` and never `.bashrc`, and display managers source `.profile`;
+  // Codex reads the key from the environment, so a shell that starts it without the export
+  // cannot reach the MCP server. `.profile` is the POSIX login fallback, written always; a
+  // shell's own login file (`.bash_profile`, `.zprofile`) shadows it, so extend one that
+  // already exists but never create it, so the shell's startup order is unchanged.
+  const paths = [
+    join(home, ".profile"),
+    join(home, ".bashrc"),
+    join(home, ".zshrc"),
+  ];
+  for (const login of [".bash_profile", ".zprofile"]) {
+    const path = join(home, login);
+    if (existsSync(path)) paths.push(path);
+  }
   const fishDirectory = join(home, ".config", "fish");
-  const paths = [join(home, ".bashrc"), join(home, ".zshrc")];
   if (existsSync(fishDirectory) || present("fish"))
     paths.push(join(fishDirectory, "config.fish"));
   return paths;

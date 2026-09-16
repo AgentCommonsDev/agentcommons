@@ -55,7 +55,8 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
     key: "test",
     organizationId: "019939c0-0000-7000-8000-000000000001",
     credentialHash: hash("test"),
-    installOptions: { configHome, noShellRc: true },
+    // A normal install writes the shell exports; reconcile re-runs with the same flags.
+    installOptions: { configHome, noShellRc: false },
   });
   // As after `hook.js install`: the wiring record names the installed (old) bundle.
   recordConfigured(directory, executable, ["claude"]);
@@ -220,13 +221,12 @@ describe("hook self-update", () => {
     expect(f.log()).not.toContain("Updated");
   });
   // @req R-CAP-17
-  it("re-runs the bundle's install with the recorded flags after a swap and when a new harness appears, never touching shell rc files, and converges hourly after a failure", async () => {
+  it("re-runs the bundle's install with the recorded flags after a swap and when a new harness appears, re-applying the shell exports a normal install wrote, and converges hourly after a failure", async () => {
     const f = fixture();
     await f.run();
-    // The swap ran the new bundle's install once with the recorded config home and no shell rc edits.
-    expect(f.installRuns()).toEqual([
-      `--config-home ${f.configHome} --no-shell-rc`,
-    ]);
+    // The swap ran the new bundle's install once with the recorded config home; a normal
+    // install recorded no --no-shell-rc, so reconcile re-applies the (idempotent) exports.
+    expect(f.installRuns()).toEqual([`--config-home ${f.configHome}`]);
     expect(f.log()).toContain("Configured harnesses claude with bundle");
     await f.run();
     expect(f.installRuns(), "nothing changed").toHaveLength(1);
@@ -239,6 +239,19 @@ describe("hook self-update", () => {
     );
     await f.run();
     expect(f.installRuns(), "steady state").toHaveLength(2);
+  });
+  // @req R-CAP-17
+  it("preserves --no-shell-rc on reconcile for a canary install that suppressed the exports", async () => {
+    const f = fixture();
+    // A canary or test install recorded --no-shell-rc so it never edits the real shell;
+    // reconcile honors that and keeps suppressing the exports.
+    await f.run({}, randomUUID(), {
+      ...f.config,
+      installOptions: { configHome: f.configHome, noShellRc: true },
+    });
+    expect(f.installRuns()).toEqual([
+      `--config-home ${f.configHome} --no-shell-rc`,
+    ]);
   });
   // @req R-CAP-17
   it("never runs install for a directory that hook.js install did not set up", async () => {
@@ -264,9 +277,7 @@ describe("hook self-update", () => {
     );
     await f.run();
     expect(f.requests).not.toContain("GET /hook/manifest.json");
-    expect(f.installRuns()).toEqual([
-      `--config-home ${f.configHome} --no-shell-rc`,
-    ]);
+    expect(f.installRuns()).toEqual([`--config-home ${f.configHome}`]);
     expect(
       JSON.parse(readFileSync(join(f.directory, "update.json"), "utf8")),
     ).toMatchObject({

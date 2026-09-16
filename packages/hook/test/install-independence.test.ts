@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +71,20 @@ const geminiEntry = (home: string) =>
   servers(join(home, ".gemini", "settings.json"))?.agentcommons;
 
 describe("installer independence", () => {
+  // @req R-INST-02
+  it("exports the key to interactive and login shell startup files, extending an existing login file but never creating one", () => {
+    const { directory, home, config } = machine(1);
+    // A login shell reads its own profile, not .bashrc: macOS Terminal starts login bash
+    // that reads .bash_profile. One already exists here; .zprofile does not.
+    writeFileSync(join(home, ".bash_profile"), "# user login file\n");
+    install(directory, config, {});
+    const exported = (name: string) =>
+      readFileSync(join(home, name), "utf8").includes("AGENTCOMMONS_API_KEY");
+    for (const name of [".profile", ".bashrc", ".zshrc", ".bash_profile"])
+      expect(exported(name), name).toBe(true);
+    // An absent login file stays absent, so the shell's startup order is unchanged.
+    expect(existsSync(join(home, ".zprofile"))).toBe(false);
+  });
   // @req R-INST-02
   it("a failing `claude mcp add` is reported, Gemini's stale entry is still rewritten, and the run succeeds", () => {
     const { directory, home, config } = machine(1);

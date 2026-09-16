@@ -139,7 +139,7 @@ async function main(): Promise<void> {
         ...(options.noShellRc
           ? []
           : [
-              "AGENTCOMMONS_API_KEY is exported from your bash, zsh and fish startup files.",
+              "AGENTCOMMONS_API_KEY is exported from your bash, zsh, fish and login shell startup files.",
               ...wired.flatMap((definition) =>
                 definition.shellExportNote ? [definition.shellExportNote] : [],
               ),

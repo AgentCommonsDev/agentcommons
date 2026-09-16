@@ -795,10 +795,14 @@ mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add �
    whose only CLI failed natively is therefore configured, not failed, and `install` still
    records its options and wiring for self-update. Only a harness whose files could not be
    written (including an entry that did not land) exits non-zero; write the marker-delimited
-   `AGENTCOMMONS_SERVER`/`AGENTCOMMONS_API_KEY` exports into `~/.bashrc`, `~/.zshrc` and,
-   when fish is installed or configured, `~/.config/fish/config.fish` unless
-   `--no-shell-rc` (Codex reads the key from the environment, so every login shell needs
-   it; the installer tells the user to open a new terminal before starting Codex); write the
+   `AGENTCOMMONS_SERVER`/`AGENTCOMMONS_API_KEY` exports into the interactive `~/.bashrc`,
+   `~/.zshrc` and, when fish is installed or configured, `~/.config/fish/config.fish`, and
+   into the login `~/.profile` plus an existing `~/.bash_profile`/`~/.zprofile` (never
+   created, so a shell's startup order is unchanged), unless `--no-shell-rc` (Codex reads
+   the key from the environment, and a login shell — macOS Terminal's bash, a display
+   manager — reads a login file, not `~/.bashrc`, so every login shell needs it; the
+   installer tells the user to open a new terminal before starting Codex, and Codex's
+   search tool says how to check the key when it reports it unset); write the
    §8.3 guidance block into each configured harness's global instructions file
    (`instructionsPath` in `HARNESSES`: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
    `~/.gemini/GEMINI.md`; pi's extension adds the same text to its system prompt), replacing
@@ -1115,8 +1119,10 @@ alone), the shim compares that record with the installed digest and the supporte
 present on `PATH`; after a swap, when a newly supported or newly installed harness
 appears, or when the wiring record is missing (an older uploader's strict read of
 `update.json` dropped it), it runs the installed bundle's own `install` with the recorded
-flags (always with `--no-shell-rc`, since the shell
-exports only change with the key). The installer adds or replaces only entries carrying
+flags. It honors the recorded shell-rc choice: a normal install re-applies the shell
+exports, which are marked blocks, so a re-write that changes nothing is a no-op and a swap
+heals an install whose exports an older bundle wrote to fewer files (the login files were
+added later); a `--no-shell-rc` canary keeps suppressing them. The installer adds or replaces only entries carrying
 the `agentcommons-hook` marker, backs up each config file once, and restores the MCP entry
 if a native registration fails, so a background run cannot remove or overwrite what the
 user configured. Failures are logged to `hook.log` and retried at most hourly; a success

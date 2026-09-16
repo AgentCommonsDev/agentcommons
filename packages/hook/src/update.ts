@@ -57,14 +57,17 @@ function writeState(directory: string, state: UpdateState): void {
   writeAtomic(join(directory, "update.json"), state);
 }
 /**
- * Reconcile runs never touch shell rc files: the exports only change with the key,
- * which the installer handles. Everything else follows the recorded install flags.
+ * Reconcile follows the recorded install flags, so an install that wrote the shell exports
+ * re-writes them on a bundle swap and one that suppressed them (a canary with
+ * `--no-shell-rc`) still does. The exports are marked blocks, so a re-write that changes
+ * nothing is a no-op; a swap heals an install whose exports were missing or incomplete
+ * (an older bundle wrote fewer files), the same way it heals a stale MCP entry.
  */
 function installFlags(config: HookConfig): string[] {
   const options = config.installOptions ?? {};
   return [
     ...(options.configHome ? ["--config-home", options.configHome] : []),
-    "--no-shell-rc",
+    ...(options.noShellRc ? ["--no-shell-rc"] : []),
   ];
 }
 /** The installer (or a reconcile run) just wired these harnesses with this bundle. */
