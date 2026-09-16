@@ -50,7 +50,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@playwright/mcp": "^0.0.80",
     "@playwright/test": "^1.58.2",
-    "@types/node": "^22.19.11",
+    "@types/node": "^26.5.1",
     "@types/pg": "^8.16.0",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
