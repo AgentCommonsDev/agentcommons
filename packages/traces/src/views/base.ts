@@ -144,9 +144,12 @@ export function sessionRelationSql(
   ];
   // One control read per branch: each session's own row (`self`) carries its metadata and
   // every row is also credited to its parent, so the same aggregate yields the child count.
+  // A purged child is excluded from that count: control admits purged rows (for the skeleton
+  // and Moderation), but a purged session is gone from the browse surfaces for every caller,
+  // admins included (ADR 0088), so the count matches the browsable children (R-SEC-03).
   // A condition inside the read (the admin flag) lets ClickHouse drop the branch outright.
   const controlRows = (condition: string) =>
-    `SELECT tupleElement(e,1) AS session_id,${controlNames.map((name) => `anyIf(c.${sqlIdentifier(name)},tupleElement(e,2)=1) AS ${sqlIdentifier(name)}`).join(",")},countIf(tupleElement(e,2)=0) AS child_count FROM (SELECT ${["session_id", ...controlNames].map(sqlIdentifier).join(",")} FROM ${controlTableSql(database, "session_scope")} WHERE organization_id=${org}${condition ? ` AND ${condition}` : ""}) c ARRAY JOIN [tuple(c.session_id,1),tuple(coalesce(c.parent_session_id,toUUID(${sqlString(ZERO_UUID)})),0)] AS e GROUP BY tupleElement(e,1) HAVING countIf(tupleElement(e,2)=1)=1`;
+    `SELECT tupleElement(e,1) AS session_id,${controlNames.map((name) => `anyIf(c.${sqlIdentifier(name)},tupleElement(e,2)=1) AS ${sqlIdentifier(name)}`).join(",")},countIf(tupleElement(e,2)=0 AND c.purged=0) AS child_count FROM (SELECT ${["session_id", ...controlNames].map(sqlIdentifier).join(",")} FROM ${controlTableSql(database, "session_scope")} WHERE organization_id=${org}${condition ? ` AND ${condition}` : ""}) c ARRAY JOIN [tuple(c.session_id,1),tuple(coalesce(c.parent_session_id,toUUID(${sqlString(ZERO_UUID)})),0)] AS e GROUP BY tupleElement(e,1) HAVING countIf(tupleElement(e,2)=1)=1`;
   const liveHeader = (name: string) =>
     name === "parent_native_ref"
       ? `if(${traceScopeSql.admin},c.parent_native_ref,NULL)`
