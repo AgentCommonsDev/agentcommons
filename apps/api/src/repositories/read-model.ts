@@ -577,6 +577,47 @@ export async function sessionTreePage(
   });
 }
 
+/** One control page of a subtree walk; larger than a subtree is deep, small enough to bound one query. */
+const DESCENDANT_PAGE = 500;
+/**
+ * The ids of every caller-visible session in the subtree rooted at `rootId`, excluding the
+ * root itself, in `(started_at,id)` order. Graph traversal reads only compact control, so a
+ * hidden middle node does not hide its visible children (the same gap handling the tree
+ * endpoint uses). The read is paged with a keyset so one control query never scans an
+ * unbounded subtree; the CSV export walks these ids under its own fence per session.
+ */
+export async function sessionDescendants(
+  client: TraceReadClient,
+  caller: CallerContext,
+  rootId: string,
+): Promise<string[]> {
+  const visible = visibleControlSql(caller);
+  const ids: string[] = [];
+  let after: { time: string; id: string } | null = null;
+  for (;;) {
+    // The keyset values are pinned to explicit types so referencing the mutated `after`
+    // in the template does not fold the query's result type into its own inference.
+    const afterTime: string | null = after ? after.time : null;
+    const afterId: string | null = after ? after.id : null;
+    const rows: { session_id: string; started_at: string }[] = await client
+      .control.$queryRaw`
+      WITH RECURSIVE descendants AS (
+        SELECT s.id,ARRAY[s.id] path,${visible} visible FROM public.trace_session_control s
+        WHERE s.organization_id=${caller.organizationId} AND s.id=${rootId}::uuid
+        UNION ALL SELECT s.id,d.path||s.id,${visible} visible FROM public.trace_session_control s JOIN descendants d ON s.parent_session_id=d.id
+        WHERE s.organization_id=${caller.organizationId} AND NOT s.id=ANY(d.path)
+      ) SELECT s.id session_id,s.started_at::text started_at FROM descendants d
+      JOIN public.trace_session_control s ON s.id=d.id AND s.organization_id=${caller.organizationId}
+      WHERE d.visible AND s.id<>${rootId}::uuid AND (${afterTime}::timestamptz IS NULL OR (s.started_at,s.id)>(${afterTime}::timestamptz,${afterId}::uuid))
+      ORDER BY s.started_at,s.id LIMIT ${DESCENDANT_PAGE + 1}`;
+    for (const row of rows.slice(0, DESCENDANT_PAGE)) ids.push(row.session_id);
+    const last = rows[DESCENDANT_PAGE - 1];
+    if (rows.length <= DESCENDANT_PAGE || !last) break;
+    after = { time: last.started_at, id: last.session_id };
+  }
+  return ids;
+}
+
 /** The edge columns one peer row carries besides its two titles. */
 const reuseEdgeColumns =
   "e.source_session_id,e.target_session_id,e.reader_user_id,e.reader_email,e.reader_harness,e.audit_id,e.read_at";

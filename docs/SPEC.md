@@ -1541,14 +1541,19 @@ under an explicit Content Security Policy (ADR 0040). Params and query schemas a
 body schemas are declared for methods that support a body. Fastify rejects body
 validation schemas on GET/HEAD routes. List requests with `format=csv` return the
 same bounded page as JSON, with `X-Next-Cursor` when another page exists.
-`GET /sessions/:id?format=csv` instead streams the whole requested range as one
-attachment named `session-<id>.csv`: one row per message in `seq` order, the `get`
-message columns except `content_cursor`, a message split across pages rejoined into its
-row. Its pages are `get` reads (the same audit rows, budgets, redaction and visibility)
-at the 256 KB REST page cap whatever `page_bytes` the caller passed, the header computed
-on the first page only (`header=false` afterwards), and the rows stream as each page
-arrives. The first page is read before the response starts, so a caller who cannot read
-the session receives the JSON error and no file. Full filtered
+`GET /sessions/:id?format=csv` instead streams the whole requested range **and every
+caller-visible descendant (subagent, fork or spawned) session** as one attachment named
+`session-<id>.csv`: the root's messages in `seq` order, then each visible descendant whole
+in tree order, one row per message with the `get` message columns except `content_cursor`,
+each row carrying its own `session_id` for attribution, a message split across pages
+rejoined into its row. Pages are read at the 256 KB REST page cap whatever `page_bytes` the
+caller passed, the header computed on the root's first page only, the rows streaming as each
+page arrives. The whole export is **one audited `sessions.export`** (its resource ids the
+root plus every exported descendant, `format: csv`), not one `get` read per page; it is
+written after the root's first page and the subtree enumeration are read in one short fence,
+so a caller who cannot read the root receives the JSON error and no file, an admin's export
+includes private descendants a member's does not, and a descendant hidden between
+enumeration and read yields no rows. Full filtered
 dashboard exports follow JSON cursors. REST and dashboard exports use one shared CSV
 formatter with formula escaping, JSON serialization for structured cells, and empty
 cells for null values. Table exports retain duplicate SQL column labels and their order.
@@ -2097,7 +2102,11 @@ identified operations, including membership and invitation changes, carry their 
 Audit writes resolve installation attribution in the same transaction as mutations, so
 the first accepted ingest can attribute its own audit row. Cookie operations, keys with
 no accepted ingest, and historical rows without attribution have null installation ids.
-The composite installation foreign key prevents cross-organization attribution. The audit
+The composite installation foreign key prevents cross-organization attribution. Background
+work the server runs on its own (projection publish, cleanup, prerender, inactivity sweeps)
+audits with a null `userId` and `authMethod` `worker`; the Audit log renders these with a
+"System" actor (the method shown on hover) rather than a blank user, so a userless row reads
+as a system action, not missing data. The audit
 projection worker, which copies audit rows into ClickHouse, also credits each successful
 key-authenticated MCP `search`, `get` or `sql` row to the one session nearest it on its
 installation (§10) and stores that `session_reads` row in the same flush; the reuse
@@ -2509,7 +2518,15 @@ per-person repositories, most reused and recent sessions, the per-person session
 and coding-tool tiles, the `sessions` column of the activity table
 (`countIf(parent_session_id IS NULL)`) and the weekly reuse trend, whose
 `api_ro.metrics_reuse_weekly` view is root-scoped; `api_ro.metrics_search_sessions` and
-`api_ro.metrics_reuse_sessions` expose `parent_session_id` for it. Sums stay sums over every
+`api_ro.metrics_reuse_sessions` expose `parent_session_id` for it (the raw projection
+parent, i.e. the true root, whereas on the `sessions` view `parent_session_id` is the
+caller-visible parent). Those two reuse/search relations roll each session's `search`, `sql`
+and `get` reads up to its root before the roots-only aggregation, so a root whose subagents
+did the searching or reused prior work is counted rather than dropped ("counts inside their
+root" applied, not just filtered); `GET /admin/metrics` computes its reuse and usage groups
+over the same roots-only scope, so Home and the admin metrics report identical numbers. The
+per-session `sessions` columns (`agentcommons_search_calls`, `reuses_made`, `reuse_count`)
+stay per-session for the Sessions page and `get` header. Sums stay sums over every
 session, child runs included, because a subagent's work is the team's work: messages, tool
 calls, tokens per person and the activity table's message, tool-call and token columns, and
 active people counts everyone who ran any session.
@@ -2572,8 +2589,9 @@ The `get` text header ends with a `subagent_runs` line naming the child sessions
 agent can follow them; a **Reused by** panel listing every later session that read this one
 through `get` (session, user, harness, when) and a "Reused from" list of the sessions this
 one read; a Raw tab paging the redacted raw records; a **Download CSV** action beside the
-header actions that saves the whole session through `GET /sessions/:id?format=csv`, one
-row per message with the `get` message columns (§7.6); live tail over SSE with 5 s polling
+header actions that saves the whole session and its visible subagent/fork/spawned subtree
+through `GET /sessions/:id?format=csv`, one row per message with the `get` message columns
+and a `session_id` per row (§7.6); live tail over SSE with 5 s polling
 fallback while `ACTIVE`; the parent link and a tree view fed by `/sessions/:id/tree` with
 the current session highlighted and forks and spawned sessions labeled. Messages stay in
 source order, with results nested only under an unambiguous matching recorded tool-use ID.

@@ -22,10 +22,14 @@ const repo =
   "(empty({repo:Array(String)}) OR repo_name IN {repo:Array(String)})";
 const scope = `${time} AND ${repo}`;
 /**
- * Root sessions only: `parent_session_id` is the caller-visible parent, null for a root.
- * Every tile that counts or lists sessions uses it, so the dashboard agrees with the
- * Sessions list (`roots_only`); subagent, fork and spawned runs count inside their root.
- * Sums of messages, tool calls and tokens stay over every session, child runs included.
+ * Root sessions only: `parent_session_id IS NULL` selects a root. On the `sessions` view
+ * that parent is the caller-visible parent; on `metrics_search_sessions` and
+ * `metrics_reuse_sessions` it is the projection's raw parent (a true root). Every tile that
+ * counts or lists sessions uses this, so the dashboard agrees with the Sessions list
+ * (`roots_only`), and a subagent, fork or spawned run counts inside its root: the metric
+ * relations roll each subagent's search and reuse reads up to the root before this
+ * roots-only filter, so its search/reuse activity is included rather than dropped. Sums of
+ * messages, tool calls and tokens stay over every session, child runs included.
  */
 const rootScope = `${scope} AND parent_session_id IS NULL`;
 export const dashboardScopeSql = { time, repo, scope, rootScope };

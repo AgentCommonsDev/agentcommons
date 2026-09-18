@@ -89,10 +89,14 @@ function statements(
 ) {
   const filter = (date: string, qualifier = "") =>
     `${date}>=${bounds.from} AND ${date}<${bounds.to} AND (${bounds.repo} IS NULL OR ${qualifier}repo_name=${bounds.repo})`;
+  // Session-grain reuse and search-adoption relations are read roots only
+  // (`parent_session_id IS NULL`), the same scope the dashboard tiles apply, so the admin
+  // Usage/Reuse numbers match Home rather than also counting subagent rows. The relations
+  // roll each subagent's reads up to its root, so roots-only still includes that activity.
   switch (group) {
     case "reuse":
       return {
-        cte: `s AS MATERIALIZED (SELECT started_at,reused,cross_user_reused FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), weeks AS MATERIALIZED (
+        cte: `s AS MATERIALIZED (SELECT started_at,reused,cross_user_reused FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")} AND parent_session_id IS NULL), weeks AS MATERIALIZED (
         SELECT addWeeks(toMonday(${bounds.from}),arrayJoin(range(toUInt64(dateDiff('week',toMonday(${bounds.from}),toMonday(subtractMicroseconds(${bounds.to},1)))+1)))) AS week
       ), totals AS MATERIALIZED (SELECT ${weekly} AS week,count(*) AS sessions,countIf(reused) AS reuse_sessions,
        countIf(cross_user_reused) AS cross_user_reuse_sessions FROM s GROUP BY 1), w AS MATERIALIZED (
@@ -150,7 +154,7 @@ function statements(
       };
     case "usage":
       return {
-        cte: `a AS MATERIALIZED (SELECT * FROM api_ro.metrics_usage WHERE ${filter("ts")}), s AS MATERIALIZED (SELECT memory_assisted FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")}), m AS MATERIALIZED (SELECT * FROM api_ro.metrics_mcp_calls WHERE ${filter("ts")}), d AS MATERIALIZED (SELECT * FROM api_ro.metrics_dashboard WHERE ${filter("ts")}), t AS MATERIALIZED (SELECT agentcommons_search_calls,repeat_agentcommons_search_calls FROM api_ro.metrics_search_sessions WHERE ${filter("started_at")}), adoption AS MATERIALIZED (SELECT ${searchAdoptionSelect} FROM t)`,
+        cte: `a AS MATERIALIZED (SELECT * FROM api_ro.metrics_usage WHERE ${filter("ts")}), s AS MATERIALIZED (SELECT memory_assisted FROM api_ro.metrics_reuse_sessions WHERE ${filter("started_at")} AND parent_session_id IS NULL), m AS MATERIALIZED (SELECT * FROM api_ro.metrics_mcp_calls WHERE ${filter("ts")}), d AS MATERIALIZED (SELECT * FROM api_ro.metrics_dashboard WHERE ${filter("ts")}), t AS MATERIALIZED (SELECT agentcommons_search_calls,repeat_agentcommons_search_calls FROM api_ro.metrics_search_sessions WHERE ${filter("started_at")} AND parent_session_id IS NULL), adoption AS MATERIALIZED (SELECT ${searchAdoptionSelect} FROM t)`,
         selects: [
           ...searchAdoptionMetricNames.map((name) => {
             const definition = searchAdoption[name];

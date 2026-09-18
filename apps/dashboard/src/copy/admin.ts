@@ -133,6 +133,8 @@ export const adminCopy = {
     hideFilters: "Hide filters",
     record: "Audit event",
     user: "User",
+    // Background jobs and unauthenticated calls have no user; the actor cell reads this.
+    system: "System",
     resourceId: "Resource ID",
     since: "Since",
     until: "Until",

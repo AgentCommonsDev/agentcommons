@@ -27,12 +27,14 @@ import {
   sessionReuseOutputSchema,
   reusePagePositionSchema,
   sessionIdSchema,
+  type CallerContext,
   type ContentCursor,
   type GetOutput,
   type Message,
   type MessageRow,
   type SessionHeader,
 } from "@agentcommons/core";
+import type { TraceReadClient } from "@agentcommons/traces";
 import {
   formatGet,
   formatMessage,
@@ -50,6 +52,7 @@ import {
   sessionHeaders,
   visibleSession,
   sessionTreePage,
+  sessionDescendants,
   reuseEdgePage,
 } from "../repositories/read-model.js";
 import {
@@ -256,155 +259,9 @@ export class SessionService {
       async (caller) => {
         const request = getInputSchema.parse(input);
         sessionId = request.session_id;
-        return this.dependencies.readers.read(caller, async (client) => {
-          // Metadata rows scale with the page budget: 100 for the 32 KB agent page, 800 for
-          // the 256 KB dashboard page; one more row tells whether the range continues.
-          const rowLimit = Math.round(
-            (MESSAGE_ROWS_PER_READ_BUDGET * request.page_bytes) /
-              responseBytes.read,
-          );
-          // The header is the expensive part of a read: the `sessions` row with its
-          // relatives, one scan that also answers visibility. A caller that already holds
-          // it (`header: false`) is checked against the light session state instead and
-          // gets messages only. Either answer runs beside the metadata read; row policies
-          // fence the metadata of a hidden session on their own.
-          const [header, rows] = await Promise.all([
-            request.header
-              ? sessionHeaderById(client, caller, request.session_id)
-              : visibleSession(client, request.session_id).then(() => null),
-            client.query(
-              `SELECT ${MESSAGE_METADATA_COLUMNS},payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND seq >= {first:UInt32} AND ({last:Nullable(UInt32)} IS NULL OR seq <= {last:Nullable(UInt32)}) AND kind IN {kinds:Array(String)} ORDER BY seq LIMIT {rows:UInt32}`,
-              {
-                id: request.session_id,
-                first: request.cursor?.seq ?? request.from ?? 0,
-                last: request.to ?? null,
-                // The conversation by default; META housekeeping only when asked for (§7.3).
-                kinds: request.kinds ?? defaultMessageKinds[request.format],
-                rows: rowLimit + 1,
-              },
-            ),
-          ]);
-          const output: GetOutput = { header, messages: [], next: null };
-          if (header && !fitsToolBudget(output, formatGet))
-            throw new ServiceError(
-              413,
-              "SESSION_HEADER_TOO_LARGE",
-              "The session header exceeds the response limit. Use SQL to select the fields you need.",
-            );
-          const budget = new GetPageBudget(
-            header,
-            request.page_bytes,
-            request.cursor !== null && request.cursor !== undefined,
-          );
-          // Fetch only a prefix that can contribute to this bounded page. One large
-          // first message remains readable through the existing lossless byte cursor.
-          // A row costs the slice the page will carry, not its whole payload, so a page
-          // of bounded previews reads every row it can show in one payload query.
-          const firstBatch = messagePayloadBatches(
-            rows.rows.slice(0, rowLimit),
-            request.page_bytes,
-            (row) =>
-              Math.min(
-                Number(row.payload_bytes),
-                contentSliceBytes(
-                  request.page_bytes,
-                  messageKindSchema.parse(row.kind),
-                ),
-              ),
-          ).next();
-          const batch = firstBatch.done ? [] : firstBatch.value;
-          const payloads = await readMessagePayloads(client, batch);
-          const byId = new Map(
-            payloads.map((value) => [value.message_id, value]),
-          );
-          for (const metadata of batch)
-            Object.assign(metadata, byId.get(metadata.message_id));
-          if (
-            request.cursor &&
-            (!rows.rows[0] || rows.rows[0].seq !== request.cursor.seq)
-          )
-            throw new ServiceError(
-              400,
-              "INVALID_CURSOR",
-              "The cursor does not identify a message in this range.",
-            );
-          for (let index = 0; index < batch.length; index++) {
-            const message = rows.rows[index];
-            if (!message) continue;
-            const seq = Number(message.seq);
-            const offset = index === 0 ? (request.cursor?.offset ?? 0) : 0;
-            const full = messageText(message);
-            if (offset > Buffer.byteLength(full))
-              throw new ServiceError(
-                400,
-                "INVALID_CURSOR",
-                "The content cursor is beyond the end of this message.",
-              );
-            const fields = compactMetadata(
-              pickSchema(wireRow(message), messageSchema),
-              ["tool_name", "tool_use_id", "model", "agent_id"],
-            );
-            let item: Message | null = null;
-            // JSON escaping and the header affect the remaining byte budget. Reduce the
-            // content slice until both representations fit, preserving character boundaries.
-            const sliceBytes = contentSliceBytes(
-              request.page_bytes,
-              messageKindSchema.parse(message.kind),
-            );
-            const step = Math.max(256, sliceBytes / 16);
-            for (
-              let size = Math.min(sliceBytes, Buffer.byteLength(full) - offset);
-              size >= 0;
-              size = size === 0 ? -1 : Math.max(0, size - step)
-            ) {
-              let slice;
-              try {
-                slice = utf8Slice(full, offset, size);
-              } catch {
-                throw new ServiceError(
-                  400,
-                  "INVALID_CURSOR",
-                  "The content cursor must fall on a UTF-8 character boundary within this message.",
-                );
-              }
-              const remainder =
-                slice.nextOffset !== null
-                  ? { seq, offset: slice.nextOffset }
-                  : null;
-              if (remainder && slice.nextOffset === offset) continue;
-              const candidate = messageSchema.parse({
-                ...fields,
-                content: slice.content,
-                content_cursor: remainder,
-              });
-              // A bounded message does not end the page: the page goes on with the
-              // following message and this one's rest waits behind its content_cursor.
-              // Only the range's last message continues through `next`.
-              const following = rows.rows[index + 1]
-                ? { seq: Number(rows.rows[index + 1]?.seq), offset: 0 }
-                : null;
-              const next = following ?? remainder;
-              if (budget.fits(candidate, next)) {
-                item = candidate;
-                output.next = next;
-                break;
-              }
-            }
-            if (!item) {
-              if (!output.messages.length)
-                throw new ServiceError(
-                  413,
-                  "MESSAGE_METADATA_TOO_LARGE",
-                  "The message metadata exceeds the response limit. Use SQL to select the fields you need.",
-                );
-              output.next = { seq, offset };
-              break;
-            }
-            output.messages.push(item);
-            budget.add(item);
-          }
-          return getOutputSchema.parse(output);
-        });
+        return this.dependencies.readers.read(caller, (client) =>
+          this.readPage(caller, client, request),
+        );
       },
       {
         describeResult: (result) => ({
@@ -419,14 +276,171 @@ export class SessionService {
   }
 
   /**
-   * The CSV form of `get`: every message of the range as one row each, in seq order. The
-   * pages a JSON reader would walk are read to the end under the same audit, budgets and
-   * redaction, and the content slices of a message that spans pages are rejoined into its
-   * row. Every page is the largest REST page, whatever `page_bytes` the caller passed: a
-   * file has no reader-side page budget, and each page is a fenced read with its own
-   * audit row, so fewer pages mean a shorter export. The first page is read before the
-   * rows stream, so a caller who cannot read the session gets that error and no file;
-   * later pages arrive as the consumer pulls rows.
+   * One `get` page as a fenced read produces it, with no audit of its own: the header
+   * (unless `header` is false), the messages that fit `page_bytes` in seq order, and the
+   * `next` cursor. `get` wraps it in one audited read; the CSV export reads every page of
+   * every session in the subtree this way, so the whole export is one audit.
+   */
+  private async readPage(
+    caller: CallerContext,
+    client: TraceReadClient,
+    request: GetInput,
+  ): Promise<GetOutput> {
+    // Metadata rows scale with the page budget: 100 for the 32 KB agent page, 800 for
+    // the 256 KB dashboard page; one more row tells whether the range continues.
+    const rowLimit = Math.round(
+      (MESSAGE_ROWS_PER_READ_BUDGET * request.page_bytes) / responseBytes.read,
+    );
+    // The header is the expensive part of a read: the `sessions` row with its
+    // relatives, one scan that also answers visibility. A caller that already holds
+    // it (`header: false`) is checked against the light session state instead and
+    // gets messages only. Either answer runs beside the metadata read; row policies
+    // fence the metadata of a hidden session on their own.
+    const [header, rows] = await Promise.all([
+      request.header
+        ? sessionHeaderById(client, caller, request.session_id)
+        : visibleSession(client, request.session_id).then(() => null),
+      client.query(
+        `SELECT ${MESSAGE_METADATA_COLUMNS},payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND seq >= {first:UInt32} AND ({last:Nullable(UInt32)} IS NULL OR seq <= {last:Nullable(UInt32)}) AND kind IN {kinds:Array(String)} ORDER BY seq LIMIT {rows:UInt32}`,
+        {
+          id: request.session_id,
+          first: request.cursor?.seq ?? request.from ?? 0,
+          last: request.to ?? null,
+          // The conversation by default; META housekeeping only when asked for (§7.3).
+          kinds: request.kinds ?? defaultMessageKinds[request.format],
+          rows: rowLimit + 1,
+        },
+      ),
+    ]);
+    const output: GetOutput = { header, messages: [], next: null };
+    if (header && !fitsToolBudget(output, formatGet))
+      throw new ServiceError(
+        413,
+        "SESSION_HEADER_TOO_LARGE",
+        "The session header exceeds the response limit. Use SQL to select the fields you need.",
+      );
+    const budget = new GetPageBudget(
+      header,
+      request.page_bytes,
+      request.cursor !== null && request.cursor !== undefined,
+    );
+    // Fetch only a prefix that can contribute to this bounded page. One large
+    // first message remains readable through the existing lossless byte cursor.
+    // A row costs the slice the page will carry, not its whole payload, so a page
+    // of bounded previews reads every row it can show in one payload query.
+    const firstBatch = messagePayloadBatches(
+      rows.rows.slice(0, rowLimit),
+      request.page_bytes,
+      (row) =>
+        Math.min(
+          Number(row.payload_bytes),
+          contentSliceBytes(
+            request.page_bytes,
+            messageKindSchema.parse(row.kind),
+          ),
+        ),
+    ).next();
+    const batch = firstBatch.done ? [] : firstBatch.value;
+    const payloads = await readMessagePayloads(client, batch);
+    const byId = new Map(payloads.map((value) => [value.message_id, value]));
+    for (const metadata of batch)
+      Object.assign(metadata, byId.get(metadata.message_id));
+    if (
+      request.cursor &&
+      (!rows.rows[0] || rows.rows[0].seq !== request.cursor.seq)
+    )
+      throw new ServiceError(
+        400,
+        "INVALID_CURSOR",
+        "The cursor does not identify a message in this range.",
+      );
+    for (let index = 0; index < batch.length; index++) {
+      const message = rows.rows[index];
+      if (!message) continue;
+      const seq = Number(message.seq);
+      const offset = index === 0 ? (request.cursor?.offset ?? 0) : 0;
+      const full = messageText(message);
+      if (offset > Buffer.byteLength(full))
+        throw new ServiceError(
+          400,
+          "INVALID_CURSOR",
+          "The content cursor is beyond the end of this message.",
+        );
+      const fields = compactMetadata(
+        pickSchema(wireRow(message), messageSchema),
+        ["tool_name", "tool_use_id", "model", "agent_id"],
+      );
+      let item: Message | null = null;
+      // JSON escaping and the header affect the remaining byte budget. Reduce the
+      // content slice until both representations fit, preserving character boundaries.
+      const sliceBytes = contentSliceBytes(
+        request.page_bytes,
+        messageKindSchema.parse(message.kind),
+      );
+      const step = Math.max(256, sliceBytes / 16);
+      for (
+        let size = Math.min(sliceBytes, Buffer.byteLength(full) - offset);
+        size >= 0;
+        size = size === 0 ? -1 : Math.max(0, size - step)
+      ) {
+        let slice;
+        try {
+          slice = utf8Slice(full, offset, size);
+        } catch {
+          throw new ServiceError(
+            400,
+            "INVALID_CURSOR",
+            "The content cursor must fall on a UTF-8 character boundary within this message.",
+          );
+        }
+        const remainder =
+          slice.nextOffset !== null ? { seq, offset: slice.nextOffset } : null;
+        if (remainder && slice.nextOffset === offset) continue;
+        const candidate = messageSchema.parse({
+          ...fields,
+          content: slice.content,
+          content_cursor: remainder,
+        });
+        // A bounded message does not end the page: the page goes on with the
+        // following message and this one's rest waits behind its content_cursor.
+        // Only the range's last message continues through `next`.
+        const following = rows.rows[index + 1]
+          ? { seq: Number(rows.rows[index + 1]?.seq), offset: 0 }
+          : null;
+        const next = following ?? remainder;
+        if (budget.fits(candidate, next)) {
+          item = candidate;
+          output.next = next;
+          break;
+        }
+      }
+      if (!item) {
+        if (!output.messages.length)
+          throw new ServiceError(
+            413,
+            "MESSAGE_METADATA_TOO_LARGE",
+            "The message metadata exceeds the response limit. Use SQL to select the fields you need.",
+          );
+        output.next = { seq, offset };
+        break;
+      }
+      output.messages.push(item);
+      budget.add(item);
+    }
+    return getOutputSchema.parse(output);
+  }
+
+  /**
+   * The CSV form of `get`: every message of the session and of every visible descendant
+   * (subagent, fork or spawned run) as one row each. The root's requested range comes
+   * first in seq order, then each descendant whole in tree order, and every row carries
+   * its own `session_id` so subagent rows stay attributable. The whole subtree is one
+   * audited `sessions.export`: the first page and the descendant enumeration are read in
+   * one short fence before the rows stream (so a caller who cannot read the root gets the
+   * JSON error and no file), and every later page is its own short fence opened as the
+   * consumer pulls — never one fence held across the export. Each page is the largest REST
+   * page whatever `page_bytes` the caller passed, since a file has no reader-side budget,
+   * and a message that spans pages is rejoined into one row.
    */
   async export(
     context: ServiceContext,
@@ -436,18 +450,86 @@ export class SessionService {
       ...getInputSchema.parse(input),
       page_bytes: responseBytes.page,
     };
-    const first = (await this.get(context, request)).result;
-    return {
-      columns: MESSAGE_ROW_COLUMNS,
-      rows: this.exportRows(context, request, first),
-    };
+    const rootId = request.session_id;
+    const { result } = await readOperation(
+      this.dependencies.audit,
+      context,
+      {
+        action: "sessions.export",
+        resourceType: "session",
+        detail: input ?? null,
+      },
+      async (caller) => {
+        // One short fence fails fast on the root's visibility and enumerates the subtree;
+        // the rows stream afterwards, each page opening its own fence.
+        const { first, descendantIds } = await this.dependencies.readers.read(
+          caller,
+          async (client) => ({
+            first: await this.readPage(caller, client, request),
+            descendantIds: await sessionDescendants(client, caller, rootId),
+          }),
+        );
+        return {
+          descendantIds,
+          rows: this.exportTree(caller, request, first, descendantIds),
+        };
+      },
+      {
+        describeResult: (value) => ({
+          session_id: rootId,
+          sessions: 1 + value.descendantIds.length,
+        }),
+        describeResources: (value) => [rootId, ...value.descendantIds],
+      },
+    );
+    return { columns: MESSAGE_ROW_COLUMNS, rows: result.rows };
   }
-  private async *exportRows(
-    context: ServiceContext,
+  /** The root's range first, then each visible descendant whole, as one row stream. */
+  private async *exportTree(
+    caller: CallerContext,
     request: GetInput,
     first: GetOutput,
+    descendantIds: readonly string[],
   ): AsyncGenerator<MessageRow> {
-    let page = first;
+    yield* this.exportSession(caller, request, { first });
+    for (const id of descendantIds)
+      yield* this.exportSession(
+        caller,
+        {
+          ...request,
+          session_id: id,
+          from: undefined,
+          to: undefined,
+          cursor: null,
+          header: false,
+        },
+        { skipMissing: true },
+      );
+  }
+  /**
+   * Every row of one session: its pages read to the end, one short fence each, a message
+   * that spans pages rejoined into one row. A descendant hidden between enumeration and
+   * read yields no rows rather than failing the export.
+   */
+  private async *exportSession(
+    caller: CallerContext,
+    request: GetInput,
+    options: { first?: GetOutput; skipMissing?: boolean } = {},
+  ): AsyncGenerator<MessageRow> {
+    let page: GetOutput;
+    if (options.first) page = options.first;
+    else
+      try {
+        page = await this.readFenced(caller, request);
+      } catch (error) {
+        if (
+          options.skipMissing &&
+          error instanceof ServiceError &&
+          error.statusCode === 404
+        )
+          return;
+        throw error;
+      }
     let row: MessageRow | null = null;
     let slices: string[] = [];
     for (;;) {
@@ -471,7 +553,7 @@ export class SessionService {
           )
         )
           for await (const slice of this.rest(
-            context,
+            caller,
             request,
             message.content_cursor,
           ))
@@ -480,36 +562,41 @@ export class SessionService {
       if (page.next === null) break;
       // The first page carried the header and the visibility answer; later pages read
       // messages only.
-      page = (
-        await this.get(context, {
-          ...request,
-          cursor: page.next,
-          header: false,
-        })
-      ).result;
+      page = await this.readFenced(caller, {
+        ...request,
+        cursor: page.next,
+        header: false,
+      });
     }
     if (row) yield { ...row, content: slices.join("") };
   }
-  /** The rest of one bounded message, slice by slice, under the same audit and visibility. */
+  /** The rest of one bounded message, slice by slice, under the export's fence per page. */
   private async *rest(
-    context: ServiceContext,
+    caller: CallerContext,
     request: GetInput,
     cursor: ContentCursor,
   ): AsyncGenerator<string> {
     let position: ContentCursor | null = cursor;
     while (position !== null) {
-      const page: GetOutput = (
-        await this.get(context, {
-          ...request,
-          from: cursor.seq,
-          to: cursor.seq,
-          cursor: position,
-          header: false,
-        })
-      ).result;
+      const page = await this.readFenced(caller, {
+        ...request,
+        from: cursor.seq,
+        to: cursor.seq,
+        cursor: position,
+        header: false,
+      });
       for (const slice of page.messages) yield slice.content;
       position = page.next;
     }
+  }
+  /** One `get` page under its own reader fence, with no audit of its own. */
+  private readFenced(
+    caller: CallerContext,
+    request: GetInput,
+  ): Promise<GetOutput> {
+    return this.dependencies.readers.read(caller, (client) =>
+      this.readPage(caller, client, request),
+    );
   }
 
   list(context: ServiceContext, input: unknown) {

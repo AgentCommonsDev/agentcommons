@@ -951,8 +951,8 @@ describe("read services on ClickHouse", () => {
       largest,
     );
   }, 120_000);
-  // @req R-DASH-38
-  it("exports every message of a range as one row each, rejoining pages under the same get audit and visibility", async () => {
+  // @req R-DASH-38 @req R-GET-07
+  it("exports the whole subtree as one row stream and one sessions.export audit, rejoining pages and respecting caller visibility", async () => {
     const collect = async (ctx: ServiceContext, input: unknown) => {
       const output = await sessions.export(ctx, input);
       const rows = [];
@@ -960,30 +960,44 @@ describe("read services on ClickHouse", () => {
       return { columns: output.columns, rows };
     };
     const columns = Object.keys(messageRowSchema.shape);
+    // The root's own messages come first, field for field, in seq order.
     const whole = await collect(context(), {
       session_id: ids.public,
       format: "csv",
     });
     expect(whole.columns).toEqual(columns);
     expect(columns).not.toContain("content_cursor");
-    // One page holds the whole session: the rows are its messages, field for field.
-    const page = (await sessions.get(context(), { session_id: ids.public }))
+    const rootPage = (await sessions.get(context(), { session_id: ids.public }))
       .result;
-    expect(page.next).toBeNull();
-    expect(whole.rows).toEqual(
-      page.messages.map((message) =>
-        Object.fromEntries(
-          columns.map((column) => [
-            column,
-            message[column as keyof typeof message],
-          ]),
-        ),
+    expect(rootPage.next).toBeNull();
+    const rootRows = rootPage.messages.map((message) =>
+      Object.fromEntries(
+        columns.map((column) => [
+          column,
+          message[column as keyof typeof message],
+        ]),
       ),
     );
-    expect(whole.rows.map((row) => row.seq)).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    // A message that spans pages is one row whose content is its slices in order, and
-    // every page the export walked is a `get` read of the same request marked as CSV at
-    // the REST page cap, however small a page the caller asked for.
+    expect(whole.rows.slice(0, rootRows.length)).toEqual(rootRows);
+    expect(rootRows.map((row) => row.seq)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // A ROOT export also carries every visible descendant (subagent/fork/spawned run):
+    // the visible grandchild and its visible leaf appear, attributed by session_id; the
+    // hidden middle session does not, and no column was added for the attribution.
+    const exported = new Set(whole.rows.map((row) => row.session_id));
+    expect(exported.has(ids.child)).toBe(true);
+    expect(exported.has(ids.leaf)).toBe(true);
+    expect(exported.has(ids.private)).toBe(false);
+    expect(whole.rows).toHaveLength(7 + 1 + 1);
+    // Visibility is the caller's: an admin sees the hidden middle, so its one message joins.
+    const asAdmin = await collect(context("org-a", { admin: true }), {
+      session_id: ids.public,
+      format: "csv",
+    });
+    const adminSessions = new Set(asAdmin.rows.map((row) => row.session_id));
+    expect(adminSessions.has(ids.private)).toBe(true);
+    expect(asAdmin.rows).toHaveLength(7 + 1 + 1 + 1);
+    // A message that spans pages is one row whose content is its slices in order. Each page
+    // is read at the REST page cap however small a page the caller asked for.
     const ctx = context();
     // The 1 MB thinking message spans several pages even at the 256 KB export page.
     const range = { session_id: ids.long, from: 0, to: 0 };
@@ -1012,23 +1026,23 @@ describe("read services on ClickHouse", () => {
     expect(spanning.rows).toHaveLength(1);
     expect(spanning.rows[0]?.seq).toBe(0);
     expect(spanning.rows[0]?.content).toBe(slices.join(""));
+    // However many pages the export walked, it is ONE sessions.export audit over the tree,
+    // recording the exported session and format in its detail.
     const audits = await writer.query<{
       action: string;
       format: string | null;
-      page_bytes: string | null;
-      header: string | null;
+      sessions: string | null;
+      resource_ids: string[];
     }>(
-      "SELECT action, detail->'input'->>'format' AS format, detail->'input'->>'page_bytes' AS page_bytes, detail->'input'->>'header' AS header FROM audit_event WHERE request_id=$1",
+      "SELECT action, detail->'input'->>'format' AS format, detail->'result'->>'sessions' AS sessions, resource_ids FROM audit_event WHERE request_id=$1",
       [ctx.requestId],
     );
-    expect(audits.rows).toHaveLength(pages);
-    expect(
-      new Set(audits.rows.map((row) => `${row.action}:${row.format ?? ""}`)),
-    ).toEqual(new Set(["get:csv"]));
-    expect(new Set(audits.rows.map((row) => row.page_bytes))).toEqual(
-      new Set([String(responseBytes.page)]),
-    );
-    expect(audits.rows.filter((row) => row.header === "true")).toHaveLength(1);
+    expect(audits.rows).toHaveLength(1);
+    expect(audits.rows[0]?.action).toBe("sessions.export");
+    expect(audits.rows[0]?.format).toBe("csv");
+    // ids.long is a leaf: itself and no visible descendant.
+    expect(audits.rows[0]?.sessions).toBe("1");
+    expect(audits.rows[0]?.resource_ids).toEqual([ids.long]);
     // The refusal a JSON read gets is the refusal the export gets, before any row.
     await expect(
       sessions.export(context(), { session_id: ids.private }),

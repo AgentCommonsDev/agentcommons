@@ -204,4 +204,28 @@ describe("adoption and reuse metrics can be scoped to root sessions", () => {
       "FROM api_ro.metrics_reuse_sessions WHERE parent_session_id IS NULL GROUP BY week",
     );
   });
+  it("rolls each session's reads up to its root before the roots-only filter", () => {
+    for (const name of ["metrics_search_sessions", "metrics_reuse_sessions"]) {
+      // The root map credits every session to its topmost visible ancestor, matching the
+      // way session_details and sessionLinks compute the root; the projection is materialized
+      // once and walked up with a bounded self-join ladder, not re-scanned per level.
+      expect(sql(name), name).toContain("WITH proj AS MATERIALIZED");
+      expect(sql(name), name).toContain(
+        "rootmap AS (SELECT p0.session_id AS session_id,coalesce(",
+      );
+      expect(sql(name), name).toContain(
+        "LEFT JOIN proj p1 ON p1.session_id=p0.parent_session_id",
+      );
+      // Reads are aggregated by the reading session's root, not the reading session, so a
+      // root's flags and call count include its subagents' reads.
+      expect(sql(name), name).toContain(
+        "JOIN rootmap ro ON ro.session_id=r.session_id",
+      );
+      expect(sql(name), name).toContain("GROUP BY ro.root_session_id");
+      expect(sql(name), name).not.toContain("GROUP BY r.session_id");
+    }
+    // The rollup adds no api_ro layering and no second control read (one query context).
+    expect(sql("metrics_reuse_sessions")).not.toMatch(/\bapi_ro\./);
+    expect(sql("metrics_search_sessions")).not.toMatch(/\bapi_ro\./);
+  });
 });

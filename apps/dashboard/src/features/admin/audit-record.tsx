@@ -1,5 +1,10 @@
 import { copy } from "../../copy";
-import { dateTime, metricValue, textValue } from "../../lib/display";
+import {
+  auditActor,
+  dateTime,
+  metricValue,
+  textValue,
+} from "../../lib/display";
 import type { AuditEvent } from "../../lib/types";
 import { Badge } from "../../components/ui/badge";
 import {
@@ -30,6 +35,7 @@ export function AuditRecordDialog({
   const description = event
     ? [event.action, dateTime(event.ts)].join(copy.app.common.separator)
     : undefined;
+  const actor = event ? auditActor(event) : null;
   return (
     <Dialog
       open={event !== null}
@@ -54,7 +60,14 @@ export function AuditRecordDialog({
                 },
                 { label: fields.transport, value: event.transport },
                 { label: fields.auth_method, value: event.auth_method },
-                { label: text.user, value: textValue(event.user_id) },
+                {
+                  label: text.user,
+                  value: actor ? (
+                    <span title={actor.title}>{actor.label}</span>
+                  ) : (
+                    copy.app.common.unavailable
+                  ),
+                },
                 {
                   label: fields.api_key_id,
                   value: textValue(event.api_key_id),

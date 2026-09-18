@@ -31,6 +31,37 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
   // query context); the two that need control-owned lifecycle columns take the full relation.
   const projection = `(${liveProjectionSql(database)})`;
   const control = `(${sessionRelationSql(database)})`;
+  // Root rollup for the reuse and search-adoption relations (R-DASH-47): a subagent's reads
+  // land on its own child session, so a roots-only tile would drop them. `rootmap` credits
+  // every session to the topmost ancestor reachable by its raw `parent_session_id` inside
+  // the caller-visible projection (a visible root, as `session_details` and `sessionLinks`
+  // compute it); the reuse/search aggregates group the stored reads by that root, so a
+  // root's flags and call count include its whole subtree and each child row falls to zero.
+  // Kept inline, not a second `api_ro` view: the one-query-context rule shares the policy
+  // scalar, and `proj` is the single projection text the scan-count guard holds to one pass.
+  // `proj` is materialized once (lean columns keep the FINAL merge cheap) and walked up with
+  // a bounded ladder of self-joins, not a recursive CTE (which cannot materialize its base
+  // and re-runs the projection per level under load); an unmatched parent joins to the zero
+  // UUID, so `nullIf` skips it. Real subagent/fork/spawn chains are far shallower than the
+  // ladder; a session deeper than it attributes to its highest reachable ancestor.
+  const rollupColumns =
+    "session_id,parent_session_id,organization_id,started_at,repo_name,user_id,installation_id,harness,purged_at";
+  const zeroUuid = `toUUID(${sqlString("00000000-0000-0000-0000-000000000000")})`;
+  const rootDepth = 8;
+  const rootJoins = Array.from(
+    { length: rootDepth },
+    (_unused, index) =>
+      `LEFT JOIN proj p${String(index + 1)} ON p${String(index + 1)}.session_id=p${String(index)}.parent_session_id`,
+  ).join(" ");
+  const rootChain = [
+    ...Array.from(
+      { length: rootDepth },
+      (_unused, index) =>
+        `nullIf(p${String(rootDepth - index)}.session_id,${zeroUuid})`,
+    ),
+    "p0.session_id",
+  ].join(",");
+  const rollup = `WITH proj AS MATERIALIZED (SELECT ${rollupColumns} FROM ${projection}), rootmap AS (SELECT p0.session_id AS session_id,coalesce(${rootChain}) AS root_session_id FROM proj p0 ${rootJoins})`;
   const definitions: TraceViewDefinition[] = [];
   const add = (name: string, query: string, grant?: TraceViewGrant) => {
     definitions.push(traceView(name, query, grant));
@@ -124,15 +155,19 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
     `SELECT s.user_id AS user_id,uniqExactIf(s.session_id,e.side='in') AS sessions_reused_by_others,uniqExactIf(e.reader_user_id,e.side='in') AS distinct_readers,uniqExactIf(tuple(e.source_session_id,e.target_session_id),e.side='out') AS reuses_made
  FROM ${projection} s LEFT JOIN (SELECT source_session_id,target_session_id,reader_user_id,tupleElement(credit,1) AS side,tupleElement(credit,2) AS session_id FROM (${edgeRows(false)}) ARRAY JOIN [('in',target_session_id),('out',source_session_id)] AS credit) e ON e.session_id=s.session_id WHERE s.purged_at IS NULL GROUP BY s.user_id`,
   );
-  // One pass over the stored reads per session: any edge marks it reused, an edge to another
-  // member's session marks it cross-user, and any stored read is a qualifying call (the
-  // policy already drops gets of hidden targets).
+  // One pass over the stored reads, rolled up to root: any edge in a root's subtree marks it
+  // reused, an edge to another member's session marks it cross-user, any stored read is a
+  // qualifying call (the policy already drops gets of hidden targets). Reads are grouped by
+  // the reading session's root (`rootmap`), so a root's flags include its subagents' reads
+  // and each child row is zero; `parent_session_id` stays the projection's raw parent, null
+  // only for a true root (R-DASH-47). Roots-only readers select each root once, with its
+  // whole subtree.
   add(
     "metrics_reuse_sessions",
-    `SELECT s.session_id AS session_id,s.organization_id AS organization_id,s.started_at AS started_at,s.repo_name AS repo_name,s.user_id AS user_id,s.installation_id AS installation_id,s.parent_session_id AS parent_session_id,toUInt8(coalesce(f.reused,0)) AS reused,toUInt8(coalesce(f.cross_user_reused,0)) AS cross_user_reused,if(${admin},toUInt8(coalesce(f.memory_assisted,0)),NULL) AS memory_assisted FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,max(${edgeCondition("r")}) AS reused,maxIf(coalesce(t.user_id,'')!=r.reader_user_id,${edgeCondition("r")}) AS cross_user_reused,toUInt8(1) AS memory_assisted FROM (${reads}) r LEFT ANY JOIN (${owners}) t ON t.session_id=r.target_session_id GROUP BY r.session_id) f ON f.session_id=s.session_id WHERE s.purged_at IS NULL`,
+    `${rollup} SELECT s.session_id AS session_id,s.organization_id AS organization_id,s.started_at AS started_at,s.repo_name AS repo_name,s.user_id AS user_id,s.installation_id AS installation_id,s.parent_session_id AS parent_session_id,toUInt8(coalesce(f.reused,0)) AS reused,toUInt8(coalesce(f.cross_user_reused,0)) AS cross_user_reused,if(${admin},toUInt8(coalesce(f.memory_assisted,0)),NULL) AS memory_assisted FROM proj s LEFT ANY JOIN (SELECT ro.root_session_id AS session_id,max(${edgeCondition("r")}) AS reused,maxIf(coalesce(t.user_id,'')!=r.reader_user_id,${edgeCondition("r")}) AS cross_user_reused,toUInt8(1) AS memory_assisted FROM (${reads}) r JOIN rootmap ro ON ro.session_id=r.session_id LEFT ANY JOIN (${owners}) t ON t.session_id=r.target_session_id GROUP BY ro.root_session_id) f ON f.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
-  // Root sessions only, like the dashboard's reuse-rate tile: a subagent run counts inside
-  // the session that spawned it.
+  // Root sessions only, like the dashboard's reuse-rate tile: a subagent run and its reads
+  // count inside the root that spawned it (rolled up in metrics_reuse_sessions above).
   add(
     "metrics_reuse_weekly",
     `SELECT toDate(toStartOfWeek(started_at,1,'UTC')) AS week,count() AS sessions,countIf(reused) AS reuse_sessions,countIf(cross_user_reused) AS cross_user_reuse_sessions,toFloat64(countIf(reused))/nullIf(count(),0) AS reuse_rate,toFloat64(countIf(cross_user_reused))/nullIf(count(),0) AS cross_user_reuse_rate FROM api_ro.metrics_reuse_sessions WHERE parent_session_id IS NULL GROUP BY week`,
@@ -202,11 +237,13 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
     `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,i.tools_enabled AS tools_enabled,s.tool_call_count AS tool_call_count,toDecimal256(s.input_tokens,0)+toDecimal256(s.output_tokens,0) AS tokens,greatest(0,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0) AS duration_seconds,(s.ended_at IS NOT NULL AND JSONLength(s.observed_commits)>0) AS observed_commit,d.session_id IS NOT NULL AS near_duplicate,r.session_id IS NOT NULL AS rerun_loop FROM ${control} s JOIN api_ro.installations i ON i.installation_id=s.installation_id LEFT JOIN api_ro.outcome_duplicates d ON d.session_id=s.session_id LEFT JOIN api_ro.outcome_reruns r ON r.session_id=s.session_id WHERE ${admin} AND s.purged_at IS NULL`,
   );
   // Search adoption (ADR 0067): the `search` and `sql` reads credited to a session while it
-  // was active, from the same attributed reads as reuse. Transcript tool names play no
-  // part, so the count does not depend on how a user aliased the MCP server.
+  // was active, from the same attributed reads as reuse, rolled up to root (R-DASH-47) so a
+  // root's call count sums its subagents' reads and each child row is zero. Transcript tool
+  // names play no part, so the count does not depend on how a user aliased the MCP server.
+  // `parent_session_id` stays the projection's raw parent, null only for a true root.
   add(
     "metrics_search_sessions",
-    `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,s.harness AS harness,s.user_id AS user_id,s.parent_session_id AS parent_session_id,coalesce(t.calls,toUInt64(0)) AS agentcommons_search_calls,greatest(toInt64(coalesce(t.calls,0))-1,0) AS repeat_agentcommons_search_calls FROM ${projection} s LEFT ANY JOIN (SELECT r.session_id AS session_id,count() AS calls FROM (${reads}) r WHERE r.action IN (${searchReadActions.map(sqlString).join(",")}) GROUP BY r.session_id) t ON t.session_id=s.session_id WHERE s.purged_at IS NULL`,
+    `${rollup} SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,s.harness AS harness,s.user_id AS user_id,s.parent_session_id AS parent_session_id,coalesce(t.calls,toUInt64(0)) AS agentcommons_search_calls,greatest(toInt64(coalesce(t.calls,0))-1,0) AS repeat_agentcommons_search_calls FROM proj s LEFT ANY JOIN (SELECT ro.root_session_id AS session_id,count() AS calls FROM (${reads}) r JOIN rootmap ro ON ro.session_id=r.session_id WHERE r.action IN (${searchReadActions.map(sqlString).join(",")}) GROUP BY ro.root_session_id) t ON t.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
   // One pass over the stored reads for the `sessions` columns they feed: every read is
   // credited to the session that made it ('out': its search/sql calls and the distinct

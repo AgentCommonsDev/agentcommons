@@ -8,10 +8,14 @@ import { provisionOrganization } from "../../../apps/api/test/support.js";
 import { cleanup } from "../../../scripts/cleanup.js";
 import { createTraceClient, type TraceParameters } from "../src/index.js";
 import { tracePrincipal } from "../src/client.js";
+import { NO_TARGET_SESSION_ID } from "../src/reads.js";
 import { callerContextSchema } from "@agentcommons/core/schemas/common";
 
 let db: Awaited<ReturnType<typeof startTraceDatabase>>;
 let fixtures: TraceFixtures;
+let organizationContext: Awaited<
+  ReturnType<typeof provisionOrganization>
+>["context"];
 let owner: ReadAuthority;
 let member: ReadAuthority;
 const release: Array<() => Promise<unknown>> = [];
@@ -34,6 +38,7 @@ beforeAll(async () => {
   fixtures = new TraceFixtures(db);
   release.unshift(() => fixtures.close());
   const organization = await provisionOrganization(db, "native-views");
+  organizationContext = organization.context;
   owner = callerContextSchema.parse(organization.context.caller);
   member = { ...owner, permissions: { sessions: ["read"] } };
   await db.prisma.user.update({
@@ -375,6 +380,144 @@ it("never evaluates a member's predicate over a hidden session's control metadat
       await select(
         owner,
         "SELECT count() AS c FROM sessions WHERE status='ENDED'",
+      )
+    ).rows,
+  ).toEqual([{ c: "1" }]);
+});
+
+// @req R-DASH-47 @req R-DASH-15 @req R-DASH-18
+it("rolls a subagent's search and reuse reads up to its root, so roots-only metrics count them", async () => {
+  // A fresh tree owned by the same member: root -> subagent -> nested subagent (depth two),
+  // sharing one installation. The deepest child does all the querying and reuse.
+  const installationId = randomUUID();
+  // Set the parent link on both the control row (`parent`, the caller-visible parent the
+  // sessions view reads) and the projection row (`fields`, what production's projection
+  // worker copies from control and what liveProjectionSql — and so the rollup — reads).
+  const make = async (parent?: string) =>
+    (
+      await fixtures.sessionFor(organizationContext, {
+        installationId,
+        hostname: HOST,
+        ...(parent
+          ? {
+              parent,
+              fields: {
+                title: "Rollup",
+                parent_session_id: parent,
+                parent_relation: "SUBAGENT",
+              },
+            }
+          : { fields: { title: "Rollup" } }),
+      })
+    ).id;
+  const root = await make();
+  const sub = await make(root);
+  const subsub = await make(sub);
+  // The nested subagent runs two searches, one sql query, and reads a prior session.
+  await db.traces.appendSessionReads(
+    (
+      [
+        ["search", NO_TARGET_SESSION_ID],
+        ["search", NO_TARGET_SESSION_ID],
+        ["sql", NO_TARGET_SESSION_ID],
+        ["get", fixture.publicParent],
+      ] as const
+    ).map(([action, target], index) => ({
+      organization_id: owner.organizationId,
+      session_id: subsub,
+      audit_id: randomUUID(),
+      read_at: new Date(`2026-08-03T00:0${String(index)}:00Z`),
+      action,
+      target_session_id: target,
+      reader_user_id: z.string().parse(owner.userId),
+      reader_email: null,
+      reader_harness: "CLAUDE_CODE",
+    })),
+  );
+  const byId = <T extends { session_id: string }>(rows: T[]) =>
+    new Map(rows.map((row) => [row.session_id, row]));
+  const search = z.array(
+    z.strictObject({
+      session_id: z.string(),
+      parent_session_id: z.string().nullable(),
+      agentcommons_search_calls: z.coerce.number(),
+      repeat_agentcommons_search_calls: z.coerce.number(),
+    }),
+  );
+  // Search adoption: the root carries the whole subtree's three search/sql calls; every
+  // child row is zero, and the root's raw parent stays null while the children keep theirs.
+  const searchRows = byId(
+    search.parse(
+      (
+        await select(
+          owner,
+          "SELECT session_id,parent_session_id,agentcommons_search_calls,repeat_agentcommons_search_calls FROM metrics_search_sessions WHERE session_id IN {ids:Array(UUID)}",
+          { ids: [root, sub, subsub] },
+        )
+      ).rows,
+    ),
+  );
+  expect(searchRows.get(root)).toEqual({
+    session_id: root,
+    parent_session_id: null,
+    agentcommons_search_calls: 3,
+    repeat_agentcommons_search_calls: 2,
+  });
+  expect(searchRows.get(sub)).toEqual({
+    session_id: sub,
+    parent_session_id: root,
+    agentcommons_search_calls: 0,
+    repeat_agentcommons_search_calls: 0,
+  });
+  expect(searchRows.get(subsub)).toEqual({
+    session_id: subsub,
+    parent_session_id: sub,
+    agentcommons_search_calls: 0,
+    repeat_agentcommons_search_calls: 0,
+  });
+  const reuse = z.array(
+    z.strictObject({
+      session_id: z.string(),
+      parent_session_id: z.string().nullable(),
+      reused: z.coerce.number(),
+    }),
+  );
+  // Reuse: the deepest child read a prior session, so its root reused prior work while the
+  // child rows are zero.
+  const reuseRows = byId(
+    reuse.parse(
+      (
+        await select(
+          owner,
+          "SELECT session_id,parent_session_id,reused FROM metrics_reuse_sessions WHERE session_id IN {ids:Array(UUID)}",
+          { ids: [root, sub, subsub] },
+        )
+      ).rows,
+    ),
+  );
+  expect(reuseRows.get(root)).toEqual({
+    session_id: root,
+    parent_session_id: null,
+    reused: 1,
+  });
+  expect(reuseRows.get(sub)).toEqual({
+    session_id: sub,
+    parent_session_id: root,
+    reused: 0,
+  });
+  expect(reuseRows.get(subsub)).toEqual({
+    session_id: subsub,
+    parent_session_id: sub,
+    reused: 0,
+  });
+  // The roots-only tile predicate (templates.ts rootScope) now counts the root once for the
+  // subagent's search; before the rollup the read landed on a non-root child and was dropped.
+  expect(
+    (
+      await select(
+        owner,
+        "SELECT countIf(agentcommons_search_calls > 0) AS c FROM metrics_search_sessions WHERE parent_session_id IS NULL AND session_id IN {ids:Array(UUID)}",
+        { ids: [root, sub, subsub] },
       )
     ).rows,
   ).toEqual([{ c: "1" }]);

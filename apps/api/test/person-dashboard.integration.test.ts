@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { dashboardRenderOutputSchema } from "@agentcommons/core";
 import { personDashboard } from "@agentcommons/core/dashboards";
+import { NO_TARGET_SESSION_ID } from "@agentcommons/traces";
 import { provisionMember, provisionOrganization, releaser } from "./support.js";
 import { startApp } from "./app.js";
 import { requireCaller, type ServiceContext } from "../src/services/context.js";
@@ -149,23 +150,24 @@ it("renders one member's activity from a 40k-message fixture as admin and as a m
     expect(
       z.string().parse(stat(output, "last_active", "last_active")),
     ).toMatch(/^2026-08-/);
-    // The six stats share one statement and so one result; the two tiles below run their own.
+    // Four stats share one statement and so one result; searched and reused read the
+    // roots-only metric relations (so a subagent's activity counts inside its root), and the
+    // two tiles below run their own.
     const activity = output.tiles.find(
       (tile) => tile.id === "sessions",
     )?.result;
     expect(
       output.tiles
         .filter((tile) =>
-          [
-            "messages",
-            "tool_calls",
-            "searched",
-            "reused",
-            "last_active",
-          ].includes(tile.id),
+          ["messages", "tool_calls", "last_active"].includes(tile.id),
         )
         .map((tile) => tile.result),
-    ).toEqual(Array.from({ length: 5 }, () => activity));
+    ).toEqual(Array.from({ length: 3 }, () => activity));
+    for (const id of ["searched", "reused"])
+      expect(
+        output.tiles.find((tile) => tile.id === id)?.result,
+        id,
+      ).not.toEqual(activity);
     const repositories = output.tiles.find(
       (tile) => tile.id === "repositories",
     );
@@ -174,7 +176,7 @@ it("renders one member's activity from a 40k-message fixture as admin and as a m
     expect(harnesses?.result?.rows).toHaveLength(2);
     const slowest = Math.max(...runs.map((run) => run.ms));
     console.info(
-      `person dashboard as ${label}: ${runs.map((run) => run.ms.toFixed(0)).join(" / ")} ms for four concurrent renders (8 tiles, 3 statements each)`,
+      `person dashboard as ${label}: ${runs.map((run) => run.ms.toFixed(0)).join(" / ")} ms for four concurrent renders (8 tiles, 5 statements)`,
     );
     // Well under the 5 s reader limit with four renders in flight.
     expect(slowest).toBeLessThan(4000);
@@ -182,4 +184,57 @@ it("renders one member's activity from a 40k-message fixture as admin and as a m
   // Another member's email counts nothing of this member's.
   const { output } = await renderFor(organization.owner, bystander.email);
   expect(numeric(stat(output, "sessions", "sessions"))).toBe(0);
+}, 120_000);
+
+// @req R-DASH-47 @req R-DASH-18 @req R-DASH-15
+it("counts a member's subagent search and reuse inside the root on the person dashboard", async () => {
+  const caller = requireCaller(bystander.context);
+  const installationId = randomUUID();
+  const make = async (parent?: string) => {
+    const fields: Record<string, unknown> = {
+      started_at: new Date(Date.UTC(2026, 7, 15)),
+      last_activity_at: new Date(Date.UTC(2026, 7, 15, 1)),
+      message_count: 0,
+      tool_call_count: 0,
+    };
+    // A subagent link on both the control row (`parent`) and the projection row (`fields`),
+    // matching what the projection worker copies from control in production.
+    if (parent) {
+      fields.parent_session_id = parent;
+      fields.parent_relation = "SUBAGENT";
+    }
+    const { id } = await fixtures.sessionFor(bystander.context, {
+      installationId,
+      ...(parent ? { parent } : {}),
+      fields,
+    });
+    return id;
+  };
+  const root = await make();
+  const sub = await make(root);
+  // The subagent searches once and reads a prior session; both reads are credited to it, so
+  // the roots-only person tiles must roll them up to the root to count them.
+  await db.traces.appendSessionReads(
+    (
+      [
+        ["search", NO_TARGET_SESSION_ID],
+        ["get", root],
+      ] as const
+    ).map(([action, target]) => ({
+      organization_id: caller.organizationId,
+      session_id: sub,
+      audit_id: randomUUID(),
+      read_at: new Date(Date.UTC(2026, 7, 15, 0, 30)),
+      action,
+      target_session_id: target,
+      reader_user_id: caller.userId,
+      reader_email: null,
+      reader_harness: "CLAUDE_CODE",
+    })),
+  );
+  const { output } = await renderFor(organization.owner, bystander.email);
+  // One root session; its subagent's search and reuse count inside it, not zero.
+  expect(numeric(stat(output, "sessions", "sessions"))).toBe(1);
+  expect(numeric(stat(output, "searched", "searched"))).toBe(1);
+  expect(numeric(stat(output, "reused", "reused"))).toBe(1);
 }, 120_000);

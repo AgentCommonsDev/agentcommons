@@ -4,7 +4,13 @@ import { transportSchema } from "@agentcommons/core/schemas/common";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
 import { auditSortKeys } from "../../lib/api/options";
-import { dateTime, metricValue, textValue, truncate } from "../../lib/display";
+import {
+  auditActor,
+  dateTime,
+  metricValue,
+  textValue,
+  truncate,
+} from "../../lib/display";
 import type { AuditEvent } from "../../lib/types";
 import { useWorkspace } from "../../components/app/workspace";
 import { DataTable } from "../../components/app/data-table";
@@ -116,16 +122,20 @@ export function AuditPage() {
         accessorKey: "user_id",
         header: text.user,
         size: 170,
-        cell: ({ row }) =>
-          row.original.user_email ? (
-            <span title={row.original.user_id ?? undefined}>
-              {row.original.user_email}
+        cell: ({ row }) => {
+          const actor = auditActor(row.original);
+          const className =
+            actor.kind === "id"
+              ? "font-mono text-xs"
+              : actor.kind === "system"
+                ? "text-muted"
+                : undefined;
+          return (
+            <span className={className} title={actor.title}>
+              {actor.label}
             </span>
-          ) : (
-            <span className="font-mono text-xs">
-              {textValue(row.original.user_id)}
-            </span>
-          ),
+          );
+        },
       },
       {
         accessorKey: "status_code",

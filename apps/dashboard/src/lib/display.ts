@@ -171,3 +171,36 @@ export function columnValueLabel(column: string, value: string): string {
 export function truncate(value: string, max = 80): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
+export type AuditActor = {
+  label: string;
+  kind: "email" | "id" | "system";
+  /** The raw user id, shown on hover when the label is an email; the auth method for a
+   * system actor. */
+  title?: string;
+};
+/**
+ * Who an audit event is attributed to, as an admin reads it. A person shows their email,
+ * with the raw user id on hover, or the id alone until the email resolves. Background jobs
+ * record no user and an `auth_method` of "worker"; unauthenticated calls record "none".
+ * Both read as the system, and any other userless method shows its own name, so the actor
+ * cell is never blank.
+ */
+export function auditActor(event: {
+  user_email: string | null;
+  user_id: string | null;
+  auth_method: string;
+}): AuditActor {
+  if (event.user_email)
+    return {
+      label: event.user_email,
+      kind: "email",
+      ...(event.user_id ? { title: event.user_id } : {}),
+    };
+  if (event.user_id) return { label: event.user_id, kind: "id" };
+  const method = event.auth_method;
+  const label =
+    method === "worker" || method === "none" || method === ""
+      ? copy.admin.audit.system
+      : method;
+  return { label, kind: "system", ...(method ? { title: method } : {}) };
+}
