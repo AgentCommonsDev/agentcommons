@@ -1337,8 +1337,21 @@ Input (`packages/core/schemas/search.ts`):
   Embeddings, when enabled, fuse native cosine neighbors with lexical rank. Ordering is
   `(rank desc, session_id, seq)`. Batched neighbor/header queries form and merge touching
   message windows. The unchanged golden corpus must retain its top-three hit rate.
+  Before the per-session cap and the page limit, a candidate session authored by a
+  different member of the caller's organization has its rank scaled by a modest constant
+  (`TEAMMATE_RANK_BOOST = 1.15`), so a teammate's relevant prior work is pulled into the
+  page rather than only reordered within it; the boosted value is the `rank` that the
+  order, the per-session cap and the keyset cursor all use, keeping the order
+  deterministic and the cursor stable. Author is a per-session property (one bounded
+  scan of `session_authors` joined to the candidate sessions), so the best hit per
+  session and its intra-session order are unchanged, and only the rank-ordered
+  lexical/RRF query boosts — the time-ordered browse is untouched. Each result carries
+  `by_teammate`, true when its author is a different member of the caller's organization
+  (from the already-caller-visible `user_id`) and false for the caller's own session;
+  the text form appends ` · teammate` to those results and one line counting them
+  (ADR 0090).
 - Empty `query` with filters: one most-recent anchor message per matching session.
-- Output: blocks `{ session_id, title, harness, model, repo_name, branch, user_email,
+- Output: blocks `{ session_id, title, harness, model, repo_name, branch, user_email, by_teammate,
 started_at, messages: [{ seq, role, kind, tool_name?, tool_use_id?, content, hit,
 truncated, truncated_fields }], truncated_fields }`,
   `cursor` (opaque, query-bound; same in REST and MCP), `truncated_response`, and
@@ -1378,7 +1391,7 @@ lists `META` to read them, and the CSV export carries every kind because a file 
 context window. `seq` counts every kind, so a default read shows gaps where META records
 sit and `message_count` in the header still counts them. Returns a header with every session-level fact: `session_id`,
 `title`, `harness`, `harness_version`, `entrypoint`, `model`, `models_used`,
-`user_email`, `installation_id`, `installation_hostname`, `repo_name`, `repo_url`, `branch`, `observed_branches`, `cwd_relative`,
+`user_email`, `by_teammate` (true when the session's author is another member of the caller's organization; false for the caller's own), `installation_id`, `installation_hostname`, `repo_name`, `repo_url`, `branch`, `observed_branches`, `cwd_relative`,
 `start_commit`, `end_commit`, `started_at`, `ended_at`, `status`, `visibility` (`PUBLIC`/`PRIVATE`), `end_reason`,
 `message_count`, `tool_call_count`, `input_tokens`, `output_tokens`, `tools_used`,
 `file_count`, `observed_commit_count`, `observed_branch_count`, `reuse_count`, `agentcommons_search_calls`, `reuses_made`, `agent_type`, `parent_tool_use_id`, `parent` ref and `children` refs
@@ -2723,6 +2736,12 @@ recorded only from `get` reads made through MCP or REST by a key whose installat
 an active session at the time; dashboard views by humans do not count. The audit
 projection writes the attributed reads once (ADR 0060); these views aggregate them
 instead of recomputing the graph from audit rows and receipts on every read.
+
+Cross-user reuse — one member reading another member's session — is a large share of
+reuse (about 28% of reuse edges, the median cross-user target roughly a day old): live
+knowledge transfer between teammates. To amplify it, `search` boosts teammate-authored
+sessions into the result page and both `search` and `get` label them `by_teammate`,
+exposing only fields the caller can already see (ADR 0090).
 
 - _Health_: installations active in the last 7 days over the organization's member
   count; sessions per day per harness and per user; median capture latency (record

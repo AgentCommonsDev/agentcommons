@@ -13480,6 +13480,11 @@
                             "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
                             "description": "Email of the member who ran it"
                           },
+                          "by_teammate": {
+                            "default": false,
+                            "description": "true when this session's author is another member of your organization",
+                            "type": "boolean"
+                          },
                           "started_at": {
                             "type": "string",
                             "format": "date-time",
@@ -13625,6 +13630,7 @@
                           "repo_name",
                           "branch",
                           "user_email",
+                          "by_teammate",
                           "started_at",
                           "messages",
                           "truncated_fields"
@@ -14814,6 +14820,11 @@
                             "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
                             "description": "Email of the member who ran it"
                           },
+                          "by_teammate": {
+                            "default": false,
+                            "description": "true when this session's author is another member of your organization",
+                            "type": "boolean"
+                          },
                           "installation_hostname": {
                             "type": "string",
                             "description": "Hostname of the capturing machine"
@@ -15221,6 +15232,7 @@
                           "model",
                           "models_used",
                           "user_email",
+                          "by_teammate",
                           "installation_hostname",
                           "installation_id",
                           "repo_name",
@@ -15502,6 +15514,11 @@
                             "format": "email",
                             "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
                             "description": "Email of the member who ran it"
+                          },
+                          "by_teammate": {
+                            "default": false,
+                            "description": "true when this session's author is another member of your organization",
+                            "type": "boolean"
                           },
                           "installation_hostname": {
                             "type": "string",
@@ -15899,6 +15916,7 @@
                           "model",
                           "models_used",
                           "user_email",
+                          "by_teammate",
                           "installation_hostname",
                           "installation_id",
                           "repo_name",
@@ -16239,6 +16257,11 @@
                               "format": "email",
                               "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
                               "description": "Email of the member who ran it"
+                            },
+                            "by_teammate": {
+                              "default": false,
+                              "description": "true when this session's author is another member of your organization",
+                              "type": "boolean"
                             },
                             "installation_hostname": {
                               "type": "string",
@@ -16636,6 +16659,7 @@
                             "model",
                             "models_used",
                             "user_email",
+                            "by_teammate",
                             "installation_hostname",
                             "installation_id",
                             "repo_name",

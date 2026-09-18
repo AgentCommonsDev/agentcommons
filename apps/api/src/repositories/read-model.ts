@@ -384,11 +384,19 @@ function assembleHeader(
   row: Record<string, unknown>,
   relatives: Relatives,
   links: ReadonlyMap<string, SessionLinks>,
+  caller: CallerContext,
 ): SessionHeader {
   const header: Record<string, unknown> = pickSchema(
     wireRow(row),
     sessionHeaderSchema,
   );
+  // Cross-user reuse label (ADR 0090): a session another member of the organization authored
+  // is a teammate result. `user_id` is a caller-visible column; false when the author is the
+  // caller or the author id is empty. `by_teammate` is not a `sessions` column, so it is not
+  // picked from the row above and is set here.
+  const author = row.user_id;
+  header.by_teammate =
+    typeof author === "string" && author !== "" && author !== caller.userId;
   for (const key of [
     "file_count",
     "observed_commit_count",
@@ -425,7 +433,7 @@ export async function sessionHeaderById(
   });
   const row = relatives.self.get(sessionId);
   if (!row) throw sessionNotFound();
-  return assembleHeader(row, relatives, links);
+  return assembleHeader(row, relatives, links, caller);
 }
 /**
  * Headers for `sessions` rows already read: one ClickHouse query for every parent and
@@ -445,7 +453,7 @@ export async function sessionHeaders(
     sessionRelatives(client, { self: [], parents, ids }),
     sessionLinks(client.control, caller, ids),
   ]);
-  return rows.map((row) => assembleHeader(row, relatives, links));
+  return rows.map((row) => assembleHeader(row, relatives, links, caller));
 }
 
 function boundedHeader(original: SessionHeader): SessionHeader {

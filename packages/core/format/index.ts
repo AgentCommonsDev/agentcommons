@@ -78,7 +78,7 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
     });
     return [
       `session_id: ${block.session_id} | ${inline(block.title ?? "Untitled session")}`,
-      `repo_name: ${inline(block.repo_name)} | branch: ${inline(block.branch)} | user_email: ${inline(block.user_email)}`,
+      `repo_name: ${inline(block.repo_name)} | branch: ${inline(block.branch)} | user_email: ${inline(block.user_email)}${block.by_teammate ? " · teammate" : ""}`,
       `harness: ${block.harness} | model: ${inline(block.model)} | started_at: ${block.started_at}`,
       // A hit inside a run names its root so a reader opens the whole tree with get.
       ...(block.parent_relation
@@ -92,8 +92,17 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
       ...messages,
     ].join("\n");
   });
+  const teammateBlocks = result.blocks.filter(
+    (block) => block.by_teammate,
+  ).length;
   const text = [
     formatSearchTotal(result.total),
+    // Teammate-authored results are the ones to reuse first; name how many so a reader opens one.
+    ...(teammateBlocks > 0
+      ? [
+          `${String(teammateBlocks)} of ${String(result.blocks.length)} results are from teammates — open one to reuse their work.`,
+        ]
+      : []),
     // A bounded page after a time limit says what it covered and how to reach the rest.
     ...(result.partial
       ? [
@@ -113,11 +122,20 @@ export function formatSearch(result: SearchOutput): Formatted<SearchOutput> {
   return { text, structuredContent: result };
 }
 /** Header fields that mean nothing to a reader of the text form; the JSON keeps them. */
-const HEADER_TEXT_OMITTED = new Set(["organization_id", "installation_id"]);
+const HEADER_TEXT_OMITTED = new Set([
+  "organization_id",
+  "installation_id",
+  // Rendered as a marker on the author line, not as its own boolean fact.
+  "by_teammate",
+]);
 export function formatSessionHeader(header: SessionHeader): string {
   const facts = Object.entries(header)
     .filter(([key]) => !HEADER_TEXT_OMITTED.has(key))
-    .map(([key, value]) => `${key}: ${inline(value)}`);
+    .map(([key, value]) =>
+      key === "user_email" && header.by_teammate
+        ? `${key}: ${inline(value)} (teammate)`
+        : `${key}: ${inline(value)}`,
+    );
   const lines: string[] = [];
   for (let offset = 0; offset < facts.length; offset += 3)
     lines.push(facts.slice(offset, offset + 3).join(" | "));

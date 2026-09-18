@@ -343,6 +343,12 @@ export const searchBlockSchema = z.strictObject({
   user_email: emailSchema.describe(
     catalogDescription("sessions", "user_email"),
   ),
+  by_teammate: z
+    .boolean()
+    .default(false)
+    .describe(
+      "true when this session's author is another member of your organization",
+    ),
   started_at: utcDateTimeSchema.describe(
     catalogDescription("sessions", "started_at"),
   ),

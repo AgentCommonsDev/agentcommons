@@ -274,6 +274,18 @@ export function baseViews(database: string): TraceViewDefinition[] {
       `SELECT session_id,status,message_count,last_activity_at FROM (${sessionRelationSql(database, { skeleton: true })})`,
     ),
     traceView("session_details", sessionDetailsSql(database)),
+    // The session→author map the search teammate boost joins (ADR 0090): one scan of the
+    // sessions projection, three columns wide, fenced by the same row policy as every other
+    // session relation. Search bounds it to the candidate session ids, so it reads only
+    // those rows and never scans the whole corpus.
+    traceView(
+      "session_authors",
+      latestRowsSql(database, "sessions", {
+        organization_id: sessionColumns.organization_id,
+        session_id: sessionColumns.session_id,
+        user_id: sessionColumns.user_id,
+      }),
+    ),
     traceView(
       "message_metadata",
       latestRowsSql(

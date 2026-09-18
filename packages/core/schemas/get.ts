@@ -171,6 +171,12 @@ export const sessionHeaderSchema = z.strictObject({
   model: nullableTextSchema.describe(session("model")),
   models_used: z.array(z.string()).describe(session("models_used")),
   user_email: emailSchema.describe(session("user_email")),
+  by_teammate: z
+    .boolean()
+    .default(false)
+    .describe(
+      "true when this session's author is another member of your organization",
+    ),
   installation_hostname: z.string().describe(session("installation_hostname")),
   installation_id: sessionIdSchema.describe(session("installation_id")),
   repo_name: nullableTextSchema.describe(session("repo_name")),

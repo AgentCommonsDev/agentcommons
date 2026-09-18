@@ -3,6 +3,7 @@ import {
   formatGet,
   formatMessage,
   formatSearch,
+  formatSessionHeader,
   formatSql,
   searchNextStep,
 } from "./index.js";
@@ -28,6 +29,7 @@ const header: SessionHeader = {
   model: "gpt-5",
   models_used: ["gpt-5"],
   user_email: "person@example.com",
+  by_teammate: false,
   visibility: "PUBLIC",
   purged_at: null,
   installation_hostname: "workstation",
@@ -105,6 +107,7 @@ const search: SearchOutput = {
       repo_name: header.repo_name,
       branch: "main",
       user_email: header.user_email,
+      by_teammate: false,
       started_at: timestamp,
       truncated_fields: [],
       messages: [
@@ -231,12 +234,42 @@ describe("shared text and structured formatters", () => {
     );
     expect(partial.some((line) => line.startsWith("cursor:"))).toBe(false);
   });
+  // @req R-SRCH-20
+  it("marks teammate-authored results and nudges reuse, only when a teammate result is present", () => {
+    const block = search.blocks[0];
+    if (!block) throw new Error("fixture block");
+    const teammate = {
+      ...block,
+      session_id: nestedSessionId,
+      user_email: "teammate@example.com",
+      by_teammate: true,
+    };
+    const mixed = formatSearch({ ...search, blocks: [block, teammate] });
+    // The teammate result's author line carries a compact marker; the caller's own does not.
+    expect(mixed.text).toContain("user_email: teammate@example.com · teammate");
+    expect(mixed.text).toContain(`user_email: ${block.user_email}\n`);
+    expect(mixed.text).not.toContain(
+      `user_email: ${block.user_email} · teammate`,
+    );
+    // One summary line states how many of the results are teammates' and nudges reuse.
+    expect(mixed.text).toContain(
+      "1 of 2 results are from teammates — open one to reuse their work.",
+    );
+    // With no teammate result, neither the per-block marker nor the summary line appears.
+    const none = formatSearch(search).text;
+    expect(none).not.toContain("· teammate");
+    expect(none).not.toContain("from teammates");
+  });
   // @req R-GET-03 @req R-GET-06
   it("includes every header fact an agent uses, nullable usage, thinking, and message continuation", () => {
     const formatted = formatGet(get);
     expect(formatted.structuredContent).toEqual(get);
     for (const key of Object.keys(header))
-      if (key === "organization_id" || key === "installation_id")
+      if (
+        key === "organization_id" ||
+        key === "installation_id" ||
+        key === "by_teammate"
+      )
         expect(formatted.text).not.toContain(`${key}:`);
       else expect(formatted.text).toContain(`${key}:`);
     expect(formatted.text).toContain("input_tokens: 9007199254740993");
@@ -301,6 +334,17 @@ describe("shared text and structured formatters", () => {
     expect(text).not.toContain(`${sessionId} FORK spawned_by`);
     expect(text).toContain("truncated");
     expect(formatGet(get).text).not.toContain("subagent_runs");
+  });
+  // @req R-GET-08
+  it("marks a teammate-authored session's author in the header", () => {
+    const own = formatSessionHeader(header);
+    expect(own).toContain(`user_email: ${header.user_email}`);
+    expect(own).not.toContain(`${header.user_email} (teammate)`);
+    // The boolean is a marker on the author line, never its own fact line.
+    expect(own).not.toContain("by_teammate:");
+    const teammate = formatSessionHeader({ ...header, by_teammate: true });
+    expect(teammate).toContain(`user_email: ${header.user_email} (teammate)`);
+    expect(teammate).not.toContain("by_teammate:");
   });
   it("validates the message content byte bound", () => {
     // One slice is at most a quarter of the largest page (256 KB): 64 KB (R-GET-02).

@@ -3799,6 +3799,11 @@ export interface operations {
                */
               user_email: string;
               /**
+               * @description true when this session's author is another member of your organization
+               * @default false
+               */
+              by_teammate: boolean;
+              /**
                * Format: date-time
                * @description When the session started (UTC)
                */
@@ -4233,6 +4238,11 @@ export interface operations {
                * @description Email of the member who ran it
                */
               user_email: string;
+              /**
+               * @description true when this session's author is another member of your organization
+               * @default false
+               */
+              by_teammate: boolean;
               /** @description Hostname of the capturing machine */
               installation_hostname: string;
               /**
@@ -4446,6 +4456,11 @@ export interface operations {
                * @description Email of the member who ran it
                */
               user_email: string;
+              /**
+               * @description true when this session's author is another member of your organization
+               * @default false
+               */
+              by_teammate: boolean;
               /** @description Hostname of the capturing machine */
               installation_hostname: string;
               /**
@@ -4665,6 +4680,11 @@ export interface operations {
                * @description Email of the member who ran it
                */
               user_email: string;
+              /**
+               * @description true when this session's author is another member of your organization
+               * @default false
+               */
+              by_teammate: boolean;
               /** @description Hostname of the capturing machine */
               installation_hostname: string;
               /**

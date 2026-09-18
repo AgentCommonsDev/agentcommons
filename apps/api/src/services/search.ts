@@ -79,6 +79,16 @@ export const searchAuditStructure = protocolObject(["input", "result"], {
  * primary-key ranges, so the bound prunes both message scans instead of only the page.
  */
 const PARTIAL_SEARCH_SESSIONS = 50;
+/**
+ * How much a teammate-authored session's rank is scaled before the page limit so cross-user
+ * reuse surfaces (ADR 0090): a modest multiplier that lifts an equally- or slightly-less
+ * relevant teammate session into the page without displacing a clearly better own-session
+ * hit or regressing the golden top-3 hit rate. Author is per session, so the factor is
+ * constant within a session and the best hit per session is unchanged; the boosted value
+ * feeds `rank` throughout, keeping the per-session order, the page order and the keyset
+ * cursor consistent.
+ */
+const TEAMMATE_RANK_BOOST = 1.15;
 const positionSchema = z.strictObject({
   strategy: z.enum(["lexical", "rrf"]),
   rank: z.number(),
@@ -304,10 +314,26 @@ export class SearchService {
                 ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
                 : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
               : "true";
+            // Cross-user reuse boost (ADR 0090): lift teammate-authored sessions into the
+            // ranked page before the limit, so one member's prior work reaches another. The
+            // author of each candidate session comes from one bounded scan of the
+            // session→author map (`session_authors`), joined to the candidate sessions only;
+            // a session the caller did not write has its rank scaled by TEAMMATE_RANK_BOOST.
+            // The boosted value replaces `rank` for the rest of the pipeline, so the
+            // per-session order, the page order and the keyset cursor stay consistent. Only
+            // the rank-ordered (lexical or rrf) query boosts; the time-ordered browse leaves
+            // rank at zero and is untouched, and its candidate set is not author-joined.
+            const boost = lexical
+              ? `,authors AS (SELECT session_id,any(user_id) AS user_id FROM api_ro.session_authors WHERE session_id IN (SELECT session_id FROM candidates) GROUP BY session_id), boosted AS (
+                SELECT c.session_id AS session_id,c.seq AS seq,c.time AS time,c.rank*if(a.user_id!=${params.add(caller.userId)} AND a.user_id!='',${String(TEAMMATE_RANK_BOOST)},1.0) AS rank
+                FROM candidates c LEFT JOIN authors a ON a.session_id=c.session_id
+              )`
+              : "";
+            const rankSource = lexical ? "boosted" : "candidates";
             const result = await client.query(
-              `WITH candidates AS (${candidates}), ranked AS (
+              `WITH candidates AS (${candidates})${boost}, ranked AS (
               SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session,
-                count() OVER () AS total_hits,uniqExact(session_id) OVER () AS total_sessions FROM candidates
+                count() OVER () AS total_hits,uniqExact(session_id) OVER () AS total_sessions FROM ${rankSource}
             ) SELECT session_id,seq,rank,time,total_hits,total_sessions FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
               ORDER BY ${order} LIMIT ${params.add(request.limit + 1, "UInt32")}`,
               params.values,
@@ -376,27 +402,37 @@ export class SearchService {
                 : Promise.resolve({ rows: [] }),
               ids.length
                 ? client.query(
-                    "SELECT session_id,parent_relation,agent_type,parent_tool_use_id,title,harness,model,repo_name,branch,user_email,started_at FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}",
+                    "SELECT session_id,parent_relation,agent_type,parent_tool_use_id,title,harness,model,repo_name,branch,user_email,user_id,started_at FROM api_ro.session_details WHERE session_id IN {ids:Array(UUID)}",
                     { ids },
                   )
                 : Promise.resolve({ rows: [] }),
               sessionLinks(client.control, caller, ids),
             ]);
-            for (const row of values.rows)
+            for (const row of values.rows) {
+              // `user_id` is selected only to derive `by_teammate`; it is not a header field,
+              // so it is dropped before the strict header parse. A session another member of
+              // the organization authored is a teammate result (guard: false when the author
+              // is the caller or the author id is empty).
+              const { user_id, ...header } = wireRow(row);
               headers.set(
                 String(row.session_id),
                 searchHeaderSchema.parse(
                   compactMetadata(
                     {
-                      ...wireRow(row),
+                      ...header,
                       root_session_id:
                         links.get(String(row.session_id))?.root_session_id ??
                         String(row.session_id),
+                      by_teammate:
+                        typeof user_id === "string" &&
+                        user_id !== "" &&
+                        user_id !== caller.userId,
                     },
                     ["title", "model", "repo_name", "branch", "agent_type"],
                   ),
                 ),
               );
+            }
             const contextByAnchor = new Map<
               string,
               Record<string, unknown>[]
