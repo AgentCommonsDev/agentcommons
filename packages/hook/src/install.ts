@@ -19,6 +19,7 @@ import {
   HARNESSES,
   type CliHarness,
   type HarnessDefinition,
+  type McpRegistrationContext,
 } from "./harnesses.js";
 
 import {
@@ -232,16 +233,17 @@ function saveConfig(
 }
 /**
  * Every login shell a person may start a coding agent from gets the exports: bash and zsh
- * always, fish when it is installed or configured. Codex reads the key from the
- * environment (`bearer_token_env_var`), so a shell without the export cannot start the
- * MCP server. The block is marker-delimited and replaced in place on every install.
+ * always, fish when it is installed or configured. Codex no longer depends on this export —
+ * its `agentcommons` MCP entry is a stdio bridge that carries the key in its own config (ADR
+ * 0089) — but the export stays for other tools that read AGENTCOMMONS_API_KEY. The block is
+ * marker-delimited and replaced in place on every install.
  */
 function shellRcPaths(home: string): string[] {
   // Interactive rc files cover a terminal-launched shell; the login files cover a login
   // shell, which reads them instead. macOS Terminal starts a login bash that reads
-  // `.bash_profile`/`.profile` and never `.bashrc`, and display managers source `.profile`;
-  // Codex reads the key from the environment, so a shell that starts it without the export
-  // cannot reach the MCP server. `.profile` is the POSIX login fallback, written always; a
+  // `.bash_profile`/`.profile` and never `.bashrc`, and display managers source `.profile`.
+  // Codex's own MCP entry no longer needs the export (ADR 0089), but other tools reading
+  // AGENTCOMMONS_API_KEY still do. `.profile` is the POSIX login fallback, written always; a
   // shell's own login file (`.bash_profile`, `.zprofile`) shadows it, so extend one that
   // already exists but never create it, so the shell's startup order is unchanged.
   const paths = [
@@ -397,7 +399,12 @@ function wireHarness(
     mcpPath === path ? output : (readConfig(format, mcpPath) ?? {});
   const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
   const previous = registry[mcpPath];
-  const expected = definition.mcp(url, config.key);
+  const mcpContext: McpRegistrationContext = {
+    directory,
+    node: config.node,
+    server: config.server,
+  };
+  const expected = definition.mcp(url, config.key, mcpContext);
   if (uninstall) {
     if (
       previous &&
@@ -421,7 +428,7 @@ function wireHarness(
   }
   mcpConfig[format.mcpKey] = servers;
   saveConfig(format, mcpPath, mcpConfig);
-  const nativeCommand = definition.mcpCommand(url, config.key);
+  const nativeCommand = definition.mcpCommand(url, config.key, mcpContext);
   try {
     if (!uninstall && options.configHome === undefined && nativeCommand) {
       const registrationConfig = {
@@ -561,7 +568,11 @@ export async function doctor(
       throw new Error(`The ${harness} MCP configuration file is missing.`);
     const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
     const configured = objectSchema.parse(servers[MCP_NAME] ?? {});
-    const expected = definition.mcp(url, config.key);
+    const expected = definition.mcp(url, config.key, {
+      directory,
+      node: config.node,
+      server: config.server,
+    });
     if (
       expected &&
       Object.entries(expected).some(

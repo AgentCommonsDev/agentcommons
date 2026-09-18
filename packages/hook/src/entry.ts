@@ -87,6 +87,14 @@ async function main(): Promise<void> {
     return;
   }
   const config = loadConfig(directory);
+  if (mode === "mcp") {
+    // The stdio↔HTTP MCP bridge Codex launches (ADR 0089): it forwards the client's JSON-RPC
+    // over the server's streamable-HTTP /mcp with the literal key, so a GUI/IDE launch that
+    // sourced no shell still authenticates. Never a hook; never touches session state.
+    const { runMcpBridge } = await import("./mcp-bridge.js");
+    await runMcpBridge(config);
+    return;
+  }
   if (mode === "upload") {
     const path = args[0];
     if (!path) throw new Error("A state file is required.");
@@ -173,7 +181,7 @@ async function main(): Promise<void> {
     return;
   }
   throw new Error(
-    "Use a harness name, upload, configure, guidance, install, doctor, version, or uninstall.",
+    "Use a harness name, upload, mcp, configure, guidance, install, doctor, version, or uninstall.",
   );
 }
 void main().catch((error: unknown) => {

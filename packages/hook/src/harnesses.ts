@@ -87,6 +87,19 @@ const codexPreToolWarn = (reason: string): string =>
   });
 const geminiPreToolWarn = (reason: string): string =>
   JSON.stringify({ systemMessage: reason });
+/**
+ * What the installer knows when it writes a harness's MCP entry that a stdio bridge command
+ * needs (ADR 0089): where the bundle and its Node runtime live, and the server to reach. Only a
+ * harness whose entry is a stdio command (Codex) reads it; the HTTP-embedding harnesses do not.
+ */
+export interface McpRegistrationContext {
+  /** The installation directory holding hook.js and config.json. */
+  directory: string;
+  /** The Node executable that runs the bridge (config.node). */
+  node: string;
+  /** The AgentCommons server base URL, placed in the stdio server's env table. */
+  server: string;
+}
 export interface HarnessDefinition {
   id: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
   reader: ReaderKind;
@@ -104,10 +117,22 @@ export interface HarnessDefinition {
    * The MCP entry the installer writes. `key` is written literally where the client's IDE
    * host cannot expand `${VAR}` (Claude Code's `~/.claude.json`, Gemini's `settings.json`,
    * which the Gemini Code Assist extension reads without a shell; both files are 0600).
-   * Codex reads the key from the environment through its own `bearer_token_env_var`.
+   * Codex registers `agentcommons` as a *stdio* server (`node hook.js mcp`, ADR 0083/0089):
+   * Codex 0.154 has no literal-token or `--header` option for a streamable-HTTP server, so the
+   * literal key rides in the stdio server's per-server `env` table and reaches the server even
+   * from a GUI/IDE launch that sourced no shell. `context` carries the bundle location that
+   * command needs and is required for a stdio harness (Codex); the HTTP harnesses ignore it.
    */
-  mcp(url: string, key: string): Record<string, unknown> | null;
-  mcpCommand(url: string, key: string): string[] | null;
+  mcp(
+    url: string,
+    key: string,
+    context?: McpRegistrationContext,
+  ): Record<string, unknown> | null;
+  mcpCommand(
+    url: string,
+    key: string,
+    context?: McpRegistrationContext,
+  ): string[] | null;
   /** Printed once after `install` wires this harness. */
   installNote?: string;
   /** Printed after `install` wires this harness and wrote the shell exports (§8.4). */
@@ -195,24 +220,49 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
   codex: {
     id: "CODEX",
     mcpConfigPath: [".codex", "config.toml"],
-    mcpCommand: (url) => [
-      "mcp",
-      "add",
-      "agentcommons",
-      "--url",
-      url,
-      "--bearer-token-env-var",
-      "AGENTCOMMONS_API_KEY",
-    ],
+    // `codex mcp add <name> --env K=V … -- <command…>`: `--env` is valid only for a stdio
+    // server (its `--help`), so the literal key travels in the entry rather than a shell.
+    mcpCommand: (_url, key, context) => {
+      if (!context)
+        throw new Error("Codex MCP registration needs the install context.");
+      return [
+        "mcp",
+        "add",
+        "agentcommons",
+        "--env",
+        `AGENTCOMMONS_API_KEY=${key}`,
+        "--env",
+        `AGENTCOMMONS_SERVER=${context.server}`,
+        "--",
+        context.node,
+        join(context.directory, "hook.js"),
+        "mcp",
+      ];
+    },
     reader: "jsonl-append",
     recordKeyFields: ["ordinal"],
     binary: "codex",
     processMarkers: ["codex", "@openai/codex"],
-    mcp: (url) => ({ url, bearer_token_env_var: "AGENTCOMMONS_API_KEY" }),
+    // A stdio server the hook itself provides (ADR 0089): `node hook.js mcp` bridges the
+    // client's JSON-RPC to the server's streamable-HTTP `/mcp`. The literal key lives in the
+    // per-server `env` table (which Codex supports for stdio servers), so it reaches the
+    // server even from a GUI/IDE launch that sourced no shell.
+    mcp: (_url, key, context) => {
+      if (!context)
+        throw new Error("Codex MCP registration needs the install context.");
+      return {
+        command: context.node,
+        args: [join(context.directory, "hook.js"), "mcp"],
+        env: {
+          AGENTCOMMONS_API_KEY: key,
+          AGENTCOMMONS_SERVER: context.server,
+        },
+      };
+    },
     installNote:
       "Codex asks you to trust hooks on the next interactive launch.",
     shellExportNote:
-      "Codex reads AGENTCOMMONS_API_KEY from the shell that starts it, so start it from a new terminal after installing. If its search tool reports the key is unset, run `echo $AGENTCOMMONS_API_KEY` in that shell; when it is empty, re-run the installer and open a new terminal.",
+      "Codex reaches AgentCommons through a stdio bridge that carries the key in its own config, so it no longer needs this shell export; the export stays for other tools that read AGENTCOMMONS_API_KEY.",
     configPath: [".codex", "config.toml"],
     instructionsPath: [".codex", "AGENTS.md"],
     repositoryInstructionsFile: "AGENTS.md",

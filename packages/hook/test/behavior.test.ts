@@ -269,9 +269,19 @@ it("all four captured harness entries choose their reader, timeout, MCP shape, a
   expect(HARNESSES.gemini.reader).toBe("json-document");
   expect(HARNESSES.gemini.timeout).toBe(3000);
   expect(HARNESSES.pi.events.session_tree?.behavior).toBe("sync");
-  expect(HARNESSES.codex.mcp("https://example.test/mcp", "ac_test")).toEqual({
-    url: "https://example.test/mcp",
-    bearer_token_env_var: "AGENTCOMMONS_API_KEY",
+  expect(
+    HARNESSES.codex.mcp("https://example.test/mcp", "ac_test", {
+      directory: "/opt/agentcommons",
+      node: "/usr/bin/node",
+      server: "https://example.test",
+    }),
+  ).toEqual({
+    command: "/usr/bin/node",
+    args: [join("/opt/agentcommons", "hook.js"), "mcp"],
+    env: {
+      AGENTCOMMONS_API_KEY: "ac_test",
+      AGENTCOMMONS_SERVER: "https://example.test",
+    },
   });
   const manifest: unknown = JSON.parse(
     readFileSync("packages/hook/package.json", "utf8"),

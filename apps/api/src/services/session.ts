@@ -646,6 +646,13 @@ export class SessionService {
               // parent_session_id is the caller-visible parent, so a child of a hidden
               // session lists as a root.
               const predicate = andSql([
+                // A purged session is gone from the browse surfaces for everyone,
+                // including admins: `api_ro.sessions` still carries the admin-only purge
+                // skeleton (so `get` and the Moderation route keep exposing it), but the
+                // Sessions list is not a moderation surface, so it drops the skeleton here
+                // rather than in the shared view (ADR 0088). Members never see a purged row
+                // to begin with (row policy `purged=0`), so this is always-true for them.
+                "s.purged_at IS NULL",
                 ...plan.session,
                 ...(plan.message.length
                   ? [

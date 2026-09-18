@@ -255,12 +255,15 @@ export async function visibleSession(
 }
 /**
  * The control-side visibility rule the tree and the header links share (alias `s` over
- * `trace_session_control`): published, and public and unpurged unless the caller is an
- * admin. It mirrors the native row policies, which read the same control columns.
+ * `trace_session_control`): published and unpurged, and public unless the caller is an
+ * admin. A purged session is gone from the browse surfaces for everyone, admins included
+ * (ADR 0088), so `purged_at IS NULL` gates every caller here; admins still reach a purged
+ * session's skeleton through `get` and the Moderation route, which read control directly.
+ * Private (non-public, unpurged) sessions stay admin-visible, as the native row policies do.
  */
 function visibleControlSql(caller: CallerContext): Prisma.Sql {
   const admin = hasAdminAuthority(caller);
-  return Prisma.sql`(s.published_revision>0 AND ((s.visibility='PUBLIC' AND s.purged_at IS NULL) OR ${admin}))`;
+  return Prisma.sql`(s.published_revision>0 AND s.purged_at IS NULL AND (s.visibility='PUBLIC' OR ${admin}))`;
 }
 interface SessionLinks {
   /** The nearest visible ancestor; null when the session is a visible root. */

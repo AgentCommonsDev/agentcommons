@@ -2144,3 +2144,116 @@ it("maps trace read limits and busy databases to stable retryable codes on searc
     (await sessions.get(context(), { session_id: ids.long })).result.header,
   ).not.toBeNull();
 });
+
+// @req R-MOD-02 @req R-DASH-01 @req R-DASH-11
+// A purged session (its cascade included) is gone from the browse surfaces — the default
+// session list and the session-detail tree/children — for everyone, admins included, while
+// `get` still returns its skeleton and the admin-only skeleton in `api_ro.sessions` (which
+// backs `get` and the Moderation route's published-row read) is untouched (ADR 0088).
+describe("purged sessions leave the browse surfaces (ADR 0088)", () => {
+  const purgedRoot = randomUUID();
+  const purgedChild = randomUUID();
+  const liveRoot = randomUUID();
+  const mixedRoot = randomUUID();
+  const liveChild = randomUUID();
+  const purgedSibling = randomUUID();
+  const repo = "host/team/purge-browse";
+  const admin = () => context("org-a", { admin: true });
+  const idsOf = (page: { result: { items: { session_id: string }[] } }) =>
+    page.result.items.map((item) => item.session_id);
+  beforeAll(async () => {
+    // A root and its subagent, both purged (the cascade of one purge).
+    const rootBatch = await session(purgedRoot, { repo, title: "Purged root" });
+    await message(purgedRoot, rootBatch, 0, "root content before purge");
+    const childBatch = await session(purgedChild, {
+      parent: purgedRoot,
+      repo,
+      title: "Purged subagent",
+    });
+    await message(purgedChild, childBatch, 0, "subagent content before purge");
+    // A live root that keeps browsing normally.
+    const liveBatch = await session(liveRoot, { repo, title: "Live root" });
+    await message(liveRoot, liveBatch, 0, "live root content");
+    // A live root with one live and one directly-purged subagent, so the tree drops only
+    // the purged one while the live subagent still nests.
+    const mixedBatch = await session(mixedRoot, { repo, title: "Mixed root" });
+    await message(mixedRoot, mixedBatch, 0, "mixed root content");
+    const liveChildBatch = await session(liveChild, {
+      parent: mixedRoot,
+      repo,
+      title: "Live subagent",
+    });
+    await message(liveChild, liveChildBatch, 0, "live subagent content");
+    const purgedSiblingBatch = await session(purgedSibling, {
+      parent: mixedRoot,
+      repo,
+      title: "Purged subagent",
+    });
+    await message(purgedSibling, purgedSiblingBatch, 0, "sibling before purge");
+    // Install the tombstone the way a purge does; the corpus stays behind (as it does until
+    // the cleanup worker runs), so this exercises the skeleton path, not physical deletion.
+    for (const id of [purgedRoot, purgedChild, purgedSibling])
+      await db.prisma.traceSessionControl.updateMany({
+        where: { organizationId: "org-a", id },
+        data: { purgedAt: new Date("2026-09-10T00:00:00Z") },
+      });
+  });
+
+  it("drops purged roots and subagents from the session list for admins and members", async () => {
+    // The default list includes subagent runs, so the live subagent shows and every purged
+    // session (root or subagent) is absent, for an admin.
+    const adminList = await sessions.list(admin(), {
+      filters: { repo_name: repo },
+      limit: 100,
+    });
+    expect(idsOf(adminList)).toEqual(
+      expect.arrayContaining([liveRoot, mixedRoot, liveChild]),
+    );
+    expect(idsOf(adminList)).not.toContain(purgedRoot);
+    expect(idsOf(adminList)).not.toContain(purgedChild);
+    expect(idsOf(adminList)).not.toContain(purgedSibling);
+    // The page totals count the same predicate, so the purge skeleton is out of the count.
+    expect(adminList.result.total.sessions).toBe(idsOf(adminList).length);
+    // A member never sees a purged row and browses the live sessions unchanged.
+    const memberList = await sessions.list(context(), {
+      filters: { repo_name: repo },
+      limit: 100,
+    });
+    expect(idsOf(memberList)).toEqual(
+      expect.arrayContaining([liveRoot, mixedRoot, liveChild]),
+    );
+    expect(idsOf(memberList)).not.toContain(purgedRoot);
+    expect(idsOf(memberList)).not.toContain(purgedChild);
+    expect(idsOf(memberList)).not.toContain(purgedSibling);
+  });
+
+  it("returns an empty tree for a purged root and omits purged children of a live root", async () => {
+    // The purged root's own detail-page tree carries no skeleton children.
+    const purgedTree = await sessions.tree(admin(), purgedRoot, {});
+    expect(purgedTree.result.nodes).toEqual([]);
+    // The live root's tree shows its live subagent but not the purged sibling, for an admin.
+    const mixedTree = await sessions.tree(admin(), mixedRoot, {});
+    const treeIds = mixedTree.result.nodes.map((node) => node.session_id);
+    expect(treeIds).toEqual(expect.arrayContaining([mixedRoot, liveChild]));
+    expect(treeIds).not.toContain(purgedSibling);
+    expect(mixedTree.result.nodes.every((node) => !node.gap)).toBe(true);
+  });
+
+  it("still returns a purged session's skeleton on a direct get, and only to an admin", async () => {
+    // Direct get is the "this session was purged" page: a skeleton header, no messages, no
+    // 404. This reads the admin-only skeleton row of `api_ro.sessions` the Moderation
+    // route's published-row read shares, proving that path is untouched.
+    const skeleton = await sessions.get(admin(), { session_id: purgedRoot });
+    expect(skeleton.result.header).not.toBeNull();
+    expect(skeleton.result.header).toMatchObject({
+      title: null,
+      message_count: 0,
+    });
+    expect(skeleton.result.messages).toEqual([]);
+    // A member gets 404 for a purged session (as for a private one), so the skeleton stays
+    // admin-only.
+    await expect(
+      sessions.get(context(), { session_id: purgedRoot }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+});

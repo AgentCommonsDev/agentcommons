@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   managementEntries,
@@ -9,11 +10,23 @@ import {
   managementServerName,
 } from "@agentcommons/core/format/mcp-registration";
 import { hash } from "../src/files.js";
-import { HARNESSES, type CliHarness } from "../src/harnesses.js";
+import {
+  HARNESSES,
+  type CliHarness,
+  type McpRegistrationContext,
+} from "../src/harnesses.js";
 import { configure, install } from "../src/install.js";
 
 const URL_ = "https://example.test/mcp";
 const KEY = "ac_literal_test_key";
+const DIR = "/home/user/.agentcommons";
+const NODE = "/usr/bin/node";
+// The install context a stdio-bridge harness (Codex) reads; the HTTP harnesses ignore it.
+const CTX: McpRegistrationContext = {
+  directory: DIR,
+  node: NODE,
+  server: "https://example.test",
+};
 afterEach(() => {
   vi.unstubAllEnvs();
 });
@@ -50,11 +63,13 @@ const entry = (configHome: string, harness: CliHarness) => {
 
 describe("MCP registration", () => {
   // @req R-INST-02
-  it("writes the key literally for Claude Code and Gemini, keeps Codex on its env-var flag, and never a placeholder", () => {
+  it("writes the key literally for every harness — Claude/Gemini in the HTTP header, Codex in its stdio bridge's env table — and never a placeholder", () => {
     for (const name of Object.keys(HARNESSES) as CliHarness[]) {
       const definition = HARNESSES[name];
-      const written = JSON.stringify(definition.mcp(URL_, KEY) ?? null);
-      const command = JSON.stringify(definition.mcpCommand(URL_, KEY) ?? null);
+      const written = JSON.stringify(definition.mcp(URL_, KEY, CTX) ?? null);
+      const command = JSON.stringify(
+        definition.mcpCommand(URL_, KEY, CTX) ?? null,
+      );
       expect(written, name).not.toContain("${");
       expect(command, name).not.toContain("${");
     }
@@ -71,13 +86,33 @@ describe("MCP registration", () => {
       httpUrl: URL_,
       headers: { Authorization: `Bearer ${KEY}` },
     });
-    expect(HARNESSES.codex.mcp(URL_, KEY)).toEqual({
-      url: URL_,
-      bearer_token_env_var: "AGENTCOMMONS_API_KEY",
+    // Codex is a stdio server the hook itself provides (ADR 0089): the literal key is in the
+    // per-server env table, reaching the server even from a GUI/IDE launch with no shell.
+    expect(HARNESSES.codex.mcp(URL_, KEY, CTX)).toEqual({
+      command: NODE,
+      args: [join(DIR, "hook.js"), "mcp"],
+      env: {
+        AGENTCOMMONS_API_KEY: KEY,
+        AGENTCOMMONS_SERVER: "https://example.test",
+      },
     });
-    expect(JSON.stringify(HARNESSES.codex.mcpCommand(URL_, KEY))).not.toContain(
-      KEY,
-    );
+    expect(HARNESSES.codex.mcpCommand(URL_, KEY, CTX)).toEqual([
+      "mcp",
+      "add",
+      "agentcommons",
+      "--env",
+      `AGENTCOMMONS_API_KEY=${KEY}`,
+      "--env",
+      "AGENTCOMMONS_SERVER=https://example.test",
+      "--",
+      NODE,
+      join(DIR, "hook.js"),
+      "mcp",
+    ]);
+    // The key is literal now (in --env and the env table), not a shell reference.
+    expect(
+      JSON.stringify(HARNESSES.codex.mcpCommand(URL_, KEY, CTX)),
+    ).toContain(KEY);
     expect(HARNESSES.pi.mcp(URL_, KEY)).toBeNull();
   });
 
@@ -89,8 +124,12 @@ describe("MCP registration", () => {
     expect(managementEntries.GEMINI_CLI(URL_, KEY)).toEqual(
       HARNESSES.gemini.mcp(URL_, KEY),
     );
+    // The installer's `agentcommons` recall server is a stdio bridge for Codex (ADR 0089),
+    // but the manually pasted `agentcommons-admin` management server keeps the HTTP +
+    // env-var shape: a person pasting it is at a terminal whose shell has the export, so the
+    // two intentionally diverge. Claude and Gemini still mirror the installer's shapes.
     expect(managementEntries.CODEX(URL_)).toEqual({
-      ...HARNESSES.codex.mcp(URL_, KEY),
+      url: URL_,
       bearer_token_env_var: managementKeyVariable,
     });
     expect(managementServerName).not.toBe("agentcommons");
@@ -117,6 +156,28 @@ describe("MCP registration", () => {
       headers: { Authorization: `Bearer ${KEY}` },
       alwaysLoad: true,
     });
+    // Codex is written as a stdio bridge with the literal key in its env table (ADR 0089),
+    // never `bearer_token_env_var`, so a GUI/IDE launch that sourced no shell still reaches
+    // the server. `config.node` is the recorded Node path; `directory` holds hook.js.
+    const codexText = readFileSync(
+      join(configHome, ".codex", "config.toml"),
+      "utf8",
+    );
+    const codex = (
+      parseToml(codexText) as {
+        mcp_servers?: { agentcommons?: Record<string, unknown> };
+      }
+    ).mcp_servers?.agentcommons;
+    expect(codex).toEqual({
+      command: config.node,
+      args: [join(directory, "hook.js"), "mcp"],
+      env: {
+        AGENTCOMMONS_API_KEY: KEY,
+        AGENTCOMMONS_SERVER: "https://example.test",
+      },
+    });
+    expect(codexText).toContain(KEY);
+    expect(codexText).not.toContain("bearer_token_env_var");
     // As left by a bundle that wrote the env placeholder: the file and the installer's
     // registry both hold it. The reconcile run (§6.2) re-runs `install`, which rewrites it.
     const stale = {

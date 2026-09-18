@@ -99,7 +99,7 @@ docs              SPEC.md, adr/, reviews/
 - Zod at every boundary: HTTP bodies, hook stdin, env, transcript records (with
   `passthrough()` so unknown harness fields are kept).
 - Never hand-edit Better Auth's Prisma models; regenerate them.
-- `packages/hook` has zero runtime dependencies, two modes (hook, upload), and one code
+- `packages/hook` has zero runtime dependencies, three modes (hook, upload, mcp), and one code
   path per mode. Hook mode never touches the network; upload mode is always a detached
   child running the durability state machine in spec §6.2 (persisted intent, one pending
   batch, lock with liveness, `ackedCursor` advanced only on `202`). Adding a harness is one

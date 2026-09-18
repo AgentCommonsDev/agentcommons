@@ -779,12 +779,12 @@ key: installed hooks update themselves (§6.2, **Self-update**).
    `disabledPaths`. Existing values preserved.
 4. `node hook.js install`: for each harness present, merge hooks into its config keyed by
    an exact marker (`agentcommons-hook` in the command); register the MCP server (`claude
-mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add …
---bearer-token-env-var AGENTCOMMONS_API_KEY`, Gemini `mcpServers` entry with
+mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add agentcommons
+--env AGENTCOMMONS_API_KEY=… -- <node> <dir>/hook.js mcp` (a stdio bridge, ADR 0089), Gemini `mcpServers` entry with
    `headers.Authorization: Bearer <key>`); the Claude and Gemini entries carry the key
    literally, never an env placeholder, because IDE extension hosts read these 0600 files
-   without a shell (Appendix A, Gemini Code Assist); Codex reads the variable by design
-   through its own flag; a reconcile run (§6.2 **Reconfiguration**) rewrites an existing
+   without a shell (Appendix A, Gemini Code Assist); Codex carries the literal key in its
+   stdio bridge's `env` table, so it needs no shell either; a reconcile run (§6.2 **Reconfiguration**) rewrites an existing
    entry, so installed machines heal on their next hook run after a bundle swap; each
    harness is wired independently, so a `claude mcp add` that fails (the CLI missing
    from the detached uploader's PATH, a slow first start, a refused add) is reported as a
@@ -832,7 +832,8 @@ open); `install`/`doctor`/`uninstall` exit nonzero on failure.
 
 ### 6.2 Shim: one durability state machine
 
-One file, no dependencies, two modes.
+One file, no dependencies, three modes (hook, upload, and the `mcp` stdio↔HTTP bridge Codex
+launches — §8.4, ADR 0089; a separate invocation, not a hook path, holding no session state).
 
 **State** (`~/.agentcommons/state/<harness>-<sha256(sessionId)>.json`, versioned):
 `{ v, harness, sessionId, transcriptPath, server, organizationId, credentialHash,
@@ -1899,12 +1900,12 @@ registration.
 ### 8.4 Client configuration
 
 `claude mcp add -s user -t http agentcommons <URL>/mcp -H "Authorization: Bearer ac_…"`;
-`codex mcp add agentcommons --url <URL>/mcp --bearer-token-env-var AGENTCOMMONS_API_KEY`;
+Codex registers a stdio bridge — `codex mcp add agentcommons --env AGENTCOMMONS_API_KEY=… --env AGENTCOMMONS_SERVER=… -- <node> <dir>/hook.js mcp` — whose `[mcp_servers.agentcommons.env]` table carries the literal key, so the `hook.js mcp` bridge (a stdio↔HTTP proxy to `<URL>/mcp`, ADR 0089) authenticates with no shell, GUI/IDE launches included;
 Gemini `mcpServers` entry `{ httpUrl: <URL>/mcp, headers: { Authorization: "Bearer ac_…" } }`.
-The key is literal in the Claude and Gemini entries: `${AGENTCOMMONS_API_KEY}` is expanded
+The key is literal in the Claude and Gemini entries and in Codex's `env` table: `${AGENTCOMMONS_API_KEY}` is expanded
 by the Gemini CLI from the shell but not by the Gemini Code Assist extension host, which
-sent the placeholder verbatim and was refused every few seconds (Appendix A); Codex alone
-reads the variable, through its own `bearer_token_env_var`. A key that reaches the server
+sent the placeholder verbatim and was refused every few seconds (Appendix A); Codex no longer
+depends on the shell variable, reaching the server through its stdio bridge's `env` key. A key that reaches the server
 as an unexpanded `${…}` placeholder is refused with a 401 that says so (§9.2). Claude user
 MCP entries live in `~/.claude.json`, separately
 from the hooks in `~/.claude/settings.json`; Codex and Gemini use their hook config files.
@@ -2137,8 +2138,11 @@ a later visibility change.
 **Purge**: one control transaction serializes against ingest and readers, installs the
 irreversible tombstone, clears normalization contexts and records a durable cleanup
 outbox and audit. Native row policies hide the corpus immediately, including from
-admins; admin session views expose only the retained identity skeleton. Subsequent
-appends return `409`, and all workers check the tombstone.
+admins; the retained identity skeleton is exposed only on the direct `get` purge page and
+the Moderation route — the ordinary browse surfaces (the Sessions list and the
+session-detail tree/children) exclude purged sessions for admins as well as members, so a
+purge (and its ADR 0084 cascade) makes the sessions disappear from browsing (ADR 0088).
+Subsequent appends return `409`, and all workers check the tombstone.
 
 The response reports `cleanup: queued` until physical ClickHouse deletion is complete.
 Native deleted-row counts are nullable while pending. The worker captures an exact
@@ -3572,8 +3576,9 @@ expansion: an entry written as `"Authorization": "Bearer ${AGENTCOMMONS_API_KEY}
 verbatim, and the server logged `POST /mcp` 401 `INVALID_API_KEY` about every 4 s (3,207
 rows in two hours on one installation). The Claude Code user entry had the same shape and
 only worked because the CLI expands it from a login shell. Both entries now carry the key
-literally (the files are 0600); Codex keeps `bearer_token_env_var`, which is how its
-`codex mcp add` works, and the shell exports remain for it.
+literally (the files are 0600); Codex registers a `hook.js mcp` stdio bridge with the literal
+key in its per-server `env` table (ADR 0089), so it authenticates without a shell too. The
+shell exports remain for other tools but Codex no longer depends on them.
 
 **Prompt-time context from hooks, 2026-09-11.** Claude Code 2.1.266
 (`fixtures/hooks/claude-code-2.1.266-prompt-context-events.jsonl`): a `-p` session in an

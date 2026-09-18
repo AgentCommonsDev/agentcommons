@@ -55,9 +55,20 @@ export function wiredConfigHome(
       }),
     );
     mkdirSync(join(configHome, ".codex"), { recursive: true });
+    // Codex's `agentcommons` is a stdio bridge (ADR 0089); the registration check only looks
+    // for the server's presence in the TOML, so a representative stdio entry is enough here.
     writeFileSync(
       join(configHome, ".codex", "config.toml"),
-      `[mcp_servers.agentcommons]\nurl = "${url}"\nbearer_token_env_var = "AGENTCOMMONS_API_KEY"\n`,
+      [
+        "[mcp_servers.agentcommons]",
+        'command = "node"',
+        'args = ["hook.js", "mcp"]',
+        "",
+        "[mcp_servers.agentcommons.env]",
+        `AGENTCOMMONS_API_KEY = ${JSON.stringify(key)}`,
+        `AGENTCOMMONS_SERVER = ${JSON.stringify(server)}`,
+        "",
+      ].join("\n"),
     );
   }
   return { installOptions: { configHome } };

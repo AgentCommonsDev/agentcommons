@@ -138,6 +138,39 @@ async function audit(
   await auditProjection.flush();
   return row;
 }
+/**
+ * The MCP handshake a key-authenticated read needs before it attributes to a session
+ * (R-AUD-05, ADR 0060/0067): reads on an installation with no prior `mcp.tools.list` are not
+ * agent reuse. Seed one for the installation whose reads should attribute, before those reads;
+ * the next `audit()` flush projects it alongside them.
+ */
+async function seedHandshake(
+  context: ServiceContext,
+  installationId: string,
+  time: Date,
+) {
+  const caller = requireCaller(context);
+  const row = await db.prisma.auditEvent.create({
+    data: {
+      organizationId: caller.organizationId,
+      id: randomUUID(),
+      ts: time,
+      requestId: randomUUID(),
+      userId: caller.userId,
+      apiKeyId: caller.apiKeyId,
+      installationId,
+      authMethod: "key",
+      ip: "fixture",
+      transport: "mcp",
+      action: "mcp.tools.list",
+      statusCode: 200,
+      durationMs: 1,
+      resourceIds: [],
+      detail: {},
+    },
+  });
+  await db.prisma.traceAuditOutbox.create({ data: { auditId: row.id } });
+}
 async function metrics(group: string, extra: Record<string, unknown> = {}) {
   return (
     await service.get(org.context, group, { filters, limit: 100, ...extra })
@@ -184,6 +217,7 @@ it("counts weekly reuse once per active reading session, respects event boundari
     repo: "reuse-target",
   });
   const source = await session(org.context, { repo: "reuse-source" });
+  await seedHandshake(org.context, source.installationId, at(8));
   const wrong = await session(org.context, { repo: "wrong-installation" });
   const hidden = await session(member.context, {
     visibility: "PRIVATE",
@@ -343,6 +377,7 @@ it("counts weekly reuse once per active reading session, respects event boundari
 // @req R-DASH-13 @req R-ORG-07
 it("computes filtered capture, redaction, search precision, cross-user and dashboard metrics from real observations", async () => {
   const source = await session(org.context, { repo: "metric-observations" });
+  await seedHandshake(org.context, source.installationId, at(9));
   const target = await session(member.context, {
     repo: "metric-observations",
     start: at(7),
@@ -752,6 +787,10 @@ it("retains authoritative read resource IDs and numeric search results under UUI
     },
   });
   db.policies.invalidate(target.organizationId);
+  // R-AUD-05: attribute the org key's reads by seeding its MCP handshake on the source's
+  // installation and issuing the reads over MCP (a REST read is not agent reuse).
+  await seedHandshake(org.context, source.installationId, new Date(now - 1000));
+  const mcp = { ...org.context, transport: "mcp" as const };
   try {
     const dependencies = {
       ...db,
@@ -760,7 +799,7 @@ it("retains authoritative read resource IDs and numeric search results under UUI
     };
     const search = new SearchService(dependencies);
     const get = new SessionService(dependencies);
-    const result = await search.execute(org.context, {
+    const result = await search.execute(mcp, {
       query: "audit fixture",
       filters: {
         repo_name: [
@@ -783,7 +822,7 @@ it("retains authoritative read resource IDs and numeric search results under UUI
     expect(JSON.stringify(result.audit.detail)).not.toContain(
       "not_a_real_secret123456789",
     );
-    const read = await get.get(org.context, { session_id: target.id });
+    const read = await get.get(mcp, { session_id: target.id });
     await drainTraceAudit(auditProjection);
     expect(read.audit.resourceIds).toEqual([target.id]);
     expect(JSON.stringify(read.audit.detail)).not.toContain(target.id);

@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted. The deferred item below (a stdio MCP bridge with the key in Codex's per-server
+`env` table, for shell-less GUI/IDE launches) is now **resolved by ADR 0089**; the
+login-shell exports and reconcile behavior this ADR introduced remain in force.
 
 ## Context
 
@@ -65,7 +67,10 @@ problem.
   file) is still out of reach of a shell export; the fully general fix would be a stdio MCP
   bridge that carries the key in Codex's per-server `env` table (which Codex supports only for
   stdio servers). That is a larger change, deferred until a real GUI-launch case appears; the
-  common terminal-launched paths are all covered now.
+  common terminal-launched paths are all covered now. **Update: resolved by ADR 0089** — the
+  installer now registers `agentcommons` for Codex as a stdio server (`node hook.js mcp`) with
+  the literal key in its `env` table, so a shell-less GUI/IDE launch also authenticates; the
+  export here stays for other tools but Codex no longer depends on it.
 
 ## Alternatives considered
 
@@ -74,7 +79,8 @@ problem.
 - **A stdio MCP bridge with the key in the per-server `env` table.** Fully robust (covers even
   GUI launches), but it means building and shipping an MCP stdio↔HTTP proxy in the
   zero-dependency hook. Disproportionate to the observed failure (terminal-launched Codex);
-  deferred.
+  deferred at the time — **since adopted in ADR 0089** (a zero-dependency bridge built on Node
+  built-ins, ~2.7 KB).
 - **Leave reconcile at `--no-shell-rc` and rely on manual re-install.** Leaves existing broken
   installs broken until each user knows to re-run the installer. Rejected: the whole value of
   reconcile is healing stale installs without user action.
