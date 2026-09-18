@@ -1996,6 +1996,11 @@ demote the last active owner. Better Auth owns identity and membership lifecycle
 services enforce these constraints and audit them. Operators configure email/password
 and/or the existing instance login provider; SCIM, group sync, and per-organization
 identity-provider configuration beyond native Google domain access is outside this spec.
+An instance runs **SSO-only** when `AUTH_EMAIL_PASSWORD_ENABLED=false` and a social or
+OIDC provider is configured: Better Auth registers no email/password endpoints, so
+sign-in, public signup and admin setup links are all password-free and people sign in
+only through the provider. On-prem deployments may ship with this default (ADR 0091);
+per-organization SSO-only enforcement is deferred to a future ADR.
 
 **Sign-in domains (ADR 0049).** Organization owners and administrators manage Google
 sign-in domains on Settings: list the current organization's domains and add an exact

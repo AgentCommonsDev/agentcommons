@@ -5,7 +5,7 @@ config:
   agentcommons:hostname: hooks.tools.goodhartlabs.com
   agentcommons:environment:
     INSTANCE_MODE: customer
-    AUTH_EMAIL_PASSWORD_ENABLED: "true"
+    AUTH_EMAIL_PASSWORD_ENABLED: "false"
     AUTH_SOCIAL_PROVIDER: google
     AUTH_ALLOWED_EMAIL_DOMAINS: zeropath.com,goodhartlabs.com
     AUTH_SIGNUP_MODE: invite

@@ -105,6 +105,14 @@ it("bootstraps idempotently without public password signup or authentication man
   expect(() =>
     createAuth(prisma, { ...config, emailPasswordEnabled: false }),
   ).toThrow("Configure at least one login method");
+  // @req R-AUTH-01 SSO-only deployment (ADR 0091): passwords off with a provider boots fine.
+  expect(() =>
+    createAuth(prisma, {
+      ...config,
+      emailPasswordEnabled: false,
+      socialProviders: { google: { clientId: "id", clientSecret: "secret" } },
+    }),
+  ).not.toThrow();
 });
 
 // @req R-AUTH-03
