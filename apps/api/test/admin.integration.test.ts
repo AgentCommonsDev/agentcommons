@@ -185,6 +185,82 @@ it("supports admin-only keys and applies visibility only to the authenticated or
   });
 });
 
+// @req R-MOD-01
+it("cascades visibility to descendant subagents and restores them together", async () => {
+  const orgId = z.string().parse(organization.context.caller?.organizationId);
+  const rootId = (await ingest.execute(organization.context, envelope())).result
+    .sessionId;
+  const childId = (
+    await fixtures.sessionFor(organization.context, {
+      parent: rootId,
+      fields: { title: "subagent" },
+    })
+  ).id;
+  const visibility = async (id: string) =>
+    (
+      await database.prisma.traceSessionControl.findUniqueOrThrow({
+        where: { organizationId_id: { organizationId: orgId, id } },
+      })
+    ).visibility;
+  // Hiding the parent hides the run that belongs to it.
+  await admin.setVisibility(adminOnly, {
+    session_id: rootId,
+    visibility: "PRIVATE",
+    reason,
+  });
+  expect(await visibility(rootId)).toBe("PRIVATE");
+  expect(await visibility(childId)).toBe("PRIVATE");
+  // Restoring the parent restores the subagent with it.
+  await admin.setVisibility(adminOnly, {
+    session_id: rootId,
+    visibility: "PUBLIC",
+    reason,
+  });
+  expect(await visibility(childId)).toBe("PUBLIC");
+});
+
+// @req R-MOD-02
+it("cascades a purge to descendant subagents and a re-run catches ones a prior purge missed", async () => {
+  const orgId = z.string().parse(organization.context.caller?.organizationId);
+  const rootId = (await ingest.execute(organization.context, envelope())).result
+    .sessionId;
+  const childA = (
+    await fixtures.sessionFor(organization.context, {
+      parent: rootId,
+      fields: { title: "subagent A" },
+    })
+  ).id;
+  const control = (id: string) =>
+    database.prisma.traceSessionControl.findUniqueOrThrow({
+      where: { organizationId_id: { organizationId: orgId, id } },
+    });
+  const first = await admin.purge(adminOnly, { session_id: rootId, reason });
+  expect(first.result.updated).toBe(true);
+  expect((await control(rootId)).purgedAt).not.toBeNull();
+  expect((await control(childA)).purgedAt).not.toBeNull();
+  // The subagent's corpus cleanup is queued like the root's.
+  expect(
+    await database.prisma.traceOutbox.count({
+      where: { organizationId: orgId, sessionId: childA, kind: "purge" },
+    }),
+  ).toBe(1);
+  // A subagent that arrives after the root was purged is caught by a re-run, even though the
+  // root itself is already a tombstone.
+  const childB = (
+    await fixtures.sessionFor(organization.context, {
+      parent: rootId,
+      fields: { title: "subagent B" },
+    })
+  ).id;
+  expect((await control(childB)).purgedAt).toBeNull();
+  const second = await admin.purge(adminOnly, { session_id: rootId, reason });
+  expect(second.result.updated).toBe(true);
+  expect((await control(childB)).purgedAt).not.toBeNull();
+  // With nothing left un-purged, a further run is a no-op.
+  const third = await admin.purge(adminOnly, { session_id: rootId, reason });
+  expect(third.result.updated).toBe(false);
+});
+
 // @req R-MOD-02
 it("purges every declared row type, clears derived metadata, retains receipts and identity, and reports an exact idempotent manifest", async () => {
   const request = envelope("Contains token ac_abcdefghijklmnopqrstuvwxyz");

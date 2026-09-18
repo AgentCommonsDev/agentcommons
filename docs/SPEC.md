@@ -2119,6 +2119,12 @@ query values and native password-reset token path segments.
 
 **Private**: hidden from members everywhere (lists, search, SQL, `get`, MCP), including
 from the uploader's own key; organization-admin-only; reversible. Named "admin-only" in the UI.
+Both actions cascade over the session tree: a subagent, fork or spawned session is part of
+its parent, so hiding a session hides every descendant and restoring it restores them, and
+purging a session purges every descendant too (ADR 0084). A re-run catches descendants an
+earlier action missed — a subagent whose transcript arrived after its parent was purged is
+purged when the parent is purged again — and a purged descendant keeps its tombstone through
+a later visibility change.
 **Purge**: one control transaction serializes against ingest and readers, installs the
 irreversible tombstone, clears normalization contexts and records a durable cleanup
 outbox and audit. Native row policies hide the corpus immediately, including from

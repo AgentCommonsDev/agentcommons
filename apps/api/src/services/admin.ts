@@ -62,6 +62,27 @@ async function session(
     where: { organizationId_id: { organizationId, id } },
   });
 }
+/**
+ * The session and every descendant (subagent, fork or spawned run), so a moderation action
+ * on a parent covers the runs that belong to it (§9.5). Cycle-safe over the control parent
+ * links; the org write fence held by the caller serializes it against ingest and readers.
+ */
+async function sessionSubtree(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  id: string,
+): Promise<string[]> {
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    WITH RECURSIVE subtree AS (
+      SELECT id, ARRAY[id] AS path FROM public.trace_session_control
+      WHERE organization_id = ${organizationId} AND id = ${id}::uuid
+      UNION ALL
+      SELECT s.id, p.path || s.id FROM public.trace_session_control s
+      JOIN subtree p ON s.parent_session_id = p.id
+      WHERE s.organization_id = ${organizationId} AND NOT s.id = ANY(p.path)
+    ) SELECT id FROM subtree`;
+  return rows.map((row) => row.id);
+}
 const auditSort = {
   ts: "ts",
   action: "action",
@@ -237,24 +258,111 @@ export class AdminService {
             "SESSION_PURGED",
             "A purged session cannot change visibility.",
           );
-        const updated = current.visibility !== request.visibility;
-        if (updated)
-          await tx.traceSessionControl.update({
+        // Visibility follows the tree: a subagent's visibility tracks its parent's, so
+        // hiding a session hides the runs that belong to it and restoring it restores them
+        // (ADR 0084). A purged descendant keeps its tombstone and is left alone.
+        const ids = await sessionSubtree(tx, caller.organizationId, current.id);
+        const rows = await tx.traceSessionControl.findMany({
+          where: {
+            organizationId: caller.organizationId,
+            id: { in: ids },
+            purgedAt: null,
+          },
+          select: { id: true, visibility: true },
+        });
+        const changed = rows
+          .filter((row) => row.visibility !== request.visibility)
+          .map((row) => row.id);
+        if (changed.length)
+          await tx.traceSessionControl.updateMany({
             where: {
-              organizationId_id: {
-                organizationId: caller.organizationId,
-                id: current.id,
-              },
+              organizationId: caller.organizationId,
+              id: { in: changed },
             },
             data: { visibility: request.visibility },
           });
         return {
-          result: { id: current.id, updated },
-          resourceIds: [current.id],
-          detail: { visibility: request.visibility, reason: request.reason },
+          result: { id: current.id, updated: changed.length > 0 },
+          resourceIds: [
+            current.id,
+            ...changed.filter((id) => id !== current.id),
+          ],
+          detail: {
+            visibility: request.visibility,
+            reason: request.reason,
+            cascaded: changed.length,
+          },
         };
       },
     );
+  }
+  /**
+   * Purge one session's corpus: delete its redaction/violation/outbox rows, install the
+   * tombstone and enqueue the ClickHouse cleanup. Returns the manifest. The caller holds the
+   * organization write fence and has already skipped rows that are purged.
+   */
+  private async purgeOne(
+    tx: Prisma.TransactionClient,
+    context: ServiceContext,
+    caller: { organizationId: string; userId: string | null },
+    row: { id: string; acceptedRevision: bigint },
+    reason: string,
+  ) {
+    const where = { organizationId: caller.organizationId, sessionId: row.id };
+    const redactions = await tx.redactionEvent.deleteMany({ where });
+    await tx.toolPolicyViolation.deleteMany({ where });
+    await tx.traceOutbox.deleteMany({ where });
+    const revision = row.acceptedRevision + 1n;
+    const manifest = {
+      deleted: {
+        raw_records: null,
+        messages: null,
+        session_files: null,
+        message_chunks: null,
+        session_embeddings: null,
+        redaction_events: redactions.count,
+      },
+      nulled_fields: [
+        "title",
+        "first_prompt",
+        "observed_commits",
+        "observed_diff_stat",
+        "branch",
+      ],
+      reset_fields: purgeResetFields,
+      retained: [
+        "session_identity",
+        "ingest_receipts",
+        "audit_events",
+        "installation",
+      ],
+    };
+    await tx.traceSessionControl.update({
+      where: {
+        organizationId_id: {
+          organizationId: caller.organizationId,
+          id: row.id,
+        },
+      },
+      data: {
+        purgedAt: new Date(),
+        purgedByUserId: caller.userId,
+        purgeReason: reason,
+        purgeManifest: manifest,
+        normalizerContext: {},
+        projectedContext: {},
+        projectionError: null,
+        projectionState: "queued",
+        embeddingRevision: null,
+        acceptedRevision: revision,
+      },
+    });
+    const outboxId = uuidv7();
+    await tx.traceOutbox.create({
+      data: { id: outboxId, ...where, revision, kind: "purge", payload: {} },
+    });
+    await this.dependencies.jobs.enqueue(tx, { ...where, outboxId });
+    return manifest;
   }
   purge(context: ServiceContext, input: unknown) {
     return mutationOperation(
@@ -271,90 +379,47 @@ export class AdminService {
           caller.organizationId,
           request.session_id,
         );
-        const where = {
-          organizationId: caller.organizationId,
-          sessionId: current.id,
-        };
         const reason = await this.dependencies.audit.redactText(
           context,
           request.reason,
           tx,
         );
+        // A subagent, fork or spawned session is part of its parent, so purging a session
+        // purges every descendant too (ADR 0084). Each un-purged one gets its own tombstone
+        // and cleanup outbox; an already-purged one (e.g. the target on a re-run) is left as
+        // it is, so re-purging a root still catches descendants an older, non-cascading
+        // purge missed.
+        const ids = await sessionSubtree(tx, caller.organizationId, current.id);
+        const rows = await tx.traceSessionControl.findMany({
+          where: { organizationId: caller.organizationId, id: { in: ids } },
+          orderBy: { id: "asc" },
+          select: { id: true, acceptedRevision: true, purgedAt: true },
+        });
         let manifest = current.purgeManifest;
-        if (!current.purgedAt) {
-          const redactions = await tx.redactionEvent.deleteMany({ where });
-          await tx.toolPolicyViolation.deleteMany({ where });
-          await tx.traceOutbox.deleteMany({ where });
-          const revision = current.acceptedRevision + 1n;
-          manifest = {
-            deleted: {
-              raw_records: null,
-              messages: null,
-              session_files: null,
-              message_chunks: null,
-              session_embeddings: null,
-              redaction_events: redactions.count,
-            },
-            nulled_fields: [
-              "title",
-              "first_prompt",
-              "observed_commits",
-              "observed_diff_stat",
-              "branch",
-            ],
-            reset_fields: purgeResetFields,
-            retained: [
-              "session_identity",
-              "ingest_receipts",
-              "audit_events",
-              "installation",
-            ],
-          };
-          await tx.traceSessionControl.update({
-            where: {
-              organizationId_id: {
-                organizationId: caller.organizationId,
-                id: current.id,
-              },
-            },
-            data: {
-              purgedAt: new Date(),
-              purgedByUserId: caller.userId,
-              purgeReason: reason,
-              purgeManifest: manifest,
-              normalizerContext: {},
-              projectedContext: {},
-              projectionError: null,
-              projectionState: "queued",
-              embeddingRevision: null,
-              acceptedRevision: revision,
-            },
-          });
-          const outboxId = uuidv7();
-          await tx.traceOutbox.create({
-            data: {
-              id: outboxId,
-              ...where,
-              revision,
-              kind: "purge",
-              payload: {},
-            },
-          });
-          await this.dependencies.jobs.enqueue(tx, { ...where, outboxId });
+        const purged: string[] = [];
+        for (const row of rows) {
+          if (row.purgedAt) continue;
+          const applied = await this.purgeOne(tx, context, caller, row, reason);
+          if (row.id === current.id) manifest = applied;
+          purged.push(row.id);
         }
         const result = purgeOutputSchema.parse({
           id: current.id,
-          updated: current.purgedAt === null,
+          updated: purged.length > 0,
           cleanup: current.purgeCompletedAt ? "completed" : "queued",
           manifest,
         });
         return {
           result,
-          resourceIds: [current.id],
+          resourceIds: [
+            current.id,
+            ...purged.filter((id) => id !== current.id),
+          ],
           detail: {
             reason,
             manifest: result.manifest,
             reset_fields: purgeResetFields,
+            cascaded: purged.length,
           },
         };
       },
