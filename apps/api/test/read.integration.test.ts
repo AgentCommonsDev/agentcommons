@@ -1645,10 +1645,21 @@ describe("read services on ClickHouse", () => {
     );
     expect(adminTree.result.nodes).toHaveLength(4);
     expect(adminTree.result.nodes.every((node) => !node.gap)).toBe(true);
-    const list = await sessions.list(context(), {});
-    expect(list.result.items.map((item) => item.session_id)).toContain(
+    // ids.empty is the org-a session with no messages, seeded uniquely under the
+    // host/team/empty repo. Filter to that repo so its visibility is asserted
+    // deterministically: the default page holds only 50 rows ordered started_at then
+    // session_id, and earlier tests in this file accumulate more than 50 org-a
+    // sessions, so ids.empty is not guaranteed to sit on the unfiltered first page.
+    const empty = await sessions.list(context(), {
+      filters: { repo_name: "host/team/empty" },
+    });
+    expect(empty.result.items.map((item) => item.session_id)).toContain(
       ids.empty,
     );
+    // Cross-organization isolation on the list read path: the row policy excludes
+    // another organization's session regardless of paging, so the unfiltered
+    // default page (org-a's whole corpus) proves it.
+    const list = await sessions.list(context(), {});
     expect(list.result.items.map((item) => item.session_id)).not.toContain(
       ids.other,
     );
@@ -2237,6 +2248,16 @@ describe("purged sessions leave the browse surfaces (ADR 0088)", () => {
     expect(treeIds).toEqual(expect.arrayContaining([mixedRoot, liveChild]));
     expect(treeIds).not.toContain(purgedSibling);
     expect(mixedTree.result.nodes.every((node) => !node.gap)).toBe(true);
+    // ADR 0088 on the detail-page header too: the children relatives list omits the purged
+    // sibling for an admin (read-model children query filters purged_at IS NULL), so the list
+    // agrees with the child_count fix instead of showing a purged skeleton.
+    const mixedHeader = await sessions.get(admin(), { session_id: mixedRoot });
+    const headerChildIds = (mixedHeader.result.header?.children ?? []).map(
+      (child) => child.session_id,
+    );
+    expect(headerChildIds).toContain(liveChild);
+    expect(headerChildIds).not.toContain(purgedSibling);
+    expect(mixedHeader.result.header?.child_count).toBe(1);
   });
 
   it("still returns a purged session's skeleton on a direct get, and only to an admin", async () => {

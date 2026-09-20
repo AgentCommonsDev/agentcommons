@@ -349,7 +349,7 @@ async function sessionRelatives(
           `SELECT 'parent' AS relation,${relativeSelect(false)} FROM api_ro.session_details s WHERE s.session_id IN {parents:Array(UUID)}`,
         ]
       : []),
-    `SELECT 'child' AS relation,${relativeSelect(false)} FROM (SELECT * FROM api_ro.session_details WHERE parent_session_id IN {ids:Array(UUID)} ORDER BY started_at,session_id LIMIT 10 BY parent_session_id) s`,
+    `SELECT 'child' AS relation,${relativeSelect(false)} FROM (SELECT * FROM api_ro.session_details WHERE parent_session_id IN {ids:Array(UUID)} AND purged_at IS NULL ORDER BY started_at,session_id LIMIT 10 BY parent_session_id) s`,
   ];
   const result = await client.query(branches.join(" UNION ALL "), {
     self: [...scope.self],
