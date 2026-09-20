@@ -163,7 +163,8 @@ export class TraceProjectionService {
           await this.publishReceipts(organizationId, sessionId);
         return;
       }
-      await this.publish(plan, build);
+      if (await this.publish(plan, build))
+        await this.syncCurrentMessages(plan, build);
       await this.cleanupSuperseded(plan, build);
       await this.cleanupGenerations(organizationId, sessionId);
     } catch (error) {
@@ -675,8 +676,12 @@ export class TraceProjectionService {
       violationsEnforced: toolPolicy.enabled,
     };
   }
-  /** Commit the built generation on the control row, if the lease still holds. */
-  private async publish(plan: Plan, build: Build): Promise<void> {
+  /**
+   * Commit the built generation on the control row, if the lease still holds. Returns whether
+   * the publication committed: only then may the search corpus advance to this revision, since
+   * `syncCurrentMessages` writes rows at the published revision and must never write ahead of it.
+   */
+  private async publish(plan: Plan, build: Build): Promise<boolean> {
     const { organizationId, sessionId } = plan;
     const {
       target,
@@ -689,7 +694,7 @@ export class TraceProjectionService {
       violations,
       violationsEnforced,
     } = build;
-    await this.dependencies.prisma.$transaction(async (tx) => {
+    return this.dependencies.prisma.$transaction(async (tx) => {
       await lockSession(tx, organizationId, sessionId);
       const current = await tx.traceSessionControl.findUniqueOrThrow({
         where: { organizationId_id: { organizationId, id: sessionId } },
@@ -699,7 +704,7 @@ export class TraceProjectionService {
         current.projectionLease !== plan.lease ||
         current.publishedRevision !== plan.control.publishedRevision
       )
-        return;
+        return false;
       if (plan.rescan) await this.reauthorizeRescan(tx, plan.rescan);
       if (rewritten && plan.redactor) {
         const text = await this.redactControlText(tx, current, plan.redactor);
@@ -806,7 +811,46 @@ export class TraceProjectionService {
           projection_ready: projection?.ready ?? false,
         },
       });
+      return true;
     });
+  }
+  /**
+   * Advance the published-only search corpus for a committed publication (ADR 0092). Run after
+   * `publish` commits, so the corpus only ever holds published rows. A failure is recorded and
+   * swallowed: the publication is already durable and the corpus is merely stale for this delta,
+   * never wrong; `currentBackfillSql` reprojects it. Not rethrown, so a committed publish is
+   * never retried (which would find nothing pending and never repair the corpus).
+   */
+  private async syncCurrentMessages(plan: Plan, build: Build): Promise<void> {
+    try {
+      await this.dependencies.repository.syncCurrentMessages(build.target, {
+        rescan: plan.rescan !== null,
+      });
+    } catch {
+      try {
+        await this.dependencies.prisma.$transaction((tx) =>
+          this.audit(tx, plan.organizationId, {
+            action: "trace.search.corpus",
+            statusCode: 503,
+            resourceType: "session",
+            resourceIds: [plan.sessionId],
+            // Enough to detect and target the drift: the session (resourceIds), the published
+            // revision and generation the corpus is now behind, and whether it was a rescan.
+            // Repair is `pnpm --filter @agentcommons/traces migrate` after clearing the
+            // `messages_current_v1` backfill ledger row, or the scoped backfill for this
+            // organization (ADR 0092); the primary publication is already durable.
+            detail: {
+              stale: true,
+              revision: String(build.target.revision),
+              generation: String(build.target.generation),
+              rescan: plan.rescan !== null,
+            },
+          }),
+        );
+      } catch {
+        // Observability is best-effort; the publication is durable and the corpus reprojectable.
+      }
+    }
   }
   /**
    * Re-redact the control row's native text with the rescan's engine. An upload can

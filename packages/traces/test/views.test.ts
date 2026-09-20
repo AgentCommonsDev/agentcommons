@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyticsViews } from "../src/views/analytics.js";
 import { baseViews } from "../src/views/base.js";
+import { searchViews } from "../src/views/search.js";
 import { securityStatements } from "../src/security.js";
 import { sessionScopeLookup } from "../src/control.js";
 
@@ -227,5 +228,38 @@ describe("adoption and reuse metrics can be scoped to root sessions", () => {
     // The rollup adds no api_ro layering and no second control read (one query context).
     expect(sql("metrics_reuse_sessions")).not.toMatch(/\bapi_ro\./);
     expect(sql("metrics_search_sessions")).not.toMatch(/\bapi_ro\./);
+  });
+});
+
+// @req R-SRCH-06 @req R-SRCH-18 @req R-SRCH-21
+describe("search reads the published-only corpus with one FINAL scan per matcher pass", () => {
+  const search = Object.fromEntries(
+    searchViews(database).map((view) => [view.name, view.sql]),
+  );
+  const search_sql = (name: string) => {
+    const definition = search[name];
+    if (definition === undefined) throw new Error(`No search view ${name}.`);
+    return definition;
+  };
+  const corpusScans = (sql: string) =>
+    sql.split(`\`${database}\`.\`messages_current\` FINAL`).length - 1;
+  it("scans messages_current, never messages, and drops the cross-revision latest GROUP-BY", () => {
+    for (const name of ["search_messages", "search_messages_session"]) {
+      const sql = search_sql(name);
+      // Reads the corpus, not the primary `messages` table or its base view.
+      expect(sql, name).not.toMatch(/FROM `ac_trace`\.messages FINAL/);
+      expect(sql, name).not.toMatch(/\bapi_ro\.messages\b/);
+      // No `latest` GROUP-BY (max(revision) per message_id): FINAL resolves the latest
+      // published revision intrinsically on the corpus, so it is not recomputed.
+      expect(sql, name).not.toContain("max(revision)");
+      // The corpus is the current generation; the search path never filters by generation.
+      expect(sql, name).not.toContain("generation");
+      // Tombstones and pending rows never surface: FINAL plus the deleted filter.
+      expect(sql, name).toContain("NOT deleted");
+    }
+    // Strict match: one corpus scan. Relaxation: two (the message pass and the session
+    // set that must together cover every query token) — never four as `messages` needed.
+    expect(corpusScans(search_sql("search_messages"))).toBe(1);
+    expect(corpusScans(search_sql("search_messages_session"))).toBe(2);
   });
 });

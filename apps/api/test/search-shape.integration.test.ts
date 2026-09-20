@@ -4,7 +4,10 @@ import { ClickHouseError, createTraceClient } from "@agentcommons/traces";
 import type { TraceReaders } from "@agentcommons/traces";
 import { formatSearch } from "@agentcommons/core/format";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { startTraceDatabase } from "../../../packages/traces/test/support.js";
+import {
+  refreshSearchCorpus,
+  startTraceDatabase,
+} from "../../../packages/traces/test/support.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import {
   emptyTraceRow,
@@ -331,6 +334,8 @@ beforeAll(async () => {
   );
   await flush();
   await writer.close();
+  // The corpus was seeded raw into `messages`; publish it into the search corpus (ADR 0092).
+  await refreshSearchCorpus(db);
   const dependencies = {
     prisma: db.prisma,
     readers: db.traceReaders,

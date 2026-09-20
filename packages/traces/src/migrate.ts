@@ -12,6 +12,9 @@ import {
   traceTables,
   auditColumns,
   sessionReadColumns,
+  messagesCurrentColumns,
+  MESSAGES_CURRENT_TABLE,
+  MESSAGES_CURRENT_INDEX,
 } from "./schema.js";
 import { SESSION_READS_TABLE } from "./reads.js";
 import {
@@ -20,6 +23,7 @@ import {
   sessionScopeControlColumns,
   userScopeControlColumns,
 } from "./security.js";
+import { currentBackfillSql } from "./repository.js";
 import { analyticsViews } from "./views/analytics.js";
 import { baseViews } from "./views/base.js";
 import { searchTermsSql, searchViews } from "./views/search.js";
@@ -84,6 +88,8 @@ const columns = (fields: Record<string, string>) =>
 const SEARCH_TERMS_COLUMN = "search_terms";
 /** Name of the text index over that column. */
 const SEARCH_TERMS_INDEX = "message_terms";
+/** Ledger name of the one-time rebuild of the published-only search corpus (ADR 0092). */
+const MESSAGES_CURRENT_BACKFILL = "messages_current_v1";
 const countSchema = z.array(z.object({ n: z.coerce.number() }));
 /**
  * The normalized search terms of every message as a stored column plus its text index.
@@ -190,6 +196,17 @@ export async function migrateTraces(
       `CREATE MATERIALIZED VIEW IF NOT EXISTS ${db}.capture_session_identity TO ${db}.session_identities AS SELECT organization_id,session_id FROM ${db}.sessions`,
     );
     await searchTermsStatements(client, config.database);
+    // The published-only search corpus (ADR 0092): one row per message keyed by identity and
+    // versioned by revision, so a single FINAL scan resolves the latest published content.
+    // Search reads this, not `messages`; the repository writes it at publish and the backfill
+    // below rebuilds it from `messages` and control.
+    await command(
+      `CREATE TABLE IF NOT EXISTS ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} (${columns(messagesCurrentColumns)},revision Int64,deleted UInt8,INDEX ${sqlIdentifier(MESSAGES_CURRENT_INDEX)} search_terms TYPE text(tokenizer=splitByNonAlpha)) ENGINE=ReplacingMergeTree(revision,deleted) ORDER BY (organization_id,session_id,message_id)`,
+    );
+    // Add the text index idempotently for a corpus an earlier release created without it.
+    await command(
+      `ALTER TABLE ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} ADD INDEX IF NOT EXISTS ${sqlIdentifier(MESSAGES_CURRENT_INDEX)} search_terms TYPE text(tokenizer=splitByNonAlpha)`,
+    );
     for (const [name, table] of Object.entries(traceTables))
       if (table.vector)
         await command(
@@ -233,12 +250,28 @@ export async function migrateTraces(
       `GRANT SELECT,INSERT ON ${db}.backfills TO ${sqlIdentifier(config.writerUsername)}`,
     );
     await command(
+      `GRANT SELECT,INSERT,ALTER DELETE ON ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} TO ${sqlIdentifier(config.writerUsername)}`,
+    );
+    await command(
       `GRANT CREATE USER, ALTER USER ON *.* TO ${sqlIdentifier(config.accessUsername)}`,
     );
     await command(
       `GRANT ${reader},${vectorReader} TO ${sqlIdentifier(config.accessUsername)} WITH ADMIN OPTION`,
     );
     for (const query of securityStatements(config)) await command(query);
+    // Rebuild the published-only search corpus once (ADR 0092) before the search views point at
+    // it, so search never reads an empty corpus. Guarded by the backfills ledger so a redeploy
+    // does not rescan; the rebuild itself is idempotent, so an interrupted run retries safely.
+    const backfilled = await client.query({
+      query: `SELECT count() AS n FROM ${db}.backfills FINAL WHERE name=${sqlString(MESSAGES_CURRENT_BACKFILL)}`,
+      format: "JSONEachRow",
+    });
+    if ((countSchema.parse(await backfilled.json())[0]?.n ?? 0) === 0) {
+      await command(currentBackfillSql(config.database, false));
+      await command(
+        `INSERT INTO ${db}.backfills (name,completed_at) VALUES (${sqlString(MESSAGES_CURRENT_BACKFILL)},now64(6))`,
+      );
+    }
     for (const view of retiredViews)
       await command(`DROP VIEW IF EXISTS api_ro.${sqlIdentifier(view)}`);
     for (const { name, sql, grant } of [

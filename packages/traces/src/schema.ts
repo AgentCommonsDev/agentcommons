@@ -65,6 +65,28 @@ export const messageColumns = {
   searchable: "Bool",
   search_text: "String",
 } as const;
+/**
+ * The published-only search corpus (`messages_current`, ADR 0092): the message fields a
+ * search reads, no payload. One row per `(organization_id, session_id, message_id)`, versioned
+ * by `revision` with a `deleted` tombstone, so a single `FINAL` scan resolves the latest
+ * published content without the cross-revision `latest` GROUP-BY that `messages` needs. Its
+ * `search_terms` is the value copied from a `messages` row's materialized column, so the
+ * corpus stores no raw searchable text. Written only at publish, so no pending (revision >
+ * published) row ever enters it; the row policy fences it by live control.
+ */
+export const messagesCurrentColumns = {
+  organization_id: "String",
+  session_id: "UUID",
+  message_id: "UUID",
+  seq: "UInt32",
+  role: "LowCardinality(String)",
+  kind: "LowCardinality(String)",
+  searchable: "Bool",
+  search_terms: "String",
+} as const;
+/** Name of the published-only search corpus table and its text index over `search_terms`. */
+export const MESSAGES_CURRENT_TABLE = "messages_current";
+export const MESSAGES_CURRENT_INDEX = "message_terms";
 export const rawColumns = {
   raw_record_id: "UUID",
   organization_id: "String",

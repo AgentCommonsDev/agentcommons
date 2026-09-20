@@ -304,6 +304,8 @@ revision. Canonical views choose the newest published, non-deleted version. The 
 text index uses the shared English Snowball token expression (§7.1); optional vectors
 have native cosine HNSW indexes (§11). There are no PostgreSQL corpus/GIN indexes.
 
+Search reads a separate published-only corpus, `messages_current`: a `ReplacingMergeTree(revision, deleted)` keyed by `(organization_id, session_id, message_id)`, carrying only the search columns (`seq`, `role`, `kind`, `searchable`, `search_terms`) plus `revision` and a `deleted` tombstone, with the `message_terms` text index over `search_terms`. The projection writes it at publish and never for a pending revision, so it holds exactly one row per message at its latest published, current-generation content; a single `FINAL` scan resolves that content and drops tombstones, without the cross-revision `latest` GROUP-BY the primary `messages` table needs. Its row policy fences it by live control identically to `messages` (ADR 0092).
+
 ### 4.3 Records and messages
 
 **RawRecord**: `id`, `sessionId`, `pos bigint` (source position: byte offset for JSONL,
@@ -462,6 +464,13 @@ never a 401: an overloaded server is a retry, not a lost session.
   the shim coalesces duplicate hook delivery before assigning a new intent. Rescans
   reconstruct markers from receipts. A pending pi leaf preserves the last displayed
   branch while adding its resume marker (ADR 0020).
+- After a publication commits its revision, the worker advances the published-only search
+  corpus (`messages_current`, §4.2, ADR 0092) for that revision: it copies the publication's
+  projected message rows from `messages` (live rows and tombstones), and for a rescan also
+  tombstones messages absent from the new generation. It runs after the commit, never during
+  build, so no pending row enters the corpus. A corpus write failure leaves search stale for
+  that delta — never wrong and never an isolation break — is audited (`trace.search.corpus`,
+  with session, revision and generation), and is repaired by the idempotent backfill.
 - The JSON-document reader records `transcriptMetadata.sourceRecordCount` on each
   observed rewrite. The Gemini normalizer projects only positions within that current
   document length. A shrinking document removes obsolete derived slots while retaining
@@ -1316,14 +1325,17 @@ Input (`packages/core/schemas/search.ts`):
 - `limit` = hit messages before window merging (default 5, max 50), with at most 3 hits
   per session so one noisy session cannot fill a page. `context` 0–3 (default 1) counts
   normalized non-thinking messages either side.
-- Pipeline: shared structured filters → native ClickHouse text-index candidates → latest
-  published message identity. Query and indexed text use native lowercase tokenization
+- Pipeline: shared structured filters → native ClickHouse text-index candidates over the published-only search corpus `messages_current`
+  (§4.2, ADR 0092), resolved by one `FINAL` scan — the latest published message identity
+  with no cross-revision GROUP-BY. Query and indexed text use native lowercase tokenization
   and the shared English inflection rule table of §7.1; no experimental ClickHouse
   function is involved, so the same DDL runs self-hosted and on ClickHouse Cloud. The
   normalizer runs once per row at write time: `ac_trace.messages.search_terms` is a stored
-  (MATERIALIZED) column of the normalized tokens, the `message_terms` text index covers
-  that column, and `search_messages` filters and ranks over it, so a search tokenizes each
-  row once and never evaluates the inflection regexes per row per query (ADR 0074; on the
+  (MATERIALIZED) column of the normalized tokens on `messages`, copied to `messages_current`
+  at publish; the `message_terms` text index covers it, and `search_messages` /
+  `search_messages_session` filter and rank over `messages_current`, so a search tokenizes
+  each row once, never evaluates the inflection regexes per row per query, and never pays the
+  cross-revision latest GROUP-BY (ADR 0074, ADR 0092; on the
   hosted corpus that per-row evaluation cost 27–31 s of work for 5.7 M tokens behind the
   5 s reader limit). Every query token must match one message; punctuation separates
   tokens. When that strict match returns nothing on a first page of a multi-word lexical

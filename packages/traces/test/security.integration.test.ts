@@ -6,7 +6,7 @@ import {
   PrismaClient,
   type ReadAuthority,
 } from "@agentcommons/db";
-import { startTraceDatabase } from "./support.js";
+import { refreshSearchCorpus, startTraceDatabase } from "./support.js";
 import { TraceFixtures } from "./fixtures.js";
 import { provisionOrganization } from "../../../apps/api/test/support.js";
 import { cleanup } from "../../../scripts/cleanup.js";
@@ -1257,6 +1257,8 @@ it("keeps the native lexical relation uncapped beyond 500 rows and composes pred
     values,
     format: "JSONEachRow",
   });
+  // These rows were seeded raw into `messages`; publish them into the search corpus (ADR 0092).
+  await refreshSearchCorpus(db);
   const matches = await select(
     member,
     "SELECT session_id,seq,rank FROM search_messages(q='uncappedcatalogmarker') ORDER BY seq",
@@ -1971,5 +1973,165 @@ it("shows every principal exactly the rows the per-row dictionary policies showe
         () => admin.close(),
       ]),
     ).toEqual([]);
+  }
+});
+
+// @req R-SRCH-06 @req R-SRCH-18 @req R-SEC-01 @req R-SEC-02 @req R-SRCH-21
+it("serves search from the published-only corpus with the same isolation and freshness as messages", async () => {
+  // One session per case, each carrying a unique token so presence/absence is unambiguous.
+  const pub = await seed(owner);
+  const edit = await seed(owner);
+  const pending = await seed(owner);
+  const rescan = await seed(owner);
+  const priv = await seed(owner, "PRIVATE");
+  const purged = await seed(owner);
+  const foreign = await seed(other);
+  const say = async (
+    authority: ReadAuthority,
+    session: string,
+    revision: bigint,
+    generation: bigint,
+    seq: number,
+    token: string,
+    messageId: string = randomUUID(),
+  ) =>
+    row("messages", authority, session, revision, generation, {
+      message_id: messageId,
+      seq,
+      content: token,
+      search_text: token,
+      searchable: true,
+      received_at: new Date(),
+    });
+  await say(owner, pub, 1n, 0n, 0, "czpubmark");
+  // An in-generation edit of one message (same message_id, higher revision): the superseded
+  // revision must not resurrect.
+  const editId = randomUUID();
+  await say(owner, edit, 1n, 0n, 0, "czoldmark", editId);
+  await say(owner, edit, 2n, 0n, 0, "cznewmark", editId);
+  // A pending row (revision above the published revision) must never enter the corpus.
+  await say(owner, pending, 1n, 0n, 0, "czpendpubmark");
+  await say(owner, pending, 2n, 0n, 1, "czpendmark");
+  // A rescan republished the session as generation 1: the message present only in the old
+  // generation vanishes; the one rewritten in the new generation survives.
+  await say(owner, rescan, 1n, 0n, 0, "czvanmark");
+  const survivorId = randomUUID();
+  await say(owner, rescan, 1n, 0n, 1, "czsurvmark", survivorId);
+  await say(owner, rescan, 2n, 1n, 1, "czsurvmark", survivorId);
+  await say(owner, priv, 1n, 0n, 0, "czprivmark");
+  await say(owner, purged, 1n, 0n, 0, "czpurgmark");
+  await say(other, foreign, 1n, 0n, 0, "czforeignmark");
+  const control = (id: string, org: string, data: Record<string, unknown>) =>
+    db.prisma.traceSessionControl.update({
+      where: { organizationId_id: { organizationId: org, id } },
+      data,
+    });
+  await control(edit, owner.organizationId, {
+    acceptedRevision: 2n,
+    publishedRevision: 2n,
+  });
+  await control(rescan, owner.organizationId, {
+    acceptedRevision: 2n,
+    publishedRevision: 2n,
+    redactionGeneration: 1n,
+  });
+  await control(purged, owner.organizationId, { purgedAt: new Date() });
+  // Publish the raw-seeded corpus, then drive search from it exactly as an agent would.
+  await refreshSearchCorpus(db);
+  const admin = createTraceClient({
+    url: db.traceMigration.url,
+    username: db.traceMigration.username,
+    password: db.traceMigration.password,
+  });
+  const sessionsOf = async (
+    authority: ReadAuthority,
+    view: string,
+    q: string,
+  ) =>
+    (
+      await select(
+        authority,
+        `SELECT DISTINCT session_id FROM api_ro.${view}(q={q:String}) ORDER BY session_id`,
+        { q },
+      )
+    ).rows
+      .map((r) => String(r.session_id))
+      .sort();
+  try {
+    // The pre-change search over `messages` (FINAL + the cross-revision latest GROUP-BY), kept
+    // as the differential oracle: the corpus must show every principal the same rows.
+    const org = traceScopeSql.organization;
+    const nq = `assumeNotNull((SELECT ${searchTermsSql("{q:String}")}))`;
+    const latest = `(message_id,revision) IN (SELECT message_id,max(revision) FROM ac_trace.messages WHERE organization_id=${org} GROUP BY message_id)`;
+    const before = (matcher: "all" | "any") =>
+      `SELECT session_id,seq FROM ac_trace.messages FINAL WHERE organization_id=${org} AND searchable AND NOT deleted AND notEmpty(tokens(${nq})) AND ${matcher === "all" ? "hasAllTokens" : "hasAnyTokens"}(search_terms,${nq}) AND ${latest}`;
+    await admin.command({
+      query: `CREATE OR REPLACE VIEW api_ro.search_before DEFINER=ac_trace_view_owner SQL SECURITY DEFINER AS ${before("all")}`,
+    });
+    await admin.command({
+      query: `GRANT SELECT ON api_ro.search_before TO ac_trace_reader`,
+    });
+    const tokens = [
+      "czpubmark",
+      "czoldmark",
+      "cznewmark",
+      "czpendpubmark",
+      "czpendmark",
+      "czvanmark",
+      "czsurvmark",
+      "czprivmark",
+      "czpurgmark",
+      "czforeignmark",
+    ];
+    // Gate 1: byte-identical results, before (messages) vs after (messages_current), for each
+    // principal — owner (admin), member, and the foreign organization.
+    for (const authority of [owner, member, other])
+      for (const token of tokens)
+        expect(
+          await sessionsOf(authority, "search_messages", token),
+          `${JSON.stringify(authority.permissions)} ${token}`,
+        ).toEqual(await sessionsOf(authority, "search_before", token));
+    // The exact rows each principal sees, spelling out the cases the differential asserts.
+    const seen = (authority: ReadAuthority, token: string) =>
+      sessionsOf(authority, "search_messages", token);
+    expect(await seen(member, "czpubmark")).toEqual([pub]);
+    expect(await seen(member, "cznewmark")).toEqual([edit]);
+    expect(await seen(member, "czoldmark")).toEqual([]); // superseded edit, no resurrection
+    expect(await seen(member, "czpendpubmark")).toEqual([pending]);
+    expect(await seen(member, "czpendmark")).toEqual([]); // pending, never in the corpus
+    expect(await seen(member, "czsurvmark")).toEqual([rescan]); // rescan survivor
+    expect(await seen(member, "czvanmark")).toEqual([]); // rescan-vanished, tombstoned
+    expect(await seen(member, "czprivmark")).toEqual([]); // private, hidden from member
+    expect(await seen(owner, "czprivmark")).toEqual([priv]); // shown to admin
+    expect(await seen(owner, "czpurgmark")).toEqual([]); // purged, hidden from admin too
+    expect(await seen(member, "czforeignmark")).toEqual([]); // foreign organization
+    expect(await seen(other, "czforeignmark")).toEqual([foreign]);
+    // Gate 2: purge and visibility propagate to the NEXT search with no reproject, because the
+    // policy reads control live.
+    await control(pub, owner.organizationId, { purgedAt: new Date() });
+    expect(await seen(member, "czpubmark")).toEqual([]);
+    await control(priv, owner.organizationId, { visibility: "PUBLIC" });
+    expect(await seen(member, "czprivmark")).toEqual([priv]);
+    // Gate 4: a corpus left stale (a published message that never reached it) is stale, never
+    // wrong: isolation holds and the backfill is the idempotent repair.
+    await say(owner, edit, 3n, 0n, 1, "czstalemark");
+    await control(edit, owner.organizationId, {
+      acceptedRevision: 3n,
+      publishedRevision: 3n,
+    });
+    expect(await seen(member, "czstalemark")).toEqual([]); // stale: not yet in the corpus
+    await refreshSearchCorpus(db);
+    expect(await seen(member, "czstalemark")).toEqual([edit]); // repaired
+    // Relaxation reads the same corpus: two tokens spread across the edit session's messages.
+    expect(
+      await sessionsOf(
+        member,
+        "search_messages_session",
+        "cznewmark czstalemark",
+      ),
+    ).toEqual([edit]);
+  } finally {
+    await admin.command({ query: `DROP VIEW IF EXISTS api_ro.search_before` });
+    await admin.close();
   }
 });

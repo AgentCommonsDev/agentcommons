@@ -8,6 +8,8 @@ import { cleanup } from "../../../scripts/cleanup.js";
 import {
   clickHouseConfigSchema,
   clickHouseEnvironmentKeys,
+  createTraceClient,
+  currentBackfillSql,
   migrateTraces,
   CLICKHOUSE_IMAGE,
   TraceReaders,
@@ -115,6 +117,30 @@ export async function startTraceDatabase(
   }
 }
 
+/**
+ * Rebuilds the published-only search corpus (`messages_current`, ADR 0092) from `messages` and
+ * control, for fixtures that seed messages with raw inserts (`insertRaw` or the writer client)
+ * and set control directly instead of publishing through `TraceFixtures.insert`. Runs the same
+ * backfill the migration runs, as the migration admin principal (the reader and writer are not
+ * admitted to control). Call it once after seeding, before searching.
+ */
+export async function refreshSearchCorpus(
+  db: Awaited<ReturnType<typeof startTraceDatabase>>,
+): Promise<void> {
+  const admin = createTraceClient({
+    url: db.traceMigration.url,
+    username: db.traceMigration.username,
+    password: db.traceMigration.password,
+  });
+  try {
+    await admin.command({
+      query: currentBackfillSql(db.traceConfig.database, false),
+      abort_signal: AbortSignal.timeout(60000),
+    });
+  } finally {
+    await admin.close();
+  }
+}
 /** The actual runtime boundary for native dual-store integration fixtures. */
 export function traceEnvironment(
   config: ClickHouseConfig,

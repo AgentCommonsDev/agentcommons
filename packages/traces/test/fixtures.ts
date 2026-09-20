@@ -80,6 +80,20 @@ export class TraceFixtures {
       },
       data: { acceptedRevision: revision, publishedRevision: revision },
     });
+    // Advance the published-only search corpus for a published message row, exactly as the
+    // projection worker does (ADR 0092), so tests that publish through the fixtures search the
+    // corpus without a separate step. Raw (`insertRaw`) or unpublished rows do not, so a
+    // pending row never enters; those fixtures call `refreshSearchCorpus` after setting control.
+    if (table === "messages")
+      await this.db.traces.syncCurrentMessages(
+        {
+          organizationId: control.organizationId,
+          sessionId,
+          revision,
+          generation: control.redactionGeneration,
+        },
+        { rescan: false },
+      );
   }
   async update(
     table: TraceTable,

@@ -1,4 +1,5 @@
 import { sqlIdentifier, sqlString } from "../client.js";
+import { MESSAGES_CURRENT_TABLE } from "../schema.js";
 import { traceScopeSql, traceView, type TraceViewDefinition } from "./base.js";
 
 /**
@@ -42,9 +43,15 @@ export function searchTermsSql(expression: string): string {
 
 export function searchViews(database: string): TraceViewDefinition[] {
   const db = sqlIdentifier(database);
-  // The normalized tokens of every row are the stored `search_terms` column (computed once
-  // at write time by the same expression; see `searchTermsStatements` in migrate.ts), so a
-  // search costs one tokenization per row, never the inflection regexes.
+  // Search reads the published-only corpus `messages_current` (ADR 0092), not `messages`.
+  // The corpus holds one row per message keyed by `(organization_id, session_id, message_id)`
+  // and versioned by `revision`, so a single `FINAL` scan resolves the latest published
+  // content and drops tombstones — no cross-revision `latest` GROUP-BY, no generation fan-out.
+  // Its row policy fences organization, publication, visibility and purge from live control.
+  const corpus = `${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} FINAL`;
+  // The normalized tokens of every row are the stored `search_terms` column (copied at publish
+  // from the `messages` row's materialized column, computed once at write time by the shared
+  // expression), so a search costs one tokenization per row, never the inflection regexes.
   const terms = "search_terms";
   // The scalar subquery makes the normalized needle a native constant for the text index;
   // assumeNotNull strips the Nullable wrapper every release gives scalar subqueries, which
@@ -56,22 +63,18 @@ export function searchViews(database: string): TraceViewDefinition[] {
   const rank = `multiIf(role='USER',1.0,kind='TEXT',0.4,kind='TOOL_USE',0.2,0.1)
         * arrayCount(token -> has(tokens(${query}),token),tokens(${terms}))
         / (1 + log(1 + length(tokens(${terms}))))`;
-  // The latest published revision of each message; filtering before this check would
-  // resurrect a previous edit that still contains the query.
-  const latest = `(message_id,revision) IN (
-          SELECT message_id,max(revision) FROM ${db}.messages WHERE organization_id=${traceScopeSql.organization} GROUP BY message_id
-        )`;
-  // Match history through the text index, then require the latest published row.
-  // The organization predicate narrows the scan to the caller's primary-key range; the row
-  // policy fences everything else.
+  // Match through the text index over the corpus. `FINAL` resolves the latest published
+  // revision of each message intrinsically (revision is the ReplacingMergeTree version and
+  // is not in the sort key), so a previous edit that still contains the query cannot
+  // resurrect. The organization predicate narrows the scan to the caller's primary-key
+  // range; the row policy fences everything else.
   return [
     traceView(
       "search_messages",
       `SELECT session_id,seq,${rank} AS rank
-      FROM ${db}.messages FINAL
+      FROM ${corpus}
       WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted AND notEmpty(tokens(${query}))
-        AND hasAllTokens(${terms},${query})
-        AND ${latest}`,
+        AND hasAllTokens(${terms},${query})`,
     ),
     // The relaxation fallback (ADR 0081): a session matches when its messages together carry
     // every query token, not one message alone, so a natural-language query whose words are
@@ -82,15 +85,13 @@ export function searchViews(database: string): TraceViewDefinition[] {
     traceView(
       "search_messages_session",
       `SELECT session_id,seq,${rank} AS rank
-      FROM ${db}.messages FINAL
+      FROM ${corpus}
       WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted AND notEmpty(tokens(${query}))
         AND hasAnyTokens(${terms},${query})
-        AND ${latest}
         AND session_id IN (
-          SELECT session_id FROM ${db}.messages FINAL
+          SELECT session_id FROM ${corpus}
           WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted
             AND hasAnyTokens(${terms},${query})
-            AND ${latest}
           GROUP BY session_id
           HAVING length(arrayDistinct(arrayFlatten(groupArray(
             arrayFilter(token -> has(tokens(${terms}),token),tokens(${query}))

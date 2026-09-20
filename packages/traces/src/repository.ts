@@ -23,6 +23,8 @@ import {
   traceTables,
   rawColumns,
   messageColumns,
+  messagesCurrentColumns,
+  MESSAGES_CURRENT_TABLE,
   type TraceTable,
 } from "./schema.js";
 import { emptyTraceRow, traceWire, validateTraceRow } from "./rows.js";
@@ -53,6 +55,30 @@ const sha256 = (value: string) =>
 /** Digest of a trace value in its wire form; publishers compare it against stored manifests. */
 export const fingerprint = (value: unknown): string =>
   sha256(JSON.stringify(traceWire(value)));
+/** Columns of the published-only search corpus in insert order (revision and deleted appended). */
+const currentColumns = [
+  ...Object.keys(messagesCurrentColumns),
+  "revision",
+  "deleted",
+]
+  .map(sqlIdentifier)
+  .join(",");
+/**
+ * Rebuilds the published-only search corpus (`messages_current`, ADR 0092) from `messages` and
+ * control: the latest published, current-generation, non-deleted row of every message of every
+ * unpurged, published session, as a live (deleted=0) corpus row. Idempotent — the corpus is a
+ * ReplacingMergeTree(revision, deleted), so re-inserting a row dedups by revision — so it is
+ * safe to re-run and is the repair for a stale corpus. `scoped` limits it to one organization
+ * (parameter `organization`) for a targeted repair; otherwise it rebuilds every organization
+ * (the migration backfill). It reads `control_session_scope` and `messages`, so it must run as
+ * a principal the internal (`USING 1`) policies admit for both — the migration/admin principal,
+ * never a reader or the writer (the writer is not admitted to control).
+ */
+export function currentBackfillSql(database: string, scoped: boolean): string {
+  const db = sqlIdentifier(database);
+  const org = scoped ? " AND m.organization_id={organization:String}" : "";
+  return `INSERT INTO ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} (${currentColumns}) SELECT m.organization_id,m.session_id,m.message_id,argMax(m.seq,m.revision),argMax(m.role,m.revision),argMax(m.kind,m.revision),argMax(m.searchable,m.revision),argMax(m.search_terms,m.revision),max(m.revision),0 FROM ${db}.messages m INNER JOIN ${db}.${sqlIdentifier("control_session_scope")} c ON c.organization_id=m.organization_id AND c.session_id=m.session_id WHERE c.purged=0 AND c.published_revision>0 AND m.generation=c.redaction_generation AND m.revision<=c.published_revision${org} GROUP BY m.organization_id,m.session_id,m.message_id HAVING argMax(m.deleted,m.revision)=0`;
+}
 const pageInput = z.object({
   after: z.string().nullable(),
   limit: z.number().int().min(1).max(1000),
@@ -288,6 +314,46 @@ export class TraceRepository {
         })),
       ),
     ]);
+  }
+  /**
+   * Advances the published-only search corpus (`messages_current`, ADR 0092) for one just-
+   * published revision. Called after control has advanced `publishedRevision` to `scope.revision`,
+   * never before: only rows at or below the published revision may enter, so no pending row
+   * reaches the corpus (a higher-revision pending row would win the ReplacingMergeTree merge and
+   * the row policy would then hide the published survivor — the failure that rules out changing
+   * `messages` in place). Copies this publication's projected rows (live deltas and normal-ingest
+   * tombstones) from `messages`, reusing their materialized search terms. For a rescan, which
+   * rewrites a whole session as a new generation, it also tombstones messages present in the
+   * previous published generation but absent from the new one, which the generation clause
+   * `messages` relies on cannot express here. A failure leaves the corpus stale, never wrong or
+   * corrupt; the backfill (`currentBackfillSql`) is the idempotent repair.
+   */
+  async syncCurrentMessages(
+    scope: TraceScope,
+    options: { rescan: boolean },
+  ): Promise<void> {
+    traceScopeSchema.parse(scope);
+    const db = sqlIdentifier(this.config.database);
+    const table = `${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)}`;
+    const query_params = {
+      organization: scope.organizationId,
+      session: scope.sessionId,
+      generation: scope.generation.toString(),
+      revision: scope.revision.toString(),
+    };
+    const scoped =
+      "organization_id={organization:String} AND session_id={session:UUID} AND generation={generation:Int64} AND revision={revision:Int64}";
+    await this.client.command({
+      query: `INSERT INTO ${table} (${currentColumns}) SELECT organization_id,session_id,message_id,seq,role,kind,searchable,search_terms,{revision:Int64},deleted FROM ${db}.messages WHERE ${scoped}`,
+      query_params,
+      abort_signal: AbortSignal.timeout(30000),
+    });
+    if (options.rescan)
+      await this.client.command({
+        query: `INSERT INTO ${table} (${currentColumns}) SELECT organization_id,session_id,message_id,0,'','',false,'',{revision:Int64},1 FROM ${table} FINAL WHERE organization_id={organization:String} AND session_id={session:UUID} AND deleted=0 AND message_id NOT IN (SELECT message_id FROM ${db}.messages WHERE ${scoped} AND deleted=0)`,
+        query_params,
+        abort_signal: AbortSignal.timeout(30000),
+      });
   }
   async readSession(
     organizationId: string,
@@ -730,6 +796,19 @@ export class TraceRepository {
           : { generation: generation.toString() }),
       },
     );
+    // A full purge (no generation) also reclaims the published-only search corpus for the
+    // session; the row policy already hides it live, so this is physical cleanup. The corpus
+    // has no generations, so per-generation cleanup never touches it.
+    if (generation === undefined)
+      await this.client.command({
+        query: `ALTER TABLE ${sqlIdentifier(this.config.database)}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} DELETE WHERE organization_id={organization:String} AND session_id={session:UUID}`,
+        query_params: {
+          organization: scope.organizationId,
+          session: scope.sessionId,
+        },
+        clickhouse_settings: { mutations_sync: "2" },
+        abort_signal: AbortSignal.timeout(30000),
+      });
   }
   /**
    * Reclaims rows the published revision has superseded: within `scope.generation`, every

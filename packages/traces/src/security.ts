@@ -111,6 +111,22 @@ export function securityStatements(config: TraceMigrationConfig): string[] {
       ),
     );
   }
+  // The published-only search corpus (ADR 0092). It holds only published rows and is always
+  // the current generation, so its policy needs no generation clause: organization, published
+  // (revision <= published_revision), unpurged and — through the control table's own policy and
+  // the fail-closed fallbacks — caller-visible. Isolation is identical to `messages`; a hidden,
+  // purged or foreign session is absent from control, so the fallbacks (published 0, purged 1)
+  // hide its rows on the next read with no reproject.
+  {
+    const current = lookup("session_id");
+    statements.push(
+      ...policies(
+        "messages_current",
+        `${organization} AND revision>0 AND ${current("purged", "toInt64(1)")}=0 AND revision<=${current("published_revision", "toInt64(0)")}`,
+        [writer, administrator],
+      ),
+    );
+  }
   // Member and installation metadata dictionaries; only installations also exist as a table.
   for (const [name, type, attributes] of [
     ["user", "String", "email String,name String"],
