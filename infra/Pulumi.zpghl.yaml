@@ -46,3 +46,4 @@ config:
   agentcommons:clickhouseCloudUrl: https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443
   agentcommons:clickhouseCloudPassword:
     secure: v1:20tiBf/T856G67vN:oIYLYthzOkzwjuA+ldImQqIVPBg6N6siFS3Z4vk=
+  agentcommons:instanceType: t4g.xlarge
