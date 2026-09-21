@@ -58,6 +58,23 @@ export const settingsCopy = {
     empty: "No domains yet",
     emptyHint: "Add a domain so people can join without being added by hand.",
   },
+  sso: {
+    title: "Require SSO",
+    description:
+      "Require Google sign-in for members in your sign-in domains and turn off email and password for them.",
+    toggle: "Require SSO",
+    enabledHint:
+      "Members in your sign-in domains sign in with Google. Their existing passwords no longer work.",
+    disabledHint: "Members can sign in with Google or with email and password.",
+    enable: "Require SSO",
+    disable: "Allow passwords",
+    enableTitle: "Require SSO?",
+    enableDescription:
+      "Members in your sign-in domains will have to sign in with Google. Anyone signed in with a password has to switch to Google the next time they sign in.",
+    disableTitle: "Allow password sign-in?",
+    disableDescription:
+      "Members in your sign-in domains can sign in with email and password again.",
+  },
   dashboard: {
     title: "Home dashboard",
     description: "The dashboard members see when they open Home.",

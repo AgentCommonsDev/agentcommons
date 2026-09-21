@@ -329,6 +329,10 @@ model OrganizationSettings {
   organizationId    String   @id @map("organization_id")
   embeddingsEnabled Boolean  @default(false) @map("embeddings_enabled")
   revision          Int      @default(0)
+  // Per-organization SSO-only (ADR 0093). `ssoRevision` is a dedicated version counter:
+  // `revision` is an embeddings epoch folded into the vector digest, so SSO must not touch it.
+  ssoOnly           Boolean  @default(false) @map("sso_only")
+  ssoRevision       Int      @default(0) @map("sso_revision")
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   @@map("organization_settings")

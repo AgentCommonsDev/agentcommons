@@ -13,6 +13,7 @@ import {
 } from "./config.js";
 import { authEnvironment } from "./environment.js";
 import { membershipTransaction } from "./transaction.js";
+import { domainRequiresSso } from "./sso.js";
 import { seedPolicies } from "../services/policies.js";
 import { seedToolPolicy } from "../services/tool-policy.js";
 import { AuditService, type AuditActor } from "../services/audit.js";
@@ -136,7 +137,12 @@ export async function bootstrap(
     }
     await tx.$queryRaw`SELECT id FROM "user" WHERE id=${user.id} FOR UPDATE`;
     const accounts = await tx.account.count({ where: { userId: user.id } });
-    if (config.emailPasswordEnabled && accounts === 0)
+    // No password setup link when the domain requires SSO sign-in (ADR 0093).
+    if (
+      config.emailPasswordEnabled &&
+      accounts === 0 &&
+      !(await domainRequiresSso(tx, user.email))
+    )
       await native.api.requestPasswordReset({
         body: { email: user.email, redirectTo: passwordSetupUrl(config) },
       });

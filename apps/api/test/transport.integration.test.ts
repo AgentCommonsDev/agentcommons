@@ -5,6 +5,7 @@ import {
 import { traceServices } from "./trace-services.js";
 import { TraceFixtures } from "../../../packages/traces/test/fixtures.js";
 import { OrganizationEmbeddingsService } from "../src/services/organization-embeddings.js";
+import { OrganizationSsoService } from "../src/services/organization-sso.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { gzipSync } from "node:zlib";
 import type { FastifyInstance } from "fastify";
@@ -124,6 +125,10 @@ beforeAll(async () => {
     organizationEmbeddings: new OrganizationEmbeddingsService({
       ...deps,
       jobs,
+    }),
+    organizationSso: new OrganizationSsoService({
+      prisma: database.prisma,
+      audit: database.audit,
     }),
     billing: new BillingService({
       ...deps,

@@ -308,6 +308,76 @@ export function DomainsCard() {
   );
 }
 
+export function SsoCard() {
+  const { organization } = useWorkspace();
+  const client = useQueryClient();
+  const switchId = useId();
+  const text = copy.settings.sso;
+  const [confirm, setConfirm] = useState<boolean | null>(null);
+  const queryKey = [organization.id, "organization-sso"];
+  const query = useQuery({
+    queryKey,
+    queryFn: async ({ signal }) =>
+      unwrap(await api.GET("/api/v1/organization/sso", { signal })),
+  });
+  const data = query.data;
+  return (
+    <Card data-testid="settings-sso">
+      <CardHeader>
+        <div className="min-w-0">
+          <CardTitle>{text.title}</CardTitle>
+          <CardDescription>{text.description}</CardDescription>
+        </div>
+        {data && (
+          <div className="flex items-center gap-2.5">
+            <Label htmlFor={switchId}>{text.toggle}</Label>
+            <Switch
+              id={switchId}
+              checked={data.sso_only}
+              onCheckedChange={(next) => {
+                setConfirm(next);
+              }}
+            />
+          </div>
+        )}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <QueryState query={query} rows={1}>
+          {(data) => (
+            <p className="text-sm leading-relaxed text-muted">
+              {data.sso_only ? text.enabledHint : text.disabledHint}
+            </p>
+          )}
+        </QueryState>
+      </CardContent>
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null);
+        }}
+        title={confirm ? text.enableTitle : text.disableTitle}
+        description={confirm ? text.enableDescription : text.disableDescription}
+        confirmLabel={confirm ? text.enable : text.disable}
+        destructive={false}
+        requireReason={false}
+        action={async () => {
+          if (confirm === null) return;
+          const value = unwrap(
+            await api.PUT("/api/v1/organization/sso", {
+              body: { sso_only: confirm },
+            }),
+          );
+          client.setQueryData(queryKey, value);
+          await Promise.all([
+            client.invalidateQueries({ queryKey: [organization.id] }),
+            client.invalidateQueries({ queryKey: authConfigQuery.queryKey }),
+          ]);
+        }}
+      />
+    </Card>
+  );
+}
+
 export function DefaultDashboardCard() {
   const { organization } = useWorkspace();
   const client = useQueryClient();

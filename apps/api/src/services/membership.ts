@@ -23,6 +23,7 @@ import {
 } from "../auth/config.js";
 import { membershipTransaction } from "../auth/transaction.js";
 import { invalidateSetupTokens } from "../auth/setup-tokens.js";
+import { domainRequiresSso } from "../auth/sso.js";
 import type { AuditService } from "./audit.js";
 import { lockOrganization, requireCookie } from "./auth.js";
 import { CursorCodec } from "./cursor.js";
@@ -367,7 +368,13 @@ export class MembershipService {
             users.set(email, user);
             members.set(user.id, { id: member.id, removedAt: null });
             memberIds.push(member.id);
-            if (!existing && this.config.emailPasswordEnabled)
+            // No password setup link when the member's domain requires SSO (ADR 0093):
+            // that address can only sign in through the organization's provider.
+            if (
+              !existing &&
+              this.config.emailPasswordEnabled &&
+              !(await domainRequiresSso(tx, email))
+            )
               await auth.api.requestPasswordReset({
                 body: { email, redirectTo: passwordSetupUrl(this.config) },
               });

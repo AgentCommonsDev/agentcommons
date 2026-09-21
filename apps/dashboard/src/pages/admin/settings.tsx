@@ -5,6 +5,7 @@ import {
   DomainsCard,
   EmbeddingsCard,
   GeneralCard,
+  SsoCard,
 } from "../../features/admin/settings";
 
 export function SettingsPage() {
@@ -18,6 +19,7 @@ export function SettingsPage() {
         <GeneralCard />
         <EmbeddingsCard />
         <DomainsCard />
+        <SsoCard />
         <DefaultDashboardCard />
       </div>
     </>

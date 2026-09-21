@@ -1,6 +1,6 @@
 import { LogIn, ShieldCheck } from "lucide-react";
-import { useState, type ReactNode } from "react";
-import { authClient, authResult } from "../lib/auth-client";
+import { useEffect, useState, type ReactNode } from "react";
+import { authClient, authResult, isSsoRequired } from "../lib/auth-client";
 import { errorMessage } from "../lib/display";
 import type { AuthConfig } from "../lib/types";
 import { copy } from "../copy";
@@ -84,6 +84,13 @@ export function AuthMethods({
   const [providerError, setProviderError] = useState<string | null>(null);
   const provider = config.oidc_enabled || config.social_provider;
   const passwordEnabled = config.email_password_enabled;
+  const ssoRequired = isSsoRequired(error);
+  // An SSO-only organization refused the password: fall back to the provider so the
+  // member can finish with the sign-in their organization requires, while the toggle
+  // stays available in case they meant a different account.
+  useEffect(() => {
+    if (ssoRequired) setUsePassword(false);
+  }, [ssoRequired]);
   const showPassword = passwordEnabled && (!provider || usePassword);
   const showProvider = Boolean(provider) && !usePassword;
   const shown =
@@ -117,7 +124,11 @@ export function AuthMethods({
       {!passwordEnabled && !provider && (
         <Alert variant="danger">{copy.auth.noMethods}</Alert>
       )}
-      {shown && <Alert variant="danger">{shown}</Alert>}
+      {ssoRequired ? (
+        <Alert variant="info">{copy.auth.ssoRequired}</Alert>
+      ) : (
+        shown && <Alert variant="danger">{shown}</Alert>
+      )}
       {(passwordEnabled || provider) && children}
     </>
   );

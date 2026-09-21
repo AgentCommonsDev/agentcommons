@@ -69,7 +69,7 @@ async function redactUserName<T extends { name?: string }>(
 }
 
 /** The lowercase domain part of an email address. */
-function emailDomain(email: string): string | undefined {
+export function emailDomain(email: string): string | undefined {
   return email.toLowerCase().split("@").at(-1);
 }
 

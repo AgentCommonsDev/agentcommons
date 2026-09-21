@@ -37,6 +37,7 @@ import {
   type NativeAuth,
 } from "../auth/config.js";
 import { authenticationFailure } from "../auth/failure.js";
+import { domainRequiresSso } from "../auth/sso.js";
 import {
   cookieCaller,
   identityFromHeaders,
@@ -81,6 +82,22 @@ const nativeRoutes: readonly {
   },
   { method: "GET", pattern: /^\/auth\/verify-email$/, saasOnly: true },
 ];
+/** The password credential paths a per-organization SSO-only policy refuses (ADR 0093). */
+const ssoOnlyCredentialPath =
+  /^\/auth\/(sign-in\/email|sign-up\/email|request-password-reset)$/;
+/** The email a credential request carries, or null when the body has none or is malformed. */
+function credentialEmail(body: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === "object" && "email" in parsed) {
+      const email: unknown = parsed.email;
+      return typeof email === "string" ? email : null;
+    }
+  } catch {
+    /* A malformed body cannot sign in; native auth returns its own 400. */
+  }
+  return null;
+}
 const stripeObjectSchema = z.looseObject({
   customer: z
     .union([z.string().max(255), z.looseObject({ id: z.string().max(255) })])
@@ -314,6 +331,39 @@ export class AuthService {
             ? "auth.password_setup"
             : `auth.${path.split("/").at(-1) ?? "request"}`;
       operation.action = action;
+      // Per-organization SSO-only (§9.1, ADR 0093). Password credentials are refused for any
+      // email whose domain is an enrolled, verified Google sign-in domain of an organization
+      // that set ssoOnly. This runs before native.handler, so a direct call to /auth/* cannot
+      // bypass it (this method is the single funnel), and it stays dormant when instance
+      // email/password is disabled, where native auth refuses credentials anyway (ADR 0091).
+      // The lookup fails closed: an error refuses the request rather than allowing it.
+      if (
+        this.config.emailPasswordEnabled &&
+        request.method === "POST" &&
+        ssoOnlyCredentialPath.test(path)
+      ) {
+        const email = credentialEmail(await request.clone().text());
+        let required: boolean;
+        try {
+          required = email
+            ? await domainRequiresSso(this.prisma, email)
+            : false;
+        } catch (error) {
+          const failure = new ServiceError(
+            503,
+            "AUTH_UNAVAILABLE",
+            "Sign-in is temporarily unavailable. Try again shortly.",
+          );
+          failure.cause = error;
+          throw failure;
+        }
+        if (required)
+          throw new ServiceError(
+            403,
+            "SSO_REQUIRED",
+            "This organization requires SSO sign-in.",
+          );
+      }
       let stripeEvent: {
         id: string;
         type: string;

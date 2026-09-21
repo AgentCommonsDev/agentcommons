@@ -4,6 +4,7 @@ import { TraceReaders, TraceRepository } from "@agentcommons/traces";
 import { TraceProjectionService } from "./services/trace-projection.js";
 import { BillingMeterService } from "./services/billing-meter.js";
 import { OrganizationEmbeddingsService } from "./services/organization-embeddings.js";
+import { OrganizationSsoService } from "./services/organization-sso.js";
 import { createPolicyCache } from "./services/policy-cache.js";
 import { EmbeddingService } from "./embeddings/service.js";
 import {
@@ -60,8 +61,9 @@ export async function createRuntime(env: Env) {
     const policies = createPolicyCache(prisma);
     const audit = new AuditService(prisma, policies);
     const organizations = await prisma.organization.findMany({
-      select: { id: true },
+      select: { id: true, slug: true },
     });
+    const ssoOnlyOrgs = new Set(env.AUTH_SSO_ONLY_ORGS);
     for (const organization of organizations)
       await prisma.$transaction(async (tx) => {
         const inserted = await seedPolicies(tx, organization.id, null, extras);
@@ -90,6 +92,36 @@ export async function createRuntime(env: Env) {
             },
             tx,
           );
+        // Default-on SSO-only for named organizations (ADR 0093). Idempotent: the row is
+        // written only when the setting is not already on, so revision does not churn on boot.
+        if (ssoOnlyOrgs.has(organization.slug)) {
+          const current = await tx.organizationSettings.findUnique({
+            where: { organizationId: organization.id },
+            select: { ssoOnly: true },
+          });
+          if (!current?.ssoOnly) {
+            await tx.organizationSettings.upsert({
+              where: { organizationId: organization.id },
+              create: {
+                organizationId: organization.id,
+                ssoOnly: true,
+                ssoRevision: 1,
+              },
+              update: { ssoOnly: true, ssoRevision: { increment: 1 } },
+            });
+            await audit.write(
+              operatorContext(),
+              {
+                action: "organization.sso.reconcile",
+                resourceType: "organization",
+                resourceIds: [organization.id],
+                actor: operatorActor(organization.id),
+                detail: { sso_only: true },
+              },
+              tx,
+            );
+          }
+        }
       });
     const cursors = new CursorCodec(env.BETTER_AUTH_SECRET);
     const provider = env.embeddingProvider
@@ -160,9 +192,11 @@ export async function createRuntime(env: Env) {
       embeddings ? ["similar_sessions"] : [],
       jobs,
     );
+    const organizationSso = new OrganizationSsoService({ prisma, audit });
     const services: Services = {
       dashboards,
       organizationEmbeddings,
+      organizationSso,
       billing: new BillingService({
         prisma,
         audit,

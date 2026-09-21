@@ -2024,8 +2024,9 @@ identity-provider configuration beyond native Google domain access is outside th
 An instance runs **SSO-only** when `AUTH_EMAIL_PASSWORD_ENABLED=false` and a social or
 OIDC provider is configured: Better Auth registers no email/password endpoints, so
 sign-in, public signup and admin setup links are all password-free and people sign in
-only through the provider. On-prem deployments may ship with this default (ADR 0091);
-per-organization SSO-only enforcement is deferred to a future ADR.
+only through the provider. On-prem deployments may ship with this default (ADR 0091).
+
+Per-organization SSO-only (ADR 0093). An organization may set `ssoOnly`. When set, password authentication is refused for any email whose domain is one of that organization's enrolled, verified Google sign-in domains (domains are one-per-organization, ADR 0049): `POST /auth/sign-in/email`, `POST /auth/sign-up/email` and `POST /auth/request-password-reset` return `403` with code `SSO_REQUIRED` and message "This organization requires SSO sign-in." The check runs in the single `/auth/*` funnel before Better Auth handles the request, so it cannot be bypassed by calling the API directly; social sign-in and OAuth callbacks are never gated. It is domain-scoped: an email in an ssoOnly organization's domain is forced to SSO regardless of the user's other memberships. It is dormant when instance email/password is disabled (ADR 0091 already refuses credentials then) and independent of that instance-wide posture. The domain→organization→ssoOnly lookup fails closed: a lookup error refuses with `503 AUTH_UNAVAILABLE`. Admin member-add and operator bootstrap issue no password setup link for an ssoOnly domain. `GET`/`PUT /organization/sso` (`{ sso_only, revision }`, PUT body `{ sso_only }`) read and write the flag under effective admin authority, matching the embeddings settings (REST-only, no MCP tool); every write locks the organization, bumps a dedicated `sso_revision`, and is audited (`organization.sso.update`). `AUTH_SSO_ONLY_ORGS` (comma-separated slugs) defaults named organizations to ssoOnly at boot, idempotently and audited (`organization.sso.reconcile`).
 
 **Sign-in domains (ADR 0049).** Organization owners and administrators manage Google
 sign-in domains on Settings: list the current organization's domains and add an exact

@@ -1,5 +1,6 @@
 import type { DashboardService } from "../services/dashboards.js";
 import type { OrganizationEmbeddingsService } from "../services/organization-embeddings.js";
+import type { OrganizationSsoService } from "../services/organization-sso.js";
 import type { SimilarService } from "../services/similar.js";
 import type { BillingService } from "../services/billing.js";
 import type { SessionEventsService } from "../services/session-events.js";
@@ -19,6 +20,7 @@ import type { JobService } from "../services/jobs.js";
 export interface Services {
   dashboards: DashboardService;
   organizationEmbeddings: OrganizationEmbeddingsService;
+  organizationSso: OrganizationSsoService;
   billing: BillingService;
   similar?: SimilarService;
   events: SessionEventsService;

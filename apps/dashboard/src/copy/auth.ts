@@ -37,6 +37,8 @@ export const authCopy = {
   passwordHint: "Use at least 8 characters.",
   noMethods:
     "No sign-in method is configured for this instance. Contact its administrator.",
+  ssoRequired:
+    "This organization requires SSO. Email and password sign-in is turned off for its members.",
   invalidSetup:
     "This password setup link is missing its token. Ask your administrator for a new link.",
   signInFailed: "Sign-in failed. Check your credentials and try again.",

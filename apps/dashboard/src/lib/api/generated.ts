@@ -89,6 +89,24 @@ export interface paths {
     patch: operations["patch_organization_embeddings"];
     trace?: never;
   };
+  "/api/v1/organization/sso": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read whether this organization requires SSO sign-in */
+    get: operations["get_organization_sso"];
+    /** Require or stop requiring SSO sign-in for this organization */
+    put: operations["put_organization_sso"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/billing": {
     parameters: {
       query?: never;
@@ -3246,6 +3264,114 @@ export interface operations {
             sessions_indexed: number;
             sessions_pending: number;
             last_attempt: ("completed" | "failed" | "reserved") | null;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  get_organization_sso: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            sso_only: boolean;
+            revision: number;
+          };
+        };
+      };
+      /** @description Default Response */
+      "4XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+      /** @description Default Response */
+      "5XX": {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            code: string;
+            message: string;
+            position?: number | null;
+            detail?: components["schemas"]["JsonValue"];
+          };
+        };
+      };
+    };
+  };
+  put_organization_sso: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": {
+          sso_only: boolean;
+        };
+      };
+    };
+    responses: {
+      /** @description Default Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            sso_only: boolean;
+            revision: number;
           };
         };
       };

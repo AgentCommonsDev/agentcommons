@@ -80,6 +80,17 @@ export function environment(runtimeEnv: NodeJS.ProcessEnv = process.env) {
         ),
       EMAIL_TRANSPORT: emailTransportSchema.default("none"),
       AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
+      // Organization slugs that boot reconciles to ssoOnly=true (ADR 0093), comma-separated.
+      // The orchestrator sets it for the hosted default; it is never set in Pulumi config.
+      AUTH_SSO_ONLY_ORGS: z
+        .string()
+        .default("")
+        .transform((value) =>
+          value
+            .split(",")
+            .map((slug) => slug.trim().toLowerCase())
+            .filter(Boolean),
+        ),
       // Identical MCP handshakes from one key and client write one audit row per window
       // (§8.1, ADR 0073); 0 writes every handshake.
       MCP_HANDSHAKE_WINDOW_SECONDS: z.coerce

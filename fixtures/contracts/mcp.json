@@ -2461,6 +2461,7 @@
         "repo_name": "github.com/rek7/agentcommons",
         "branch": "main",
         "user_email": "transport-primary@example.com",
+        "by_teammate": false,
         "started_at": "2026-09-07T01:00:00.000Z",
         "messages": [
           {
@@ -2499,6 +2500,7 @@
       "model": null,
       "models_used": [],
       "user_email": "transport-primary@example.com",
+      "by_teammate": false,
       "installation_hostname": "transport-fixture",
       "installation_id": "00000000-0000-4000-8000-000000000002",
       "repo_name": "github.com/rek7/agentcommons",

@@ -213,6 +213,24 @@ export function registerApiRoutes(
     },
     (ctx, input) => runtime().organizationEmbeddings.set(ctx, input.body),
   );
+  route(
+    "GET",
+    "/organization/sso",
+    "Read whether this organization requires SSO sign-in",
+    { ...read, output: schema.organizationSsoOutputSchema },
+    (ctx) => runtime().organizationSso.get(ctx),
+  );
+  route(
+    "PUT",
+    "/organization/sso",
+    "Require or stop requiring SSO sign-in for this organization",
+    {
+      ...read,
+      body: schema.organizationSsoInputSchema,
+      output: schema.organizationSsoOutputSchema,
+    },
+    (ctx, input) => runtime().organizationSso.set(ctx, input.body),
+  );
   if (features.saas) {
     route(
       "GET",

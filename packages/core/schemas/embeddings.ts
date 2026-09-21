@@ -3,6 +3,14 @@ import { enabledInputSchema } from "./admin.js";
 import { nonnegativeIntegerSchema } from "./common.js";
 
 export const organizationEmbeddingsInputSchema = enabledInputSchema;
+/** Per-organization SSO-only (ADR 0093): the requested state and its dashboard version. */
+export const organizationSsoInputSchema = z.strictObject({
+  sso_only: z.boolean(),
+});
+export const organizationSsoOutputSchema = z.strictObject({
+  sso_only: z.boolean(),
+  revision: nonnegativeIntegerSchema,
+});
 export const organizationEmbeddingsOutputSchema = z.strictObject({
   enabled: z.boolean(),
   available: z.boolean(),
