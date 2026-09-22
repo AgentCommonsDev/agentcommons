@@ -16,6 +16,7 @@ config:
     EMBEDDINGS_DIMENSIONS: "1024"
     LOG_LEVEL: info
     CADDY_TRUSTED_PROXIES: cloudflare
+    AUTH_SSO_ONLY_ORGS: zpghl
   agentcommons:databaseMigrationPassword:
     secure: v1:eXOOEIMRc8Gky9bV:Q3rwOoyEUUUHmHuRPflpXkMALe0pz1wOM8rdD0M1ExHE4dhdImxJmXKY1SUSgEwH
   agentcommons:databaseAppPassword:
