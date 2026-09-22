@@ -17,6 +17,12 @@
   <a href="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/live-canary.yml"><img src="https://github.com/AgentCommonsDev/agentcommons/actions/workflows/live-canary.yml/badge.svg" alt="Live harness canary status"></a>
 </p>
 
+<p align="center">
+  Built internally at <a href="https://goodhartlabs.com/">Goodhart Labs</a>, an arm of
+  <a href="https://zeropath.com">ZeroPath</a>, to make our own coding agents more productive
+  and cut their spend. Source at <a href="https://github.com/Goodhart-Labs">github.com/Goodhart-Labs</a>.
+</p>
+
 AgentCommons records every Claude Code, Codex, Gemini CLI and pi session on your team's
 machines into one searchable index. People search it in a dashboard. Agents search the
 same index over MCP, so an agent about to fix a test can first read the session where a
