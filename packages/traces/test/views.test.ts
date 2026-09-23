@@ -3,7 +3,7 @@ import { analyticsViews } from "../src/views/analytics.js";
 import { baseViews } from "../src/views/base.js";
 import { searchViews } from "../src/views/search.js";
 import { securityStatements } from "../src/security.js";
-import { sessionScopeLookup } from "../src/control.js";
+import { sessionScopeLookup, traceScopeSql } from "../src/control.js";
 
 const database = "ac_trace";
 const views = Object.fromEntries(
@@ -36,6 +36,7 @@ describe("session relations read control once per query and scan each base table
       "member_impact",
       "metrics_reuse_sessions",
       "metrics_search_sessions",
+      "metrics_reuse_outcomes",
     ])
       expect(sql(name), name).not.toContain("dictGet(");
   });
@@ -70,6 +71,12 @@ describe("session relations read control once per query and scan each base table
     expect(
       sql("metrics_reuse_sessions").split("`session_reads` FINAL").length - 1,
     ).toBe(1);
+    // The reuse-to-outcome view carries the same reuse scan profile: the projection plus the
+    // target-owner lookup (two sessions scans) and one pass over the stored reads.
+    expect(scansOf(sql("metrics_reuse_outcomes"), "sessions")).toBe(2);
+    expect(
+      sql("metrics_reuse_outcomes").split("`session_reads` FINAL").length - 1,
+    ).toBe(1);
     // Search adoption reads attributed API calls, never the message corpus (ADR 0067).
     expect(scansOf(sql("metrics_search_sessions"), "messages")).toBe(0);
     expect(scansOf(sql("metrics_search_sessions"), "sessions")).toBe(1);
@@ -103,6 +110,7 @@ describe("session relations read control once per query and scan each base table
     for (const name of [
       "messages",
       "metrics_reuse_sessions",
+      "metrics_reuse_outcomes",
       "session_reuse",
       "member_impact",
       "metrics_search_sessions",
@@ -228,6 +236,46 @@ describe("adoption and reuse metrics can be scoped to root sessions", () => {
     // The rollup adds no api_ro layering and no second control read (one query context).
     expect(sql("metrics_reuse_sessions")).not.toMatch(/\bapi_ro\./);
     expect(sql("metrics_search_sessions")).not.toMatch(/\bapi_ro\./);
+  });
+});
+
+// @req R-DASH-48
+describe("reuse is joined to outcome proxies per root session for cohort comparison", () => {
+  const view = () => sql("metrics_reuse_outcomes");
+  it("carries the root-rolled reuse flags beside effort and completion signals", () => {
+    // Same rollup as the other reuse relations: one materialized projection, the self-join
+    // ladder, reads aggregated by the reading session's root.
+    expect(view()).toContain("WITH proj AS MATERIALIZED");
+    expect(view()).toContain(
+      "LEFT JOIN proj p1 ON p1.session_id=p0.parent_session_id",
+    );
+    expect(view()).toContain("JOIN rootmap ro ON ro.session_id=r.session_id");
+    expect(view()).toContain("GROUP BY ro.root_session_id");
+    expect(view()).not.toContain("GROUP BY r.session_id");
+    // Reuse cohort keys and a raw parent so a reader can filter to whole task trees.
+    expect(view()).toContain("s.parent_session_id AS parent_session_id");
+    expect(view()).toContain("AS reused");
+    expect(view()).toContain("AS cross_user_reused");
+    // Effort proxies summed over the root's subtree; completion from the lifecycle, never the
+    // open-text end_reason.
+    expect(view()).toContain("sum(p.tool_call_count) AS tool_call_count");
+    expect(view()).toContain(
+      "sum(toInt64(p.input_tokens)+toInt64(p.output_tokens)) AS tokens",
+    );
+    // Completion is the lifecycle signal (ended_at), not the open-text end_reason.
+    expect(view()).toContain("toUInt8(s.ended_at IS NOT NULL) AS completed");
+  });
+  it("gates the rerun-loop proxy to admins so a member never scans the corpus for it", () => {
+    const admin = traceScopeSql.admin;
+    // Admin-only column, NULL for members, exactly as memory_assisted is gated.
+    expect(view()).toContain(
+      `if(${admin},toUInt8(coalesce(rl.rerun_loop,0)),NULL) AS rerun_loop`,
+    );
+    // The outcome_reruns roll-up is the only api_ro layer, and its scan is behind the admin
+    // scalar, so a non-admin query prunes it away.
+    expect(view()).toContain("JOIN api_ro.outcome_reruns rr");
+    expect(view()).toContain(`WHERE ${admin} GROUP BY ro.root_session_id`);
+    expect(view().match(/\bapi_ro\.\w+/g)).toEqual(["api_ro.outcome_reruns"]);
   });
 });
 

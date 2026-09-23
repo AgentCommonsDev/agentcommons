@@ -336,6 +336,32 @@ export const traceViewCatalog: Readonly<
       cross_user_reuse_rate: "cross_user_reuse_sessions divided by sessions",
     },
   },
+  metrics_reuse_outcomes: {
+    purpose:
+      "Per visible session, its root-rolled reuse flags beside outcome proxies, so reused and non-reused cohorts can be compared",
+    columns: {
+      session_id: sessionKey,
+      organization_id: scoped,
+      started_at: startedAt,
+      repo_name: repoOfSession,
+      user_id: "Member who ran it",
+      harness: "Harness of the session",
+      parent_session_id:
+        "Parent session of a subagent, fork or spawned session; NULL for a root",
+      reused:
+        "1 when the session or a subagent read at least one prior session",
+      cross_user_reused: "1 when it read another member's session",
+      duration_seconds: "Seconds from start to end or last activity",
+      tokens:
+        "input plus output tokens, summed over the session and its subagents",
+      tool_call_count: "Tool calls made by the session and its subagents",
+      message_count: "Transcript messages of the session and its subagents",
+      completed:
+        "1 when the session reported an end (clean-finish proxy); an abandoned session is 0",
+      rerun_loop:
+        "1 when the same test or build command failed at least twice (admins only)",
+    },
+  },
   metrics_health: {
     purpose: "Per session capture health flags (admins only)",
     columns: {

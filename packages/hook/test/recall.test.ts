@@ -9,19 +9,28 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hash, writeAtomic } from "../src/files.js";
-import { HARNESSES, type CliHarness } from "../src/harnesses.js";
+import {
+  HARNESSES,
+  preToolPayloadSchema,
+  type CliHarness,
+} from "../src/harnesses.js";
+import { enforcePreTool } from "../src/hook.js";
 import { configure } from "../src/install.js";
 import {
   RECALL_HINT_EVERY_PROMPTS,
   RECALL_RECENT_LIMIT,
   RECALL_REFRESH_MS,
+  beforeEditDedupPath,
+  beforeEditHint,
+  beforeEditHintText,
   hintCounterPath,
   hookContextOutput,
   matchRecent,
   matchedHintText,
   promptHint,
+  rankRecent,
   recallCachePath,
   recallHintText,
   refreshRecallHint,
@@ -54,25 +63,37 @@ const GIT = {
 };
 const REPO = "github.com/acme/widgets";
 const NOW = new Date("2026-09-11T12:00:00Z");
+/** A cached session with the distill fields at their no-signal defaults unless overridden. */
+const session = (
+  fields: Pick<RecentSession, "id" | "title" | "startedAt" | "branch"> &
+    Partial<RecentSession>,
+): RecentSession => ({
+  reuseCount: 0,
+  byTeammate: false,
+  messageCount: 0,
+  endReason: null,
+  files: [],
+  ...fields,
+});
 const recent: RecentSession[] = [
-  {
+  session({
     id: "01a08fd7-9907-72a3-9135-80162670d93a",
     title: "Fix the inventory timeout in src/inventory.js",
     startedAt: "2026-09-10T12:00:00Z",
     branch: "main",
-  },
-  {
+  }),
+  session({
     id: "01a08fd7-9667-7163-a987-86201f0e0eb3",
     title: "Retry payments the way the provider requires",
     startedAt: "2026-09-09T12:00:00Z",
     branch: "fix/payments-retry",
-  },
-  {
+  }),
+  session({
     id: "01a08fd7-93e7-7257-84df-b7f4f8ba44dd",
     title: "Fake clock for the TTL cache test",
     startedAt: "2026-09-08T12:00:00Z",
     branch: "main",
-  },
+  }),
 ];
 const cache = (
   directory: string,
@@ -132,6 +153,11 @@ function listFetch(
                 title: item.title,
                 started_at: item.startedAt,
                 branch: item.branch,
+                reuse_count: item.reuseCount,
+                by_teammate: item.byTeammate,
+                message_count: item.messageCount,
+                end_reason: item.endReason,
+                files: item.files,
                 user_email: "person@example.com",
                 file_count: 3,
               })),
@@ -215,7 +241,7 @@ describe("recall hint", () => {
     const expected = startHintText(REPO, 14, recent, NOW);
     expect(overview).toBe(hookContextOutput("SessionStart", expected));
     expect(expected).toBe(
-      'AgentCommons has 14 indexed sessions on github.com/acme/widgets; newest: "Fix the inventory timeout in src/inventory.js" (1 day ago, get 01a08fd7-9907-72a3-9135-80162670d93a); "Retry payments the way the provider requires" (2 days ago, get 01a08fd7-9667-7163-a987-86201f0e0eb3); "Fake clock for the TTL cache test" (3 days ago, get 01a08fd7-93e7-7257-84df-b7f4f8ba44dd). Before changing code, search them for the test, file or error you were given (search over MCP), then read a hit with get and cite its session_id.',
+      'AgentCommons has 14 indexed sessions on github.com/acme/widgets; worth opening: "Fix the inventory timeout in src/inventory.js" (1 day ago, get 01a08fd7-9907-72a3-9135-80162670d93a); "Retry payments the way the provider requires" (2 days ago, get 01a08fd7-9667-7163-a987-86201f0e0eb3); "Fake clock for the TTL cache test" (3 days ago, get 01a08fd7-93e7-7257-84df-b7f4f8ba44dd). Before changing code, search them for the test, file or error you were given (search over MCP), then read a hit with get and cite its session_id.',
     );
     // Once per session: a resume's SessionStart is silent.
     expect(
@@ -483,6 +509,7 @@ describe("recall hint", () => {
     expect(request.origin).toBe(new URL(f.config.server).origin);
     expect(request.searchParams.get("limit")).toBe(String(RECALL_RECENT_LIMIT));
     expect(request.searchParams.get("roots_only")).toBe("true");
+    expect(request.searchParams.get("recall")).toBe("true");
     expect(
       JSON.parse(request.searchParams.get("filters") ?? "") as unknown,
     ).toEqual({ repo_name: REPO });
@@ -522,16 +549,31 @@ describe("recall hint", () => {
       "current",
     );
     expect(calls).toHaveLength(3);
-    // Titles are bounded and cache files are keyed by the hashed repository name.
+    // Titles are bounded and cache files are keyed by the hashed repository name; the distill
+    // fields ride along and are bounded (files ≤ 3 × 200 chars, end_reason ≤ 40).
     now += RECALL_REFRESH_MS;
-    const long = { ...(recent[0] as RecentSession), title: "t".repeat(400) };
+    const long: RecentSession = {
+      ...(recent[0] as RecentSession),
+      title: "t".repeat(400),
+      reuseCount: 9,
+      byTeammate: true,
+      messageCount: 42,
+      endReason: "e".repeat(80),
+      files: ["z".repeat(300), "b/b.ts", "c/c.ts", "d/d.ts"],
+    };
     expect(
       await refreshRecallHint(f.directory, f.config, GIT, {
         fetch: listFetch(1, calls, 200, [long]),
         now: () => now,
       }),
     ).toBe("refreshed");
-    expect(readCache(f.directory).recent[0]?.title).toHaveLength(100);
+    const bounded = readCache(f.directory).recent[0];
+    expect(bounded?.title).toHaveLength(100);
+    expect(bounded?.reuseCount).toBe(9);
+    expect(bounded?.byTeammate).toBe(true);
+    expect(bounded?.messageCount).toBe(42);
+    expect(bounded?.endReason).toHaveLength(40);
+    expect(bounded?.files).toEqual(["z".repeat(200), "b/b.ts", "c/c.ts"]);
     expect(readdirSync(join(f.directory, "recall"))).toEqual([
       `${hash(REPO)}.json`,
     ]);
@@ -702,7 +744,7 @@ describe("recall hint", () => {
       hookSpecificOutput: {
         hookEventName: "SessionStart",
         additionalContext: expect.stringContaining(
-          "AgentCommons has 4 indexed sessions on github.com/acme/widgets; newest:",
+          "AgentCommons has 4 indexed sessions on github.com/acme/widgets; worth opening:",
         ) as unknown,
       },
     });
@@ -729,5 +771,328 @@ describe("recall hint", () => {
     expect(existsSync(join(directory, "hook.log"))).toBe(false);
     // The 150 ms budget is asserted by timing.perf.test.ts, which includes hinted events.
     console.log(`hook wall clock: silent Stop ${silent.elapsed.toFixed(1)} ms`);
+  });
+
+  // @req R-CAP-19 @req R-CAP-23
+  it("distills reuse, teammate, top file and an unusual end into the overview, ranked by reuse", () => {
+    const rich: RecentSession[] = [
+      session({
+        id: "s-new",
+        title: "Newest, no signal",
+        startedAt: "2026-09-10T12:00:00Z",
+        branch: "main",
+      }),
+      session({
+        id: "s-reused",
+        title: "Cache TTL fix",
+        startedAt: "2026-09-08T12:00:00Z",
+        branch: "main",
+        reuseCount: 5,
+        files: ["src/cache.ts", "src/ttl.ts"],
+      }),
+      session({
+        id: "s-mate",
+        title: "Payments retry",
+        startedAt: "2026-09-09T12:00:00Z",
+        branch: "fix/pay",
+        byTeammate: true,
+        endReason: "error",
+        files: ["src/pay.ts"],
+      }),
+    ];
+    // The overview leads with reuse, then a teammate's work, then recency — not newest first.
+    expect(rankRecent(rich).map((s) => s.id)).toEqual([
+      "s-reused",
+      "s-mate",
+      "s-new",
+    ]);
+    const text = startHintText(REPO, 3, rich, NOW);
+    expect(text).toContain(
+      '"Cache TTL fix" (reused 5× · src/cache.ts · 3 days ago, get s-reused)',
+    );
+    expect(text).toContain(
+      '"Payments retry" (teammate · src/pay.ts · ended: error · 2 days ago, get s-mate)',
+    );
+    expect(text).toContain('"Newest, no signal" (1 day ago, get s-new)');
+    // A distilled preview also carries into the prompt-match hint.
+    expect(matchedHintText(REPO, [rich[1] as RecentSession], NOW)).toContain(
+      '"Cache TTL fix" (reused 5× · src/cache.ts · 3 days ago, get s-reused)',
+    );
+    // The before-edit line renders the same reuse/teammate/age marks in one sentence.
+    expect(
+      beforeEditHintText(
+        "packages/hook/src/recall.ts",
+        session({
+          id: "x",
+          title: "Prior recall work",
+          startedAt: "2026-09-09T12:00:00Z",
+          branch: "main",
+          reuseCount: 3,
+          byTeammate: true,
+        }),
+        NOW,
+      ),
+    ).toBe(
+      'AgentCommons: a prior session worked on packages/hook/src/recall.ts: "Prior recall work" (reused 3× · teammate · 2 days ago). Read it with get x before editing.',
+    );
+    // An ordinary end reason is not surfaced.
+    expect(
+      startHintText(
+        REPO,
+        1,
+        [
+          session({
+            id: "s",
+            title: "t",
+            startedAt: "2026-09-10T12:00:00Z",
+            branch: "main",
+            endReason: "completed",
+          }),
+        ],
+        NOW,
+      ),
+    ).not.toContain("ended:");
+  });
+
+  // @req R-CAP-28
+  it("surfaces one before-edit line for a file a prior session worked on, ranked and deduped, and is silent otherwise", () => {
+    const f = fixture({ config: wired() });
+    const repo = join(f.directory, "repo");
+    mkdirSync(repo);
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["remote", "add", "origin", GIT.remoteUrl], {
+      cwd: repo,
+    });
+    cache(f.directory, 8, {
+      recent: [
+        session({
+          id: "s-a",
+          title: "Fix inventory timeout",
+          startedAt: "2026-09-10T12:00:00Z",
+          branch: "main",
+          reuseCount: 4,
+          byTeammate: true,
+          files: ["src/inventory.js"],
+        }),
+        session({
+          id: "s-b",
+          title: "Also touched inventory",
+          startedAt: "2026-09-09T12:00:00Z",
+          branch: "main",
+          reuseCount: 1,
+          files: ["src/inventory.js", "README.md"],
+        }),
+      ],
+    });
+    const pre = (
+      tool: string,
+      filePath: string | undefined,
+      harness: CliHarness = "claude",
+      sessionId = "edit-sess",
+    ) =>
+      preToolPayloadSchema.parse({
+        session_id: sessionId,
+        cwd: repo,
+        hook_event_name: harness === "gemini" ? "BeforeTool" : "PreToolUse",
+        tool_name: tool,
+        ...(filePath === undefined
+          ? {}
+          : { tool_input: { file_path: filePath } }),
+      });
+    // Claude gives an absolute path; the stronger (more reused, teammate) session wins.
+    expect(
+      beforeEditHint(
+        f.directory,
+        "claude",
+        pre("Edit", join(repo, "src/inventory.js")),
+        NOW,
+      ),
+    ).toBe(
+      'AgentCommons: a prior session worked on src/inventory.js: "Fix inventory timeout" (reused 4× · teammate · 1 day ago). Read it with get s-a before editing.',
+    );
+    // The dedup set names the edited file, repository-relative; a second edit of it is silent.
+    const dedup = JSON.parse(
+      readFileSync(
+        beforeEditDedupPath(
+          join(f.directory, "state", `claude-${hash("edit-sess")}.json`),
+        ),
+        "utf8",
+      ),
+    ) as { files: string[] };
+    expect(dedup.files).toEqual(["src/inventory.js"]);
+    expect(
+      beforeEditHint(
+        f.directory,
+        "claude",
+        pre("Write", join(repo, "src/inventory.js")),
+        NOW,
+      ),
+    ).toBeNull();
+    // A different file that only s-b touched fires once for s-b.
+    expect(
+      beforeEditHint(
+        f.directory,
+        "claude",
+        pre("Write", join(repo, "README.md")),
+        NOW,
+      ),
+    ).toBe(
+      'AgentCommons: a prior session worked on README.md: "Also touched inventory" (reused 1× · 2 days ago). Read it with get s-b before editing.',
+    );
+    // Gemini gives a cwd-relative path; the same repository-relative file matches.
+    expect(
+      beforeEditHint(
+        f.directory,
+        "gemini",
+        pre("replace", "src/inventory.js", "gemini", "gem-sess"),
+        NOW,
+      ),
+    ).toContain(
+      'worked on src/inventory.js: "Fix inventory timeout" (reused 4× · teammate',
+    );
+    // Silent, never throwing: a non-edit tool, a missing file, an unindexed file, a shell-only
+    // harness, and a repository with no cache all return null.
+    expect(
+      beforeEditHint(
+        f.directory,
+        "claude",
+        preToolPayloadSchema.parse({
+          session_id: "b",
+          cwd: repo,
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "cat src/inventory.js" },
+        }),
+        NOW,
+      ),
+    ).toBeNull();
+    expect(
+      beforeEditHint(f.directory, "claude", pre("Edit", undefined), NOW),
+    ).toBeNull();
+    expect(
+      beforeEditHint(
+        f.directory,
+        "claude",
+        pre("Edit", join(repo, "src/never.ts")),
+        NOW,
+      ),
+    ).toBeNull();
+    // A same-basename file in another directory does not match (repo-relative equality, not
+    // a loose suffix): a prior session's src/inventory.js is not lib/inventory.js.
+    expect(
+      beforeEditHint(
+        f.directory,
+        "claude",
+        pre("Edit", join(repo, "lib/inventory.js"), "claude", "collide"),
+        NOW,
+      ),
+    ).toBeNull();
+    // Codex edits run through the shell tool, so its edit-tool set is empty: never fires.
+    expect(
+      beforeEditHint(
+        f.directory,
+        "codex",
+        pre("apply_patch", join(repo, "src/inventory.js"), "codex", "codex-1"),
+        NOW,
+      ),
+    ).toBeNull();
+    const g = fixture({ config: wired() });
+    expect(
+      beforeEditHint(
+        g.directory,
+        "claude",
+        pre("Edit", join(repo, "src/inventory.js"), "claude", "no-cache"),
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  // @req R-CAP-28
+  it("writes the before-edit line on the informational context channel on an allowed edit, no decision field, and nothing without a match", () => {
+    const f = fixture({ config: wired() });
+    const repo = join(f.directory, "repo");
+    mkdirSync(repo);
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["remote", "add", "origin", GIT.remoteUrl], {
+      cwd: repo,
+    });
+    cache(f.directory, 3, {
+      recent: [
+        session({
+          id: "s-a",
+          title: "Fix inventory timeout",
+          startedAt: "2026-09-10T12:00:00Z",
+          branch: "main",
+          reuseCount: 2,
+          files: ["src/inventory.js"],
+        }),
+      ],
+    });
+    const emit = (
+      harness: CliHarness,
+      input: Record<string, unknown>,
+    ): string => {
+      const chunks: string[] = [];
+      const spy = vi
+        .spyOn(process.stdout, "write")
+        .mockImplementation((chunk: string | Uint8Array) => {
+          chunks.push(
+            typeof chunk === "string" ? chunk : Buffer.from(chunk).toString(),
+          );
+          return true;
+        });
+      try {
+        expect(
+          enforcePreTool(f.directory, SHIM, f.config, harness, input),
+        ).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+      return chunks.join("");
+    };
+    // No policy cache: the call is allowed. Claude takes the line as model context only —
+    // no user-facing systemMessage, no decision/permission field, so the allow is unchanged.
+    const claudeOut = JSON.parse(
+      emit("claude", {
+        session_id: "wire",
+        cwd: repo,
+        hook_event_name: "PreToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "src/inventory.js") },
+      }),
+    ) as Record<string, unknown> & {
+      hookSpecificOutput: { additionalContext: string };
+    };
+    expect(claudeOut.hookSpecificOutput.additionalContext).toContain(
+      'worked on src/inventory.js: "Fix inventory timeout"',
+    );
+    expect(claudeOut.systemMessage).toBeUndefined();
+    expect(claudeOut.decision).toBeUndefined();
+    expect(claudeOut.hookSpecificOutput).not.toHaveProperty(
+      "permissionDecision",
+    );
+    // Gemini has no pre-tool additionalContext, so its line rides systemMessage (its only
+    // channel) with no decision field.
+    const geminiOut = JSON.parse(
+      emit("gemini", {
+        session_id: "wire-g",
+        cwd: repo,
+        hook_event_name: "BeforeTool",
+        tool_name: "replace",
+        tool_input: { file_path: "src/inventory.js" },
+      }),
+    ) as Record<string, unknown> & { systemMessage: string };
+    expect(geminiOut.systemMessage).toContain("worked on src/inventory.js");
+    expect(geminiOut.decision).toBeUndefined();
+    // An allowed non-edit tool still writes nothing.
+    expect(
+      emit("claude", {
+        session_id: "wire",
+        cwd: repo,
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "echo hi" },
+      }),
+    ).toBe("");
   });
 });

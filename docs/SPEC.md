@@ -1010,19 +1010,37 @@ checkout at the state's root as it is now (`repositoryAt`: the `origin` in its
 the repository guidance decision share; the state's `remoteUrl` dates from the first drain
 and outlives a renamed remote), and its name is `repositoryIdentity` of that remote, the
 same `repo_name` the server derives, so the cache key and the list filter agree. Hook mode
-resolves the same identity from the state's root, else from `cwd`. One request, `GET /api/v1/sessions?limit=10&roots_only=true&filters={"repo_name":"<repo_name>"}`
+resolves the same identity from the state's root, else from `cwd`. One request, `GET /api/v1/sessions?limit=10&roots_only=true&recall=true&filters={"repo_name":"<repo_name>"}`
 with the installation key (10 s timeout), whose `total.sessions` comes from the page's own
 scan (§7.6) and whose ten newest root sessions become the recent list; at most every 15
 minutes per repository. The cache is `recall/<sha256(repo_name)>.json` in the data
-directory, `{ v: 2, repoName, sessions, fetchedAt, recent: [{ id, title, startedAt, branch }] }`
-(titles bounded to 100 characters; a v1 count-only cache stays readable until its
-refresh); the attempt is recorded before the request so a failing server is asked again
+directory, `{ v: 2, repoName, sessions, fetchedAt, recent: [{ id, title, startedAt, branch, reuseCount, byTeammate, messageCount, endReason, files }] }`
+(titles bounded to 100 characters, `endReason` to 40, `files` to 3 paths of 200; each
+distilled field read tolerantly; a v1 count-only cache stays readable until its refresh).
+The recall page is ordered by proven value (reuse_count desc, then recency) and each item
+carries a files preview (§7.6); the attempt is recorded before the request so a failing server is asked again
 only after the interval. Failures are logged to `hook.log` and ignored; nothing here
 touches `pending` or `ackedCursor`. No request is made for a session outside a repository
 with a remote, and a newly indexed session reaches the cache after at most one refresh.
 The data is the caller's visibility (row policies): the hint carries only what the same
-key already reads through the list endpoint, and the file paths a session touched are not
-in it (the list endpoint does not return them; ADR 0070 follow-up).
+key already reads through the list endpoint in recall mode: the distilled
+reuse/teammate/size/end signal and up to three representative files per session (still the
+caller's visibility under row policies). The overview and the prompt-match hint distill
+each named session — title, then the markers that say why it is worth opening (reused N×, a
+teammate's work, its top file, an unusual end), then age and `get <id>` — and the overview
+ranks by reuse_count, then teammate, then recency; a session with no signal reads as title,
+age and get.
+
+**Before-edit recall.** When a pre-tool event is for one of the harness's edit/write tools
+(`editTools` in `HARNESSES`) and the policy decision is `allow`, hook mode checks the
+refreshed cache for a session whose files include the file about to be edited (the tool's
+path resolved to a repo-relative cached path and compared by equality). On a match it
+surfaces one line on the harness's informational `context` channel (Claude Code/Codex
+`additionalContext`, Gemini `systemMessage`) naming the strongest such session and its
+reuse/teammate/age with `get <id>`, at most once per file per session (`<state>.edits`); it
+carries no decision or permission field, so the allow is unchanged. Only a file match, never
+same-repository membership; it reads the cache, never the network, and never blocks or
+throws.
 
 **Repository guidance.** After its drain, the first uploader run of a session inside a
 checkout writes the §8.3 repository block into the checkout's instructions files, so a
@@ -1178,7 +1196,7 @@ command when the payload carries one), evaluates it against the policy cached on
 with `evaluateToolCall`, and writes the decision. The three shell harnesses share one deny
 shape, `{"decision":"block","reason":R}` at exit 0; `warn` uses each harness's channel
 (Codex `hookSpecificOutput.additionalContext`, Gemini `systemMessage`, Claude both), and
-`allow` writes nothing. pi's handler returns `{block:true,reason:R}` or notifies the user
+`allow` writes nothing except, for an edit/write tool whose target a prior session worked on, one before-edit recall line (§6.2) on the harness's informational `context` channel (Claude Code/Codex `additionalContext`, Gemini `systemMessage`) — no decision or permission field, so the allow is unchanged. pi's handler returns `{block:true,reason:R}` or notifies the user
 and returns nothing. This path is local and offline: the shell harnesses fail open on a
 slow or crashing hook, so it never touches the network and never reads more than the small
 cached policy.
@@ -1660,6 +1678,18 @@ but not the text order), as one `ORDER BY` on the page's own scan. Its cursor is
 page continues the same order without repeating or skipping a row, and a cursor issued for
 one sort or order is refused (`INVALID_CURSOR`) under another.
 
+Recall ranking. `GET /api/v1/sessions?recall=true` orders the page for the install hook's
+cache by proven value — `reuse_count` descending, then `started_at` descending, `session_id`
+breaking ties — overriding `sort`/`order`. It is one scan of `api_ro.sessions` under the
+reader fence, scoped by `filters` (the hook passes `{repo_name}`) and `roots_only` like any
+list call, with totals from the same window aggregates and a cursor bound to the mode. In
+recall mode each item also carries `files`: up to three representative paths the session
+touched — files it changed ranked ahead of read-only, then alphabetical — from one bounded
+scan of `api_ro.session_files` over the page's own session ids (empty when none); the field is
+absent for an ordinary list, which keeps its single scan. The at-a-glance value fields —
+`reuse_count`, `by_teammate`, `message_count`, `end_reason` — are the session header's own
+(R-GET-04, R-GET-08); recall only fixes order and adds the files sample.
+
 `agentcommons_search_calls` and `reuses_made` are the reading side of the stored reads
 (§10, ADR 0060): per session, the `search` and `sql` calls credited to it while it was
 active, and the distinct earlier sessions it read through `get` (a self read is none).
@@ -1916,11 +1946,11 @@ and session ids. If this machine has no `agentcommons` MCP server, tell the user
 that the AgentCommons install is missing and continue without it.
 ```
 
-The recall hint (§6.2) is the fourth surface, from the capture hook: a session overview
-naming the newest indexed sessions of the repository at session start, the sessions
+The recall hint (§6.2) is the fourth surface, from the capture hook: a distilled session overview
+ranked by reuse and teammate authorship at session start, the sessions
 matching a prompt when there are any, the count nudge every 25 prompts otherwise, and a
 repair notice instead of all of these when the harness has no usable `agentcommons`
-registration.
+registration. Before an edit to a file a prior session touched, the hook adds one line naming that session (§6.2).
 
 ### 8.4 Client configuration
 
@@ -2755,6 +2785,24 @@ reuse (about 28% of reuse edges, the median cross-user target roughly a day old)
 knowledge transfer between teammates. To amplify it, `search` boosts teammate-authored
 sessions into the result page and both `search` and `get` label them `by_teammate`,
 exposing only fields the caller can already see (ADR 0090).
+
+_Does reuse pay off?_ `api_ro.metrics_reuse_outcomes` puts the same root-rolled reuse flags
+beside a session's outcome proxies, so reused and non-reused work can be compared rather than
+counted. One row per visible session (with `parent_session_id` for a roots-only read): `reused`
+and `cross_user_reused` as `metrics_reuse_sessions` computes them; `duration_seconds` for the
+root's own span; `tokens`, `tool_call_count` and `message_count` summed over the root's
+subtree; `completed` (the session reported an end — the clean-finish proxy, since `end_reason`
+is open harness text, not a category); and admin-only `rerun_loop` rolled up from
+`outcome_reruns` (`if(admin,…,NULL)` like `memory_assisted`, its corpus scan behind the admin
+scalar so a member never pays for a column it cannot see). It reads the projection, the target
+owners and `session_reads` once each — the reuse scan profile — plus `outcome_reruns` once for
+admins. The `reuse_outcomes` starter tile splits root sessions into three disjoint cohorts — no
+reuse, same-user reuse, cross-user reuse — and shows, per cohort, session count, average
+duration, tokens and tool calls, and completion rate; admins slice `rerun_loop` through `sql`.
+This is an observational comparison, not a controlled one: sessions that reuse prior work may
+differ systematically (task, person, repository maturity), so the effort deltas are
+associations read alongside the north-star reuse rate, not proof reuse caused them. As with the
+`tools_enabled` Outcomes split, the numbers mean something only with both cohorts populated.
 
 - _Health_: installations active in the last 7 days over the organization's member
   count; sessions per day per harness and per user; median capture latency (record

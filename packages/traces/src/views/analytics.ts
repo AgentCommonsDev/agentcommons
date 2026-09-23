@@ -61,7 +61,14 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
     ),
     "p0.session_id",
   ].join(",");
-  const rollup = `WITH proj AS MATERIALIZED (SELECT ${rollupColumns} FROM ${projection}), rootmap AS (SELECT p0.session_id AS session_id,coalesce(${rootChain}) AS root_session_id FROM proj p0 ${rootJoins})`;
+  // The `proj`/`rootmap` rollup, optionally carrying extra projection columns so a view can
+  // sum them per root. The reuse and search relations pass nothing (proj stays lean, keeping
+  // the FINAL merge cheap); `metrics_reuse_outcomes` widens proj with the effort/lifecycle
+  // columns it rolls up. The self-join ladder and root chain are unchanged, so the existing
+  // views' text is byte-identical.
+  const rollupCte = (extraColumns = "") =>
+    `WITH proj AS MATERIALIZED (SELECT ${rollupColumns}${extraColumns} FROM ${projection}), rootmap AS (SELECT p0.session_id AS session_id,coalesce(${rootChain}) AS root_session_id FROM proj p0 ${rootJoins})`;
+  const rollup = rollupCte();
   const definitions: TraceViewDefinition[] = [];
   const add = (name: string, query: string, grant?: TraceViewGrant) => {
     definitions.push(traceView(name, query, grant));
@@ -235,6 +242,26 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
   add(
     "metrics_outcomes",
     `SELECT s.session_id AS session_id,s.started_at AS started_at,s.repo_name AS repo_name,i.tools_enabled AS tools_enabled,s.tool_call_count AS tool_call_count,toDecimal256(s.input_tokens,0)+toDecimal256(s.output_tokens,0) AS tokens,greatest(0,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0) AS duration_seconds,(s.ended_at IS NOT NULL AND JSONLength(s.observed_commits)>0) AS observed_commit,d.session_id IS NOT NULL AS near_duplicate,r.session_id IS NOT NULL AS rerun_loop FROM ${control} s JOIN api_ro.installations i ON i.installation_id=s.installation_id LEFT JOIN api_ro.outcome_duplicates d ON d.session_id=s.session_id LEFT JOIN api_ro.outcome_reruns r ON r.session_id=s.session_id WHERE ${admin} AND s.purged_at IS NULL`,
+  );
+  // Reuse against outcomes (R-DASH-48): per visible session, the root-rolled reuse flags
+  // (`reused`, `cross_user_reused`, as `metrics_reuse_sessions` computes them) beside the
+  // session's outcome proxies, so a caller can split "reused vs not" cohorts and compare.
+  // One row per session; `parent_session_id` is the projection's raw parent (NULL for a true
+  // root), so a roots-only reader (`parent_session_id IS NULL`) compares whole task trees.
+  // Effort proxies (`tokens`, `tool_call_count`, `message_count`) are summed over the root's
+  // subtree, the same "sums stay totals" convention the dashboard uses; `duration_seconds` is
+  // the root's own start-to-end span; `completed` is the reliable clean-finish proxy
+  // (`ended_at IS NOT NULL`), since `end_reason` is open harness free-text, not a category.
+  // `rerun_loop` is admin-only (`if(admin,…,NULL)`, like `memory_assisted`): rolled up from
+  // the internal `outcome_reruns` view, its subquery guarded by the admin scalar so a member
+  // never scans the corpus for it, and column pruning drops it when a caller does not select
+  // it. This is an observational comparison, not a controlled test: reusers may differ
+  // systematically, so the field text frames the delta as association, not causation.
+  const outcomeColumns =
+    ",tool_call_count,message_count,input_tokens,output_tokens,ended_at,last_activity_at";
+  add(
+    "metrics_reuse_outcomes",
+    `${rollupCte(outcomeColumns)}, sums AS (SELECT ro.root_session_id AS session_id,sum(p.tool_call_count) AS tool_call_count,sum(p.message_count) AS message_count,sum(toInt64(p.input_tokens)+toInt64(p.output_tokens)) AS tokens FROM proj p JOIN rootmap ro ON ro.session_id=p.session_id GROUP BY ro.root_session_id), reruns AS (SELECT ro.root_session_id AS session_id,max(toUInt8(rr.session_id IS NOT NULL)) AS rerun_loop FROM rootmap ro JOIN api_ro.outcome_reruns rr ON rr.session_id=ro.session_id WHERE ${admin} GROUP BY ro.root_session_id) SELECT s.session_id AS session_id,s.organization_id AS organization_id,s.started_at AS started_at,s.repo_name AS repo_name,s.user_id AS user_id,s.harness AS harness,s.parent_session_id AS parent_session_id,toUInt8(coalesce(f.reused,0)) AS reused,toUInt8(coalesce(f.cross_user_reused,0)) AS cross_user_reused,greatest(0,dateDiff('microsecond',s.started_at,coalesce(s.ended_at,s.last_activity_at))/1000000.0) AS duration_seconds,coalesce(g.tokens,toInt64(0)) AS tokens,coalesce(g.tool_call_count,toUInt64(0)) AS tool_call_count,coalesce(g.message_count,toUInt64(0)) AS message_count,toUInt8(s.ended_at IS NOT NULL) AS completed,if(${admin},toUInt8(coalesce(rl.rerun_loop,0)),NULL) AS rerun_loop FROM proj s LEFT ANY JOIN (SELECT ro.root_session_id AS session_id,max(${edgeCondition("r")}) AS reused,maxIf(coalesce(t.user_id,'')!=r.reader_user_id,${edgeCondition("r")}) AS cross_user_reused FROM (${reads}) r JOIN rootmap ro ON ro.session_id=r.session_id LEFT ANY JOIN (${owners}) t ON t.session_id=r.target_session_id GROUP BY ro.root_session_id) f ON f.session_id=s.session_id LEFT ANY JOIN sums g ON g.session_id=s.session_id LEFT ANY JOIN reruns rl ON rl.session_id=s.session_id WHERE s.purged_at IS NULL`,
   );
   // Search adoption (ADR 0067): the `search` and `sql` reads credited to a session while it
   // was active, from the same attributed reads as reuse, rolled up to root (R-DASH-47) so a

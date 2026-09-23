@@ -61,9 +61,14 @@ export interface EventDefinition {
    * A pre-tool enforcement event (ADR 0080, §6.4): evaluated against the cached policy
    * before the tool runs and never captured as a transcript record. `warn` renders this
    * harness's warn-channel stdout when the decision is `warn`; a `deny` uses one shape for
-   * all shell harnesses (`{"decision":"block",…}`) and `allow` writes nothing.
+   * all shell harnesses (`{"decision":"block",…}`) and `allow` writes nothing. `context`
+   * renders a purely informational line on an already-allowed tool — the before-edit recall
+   * hint (§6.2) — as model context where the harness has one (Claude Code and Codex
+   * `additionalContext`) and on Gemini's only pre-tool channel (`systemMessage`); it never
+   * carries a decision or permission field, so it cannot change the allow outcome or read as
+   * a caution.
    */
-  preTool?: { warn(reason: string): string };
+  preTool?: { warn(reason: string): string; context(text: string): string };
 }
 /**
  * Warn-channel stdout per harness (Appendix A pre-tool contracts, 2026-09-14). A `warn`
@@ -87,6 +92,23 @@ const codexPreToolWarn = (reason: string): string =>
   });
 const geminiPreToolWarn = (reason: string): string =>
   JSON.stringify({ systemMessage: reason });
+/**
+ * The informational context channel for an already-allowed tool (the before-edit recall hint):
+ * Claude Code and Codex take it as model `additionalContext` only (no user-facing warning line,
+ * so it never reads as a caution); Gemini CLI has no pre-tool `additionalContext`, so it uses
+ * its only channel, `systemMessage`. None carries a decision, so the allow outcome is unchanged.
+ */
+const additionalContextOutput = (text: string): string =>
+  JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      additionalContext: text,
+    },
+  });
+const claudePreToolContext = additionalContextOutput;
+const codexPreToolContext = additionalContextOutput;
+const geminiPreToolContext = (text: string): string =>
+  JSON.stringify({ systemMessage: text });
 /**
  * What the installer knows when it writes a harness's MCP entry that a stdio bridge command
  * needs (ADR 0089): where the bundle and its Node runtime live, and the server to reach. Only a
@@ -133,6 +155,14 @@ export interface HarnessDefinition {
     key: string,
     context?: McpRegistrationContext,
   ): string[] | null;
+  /**
+   * The edit/write tool names whose pre-tool event names a target file the shim can read from
+   * `tool_input` (Claude Code `Edit`/`Write`/`MultiEdit`/`NotebookEdit`, Gemini CLI
+   * `write_file`/`replace`). The before-edit recall hint (§6.2) fires only for these; Codex
+   * edits run through the shell tool with no file field, and pi has no shell hook, so both
+   * list none. Not harness-specific logic: it is data the one pre-tool path reads.
+   */
+  editTools: readonly string[];
   /** Printed once after `install` wires this harness. */
   installNote?: string;
   /** Printed after `install` wires this harness and wrote the shell exports (§8.4). */
@@ -148,7 +178,10 @@ const shellEvents: Readonly<Record<string, EventDefinition>> = {
   UserPromptSubmit: { behavior: "sync", always: true, hint: "prompt" },
   // Claude Code uses `shellEvents` directly; Codex spreads it and overrides `PreToolUse`
   // below with its own warn channel. The installer wires this event from the same table.
-  PreToolUse: { behavior: "sync", preTool: { warn: claudePreToolWarn } },
+  PreToolUse: {
+    behavior: "sync",
+    preTool: { warn: claudePreToolWarn, context: claudePreToolContext },
+  },
   PostToolUse: { behavior: "sync" },
   Stop: { behavior: "sync", always: true, settle: true },
   SubagentStart: { behavior: "sync", child: true, childBehavior: "start" },
@@ -194,6 +227,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: [".claude", "CLAUDE.md"],
     repositoryInstructionsFile: "CLAUDE.md",
     configFormat: "json",
+    editTools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
     timeout: 3,
     events: shellEvents,
     child(event, parentPath) {
@@ -267,11 +301,16 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: [".codex", "AGENTS.md"],
     repositoryInstructionsFile: "AGENTS.md",
     configFormat: "toml",
+    // Codex edits run through the shell tool (apply_patch), which carries no file field.
+    editTools: [],
     timeout: 3,
     events: {
       ...shellEvents,
       SessionStart: { behavior: "start", always: true },
-      PreToolUse: { behavior: "sync", preTool: { warn: codexPreToolWarn } },
+      PreToolUse: {
+        behavior: "sync",
+        preTool: { warn: codexPreToolWarn, context: codexPreToolContext },
+      },
       SubagentStart: {
         behavior: "sync",
         child: true,
@@ -312,13 +351,17 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: [".gemini", "GEMINI.md"],
     repositoryInstructionsFile: "GEMINI.md",
     configFormat: "json",
+    editTools: ["write_file", "replace"],
     timeout: 3000,
     events: {
       // Gemini CLI 0.35.3 documents SessionStart additionalContext (first turn in
       // history, or prepended to the prompt when non-interactive); canary-pending.
       SessionStart: { behavior: "start", always: true, hint: "start" },
       BeforeAgent: { behavior: "sync", always: true, hint: "prompt" },
-      BeforeTool: { behavior: "sync", preTool: { warn: geminiPreToolWarn } },
+      BeforeTool: {
+        behavior: "sync",
+        preTool: { warn: geminiPreToolWarn, context: geminiPreToolContext },
+      },
       AfterTool: { behavior: "sync" },
       AfterAgent: { behavior: "sync", always: true, settle: true },
       SessionEnd: { behavior: "end", always: true },
@@ -338,6 +381,8 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: null,
     repositoryInstructionsFile: "AGENTS.md",
     configFormat: "extension",
+    // pi has no shell hook; its tool enforcement runs in the extension, not this bundle.
+    editTools: [],
     timeout: 3,
     events: {
       session_start: { behavior: "start", always: true },

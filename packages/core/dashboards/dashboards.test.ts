@@ -130,6 +130,31 @@ it("counts and lists root sessions only, as the Sessions list does, while messag
   expect(sql("reuse_trend")).toContain("parent_session_id IS NULL");
 });
 
+// @req R-DASH-48
+it("offers a reuse-versus-outcome tile that compares three disjoint cohorts over roots", () => {
+  const tile = dashboardTileTemplates.find(
+    (item) => item.id === "reuse_outcomes",
+  )?.tile;
+  if (!tile || !("sql" in tile)) throw new Error("Missing reuse_outcomes tile");
+  // Reads the joined reuse-and-outcome view, roots only, so a subagent counts inside its root.
+  expect(tile.sql).toContain("FROM metrics_reuse_outcomes");
+  expect(tile.sql).toContain("parent_session_id IS NULL");
+  // Three disjoint cohorts: no reuse, same-user reuse, cross-user reuse.
+  expect(tile.sql).toContain(
+    "multiIf(reused = 0, 'No reuse', cross_user_reused = 1, 'Cross-user reuse', 'Same-user reuse') AS cohort",
+  );
+  // Member-safe effort and completion signals only; the admin-only rerun loop stays off the
+  // shared tile and is sliced through the sql tool instead.
+  expect(tile.sql).not.toContain("rerun_loop");
+  expect(
+    guardTraceSql(
+      tile.sql,
+      false,
+      dashboardParameterTypes(standardDashboardVariables),
+    ),
+  ).toContain("metrics_reuse_outcomes");
+});
+
 // @req R-DASH-25 @req R-SQL-02
 it("rejects undeclared or mistyped parameters and definitions with duplicate ids or dangling controls", () => {
   const types = dashboardParameterTypes(standardDashboardVariables);

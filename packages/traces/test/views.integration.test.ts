@@ -510,6 +510,52 @@ it("rolls a subagent's search and reuse reads up to its root, so roots-only metr
     parent_session_id: sub,
     reused: 0,
   });
+  // Reuse joined to outcomes (R-DASH-48): the root inherits the subtree's reuse flag and its
+  // effort proxies sum over the whole tree, while each child row is zero, so a roots-only
+  // reader compares whole task trees rather than double-counting subagents.
+  const outcome = z.array(
+    z.strictObject({
+      session_id: z.string(),
+      parent_session_id: z.string().nullable(),
+      reused: z.coerce.number(),
+      tool_call_count: z.coerce.number(),
+    }),
+  );
+  const outcomeRows = byId(
+    outcome.parse(
+      (
+        await select(
+          owner,
+          "SELECT session_id,parent_session_id,reused,tool_call_count FROM metrics_reuse_outcomes WHERE session_id IN {ids:Array(UUID)}",
+          { ids: [root, sub, subsub] },
+        )
+      ).rows,
+    ),
+  );
+  const subtreeToolCalls = z
+    .array(z.object({ c: z.coerce.number() }))
+    .parse(
+      (
+        await select(
+          owner,
+          "SELECT sum(tool_call_count) AS c FROM sessions WHERE session_id IN {ids:Array(UUID)}",
+          { ids: [root, sub, subsub] },
+        )
+      ).rows,
+    )[0]?.c;
+  expect(outcomeRows.get(root)).toEqual({
+    session_id: root,
+    parent_session_id: null,
+    reused: 1,
+    tool_call_count: subtreeToolCalls,
+  });
+  expect(outcomeRows.get(sub)).toEqual({
+    session_id: sub,
+    parent_session_id: root,
+    reused: 0,
+    tool_call_count: 0,
+  });
+  expect(outcomeRows.get(subsub)?.reused).toBe(0);
   // The roots-only tile predicate (templates.ts rootScope) now counts the root once for the
   // subagent's search; before the rollup the read landed on a non-root child and was dropped.
   expect(

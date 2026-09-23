@@ -4318,6 +4318,8 @@ export interface operations {
           )[];
         };
         roots_only?: boolean;
+        /** @description Recall ranking: order by reuse_count desc then started_at desc (overriding sort and order) and attach up to 3 representative files per session */
+        recall?: boolean;
         /** @description true: only sessions whose agent made a search or sql call while active; false: only sessions that made none */
         searched?: boolean;
         /** @description true: only sessions whose agent read an earlier session through get while active; false: only sessions that read none */
@@ -4490,6 +4492,8 @@ export interface operations {
               duration_seconds: number | null;
               /** Format: date-time */
               last_activity_at: string;
+              /** @description Up to 3 representative file paths this session touched; present only in recall mode */
+              files?: string[];
             }[];
             /** @default null */
             cursor: string | null;

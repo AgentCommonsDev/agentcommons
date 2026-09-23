@@ -138,6 +138,24 @@ export const dashboardTileTemplates: DashboardTileTemplate[] = [
     },
   },
   {
+    id: "reuse_outcomes",
+    title: "Reuse vs no reuse: outcomes",
+    description:
+      "Sessions that reused prior work compared with those that did not, on effort and completion. An association, not proof reuse caused it.",
+    variables: standard,
+    tile: {
+      id: "reuse_outcomes",
+      type: "table",
+      title: "Reuse vs no reuse: outcomes",
+      description:
+        "Three cohorts by how a session reused prior work. Observational: reusing sessions may differ in task, person or repository.",
+      layout: layout(7, 6),
+      // Root sessions split into three disjoint cohorts (no reuse, same-user reuse, cross-user
+      // reuse), then the effort and completion signals per cohort from the one scanned view.
+      sql: `SELECT multiIf(reused = 0, 'No reuse', cross_user_reused = 1, 'Cross-user reuse', 'Same-user reuse') AS cohort, count() AS sessions, avg(duration_seconds) AS avg_duration_seconds, avg(tokens) AS avg_tokens, avg(tool_call_count) AS avg_tool_calls, toFloat64(countIf(completed)) / nullIf(count(), 0) AS completed_rate FROM metrics_reuse_outcomes WHERE ${rootScope} GROUP BY cohort ORDER BY max(reused), max(cross_user_reused)`,
+    },
+  },
+  {
     id: "sessions_per_day",
     title: "Sessions per day",
     description: "Daily captured sessions, stacked by coding tool.",

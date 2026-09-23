@@ -181,6 +181,30 @@ class GetPageBudget {
     this.count++;
   }
 }
+/**
+ * Up to 3 representative file paths per session for the recall preview (§7.6): one bounded
+ * scan of `session_files` over the page's own ids, run on the list's own reader connection
+ * under its fence. A file the session changed (a write, edit or delete `op`) ranks ahead of
+ * one it only read, then paths sort so the sample is a stable, useful glance across pages.
+ * Paths are already repository-relative (`repositoryPath`), so the hook can match them.
+ */
+async function recallFiles(
+  client: TraceReadClient,
+  ids: string[],
+): Promise<Map<string, string[]>> {
+  if (!ids.length) return new Map();
+  const params = new Parameters();
+  const result = await client.query(
+    `SELECT session_id,arraySlice(arrayMap(pair->pair.2,arraySort(pair->(pair.1,pair.2),groupArray((if(hasAny(ops,['write','edit','delete']),0,1),path)))),1,3) AS files FROM api_ro.session_files WHERE session_id IN ${params.add(ids, "Array(UUID)")} GROUP BY session_id`,
+    params.values,
+  );
+  return new Map(
+    result.rows.map((row) => [
+      String(row.session_id),
+      z.array(z.string()).parse(row.files),
+    ]),
+  );
+}
 export class SessionService {
   constructor(private readonly dependencies: ReadDependencies) {}
 
@@ -666,8 +690,14 @@ export class SessionService {
               // The totals are window aggregates of the page's own scan: the same
               // predicate, fence and row policies, evaluated before the window is cut.
               const totalParameters = { ...params.values };
+              // Recall (§7.6) ranks the page by proven value — reuse_count desc, then
+              // started_at desc — for the install hook's cache; every other caller keeps the
+              // requested sort. session_id breaks ties either way so the ordering is total.
+              const orderBy = request.recall
+                ? "s.reuse_count DESC,s.started_at DESC,s.session_id"
+                : `s.${sort} ${request.order} NULLS LAST,s.session_id`;
               const rows = await client.query(
-                `SELECT s.*,count() OVER () AS total_sessions,sum(s.message_count) OVER () AS total_messages FROM api_ro.sessions s WHERE ${predicate} ORDER BY s.${sort} ${request.order} NULLS LAST,s.session_id LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
+                `SELECT s.*,count() OVER () AS total_sessions,sum(s.message_count) OVER () AS total_messages FROM api_ro.sessions s WHERE ${predicate} ORDER BY ${orderBy} LIMIT ${params.add(take)} OFFSET ${params.add(offset)}`,
                 params.values,
               );
               const first = rows.rows[0];
@@ -691,6 +721,14 @@ export class SessionService {
                 messages: Number(counts?.messages ?? 0),
               });
               const headers = await sessionHeaders(client, caller, rows.rows);
+              // Recall mode attaches a compact files preview: one bounded scan of
+              // session_files over the page's own ids, so the ordinary list path is untouched.
+              const files = request.recall
+                ? await recallFiles(
+                    client,
+                    rows.rows.map((row) => String(row.session_id)),
+                  )
+                : null;
               return rows.rows.map((row, index) => ({
                 ...headers[index],
                 duration_seconds:
@@ -698,6 +736,9 @@ export class SessionService {
                     ? null
                     : Number(row.duration_seconds),
                 last_activity_at: wireValue(row.last_activity_at),
+                ...(files
+                  ? { files: files.get(String(row.session_id)) ?? [] }
+                  : {}),
               }));
             }),
         );

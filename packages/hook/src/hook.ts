@@ -12,6 +12,7 @@ import {
 import { liveOwner } from "./lock.js";
 import { decide, readCachedPolicy, spoolDecision } from "./policy.js";
 import { harnessIdentity } from "./process.js";
+import { beforeEditHint } from "./recall.js";
 import {
   ensureState,
   recentIntents,
@@ -105,7 +106,16 @@ export function enforcePreTool(
       command,
     };
     const decision = decide(call, readCachedPolicy(directory));
-    if (decision.decision === "allow") return true;
+    if (decision.decision === "allow") {
+      // The tool runs. When a prior session already worked on the file about to be edited,
+      // one concise recall line rides this harness's informational pre-tool `context` channel
+      // (Claude/Codex `additionalContext`, Gemini `systemMessage`) — purely additive, no
+      // decision field, so the allow outcome never changes and it never reads as a caution.
+      // Reads the already-refreshed cache, never the network, and never throws (§6.2).
+      const recall = beforeEditHint(directory, harness, event);
+      if (recall) process.stdout.write(mapping.preTool.context(recall));
+      return true;
+    }
     const reason =
       decision.reason ?? "Blocked by the organization tool policy.";
     process.stdout.write(

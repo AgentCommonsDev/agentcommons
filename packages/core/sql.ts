@@ -26,6 +26,7 @@ export const traceViews = [
   "metrics_reuse_sessions",
   "metrics_search_sessions",
   "metrics_reuse_weekly",
+  "metrics_reuse_outcomes",
   "metrics_health",
   "metrics_capture",
   "metrics_activity",

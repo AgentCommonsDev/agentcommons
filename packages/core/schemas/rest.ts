@@ -47,6 +47,17 @@ export const sessionsInputSchema = createListInputSchema([
   filters: searchFiltersSchema.default({}),
   /** Only sessions without a caller-visible parent: subagent, fork and spawned runs stay inside their parent. */
   roots_only: z.boolean().default(false),
+  /**
+   * Recall ranking for the install hook's cache (§7.6): orders the page by proven value —
+   * `reuse_count` descending, then `started_at` descending — instead of `sort`/`order`, and
+   * attaches a compact `files` preview to each item. One scan; scope the repo with `filters`.
+   */
+  recall: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Recall ranking: order by reuse_count desc then started_at desc (overriding sort and order) and attach up to 3 representative files per session",
+    ),
   /** Sessions whose agent searched AgentCommons (`agentcommons_search_calls > 0`), or only those that did not; absent means either. */
   searched: z
     .boolean()
@@ -69,6 +80,18 @@ export const sessionReuseOutputSchema = paginatedOutput(reuseEdgeSchema);
 export const sessionListItemSchema = sessionHeaderSchema.extend({
   duration_seconds: z.number().nullable(),
   last_activity_at: utcDateTimeSchema,
+  /**
+   * Recall preview only: up to 3 representative file paths this session touched, present
+   * when the request set `recall=true` (absent otherwise). A cheap glance at what the
+   * session worked on; not an api_ro column.
+   */
+  files: z
+    .array(z.string())
+    .max(3)
+    .optional()
+    .describe(
+      "Up to 3 representative file paths this session touched; present only in recall mode",
+    ),
 });
 /** Counts over the whole filtered, caller-visible set; the page window never changes them. */
 export const sessionsTotalSchema = z.strictObject({

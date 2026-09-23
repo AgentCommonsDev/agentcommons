@@ -1,15 +1,20 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import * as z from "zod";
 import { ageInWords } from "../../core/format/age.js";
 import { objectSchema, type HookConfig } from "./config.js";
 import { hash, readJsonOr, writeAtomic } from "./files.js";
 import { guidanceAnnouncement } from "./guidance.js";
-import { HARNESSES, nativeHookSchema, type CliHarness } from "./harnesses.js";
+import {
+  HARNESSES,
+  nativeHookSchema,
+  type CliHarness,
+  type PreToolPayload,
+} from "./harnesses.js";
 import { note } from "./paths.js";
 import { registrationFile, registrationStatus } from "./registration.js";
 import { repositoryAt, repositoryName } from "./repository.js";
-import { loadState, type HookState } from "./state.js";
+import { loadState, statePath, type HookState } from "./state.js";
 
 /** The uploader refreshes a repository's recall cache at most this often (§6.2). */
 export const RECALL_REFRESH_MS = 15 * 60_000;
@@ -22,12 +27,28 @@ const REQUEST_TIMEOUT_MS = 10_000;
 /** Bounds on what hook mode reads and tokenizes (§6.2 budget). */
 const MAX_PROMPT_CHARS = 4096;
 const MAX_TITLE_CHARS = 100;
+/** A cached session names at most this many files, each bounded, so the render stays terse. */
+const MAX_RECENT_FILES = 3;
+const MAX_FILE_CHARS = 200;
+const MAX_END_REASON_CHARS = 40;
 
-const recentSchema = z.strictObject({
+/**
+ * A cached session preview: the server identity plus the distilled signal the hint surfaces so
+ * the agent sees why a session is worth opening — how often it was reused, whether a teammate
+ * ran it, its size, how it ended, and the files it touched (§6.2). Loose and `.catch`-defaulted
+ * so a cache written by an older bundle, or by a server that does not yet send a field, always
+ * reads; a session with no signal renders exactly as a plain title.
+ */
+const recentSchema = z.looseObject({
   id: z.string().min(1),
   title: z.string().nullable(),
   startedAt: z.string(),
   branch: z.string().nullable(),
+  reuseCount: z.number().int().nonnegative().catch(0),
+  byTeammate: z.boolean().catch(false),
+  messageCount: z.number().int().nonnegative().catch(0),
+  endReason: z.string().nullable().catch(null),
+  files: z.array(z.string()).catch([]),
 });
 export type RecentSession = z.infer<typeof recentSchema>;
 /** v1 caches (a count alone) stay readable until their refresh; v2 adds the recent list. */
@@ -81,6 +102,11 @@ const listSchema = z.looseObject({
       title: z.string().nullable(),
       started_at: z.string(),
       branch: z.string().nullable(),
+      reuse_count: z.number().int().nonnegative().catch(0),
+      by_teammate: z.boolean().catch(false),
+      message_count: z.number().int().nonnegative().catch(0),
+      end_reason: z.string().nullable().catch(null),
+      files: z.array(z.string()).catch([]),
     }),
   ),
   total: z.looseObject({ sessions: z.number().int().nonnegative() }),
@@ -170,29 +196,81 @@ const plural = (count: number, noun: string) =>
   `${String(count)} ${noun}${count === 1 ? "" : "s"}`;
 const quoted = (title: string | null) =>
   `"${(title ?? "Untitled session").replaceAll('"', "'")}"`;
-const named = (session: RecentSession, now: Date) =>
-  `${quoted(session.title)} (${ageInWords(session.startedAt, now)}, get ${session.id})`;
+/** End reasons that carry no signal; only an unusual end (an error, a clear, a timeout) shows. */
+const QUIET_END_REASONS = new Set([
+  "",
+  "completed",
+  "complete",
+  "done",
+  "normal",
+  "end",
+  "ended",
+  "stop",
+  "stopped",
+  "finished",
+  "success",
+  "ok",
+]);
+const endReasonLabel = (reason: string | null): string | null =>
+  reason && !QUIET_END_REASONS.has(reason.toLowerCase().trim())
+    ? `ended: ${reason}`
+    : null;
+/**
+ * The distilled reasons a session is worth opening, strongest first: how often it was reused,
+ * whether a teammate ran it, its top file, an unusual end, and its age. Empty pieces are
+ * dropped, so a session with no signal renders as just its age (as before the distill).
+ */
+function distillParts(session: RecentSession, now: Date): string[] {
+  const parts: string[] = [];
+  if (session.reuseCount > 0)
+    parts.push(`reused ${String(session.reuseCount)}×`);
+  if (session.byTeammate) parts.push("teammate");
+  const file = session.files[0];
+  if (file) parts.push(file);
+  const ended = endReasonLabel(session.endReason);
+  if (ended) parts.push(ended);
+  parts.push(ageInWords(session.startedAt, now));
+  return parts;
+}
+/** One session as a compact preview: `"title" (reused 3× · teammate · file · age, get id)`. */
+const distill = (session: RecentSession, now: Date): string =>
+  `${quoted(session.title)} (${distillParts(session, now).join(" · ")}, get ${session.id})`;
+/**
+ * Recent sessions ordered by what makes one worth opening — reuse, then a teammate's work,
+ * then recency. With no signal (an older bundle's cache, or a server that sends none) this is
+ * newest-first, exactly the order the overview used before.
+ */
+export function rankRecent(recent: readonly RecentSession[]): RecentSession[] {
+  return [...recent].sort(
+    (a, b) =>
+      b.reuseCount - a.reuseCount ||
+      (b.byTeammate ? 1 : 0) - (a.byTeammate ? 1 : 0) ||
+      b.startedAt.localeCompare(a.startedAt),
+  );
+}
 /** The generic nudge: a count and the repository name the hook already knows. */
 export function recallHintText(repoName: string, sessions: number): string {
   return `${String(sessions)} prior AgentCommons session${sessions === 1 ? "" : "s"} touch ${repoName}; search them before changing code (search, get, sql over MCP).`;
 }
-/** The session overview given once, at session start, with the newest sessions to open. */
+/** The session overview given once, at session start, distilled and ranked by what is worth opening. */
 export function startHintText(
   repoName: string,
   sessions: number,
   recent: readonly RecentSession[],
   now: Date,
 ): string {
-  const listed = recent.slice(0, HINT_SESSIONS).map((s) => named(s, now));
-  return `AgentCommons has ${plural(sessions, "indexed session")} on ${repoName}${listed.length ? `; newest: ${listed.join("; ")}` : ""}. Before changing code, search them for the test, file or error you were given (search over MCP), then read a hit with get and cite its session_id.`;
+  const listed = rankRecent(recent)
+    .slice(0, HINT_SESSIONS)
+    .map((s) => distill(s, now));
+  return `AgentCommons has ${plural(sessions, "indexed session")} on ${repoName}${listed.length ? `; worth opening: ${listed.join("; ")}` : ""}. Before changing code, search them for the test, file or error you were given (search over MCP), then read a hit with get and cite its session_id.`;
 }
-/** The prompt-specific hint: the cached sessions whose titles match this prompt. */
+/** The prompt-specific hint: the cached sessions whose titles match this prompt, distilled. */
 export function matchedHintText(
   repoName: string,
   matches: readonly RecentSession[],
   now: Date,
 ): string {
-  return `AgentCommons: ${plural(matches.length, "prior session")} on ${repoName} match this prompt: ${matches.map((s) => named(s, now)).join("; ")}. Read them with get before changing code; search finds more.`;
+  return `AgentCommons: ${plural(matches.length, "prior session")} on ${repoName} match this prompt: ${matches.map((s) => distill(s, now)).join("; ")}. Read them with get before changing code; search finds more.`;
 }
 /** Said once per session instead of any search hint when the harness cannot reach the server. */
 export function repairHintText(
@@ -341,6 +419,148 @@ export function promptHint(
 }
 
 // ---------------------------------------------------------------------------------------
+// Before-edit recall (hook mode, pre-tool)
+// ---------------------------------------------------------------------------------------
+/**
+ * Keys a harness's edit/write tool carries the target file under (`file_path` for Claude Code
+ * and Gemini CLI; `notebook_path` for NotebookEdit), tried in order. `tool_input` is a loose
+ * bag, so the path is read defensively and never assumed.
+ */
+const EDIT_PATH_KEYS = [
+  "file_path",
+  "notebook_path",
+  "path",
+  "absolute_path",
+  "filePath",
+];
+/** At most this many files keep their before-edit hint suppressed within one session. */
+const EDIT_DEDUP_LIMIT = 500;
+const editDedupSchema = z.looseObject({
+  v: z.literal(1),
+  files: z.array(z.string()).catch([]),
+});
+type EditDedup = z.infer<typeof editDedupSchema>;
+const emptyEditDedup: EditDedup = { v: 1, files: [] };
+/** The before-edit dedup set beside the state file: the files already hinted this session. */
+export const beforeEditDedupPath = (statePath: string): string =>
+  `${statePath}.edits`;
+function readEditDedup(path: string): EditDedup {
+  try {
+    return readJsonOr(path, editDedupSchema, emptyEditDedup);
+  } catch {
+    return emptyEditDedup;
+  }
+}
+/**
+ * A tool's file argument as the repository sees it: resolved against `cwd` (a tool gives an
+ * absolute path — Claude Code — or one relative to `cwd` — Gemini CLI), made relative to the
+ * repo root, POSIX slashes, no leading `./`; null when it resolves outside the repository.
+ * This is the transform the server applies when it stores a session's files, so the two agree
+ * and a plain string equality matches.
+ */
+function repoRelative(
+  target: string,
+  cwd: string,
+  root: string,
+): string | null {
+  const absolute = isAbsolute(target) ? target : resolve(cwd, target);
+  const rel = relative(root, absolute);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+    return null;
+  return rel.split(sep).join("/");
+}
+/** The cached file equal to `wanted` (already repository-relative POSIX), or null. */
+function matchingFile(wanted: string, files: readonly string[]): string | null {
+  for (const file of files)
+    if (file.replace(/^\.\//, "") === wanted) return file;
+  return null;
+}
+/** The target file a harness's edit tool names in its pre-tool payload, or null. */
+function editTargetPath(
+  toolInput: Record<string, unknown> | undefined,
+): string | null {
+  if (!toolInput) return null;
+  for (const key of EDIT_PATH_KEYS) {
+    const value = toolInput[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return null;
+}
+/** The one concise line surfaced before an edit to a file a prior session already worked on. */
+export function beforeEditHintText(
+  file: string,
+  session: RecentSession,
+  now: Date,
+): string {
+  const marks: string[] = [];
+  if (session.reuseCount > 0)
+    marks.push(`reused ${String(session.reuseCount)}×`);
+  if (session.byTeammate) marks.push("teammate");
+  marks.push(ageInWords(session.startedAt, now));
+  return `AgentCommons: a prior session worked on ${file}: ${quoted(session.title)} (${marks.join(" · ")}). Read it with get ${session.id} before editing.`;
+}
+/**
+ * Hook mode, the pre-tool path (§6.4). When the tool is one of the harness's edit/write tools
+ * and a cached recall session already worked on the file about to be changed, returns one
+ * concise line naming that session, strongest (most reused, a teammate's, largest, newest)
+ * first; otherwise null. At most one hint per file per session (a small set beside the state
+ * file), and only a file match — never mere same-repository membership, which would fire on
+ * every edit. Reads the already-refreshed cache and a couple of small files, never the network,
+ * and never throws: any trouble returns null so the tool always runs.
+ */
+export function beforeEditHint(
+  directory: string,
+  harness: CliHarness,
+  event: PreToolPayload,
+  now = new Date(),
+): string | null {
+  try {
+    if (!HARNESSES[harness].editTools.includes(event.tool_name)) return null;
+    const target = editTargetPath(event.tool_input);
+    if (!target) return null;
+    const repo = repositoryAt(event.cwd);
+    const repoName = repositoryName(repo);
+    if (!repoName) return null;
+    const wanted = repoRelative(target, event.cwd, repo.root);
+    if (!wanted) return null;
+    const cache = readCache(directory, repoName);
+    const recent = cache ? recentOf(cache) : [];
+    if (!recent.length) return null;
+    const best = recent
+      .map((session) => ({
+        session,
+        file: matchingFile(wanted, session.files),
+      }))
+      .filter(
+        (candidate): candidate is { session: RecentSession; file: string } =>
+          candidate.file !== null,
+      )
+      .sort(
+        (a, b) =>
+          b.session.reuseCount - a.session.reuseCount ||
+          (b.session.byTeammate ? 1 : 0) - (a.session.byTeammate ? 1 : 0) ||
+          b.session.messageCount - a.session.messageCount ||
+          b.session.startedAt.localeCompare(a.session.startedAt),
+      )[0];
+    if (!best) return null;
+    // Dedup on the repository-relative path, so the same file deduplicates whether the tool
+    // named it absolutely (Claude Code) or relative to cwd (Gemini CLI).
+    const dedupPath = beforeEditDedupPath(
+      statePath(directory, harness, event.session_id),
+    );
+    const dedup = readEditDedup(dedupPath);
+    if (dedup.files.includes(wanted)) return null;
+    writeAtomic(dedupPath, {
+      v: 1,
+      files: [...dedup.files, wanted].slice(-EDIT_DEDUP_LIMIT),
+    });
+    return beforeEditHintText(best.file, best.session, now);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // Upload mode
 // ---------------------------------------------------------------------------------------
 interface RefreshOptions {
@@ -379,6 +599,9 @@ export async function refreshRecallHint(
     const url = new URL("/api/v1/sessions", config.server);
     url.searchParams.set("limit", String(RECALL_RECENT_LIMIT));
     url.searchParams.set("roots_only", "true");
+    // Recall ranking (§7.6): the page is ordered by proven value (reuse_count desc, then
+    // recency) and each item carries the distilled fields and a files preview the hint reads.
+    url.searchParams.set("recall", "true");
     url.searchParams.set("filters", JSON.stringify({ repo_name: repoName }));
     const response = await (options.fetch ?? fetch)(url, {
       headers: {
@@ -402,6 +625,17 @@ export async function refreshRecallHint(
           item.title === null ? null : item.title.slice(0, MAX_TITLE_CHARS),
         startedAt: item.started_at,
         branch: item.branch,
+        reuseCount: item.reuse_count,
+        byTeammate: item.by_teammate,
+        messageCount: item.message_count,
+        endReason:
+          item.end_reason === null
+            ? null
+            : item.end_reason.slice(0, MAX_END_REASON_CHARS),
+        files: item.files
+          .filter((file) => file.length > 0)
+          .slice(0, MAX_RECENT_FILES)
+          .map((file) => file.slice(0, MAX_FILE_CHARS)),
       })),
     );
     return "refreshed";

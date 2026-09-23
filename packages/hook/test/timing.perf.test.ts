@@ -217,6 +217,11 @@ it(
         title: `Session ${String(index)} about the widgets ${"x".repeat(60)}`,
         startedAt: "2026-09-10T12:00:00Z",
         branch: "main",
+        reuseCount: index,
+        byTeammate: index % 2 === 0,
+        messageCount: 40_000,
+        endReason: null,
+        files: ["src/widgets.ts", "src/other.ts"],
       })),
     });
     const hintedSamples: number[] = [];
@@ -252,17 +257,41 @@ it(
       hintedSamples.push(ms);
       await delay(SETTLE_MS);
     }
+    // The before-edit recall path is the pre-tool hot path: it resolves the repository, reads
+    // the cache and matches the file about to be edited, all offline. A fresh session each pass
+    // so the once-per-file dedup never suppresses the timed hint; `cwd` is the checkout so the
+    // repository resolves from the working tree.
+    const beforeEditSamples: number[] = [];
+    for (let pass = 0; pass < PASSES; pass++) {
+      baseline.sample();
+      const { ms, stdout } = timed(
+        [executable, "claude"],
+        JSON.stringify({
+          session_id: randomUUID(),
+          cwd: checkout,
+          hook_event_name: "PreToolUse",
+          tool_name: "Edit",
+          tool_input: { file_path: join(checkout, "src/widgets.ts") },
+        }),
+        blackholed,
+      );
+      expect(stdout).toContain("worked on src/widgets.ts");
+      beforeEditSamples.push(ms);
+      await delay(SETTLE_MS);
+    }
     const limits = baseline.bounds();
     const medians = [...samples].map(
       ([key, times]) => [key, median(times)] as const,
     );
     const slowest = medians.reduce((a, b) => (b[1] > a[1] ? b : a));
     const hintedMs = median(hintedSamples);
+    const beforeEditMs = median(beforeEditSamples);
     console.log(
-      `hook wall clock (median of ${String(PASSES)}): node start ${limits.baselineMs.toFixed(1)} ms, slowest event ${slowest[0]} ${slowest[1].toFixed(1)} ms, hinted prompt ${hintedMs.toFixed(1)} ms`,
+      `hook wall clock (median of ${String(PASSES)}): node start ${limits.baselineMs.toFixed(1)} ms, slowest event ${slowest[0]} ${slowest[1].toFixed(1)} ms, hinted prompt ${hintedMs.toFixed(1)} ms, before-edit ${beforeEditMs.toFixed(1)} ms`,
     );
     for (const [key, ms] of medians) expectWithinBudget(ms, limits, key);
     expectWithinBudget(hintedMs, limits, "claude UserPromptSubmit (hinted)");
+    expectWithinBudget(beforeEditMs, limits, "claude PreToolUse (before-edit)");
     expect(
       execFileSync(process.execPath, [executable, "claude"], {
         input: "invalid",
