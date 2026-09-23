@@ -176,17 +176,17 @@ it("selects the Fargate shape by default and validates single-node settings sepa
 it("requires a ClickHouse Cloud endpoint for the cloud trace store and parses its provider and region", () => {
   expect(
     clickhouseCloudUrlSchema.parse(
-      "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+      "https://example.us-west-2.aws.clickhouse.cloud:8443",
     ),
   ).toEqual({
-    origin: "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+    origin: "https://example.us-west-2.aws.clickhouse.cloud:8443",
     provider: "aws",
     region: "us-west-2",
   });
   for (const value of [
-    "http://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
-    "https://user:pw@cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
-    "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443/db",
+    "http://example.us-west-2.aws.clickhouse.cloud:8443",
+    "https://user:pw@example.us-west-2.aws.clickhouse.cloud:8443",
+    "https://example.us-west-2.aws.clickhouse.cloud:8443/db",
     "https://example.com:8443",
   ])
     expect(clickhouseCloudUrlSchema.safeParse(value).success).toBe(false);

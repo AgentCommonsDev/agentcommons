@@ -120,7 +120,7 @@ deferred step; `DEPLOYMENTS_ENABLED` remains unset until the operator enables it
 ### One path per screen, organic recall guidance and deployment follow-ups, 2026-09-09
 
 Observed on the working tree that became this commit, after the self-hosted release
-to https://hooks.tools.goodhartlabs.com (commit b829b38 at the time of the checks).
+to https://agentcommons.acme.dev (commit b829b38 at the time of the checks).
 
 | Gate                                                     | Observed result                                                                                                                                                                                                                                                                                                   |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

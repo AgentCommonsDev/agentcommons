@@ -1,6 +1,6 @@
 # AgentCommons — Specification
 
-Status: draft v2, 2026-09-07, implementation-ready. Owner: raphael@zeropath.com.
+Status: draft v2, 2026-09-07, implementation-ready. Owner: rek7.
 First deployment: ZeroPath. Designed so any organization can self-host it; nothing
 organization-specific is hardcoded. One organization per instance.
 

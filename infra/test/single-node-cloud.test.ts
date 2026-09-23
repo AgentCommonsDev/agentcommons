@@ -8,7 +8,7 @@ import { all, find, singleNodeFixture } from "./single-node-fixture.js";
 const { mocksReady } = singleNodeFixture({
   "agentcommons:traceStore": "clickhouse-cloud",
   "agentcommons:clickhouseCloudUrl":
-    "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+    "https://example.us-west-2.aws.clickhouse.cloud:8443",
   "agentcommons:clickhouseCloudPassword": "cloud-issued-secret",
   "agentcommons:clickhouseWriterPassword": "clickhouse-writer-fixture-Aa!",
   "agentcommons:clickhouseAccessPassword": "clickhouse-access-fixture-Aa!",
@@ -67,7 +67,7 @@ describe("single-node with the ClickHouse Cloud trace store", () => {
     );
     expect(values).toMatchObject({
       TRACE_STORE: "clickhouse-cloud",
-      CLICKHOUSE_URL: "https://cjudcc6tio.us-west-2.aws.clickhouse.cloud:8443",
+      CLICKHOUSE_URL: "https://example.us-west-2.aws.clickhouse.cloud:8443",
       CLICKHOUSE_POSTGRES_HOST: "203.0.113.10",
       CLICKHOUSE_POSTGRES_PORT: "5432",
       CLICKHOUSE_MIGRATION_USER: "default",

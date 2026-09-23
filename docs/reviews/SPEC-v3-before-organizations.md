@@ -3,7 +3,7 @@
 Status: v3, 2026-09-07, implementation-ready after external review (see
 `docs/reviews/codex-review-2026-09-07.md`; v2 kept alongside for diffing). Everything
 defined here is built; there is no roadmap. Owner:
-raphael@zeropath.com. First deployment: ZeroPath. Self-hostable by any organization;
+rek7. First deployment: ZeroPath. Self-hostable by any organization;
 one organization per instance; nothing organization-specific is hardcoded.
 
 AgentCommons is a central, append-only index of coding-agent sessions. Hooks in each

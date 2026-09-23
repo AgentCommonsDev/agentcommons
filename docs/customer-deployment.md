@@ -11,7 +11,7 @@ below remains the reference for a larger footprint and was not selected.
 
 | Setting                  | Value                                                                                                                                                                          |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Application origin       | `https://hooks.tools.goodhartlabs.com`                                                                                                                                         |
+| Application origin       | `https://agentcommons.acme.dev`                                                                                                                                                |
 | Pulumi stack             | `zpghl`, S3 state backend in the account, passphrase secrets provider                                                                                                          |
 | Region                   | `us-west-2`, default VPC public subnet                                                                                                                                         |
 | Host                     | arm64 Ubuntu 24.04 `t4g.large`, 60 GiB encrypted gp3, Elastic IP, IMDSv2                                                                                                       |
@@ -19,10 +19,10 @@ below remains the reference for a larger footprint and was not selected.
 | DNS                      | Cloudflare-proxied record to the Elastic IP; Caddy trusts Cloudflare's ranges                                                                                                  |
 | Instance mode            | `customer`, Google sign-in plus the owner's password fallback, no email                                                                                                        |
 | Signup                   | `invite`; operator allowlist `zeropath.com,goodhartlabs.com`                                                                                                                   |
-| Organization             | slug and name `zpghl`; owner `raphael@zeropath.com`                                                                                                                            |
+| Organization             | slug and name `zpghl`; owner `owner@example.com`                                                                                                                               |
 | Enrolled sign-in domains | `zeropath.com`, `goodhartlabs.com` (members join automatically, ADR 0049)                                                                                                      |
 | Embeddings               | off; enable later per the runbook (`EMBEDDINGS_ENABLED`, `OPENAI_API_KEY`)                                                                                                     |
-| Trace store              | ClickHouse Cloud (`cjudcc6tio.us-west-2.aws.clickhouse.cloud`), billed by ClickHouse                                                                                           |
+| Trace store              | ClickHouse Cloud (`<clickhouse-endpoint>`), billed by ClickHouse                                                                                                               |
 | Backups                  | daily EBS snapshots, seven retained                                                                                                                                            |
 | Control database         | bundled PostgreSQL 16 container today; Aurora Serverless v2 (0.5 to 4 ACU, about $46 per month idle) is the documented move, cut over after the performance release (ADR 0063) |
 | Updates                  | hourly pull of `ghcr.io/agentcommonsdev/agentcommons:stable` with rollback (ADR 0059); `autoUpdate: false` opts out                                                            |
@@ -30,18 +30,18 @@ below remains the reference for a larger footprint and was not selected.
 
 Operator sequence after the final commit is pushed: `pulumi up`, then
 `infra/scripts/single-node-release.sh <commit>`, then
-`infra/scripts/single-node-run.sh bootstrap.sh --admin raphael@zeropath.com --organization zpghl --name zpghl --domain zeropath.com --domain goodhartlabs.com`.
+`infra/scripts/single-node-run.sh bootstrap.sh --admin owner@example.com --organization zpghl --name zpghl --domain zeropath.com --domain goodhartlabs.com`.
 The release pulls the published image and installs the updater; from then on the host
 installs each new release on its own within about an hour, and the release script is
 needed only for configuration changes and changes to the checkout (Compose files, Caddy
 and database settings). `agentcommons-update.sh --status` on the host and Admin → Status
 in the dashboard show the running release.
 
-Founder actions: keep the Cloudflare-proxied `A` record for `hooks.tools` pointing at the
+Founder actions: keep the Cloudflare-proxied `A` record for `agentcommons` pointing at the
 `publicIp` stack output (DNS-only also works), set the zone's SSL/TLS mode to Full
 (strict) once the certificate exists, leave "Always Use HTTPS" off, and add
-`https://hooks.tools.goodhartlabs.com/auth/callback/google` to the Google OAuth client's
-authorized redirect URIs (origin `https://hooks.tools.goodhartlabs.com`). Caddy obtains
+`https://agentcommons.acme.dev/auth/callback/google` to the Google OAuth client's
+authorized redirect URIs (origin `https://agentcommons.acme.dev`). Caddy obtains
 the certificate within a minute of the record resolving.
 
 ## Fargate alternative (not selected)
@@ -52,7 +52,7 @@ The remainder of this document is the earlier Fargate/RDS plan, kept for referen
 
 | Setting                   | Proposed value                                                                          |
 | ------------------------- | --------------------------------------------------------------------------------------- |
-| Application origin        | `https://hooks.tools.goodhartlabs.com`                                                  |
+| Application origin        | `https://agentcommons.acme.dev`                                                         |
 | Instance mode             | `customer`                                                                              |
 | AWS region                | `us-west-2` (Oregon)                                                                    |
 | AWS account               | Discover as `AWS_ACCOUNT_ID` using the command below                                    |
@@ -88,7 +88,7 @@ Keep DNS in Cloudflare and use the infrastructure's existing external-certificat
 There is no need to migrate or delegate the zone to Route53.
 
 1. After approval, request a public ACM certificate for the exact hostname
-   `hooks.tools.goodhartlabs.com` in `us-west-2`, using DNS validation.
+   `agentcommons.acme.dev` in `us-west-2`, using DNS validation.
 2. Read ACM's actual `ResourceRecord.Name` and `ResourceRecord.Value`. Add that CNAME
    in Cloudflare, DNS-only. Its generated token cannot be supplied before the certificate
    request. Keep this validation record for certificate renewal.
@@ -97,13 +97,13 @@ There is no need to migrate or delegate the zone to Route53.
    does not attempt to create Route53 records.
 4. Provision the reviewed stack. Read the resulting ALB DNS hostname and add:
 
-   | Cloudflare field                    | Value                                                              |
-   | ----------------------------------- | ------------------------------------------------------------------ |
-   | Type                                | `CNAME`                                                            |
-   | Name in the `goodhartlabs.com` zone | `hooks.tools`                                                      |
-   | Target                              | The actual generated ALB hostname in `us-west-2.elb.amazonaws.com` |
-   | Proxy                               | DNS-only                                                           |
-   | TTL                                 | Auto                                                               |
+   | Cloudflare field            | Value                                                              |
+   | --------------------------- | ------------------------------------------------------------------ |
+   | Type                        | `CNAME`                                                            |
+   | Name in the `acme.dev` zone | `agentcommons`                                                     |
+   | Target                      | The actual generated ALB hostname in `us-west-2.elb.amazonaws.com` |
+   | Proxy                       | DNS-only                                                           |
+   | TTL                         | Auto                                                               |
 
 An ALB provides a DNS name whose addresses can change. Do not pin one of its resolved
 IP addresses in an A record. Read the generated hostname after provisioning.
@@ -117,11 +117,11 @@ the ALB; exporting it adds no resource.
 ## Google SSO and customer membership
 
 Create a Google OAuth client with application type **Web application**. The production
-JavaScript origin is `https://hooks.tools.goodhartlabs.com`. Its exact authorized
+JavaScript origin is `https://agentcommons.acme.dev`. Its exact authorized
 redirect URI is:
 
 ```text
-https://hooks.tools.goodhartlabs.com/auth/callback/google
+https://agentcommons.acme.dev/auth/callback/google
 ```
 
 For the existing local development command, the dashboard runs on port 5173 and proxies
@@ -168,7 +168,7 @@ placeholder must be replaced with the issued regional certificate ARN.
 ```yaml
 config:
   aws:region: us-west-2
-  agentcommons:hostname: hooks.tools.goodhartlabs.com
+  agentcommons:hostname: agentcommons.acme.dev
   agentcommons:githubRepository: AgentCommonsDev/agentcommons
   agentcommons:githubOidcProviderArn: arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com
   agentcommons:certificateArn: <issued-us-west-2-ACM-certificate-ARN>

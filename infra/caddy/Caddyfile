@@ -1,5 +1,5 @@
 # Caddy in front of the API on one host (docker-compose.caddy.yml).
-# PUBLIC_URL, for example https://hooks.tools.goodhartlabs.com, comes from .env; Caddy
+# PUBLIC_URL, for example https://agentcommons.acme.dev, comes from .env; Caddy
 # obtains and renews its certificate automatically once DNS resolves to this host and
 # keeps retrying until then. The plain http:// site answers on the bare address so the
 # host can be checked before DNS exists; requests for the public hostname on port 80

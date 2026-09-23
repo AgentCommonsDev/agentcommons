@@ -5,7 +5,7 @@ Status: Accepted. Complements the Fargate/RDS stacks of §13; it does not replac
 
 ## Context
 
-The first customer instance (Goodhart Labs, `hooks.tools.goodhartlabs.com`) needs a
+The first customer instance (Goodhart Labs, `agentcommons.acme.dev`) needs a
 self-hosted AgentCommons that is cheap, reachable at one fixed IP address the customer
 can point DNS at, and operable by one person. The Fargate plan costs about $185 per month
 in production and about $92 in the dev shape before traffic, most of it NAT gateways,

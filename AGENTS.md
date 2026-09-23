@@ -9,6 +9,27 @@ AgentCommons is a central, append-only index of coding-agent sessions with searc
 people (dashboard) and agents (MCP). This file tells you where things are, what the
 rules are, and how to make a change that will be accepted.
 
+## This repository is public
+
+AgentCommons is open source. Every tracked file, and everything in git history, is
+world-readable and permanent — a secret that lands in one commit is compromised even if a
+later commit removes it. Before you commit, assume the diff will be published forever.
+
+- Never commit real secrets: API keys, tokens, passwords, private keys, connection
+  strings with real credentials, cloud keys, or `.env` files with real values. Config
+  goes through env vars or Pulumi-encrypted config (`secure:` in `infra/Pulumi.*.yaml`),
+  never plaintext. `.env` is gitignored; keep it that way and never force-add it.
+- Never commit real user PII or unredacted transcripts. Fixtures MUST pass through the
+  redactor (CI enforces this); use `@example.com`/`@example.test` addresses and generic
+  paths, never a real person's email, name, or home directory. Screenshots mask keys and
+  use example hostnames.
+- Keep internal infrastructure identifiers out of tracked files where avoidable
+  (prod hostnames, account IDs, ARNs, instance/cluster IDs, private endpoints). Where a
+  real deployment must be documented (e.g. `docs/customer-deployment.md`), keep it to
+  non-sensitive topology and prefer placeholders.
+- If you ever commit a real secret, treat it as leaked: rotate it immediately, then fix
+  history — removing it from the working tree is not enough.
+
 ## Start here if you are implementing
 
 1. Read `docs/SPEC.md` §0 through §3 in full. Then read the section for the step you are
