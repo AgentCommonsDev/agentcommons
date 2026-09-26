@@ -229,7 +229,7 @@ test("the Install page unlocks the installer command once a machine key exists a
   await expect(page.getByTestId("install-arrivals")).not.toContainText(
     install.arrivals.polling,
   );
-  // The hook writes the repository guidance itself; the manual step (command, off switch
+  // Repository guidance requires an explicit command; the optional step (command, removal
   // and the block to paste) sits behind an optional disclosure, closed by default.
   const guidance = page.getByTestId("repository-guidance");
   await expect(guidance).toContainText(install.prepare.repository.description);

@@ -1,7 +1,7 @@
 # ADR 0071: Repository guidance written on first session
 
 Date: 2026-09-11
-Status: Accepted. Extends ADR 0069 decision 1 (repository guidance, one implementation)
+Status: Superseded by [ADR 0095](0095-explicit-repository-guidance.md) on 2026-09-26. Originally extends ADR 0069 decision 1 (repository guidance, one implementation)
 and amends ADR 0057 decision 3 ("Teams add nothing to repositories") a second time: the
 capture hook now adds the block itself.
 

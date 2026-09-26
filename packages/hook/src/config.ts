@@ -28,10 +28,6 @@ export const configSchema = z.looseObject({
     .max(50 * 1024 * 1024)
     .default(65536),
   disabledPaths: z.array(z.string()).default([]),
-  /** Machine-level switch for the uploader writing the §8.3 block into repositories (§6.2). */
-  guidance: z
-    .looseObject({ auto: z.boolean().default(true) })
-    .default({ auto: true }),
   /** Flags the installer was run with; self-update re-runs `install` with the same ones. */
   installOptions: z
     .strictObject({

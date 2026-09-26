@@ -1,9 +1,9 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { repositoryIdentity } from "../../core/metadata/repository.js";
 
 /** A checkout as the shim knows it: the working tree root and its `origin` remote. */
-export interface Repository {
+interface Repository {
   root: string;
   remoteUrl: string | null;
 }
@@ -39,7 +39,7 @@ function originUrl(configText: string): string | null {
  * on the first event of a session, before the uploader has recorded git context, and in
  * a fresh clone of a repository other sessions already indexed.
  */
-export function repositoryFromCwd(cwd: string): Repository | null {
+function repositoryFromCwd(cwd: string): Repository | null {
   let directory = resolve(cwd);
   for (let depth = 0; depth < MAX_WALK; depth++) {
     const dotGit = join(directory, ".git");
@@ -76,7 +76,7 @@ export function repositoryFromCwd(cwd: string): Repository | null {
 /**
  * This checkout's repository as it is now: the enclosing repository with the `origin`
  * its `.git/config` names today, else `path` itself with no remote. The one notion of
- * "the repository of this checkout" in the shim: the guidance decision, the recall cache
+ * "the repository of this checkout" in the shim: the recall cache
  * and the hint request all resolve through it from a root or `cwd`, never from a remote
  * recorded earlier, which outlives a rename (the session state keeps the URL of its
  * first drain).
@@ -92,17 +92,3 @@ export function repositoryName(
 }
 export const repositoryNameFromCwd = (cwd: string): string | null =>
   repositoryName(repositoryFromCwd(cwd));
-/**
- * What a per-repository decision is keyed on: the remote's canonical name when there is
- * one (so every clone of a repository on the machine shares the decision), otherwise the
- * resolved root path of the checkout.
- */
-export function repositoryKey(repository: Repository): string {
-  const name = repositoryName(repository);
-  if (name) return name;
-  try {
-    return realpathSync(repository.root);
-  } catch {
-    return resolve(repository.root);
-  }
-}

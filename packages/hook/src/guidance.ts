@@ -1,24 +1,18 @@
 import {
-  accessSync,
-  constants,
   lstatSync,
   readlinkSync,
   realpathSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import * as z from "zod";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   guidanceMarkers,
   repositoryInstructions,
 } from "@agentcommons/core/format/install";
 import { replaceMarkedBlock } from "./blocks.js";
-import type { HookConfig } from "./config.js";
-import { hash, isCode, readJsonOr, writeAtomic } from "./files.js";
+import { isCode } from "./files.js";
 import { HARNESSES } from "./harnesses.js";
-import { note } from "./paths.js";
-import { repositoryAt, repositoryKey, type Repository } from "./repository.js";
 
 // ---------------------------------------------------------------------------------------
 // Repository instructions files (data in HARNESSES)
@@ -182,202 +176,4 @@ export function removeRepositoryGuidance(root: string): string[] {
     }
   }
   return removed;
-}
-
-// ---------------------------------------------------------------------------------------
-// Per-repository decisions (the hook state directory)
-// ---------------------------------------------------------------------------------------
-/** The block text this bundle writes, so a release with new text re-applies it once. */
-export const repositoryBlockHash = (): string => hash(repositoryInstructions);
-// Loose on purpose (like update.json): a newer bundle may add fields, and hook mode of an
-// older one flips `announce` with a read-modify-write.
-const decisionSchema = z.looseObject({
-  v: z.literal(1),
-  /** `repositoryKey`: the remote's canonical name, else the resolved root. */
-  repository: z.string().min(1),
-  /** The checkout the decision was last applied in. */
-  root: z.string().min(1),
-  decision: z.enum(["written", "declined"]),
-  /** Hash of the block text applied; null once declined. */
-  blockHash: z.string().nullable(),
-  /** Instructions file names that carry or link to the block after the last write. */
-  files: z.array(z.string()),
-  /** The next hinted hook event tells the model once what was written (§6.2). */
-  announce: z.boolean(),
-  at: z.number(),
-});
-type GuidanceDecision = z.infer<typeof decisionSchema>;
-/** One small file per repository under the data directory, keyed by the hashed repository key. */
-export function guidanceDecisionPath(directory: string, key: string): string {
-  return join(directory, "guidance", `${hash(key)}.json`);
-}
-export function readGuidanceDecision(
-  directory: string,
-  key: string,
-): GuidanceDecision | null {
-  try {
-    return readJsonOr(
-      guidanceDecisionPath(directory, key),
-      decisionSchema,
-      null,
-    );
-  } catch {
-    return null;
-  }
-}
-function record(
-  directory: string,
-  repository: Repository,
-  decision: Pick<
-    GuidanceDecision,
-    "decision" | "blockHash" | "files" | "announce"
-  >,
-): GuidanceDecision {
-  const key = repositoryKey(repository);
-  const value: GuidanceDecision = {
-    v: 1,
-    repository: key,
-    root: repository.root,
-    at: Date.now(),
-    ...decision,
-  };
-  writeAtomic(guidanceDecisionPath(directory, key), value);
-  return value;
-}
-/**
- * The command run by a person: the write is recorded so the uploader neither repeats it
- * nor announces it, and `--off` records the choice the uploader honours from then on.
- */
-export function recordGuidanceCommand(
-  directory: string,
-  root: string,
-  decision: "written" | "declined",
-  files: readonly string[],
-): void {
-  record(directory, repositoryAt(root), {
-    decision,
-    blockHash: decision === "written" ? repositoryBlockHash() : null,
-    files: files.map((file) => basename(file)),
-    announce: false,
-  });
-}
-
-// ---------------------------------------------------------------------------------------
-// Upload mode: the automatic write
-// ---------------------------------------------------------------------------------------
-/**
- * Whether the uploader may write the block into repositories on this machine:
- * `AGENTCOMMONS_GUIDANCE_AUTO` (`0` off, `1` on) overrides `guidance.auto` in config.json,
- * which defaults to on.
- */
-function autoGuidanceEnabled(
-  config: HookConfig,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  const override = env.AGENTCOMMONS_GUIDANCE_AUTO;
-  if (override === "0") return false;
-  if (override === "1") return true;
-  return config.guidance.auto;
-}
-/** A checkout the uploader writes into: a writable working tree root with its own `.git`, outside `node_modules`. */
-function eligibleCheckout(root: string): boolean {
-  try {
-    if (!lstatSync(root).isDirectory()) return false;
-    if (root.split(sep).includes("node_modules")) return false;
-    lstatSync(join(root, ".git")); // A directory, or a linked worktree's `gitdir:` file.
-    accessSync(root, constants.W_OK);
-    return true;
-  } catch {
-    return false; // Missing, unreadable, read-only, or a bare repository (no working tree).
-  }
-}
-type GuidanceOutcome =
-  "written" | "adopted" | "current" | "declined" | "disabled" | "skipped";
-/**
- * Upload mode only, after the drain: the first uploader run of a session inside a
- * checkout writes the §8.3 repository block into the checkout's instructions files, once
- * per repository (`guidance/<sha256(key)>.json` in the data directory). The session state
- * gives the checkout's root; the decision is keyed on the checkout's `origin` as it is now,
- * read from its `.git/config` (`repositoryAt`), because the state's `remoteUrl` was
- * recorded by the first drain and outlives a renamed remote. A recorded `declined` (from
- * `guidance --off`) or a `written` with this bundle's block hash ends the call before any
- * repository file is read; a differing hash (a release changed the text) compares the
- * block in each file with the new text, blank lines and trailing whitespace aside, and
- * rewrites only a block whose words differ. A block already saying the same thing is
- * `adopted`: recorded, never rewritten, never announced. Bare repositories never reach
- * here (no working tree root), and a root that is missing, read-only, inside
- * `node_modules` or without its own `.git` is skipped quietly. Nothing here touches the
- * network, `pending` or `ackedCursor`.
- */
-export function applyRepositoryGuidance(
-  directory: string,
-  config: HookConfig,
-  repository: Repository | null,
-): GuidanceOutcome {
-  if (!repository) return "skipped";
-  if (!autoGuidanceEnabled(config)) return "disabled";
-  const checkout = repositoryAt(repository.root);
-  const key = repositoryKey(checkout);
-  const decision = readGuidanceDecision(directory, key);
-  if (decision?.decision === "declined") return "declined";
-  const blockHash = repositoryBlockHash();
-  if (decision?.decision === "written" && decision.blockHash === blockHash)
-    return "current";
-  if (!eligibleCheckout(checkout.root)) return "skipped";
-  let result: RepositoryGuidance;
-  try {
-    result = writeRepositoryGuidance(checkout.root);
-  } catch (error) {
-    // A checkout that turned read-only under us is left alone like one found read-only.
-    if (!["EACCES", "EPERM", "EROFS"].some((code) => isCode(error, code)))
-      note(
-        directory,
-        `Repository guidance skipped for ${checkout.root}: ${error instanceof Error ? error.message : "unknown error"}`,
-      );
-    return "skipped";
-  }
-  if (!result.written.length) return "skipped";
-  const added = [...result.changed, ...result.linked];
-  record(directory, checkout, {
-    decision: "written",
-    blockHash,
-    files: [...result.written, ...result.linked].map((file) => basename(file)),
-    announce: added.length > 0,
-  });
-  if (!added.length) return "adopted";
-  note(
-    directory,
-    `Repository guidance written in ${checkout.root}: ${added.map((file) => basename(file)).join(", ")}. Commit these files so every teammate's agent reads it.`,
-  );
-  return "written";
-}
-
-// ---------------------------------------------------------------------------------------
-// Hook mode: tell the model once
-// ---------------------------------------------------------------------------------------
-/** The one line the model and its user read after the uploader wrote the block (§6.2). */
-export function guidanceAnnouncementText(files: readonly string[]): string {
-  const primary = primaryRepositoryInstructionsFile();
-  const others = files.filter((file) => file !== primary);
-  return `AgentCommons guidance was added to ${primary}${others.length ? ` (with ${others.join("/")})` : ""}; commit it so every teammate's agent reads it.`;
-}
-/**
- * Hook mode. Reads the repository's decision file and, when the uploader left a write
- * to announce, clears the flag and returns the line; one small read, one write, once per
- * repository. Never touches a repository file.
- */
-export function guidanceAnnouncement(
-  directory: string,
-  repository: Repository | null,
-): string | null {
-  if (!repository) return null;
-  const key = repositoryKey(repository);
-  const decision = readGuidanceDecision(directory, key);
-  if (!decision || decision.decision !== "written" || !decision.announce)
-    return null;
-  writeAtomic(guidanceDecisionPath(directory, key), {
-    ...decision,
-    announce: false,
-  });
-  return guidanceAnnouncementText(decision.files);
 }

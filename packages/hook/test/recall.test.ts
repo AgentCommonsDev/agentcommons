@@ -647,12 +647,10 @@ describe("recall hint", () => {
     });
     const path = f.hook({ hook_event_name: "SessionStart" });
     const calls: URL[] = [];
-    // `guidance: false`: the repository write and its announcement are covered by guidance.test.ts.
     await upload(f.directory, SHIM, path, f.config, {
       fetch: listFetch(5, calls, 200, recent),
       sleep: () => Promise.resolve(),
       update: false,
-      guidance: false,
     });
     expect(loadState(path).context.git?.remoteUrl).toBe(GIT.remoteUrl);
     expect(calls).toHaveLength(1);
@@ -672,14 +670,12 @@ describe("recall hint", () => {
       fetch: listFetch(5, calls),
       sleep: () => Promise.resolve(),
       update: false,
-      guidance: false,
     });
     await upload(f.directory, SHIM, path, f.config, {
       fetch: listFetch(5, calls),
       sleep: () => Promise.resolve(),
       update: false,
       recall: false,
-      guidance: false,
     });
     expect(calls).toHaveLength(1);
   });

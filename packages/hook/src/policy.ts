@@ -24,7 +24,7 @@ import { isCode, writeAtomic } from "./files.js";
  * and, on any doubt, treats it as no policy — which allows the call (fail open).
  */
 
-/** The cached org policy, beside `config.json`, the recall and guidance caches. */
+/** The cached org policy, beside `config.json`, the recall cache. */
 export const POLICY_CACHE_FILE = "tool-policy.json";
 /** Blocked/warned decisions the uploader forwards; one file per decision. */
 const VIOLATION_DIR = ["tool-policy", "violations"];

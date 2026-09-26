@@ -4,7 +4,6 @@ import * as z from "zod";
 import { ageInWords } from "../../core/format/age.js";
 import { objectSchema, type HookConfig } from "./config.js";
 import { hash, readJsonOr, writeAtomic } from "./files.js";
-import { guidanceAnnouncement } from "./guidance.js";
 import {
   HARNESSES,
   nativeHookSchema,
@@ -383,7 +382,6 @@ export function promptHint(
   const repository = repositoryAt(
     loadState(statePath).context.git?.root ?? event.cwd,
   );
-  const announcement = guidanceAnnouncement(directory, repository);
   const hint = ((): string | null => {
     const repoName = repositoryName(repository);
     if (!repoName) return null;
@@ -412,10 +410,7 @@ export function promptHint(
     next.lastHintPrompt = next.prompts;
     return recallHintText(repoName, cache.sessions);
   })();
-  const text = [hint, announcement]
-    .filter((part): part is string => part !== null)
-    .join(" ");
-  return text ? speak(text) : silent();
+  return hint ? speak(hint) : silent();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -575,8 +570,8 @@ interface RefreshOptions {
  * start time and branch (what the same key already reads). The attempt is recorded before
  * the request so a failing server is asked again only after the interval; failures are
  * logged and ignored and the durability path is never involved. The repository is the
- * checkout at the state's root as it is now (`repositoryAt`, the identity the guidance
- * decision uses); the state's own `remoteUrl` dates from the first drain and is never the
+ * checkout at the state's root as it is now (`repositoryAt`); the state's own `remoteUrl`
+ * dates from the first drain and is never the
  * name asked for or cached, so a renamed remote takes effect at the next refresh.
  */
 export async function refreshRecallHint(

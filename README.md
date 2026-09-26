@@ -37,9 +37,8 @@ rarely reach a pull request; the index keeps them.
 2. **Search.** Teammates search prompts, decisions and tool output across every tool, open
    the source session, and query all of it with SQL and dashboards.
 3. **Recall.** Agents get three MCP tools, `search`, `get` and `sql`, and a standing
-   instruction in their global and repository instructions files to search before changing
-   code. In Claude Code, Codex and Gemini CLI the hook also names earlier sessions on the
-   same repository when a prompt matches one; Claude Code and Gemini CLI get an overview
+   instruction in their global instructions files to search before changing code. In Claude
+   Code, Codex and Gemini CLI the hook also names earlier sessions on the same repository when a prompt matches one; Claude Code and Gemini CLI get an overview
    of the newest ones at session start.
 
 AgentCommons links a session to the earlier sessions it reads, so Home shows how much
@@ -60,12 +59,10 @@ prior work is reused and each session page lists the later sessions that read it
    `search`, `get` and `sql`.
 
 The installer writes the search-first instruction into each tool's global instructions
-file on that machine. The first captured session in a checkout writes the same block into
-the repository's `AGENTS.md` and links `CLAUDE.md` and `GEMINI.md` to it; commit those
-files so teammates' agents read it with or without the install. To add the block before
-the first session, run `node ~/.agentcommons/hook.js guidance --repo .` in the checkout.
-`--off` keeps a repository out. `guidance.auto: false` in `~/.agentcommons/config.json` or
-`AGENTCOMMONS_GUIDANCE_AUTO=0` turns the automatic write off for a machine.
+file on that machine. Repository files change only when you explicitly run
+`node ~/.agentcommons/hook.js guidance --repo .` in a checkout or paste the block from
+**Install**. The command adds the block to `AGENTS.md` and links `CLAUDE.md` and
+`GEMINI.md` to it. Add `--off` to remove the block from a repository.
 
 A machine without the hook can still give its agents the tools:
 

@@ -239,11 +239,9 @@ it("collects end observations in a detached worktree with committed and dirty fi
     cwd: worktree,
     hook_event_name: "SessionStart",
   });
-  // `guidance: false`: the dirty-file count below must see only the file this test writes.
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
     sweep: false,
-    guidance: false,
   });
   writeFileSync(join(worktree, "tracked"), "first\nsecond\n");
   git(worktree, ["commit", "-am", "observed commit"]);
@@ -257,7 +255,6 @@ it("collects end observations in a detached worktree with committed and dirty fi
   await upload(f.directory, "/none", path, f.config, {
     fetch: f.fetcher,
     sweep: false,
-    guidance: false,
   });
   expect(f.received.find((body) => body.behavior === "end")?.end).toMatchObject(
     { observedDiffStat: { files: 1, added: 1, removed: 0 }, dirtyFileCount: 1 },

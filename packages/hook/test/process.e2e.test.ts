@@ -247,10 +247,9 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
     "pi reads the AgentCommons guidance from its extension",
   );
   expect(installed.output).toContain(
-    "Open a new terminal before starting Codex",
+    "Codex reaches AgentCommons through a stdio bridge that carries the key in its own config",
   );
-  // Every login shell gets the exports, not only $SHELL: Codex reads the key from the
-  // environment of whichever shell starts it.
+  // Every login shell keeps the exports for other tools; Codex uses its bridge config.
   for (const rc of [".bashrc", ".zshrc"])
     expect(readFileSync(join(home, rc), "utf8")).toContain(
       "export AGENTCOMMONS_API_KEY='test-credential'",

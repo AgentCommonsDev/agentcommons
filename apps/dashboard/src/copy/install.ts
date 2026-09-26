@@ -31,13 +31,12 @@ export const installCopy = {
     repository: {
       title: "Guidance for a repository",
       description:
-        "The first captured session in a checkout adds the same block to its AGENTS.md and links CLAUDE.md and GEMINI.md to it. Commit those three files so every teammate's agent reads the guidance, on machines with or without the install. Nothing else to do here.",
-      show: "Optional: add it now",
+        "Repository guidance is optional. Run the command below to add the block to AGENTS.md and link CLAUDE.md and GEMINI.md to it. Capture hooks leave repository files alone.",
+      show: "Optional: add repository guidance",
       hide: "Hide the optional step",
-      command:
-        "To add the block before the first session, run this in the checkout.",
+      command: "Run this in the checkout to add the block.",
       copyCommand: "Copy command",
-      off: "To keep a repository out, run the command with --off in that checkout. It removes the block and records the choice. To turn the automatic write off for a machine, set guidance.auto to false in ~/.agentcommons/config.json or export AGENTCOMMONS_GUIDANCE_AUTO=0.",
+      off: "To remove the block from a repository, run the command with --off in that checkout. Your other instructions stay in place.",
       manual:
         "Without the install, paste this block into AGENTS.md at the repository root, with CLAUDE.md and GEMINI.md as symlinks or copies.",
       copy: "Copy repository guidance",
