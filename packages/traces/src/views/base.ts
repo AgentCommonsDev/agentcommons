@@ -291,20 +291,16 @@ export function baseViews(database: string): TraceViewDefinition[] {
     ),
     traceView(
       "message_metadata",
-      latestRowsSql(
-        database,
-        "messages",
-        {
-          ...Object.fromEntries(
-            Object.entries(messageColumns).filter(
-              ([name]) =>
-                !["content", "tool_input", "search_text"].includes(name),
-            ),
+      latestRowsSql(database, "messages", {
+        ...Object.fromEntries(
+          Object.entries(messageColumns).filter(
+            ([name]) =>
+              !["content", "tool_input", "search_text"].includes(name),
           ),
-          payload_bytes: "UInt64",
-        },
-        { payload_bytes: "length(r.content)+length(r.tool_input)" },
-      ),
+        ),
+        // Stored at write time: sizing a transcript page never reads its payload.
+        payload_bytes: "UInt64",
+      }),
     ),
     traceView(
       "messages",

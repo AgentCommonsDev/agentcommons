@@ -90,6 +90,7 @@ const SEARCH_TERMS_COLUMN = "search_terms";
 const SEARCH_TERMS_INDEX = "message_terms";
 /** Ledger name of the one-time rebuild of the published-only search corpus (ADR 0092). */
 const MESSAGES_CURRENT_BACKFILL = "messages_current_v1";
+const MESSAGE_PAYLOAD_BYTES_BACKFILL = "message_payload_bytes_v1";
 const countSchema = z.array(z.object({ n: z.coerce.number() }));
 /**
  * The normalized search terms of every message as a stored column plus its text index.
@@ -140,6 +141,31 @@ async function searchTermsStatements(
       query: `ALTER TABLE ${db}.messages MATERIALIZE INDEX ${SEARCH_TERMS_INDEX}`,
     });
 }
+/**
+ * Metadata reads must not decompress payloads just to measure them (ADR 0096). The
+ * ledger is written only after every historical part has the materialized scalar;
+ * a crash after ADD COLUMN or during the mutation therefore retries the backfill.
+ */
+async function messagePayloadBytesStatements(
+  client: ReturnType<typeof createTraceClient>,
+  database: string,
+): Promise<void> {
+  const db = sqlIdentifier(database);
+  const result = await client.query({
+    query: `SELECT count() AS n FROM ${db}.backfills WHERE name=${sqlString(MESSAGE_PAYLOAD_BYTES_BACKFILL)}`,
+    format: "JSONEachRow",
+  });
+  if ((countSchema.parse(await result.json())[0]?.n ?? 0) > 0) return;
+  await client.command({
+    query: `ALTER TABLE ${db}.messages ADD COLUMN IF NOT EXISTS payload_bytes UInt64 MATERIALIZED length(content)+length(tool_input)`,
+  });
+  await client.command({
+    query: `ALTER TABLE ${db}.messages MATERIALIZE COLUMN payload_bytes SETTINGS mutations_sync=1`,
+  });
+  await client.command({
+    query: `INSERT INTO ${db}.backfills VALUES (${sqlString(MESSAGE_PAYLOAD_BYTES_BACKFILL)},now64(6))`,
+  });
+}
 export async function migrateTraces(
   config: TraceMigrationConfig,
 ): Promise<void> {
@@ -150,7 +176,9 @@ export async function migrateTraces(
     url: config.url,
     username: config.username,
     password: config.password,
-    request_timeout: 30000,
+    // An awaited, one-time materialization can scan the complete historical corpus.
+    // This migration-only timeout does not alter any reader's five-second budget.
+    request_timeout: 300000,
     clickhouse_settings: { join_use_nulls: 1 },
   });
   const db = sqlIdentifier(config.database);
@@ -222,6 +250,7 @@ export async function migrateTraces(
     await command(
       `CREATE TABLE IF NOT EXISTS ${db}.backfills (name String,completed_at DateTime64(6,'UTC')) ENGINE=ReplacingMergeTree ORDER BY name`,
     );
+    await messagePayloadBytesStatements(client, config.database);
     for (const [name, fields] of Object.entries(controlTables))
       await command(
         `CREATE OR REPLACE TABLE ${db}.${sqlIdentifier(`control_${name}`)} (${columns(fields)}) ${postgresSourceSql(config.postgresControlUrl, name, "engine")}`,

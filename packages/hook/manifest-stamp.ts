@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 
-export interface ManifestStamp {
+interface ManifestStamp {
   builtAt?: string;
   revision?: string;
 }

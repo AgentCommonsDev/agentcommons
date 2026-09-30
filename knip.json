@@ -6,7 +6,8 @@
         "scripts/*.{ts,mjs}",
         "scripts/recall-bench/*.ts",
         "*.config.{ts,js}",
-        "e2e/**/*.test.ts"
+        "e2e/**/*.test.ts",
+        "e2e/tooling/*.mjs"
       ]
     },
     "apps/api": { "entry": ["test/**/*.test.ts"] },

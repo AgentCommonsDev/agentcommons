@@ -143,10 +143,7 @@ export type ToolPolicyDocument = z.output<typeof toolPolicyDocumentSchema>;
  * service safety-checks every user-supplied command regex with the redaction ReDoS analysis
  * before the write and rejects an unsafe pattern with a 400.
  */
-export const toolPolicyReplaceInputSchema = toolPolicySchema;
-export type ToolPolicyReplaceInput = z.output<
-  typeof toolPolicyReplaceInputSchema
->;
+export type ToolPolicyReplaceInput = z.output<typeof toolPolicySchema>;
 
 /** Sort and filter the recorded violations, newest match first by default. */
 export const toolPolicyViolationSortKeys = ["matched_at", "seq"] as const;

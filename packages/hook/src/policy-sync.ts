@@ -16,7 +16,7 @@ import { policyCachePath, violationDir } from "./policy.js";
  */
 
 /** The policy is re-fetched at most this often, like the recall hint (§6.2 budget). */
-export const POLICY_REFRESH_MS = 5 * 60_000;
+const POLICY_REFRESH_MS = 5 * 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 /** The server accepts 1..500 violations per batch. */
 const MAX_BATCH = 500;
@@ -71,7 +71,7 @@ const spoolRecordSchema = z.looseObject({
   matchedAt: z.string(),
 });
 
-export interface PolicyOptions {
+interface PolicyOptions {
   fetch?: typeof fetch;
   now?: () => number;
 }

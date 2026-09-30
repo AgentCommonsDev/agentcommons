@@ -313,6 +313,68 @@ function pendingBase(
     remainderFile: null,
   };
 }
+function observeContext(state: HookState, intent: Intent): boolean {
+  if (Date.parse(intent.sentAt) < Date.parse(state.contextSentAt)) return false;
+  const held = JSON.stringify(state.context);
+  const context = {
+    ...state.context,
+    ...intent.context,
+    git: state.context.git,
+  };
+  if (
+    intent.sentAt === state.contextSentAt &&
+    (intent.transcriptPath ?? state.transcriptPath) === state.transcriptPath &&
+    JSON.stringify(context) === held
+  )
+    return false;
+  // Start context observes HEAD as of the start hook, not the drain time. Repeated
+  // drains of a dormant child reuse that observation instead of probing git again.
+  context.git ??= gitContext(intent.context.cwd, intent.sentAt);
+  state.context = context;
+  state.contextSentAt = intent.sentAt;
+  state.transcriptPath = intent.transcriptPath ?? state.transcriptPath;
+  return JSON.stringify(state.context) !== held;
+}
+/** A stop alone does not prove a child transcript exists (ADR0097). Keep its
+ * immutable intent until bytes appear, without publishing an empty remote child. */
+function undiscoveredChild(
+  state: HookState,
+  intent: Intent | undefined,
+  observed: HookState["source"],
+): boolean {
+  return (
+    intent?.behavior === "end" &&
+    intent.context.parentHint?.relation === "SUBAGENT" &&
+    state.lastSyncAt === 0 &&
+    state.phase === null &&
+    observed.watermark === 0
+  );
+}
+function childObservation(
+  state: HookState,
+  entries: ReturnType<typeof journalEntries>,
+): HookState["source"] {
+  const highest = highestSourceEntry(entries);
+  const latest = highest ? readEntry(highest) : undefined;
+  return snapshot(
+    latest?.transcriptPath ?? state.transcriptPath,
+    latestSource(state, latest ? [latest] : []),
+    HARNESSES[state.harness].reader,
+  );
+}
+/** Dormant child ends neither consume the sweep slot nor respawn an uploader.
+ * Their intent remains on disk, so source growth makes them eligible again. */
+function hasWork(path: string, state: HookState): boolean {
+  if (state.pending) return true;
+  const entries = journalEntries(path, state.processed);
+  const observed = childObservation(state, entries);
+  if (
+    entries.every((entry) => entry.kind === "end") &&
+    undiscoveredChild(state, headIntent(entries), observed)
+  )
+    return false;
+  return entries.length > 0 || observed.signature !== state.source.signature;
+}
 async function drain(
   directory: string,
   identity: HookIdentity,
@@ -348,6 +410,29 @@ async function drain(
   // delayed behind its parent's quiet window.
   let settleRequested = false;
   let settlePolls = 0;
+  const waitForChange = async (
+    observed: HookState["source"],
+    retained: ReadonlySet<string> = new Set(),
+  ): Promise<boolean> => {
+    for (
+      let quiet = 0;
+      settle && quiet < SETTLE_QUIET_POLLS && settlePolls < SETTLE_MAX_POLLS;
+      quiet++
+    ) {
+      settlePolls++;
+      await wait(SETTLE_POLL_MS);
+      const entries = journalEntries(path, state.processed);
+      if (
+        entries.some((entry) => !retained.has(entry.id)) ||
+        (retained.size
+          ? childObservation(state, entries)
+          : snapshot(state.transcriptPath, observed, definition.reader)
+        ).signature !== observed.signature
+      )
+        return true;
+    }
+    return false;
+  };
   // Rejected records awaiting replay, listed once and again only after the set changes.
   let quarantined: { file: string; item: Deferred }[] | null = null;
   const replayable = (): { file: string; item: Deferred } | undefined => {
@@ -438,26 +523,44 @@ async function drain(
         const intent = headIntent(entries);
         // Whether this intent carries context the server does not hold yet (§6.2 step 2).
         let contextChanged = false;
+        let firstObservation = false;
         if (intent) {
-          if (Date.parse(intent.sentAt) >= Date.parse(state.contextSentAt)) {
-            const held = JSON.stringify(state.context);
-            state.context = {
-              ...state.context,
-              ...intent.context,
-              // Start context observes HEAD as of the start hook, not the drain time.
-              git:
-                state.context.git ??
-                gitContext(intent.context.cwd, intent.sentAt),
-            };
-            state.contextSentAt = intent.sentAt;
-            state.transcriptPath =
-              intent.transcriptPath ?? state.transcriptPath;
-            contextChanged = JSON.stringify(state.context) !== held;
-          }
+          firstObservation =
+            Date.parse(intent.sentAt) > Date.parse(state.contextSentAt);
+          contextChanged = observeContext(state, intent);
           state.intent = intent.behavior === "end" ? "end" : "sync";
           settleRequested ||=
             definition.events[intent.nativeEvent]?.settle === true;
           registerChildren(directory, state, definition, intent, config);
+        }
+        const childSource =
+          intent?.behavior === "end" &&
+          intent.context.parentHint?.relation === "SUBAGENT" &&
+          entries.every((entry) => entry.kind === "end")
+            ? childObservation(state, entries)
+            : null;
+        if (childSource && undiscoveredChild(state, intent, childSource)) {
+          // All retained source watermarks are zero, so the highest entry is
+          // also the newest end. A corrected path gets its own settle window.
+          const newestEntry = highestSourceEntry(entries);
+          const newest = newestEntry ? readEntry(newestEntry) : undefined;
+          if (newest) {
+            firstObservation ||=
+              Date.parse(newest.sentAt) > Date.parse(state.contextSentAt);
+            observeContext(state, newest);
+          }
+          // Save the observed context time before waiting. Later parent callbacks
+          // do not spend another settle window on this same missing child.
+          settleRequested = firstObservation;
+          save(path, state, lock);
+          if (
+            await waitForChange(
+              childSource,
+              new Set(entries.map((entry) => entry.id)),
+            )
+          )
+            continue;
+          break;
         }
         if (intent && intent.behavior !== "sync")
           prepare(
@@ -577,26 +680,7 @@ async function drain(
             } else {
               stoppedSource = observed.signature;
               // Everything read so far is acknowledged; only wait for a late final record.
-              let grew = false;
-              for (
-                let quiet = 0;
-                settle &&
-                quiet < SETTLE_QUIET_POLLS &&
-                settlePolls < SETTLE_MAX_POLLS;
-                quiet++
-              ) {
-                settlePolls++;
-                await wait(SETTLE_POLL_MS);
-                if (
-                  journalEntries(path, state.processed).length ||
-                  snapshot(state.transcriptPath, observed, definition.reader)
-                    .signature !== observed.signature
-                ) {
-                  grew = true;
-                  break;
-                }
-              }
-              if (grew) continue;
+              if (await waitForChange(observed)) continue;
               break;
             }
           }
@@ -823,7 +907,8 @@ export async function upload(
   if (
     !retry &&
     !current.suspended &&
-    journalEntries(path, current.processed).length
+    journalEntries(path, current.processed).length &&
+    hasWork(path, current)
   )
     spawnUpload(config, executable, path);
 }
@@ -871,17 +956,7 @@ async function drainAll(
           return [];
         }
       })
-      .filter(
-        ({ file, state }) =>
-          !state.suspended &&
-          (state.pending ||
-            journalEntries(file, state.processed).length ||
-            snapshot(
-              state.transcriptPath,
-              state.source,
-              HARNESSES[state.harness].reader,
-            ).signature !== state.source.signature),
-      )
+      .filter(({ file, state }) => !state.suspended && hasWork(file, state))
       .sort((a, b) => a.state.lastSyncAt - b.state.lastSyncAt)[0];
     if (candidate)
       await drain(directory, identity, candidate.file, config, {

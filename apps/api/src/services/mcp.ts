@@ -166,10 +166,7 @@ function bodyObjects(route: AdminRoute, body: z.ZodType): RouteObject[] {
  * into the route's parts, re-parsed with the route's own schemas so the service receives
  * exactly what the REST route hands it, and the shared JSON formatter renders the result.
  */
-export function toolFromRoute(
-  route: AdminRoute,
-  services: Services,
-): Definition {
+function toolFromRoute(route: AdminRoute, services: Services): Definition {
   const params = route.params ?? schema.emptySchema;
   const query = route.query ?? schema.emptySchema;
   const body = route.body ?? schema.emptySchema;
@@ -630,6 +627,7 @@ export class McpService {
     name: string,
     input: unknown,
     before?: (rate: "sql" | "read") => Promise<void>,
+    onFailure?: (failure: ServiceError) => void,
   ): Promise<CallToolResult> {
     try {
       return await auditedOperation(
@@ -683,6 +681,11 @@ export class McpService {
       );
     } catch (error) {
       if (!(error instanceof ServiceError)) throw error;
+      try {
+        onFailure?.(error);
+      } catch {
+        // Diagnostics must not replace the audited operation's result.
+      }
       const value = schema.errorSchema.parse({
         code: error.code,
         message: error.message,

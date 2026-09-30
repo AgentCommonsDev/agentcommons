@@ -6,7 +6,7 @@ import {
   type ProjectedMessage,
   type ToolPolicyRule,
   toolPolicyDocumentSchema,
-  toolPolicyReplaceInputSchema,
+  toolPolicySchema,
   toolPolicyViolationsInputSchema,
   toolPolicyViolationsOutputSchema,
   toolPolicyViolationsReportInputSchema,
@@ -259,7 +259,7 @@ export class ToolPolicyService {
       { action: "tool_policy.replace", resourceType: "tool_policy" },
       async (tx, caller) => {
         await lockOrganization(tx, caller);
-        const policy = toolPolicyReplaceInputSchema.parse(input);
+        const policy = toolPolicySchema.parse(input);
         const preset = presetRegexValues();
         for (const rule of policy.rules)
           for (const pattern of rule.command_patterns) {

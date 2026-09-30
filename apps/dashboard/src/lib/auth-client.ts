@@ -2,7 +2,7 @@ import { createAuthClient } from "better-auth/react";
 export const authClient = createAuthClient({ basePath: "/auth" });
 
 /** Error code an SSO-only organization returns when a member tries email and password. */
-export const SSO_REQUIRED = "SSO_REQUIRED";
+const SSO_REQUIRED = "SSO_REQUIRED";
 
 /**
  * A Better Auth failure carried as an Error, keeping the server's error code so callers

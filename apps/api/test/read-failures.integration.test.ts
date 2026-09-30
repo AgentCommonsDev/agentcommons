@@ -203,3 +203,70 @@ it("answers a control database lock timeout with 503 READ_BUSY and an unexpected
   ).toBe(true);
   expect(started.logs.join("")).not.toContain(headers.authorization);
 });
+
+// @req R-GET-07 @req R-MCP-05
+it("logs REST and MCP server failures once without native SQL values, even when MCP returns HTTP 200", async () => {
+  const nativeFailure = () =>
+    new ClickHouseError({
+      code: "241",
+      type: "MEMORY_LIMIT_EXCEEDED",
+      message:
+        "Failure processing 'private-query-value' before SELECT secret_value",
+    });
+  for (const transport of ["rest", "mcp"] as const) {
+    const logStart = started.logs.length;
+    failNextRead(nativeFailure());
+    const sessionId = randomUUID();
+    const body =
+      transport === "mcp"
+        ? await callTool("get", { session_id: sessionId })
+        : errorBody.parse(
+            (await rest("GET", `/api/v1/sessions/${sessionId}`)).json(),
+          );
+    expect(body.code).toBe("READ_MEMORY_LIMIT");
+    const errors = started.logs
+      .slice(logStart)
+      .filter((line) => line.includes('"msg":"request failed"'));
+    expect(errors).toHaveLength(1);
+    const logged = z
+      .object({
+        requestId: z.string(),
+        code: z.string(),
+        cause: z.object({ name: z.string(), code: z.string() }),
+      })
+      .parse(JSON.parse(errors[0] ?? "null"));
+    expect(logged.code).toBe("READ_MEMORY_LIMIT");
+    expect(logged.cause.code).toBe("241");
+    const audits = await database.prisma.auditEvent.findMany({
+      where: { requestId: logged.requestId },
+    });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ action: "get", statusCode: 503 });
+    expect(JSON.stringify(body)).not.toContain("private-query-value");
+  }
+
+  const logStart = started.logs.length;
+  failNextRead(new Error("unexpected MCP reader failure"));
+  expect(await callTool("get", { session_id: randomUUID() })).toMatchObject({
+    code: "OPERATION_FAILED",
+  });
+  const unexpected = started.logs
+    .slice(logStart)
+    .filter((line) => line.includes('"msg":"request failed"'));
+  expect(unexpected).toHaveLength(1);
+  expect(unexpected[0]).toContain("unexpected MCP reader failure");
+
+  const clientErrorStart = started.logs.length;
+  expect(await callTool("get", { session_id: randomUUID() })).toMatchObject({
+    code: "SESSION_NOT_FOUND",
+  });
+  expect(
+    started.logs
+      .slice(clientErrorStart)
+      .filter((line) => line.includes('"msg":"request failed"')),
+  ).toEqual([]);
+  const logs = started.logs.join("");
+  expect(logs).not.toContain("private-query-value");
+  expect(logs).not.toContain("secret_value");
+  expect(logs).not.toContain(headers.authorization);
+});

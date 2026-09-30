@@ -25,7 +25,7 @@ import { isCode, writeAtomic } from "./files.js";
  */
 
 /** The cached org policy, beside `config.json`, the recall cache. */
-export const POLICY_CACHE_FILE = "tool-policy.json";
+const POLICY_CACHE_FILE = "tool-policy.json";
 /** Blocked/warned decisions the uploader forwards; one file per decision. */
 const VIOLATION_DIR = ["tool-policy", "violations"];
 
@@ -134,7 +134,7 @@ export function decide(
  * and thus secretlint — stays out of this bundle. `id` is the stable row id the server
  * dedupes on, so a re-flush after a lost acknowledgement never double-records.
  */
-export interface ToolPolicyDecisionRecord {
+interface ToolPolicyDecisionRecord {
   id: string;
   v: 1;
   sessionId: string;

@@ -171,7 +171,7 @@ export function columnValueLabel(column: string, value: string): string {
 export function truncate(value: string, max = 80): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
-export type AuditActor = {
+type AuditActor = {
   label: string;
   kind: "email" | "id" | "system";
   /** The raw user id, shown on hover when the label is an email; the auth method for a

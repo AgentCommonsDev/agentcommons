@@ -1,6 +1,6 @@
 # AgentCommons — Specification
 
-Status: v5.1, local ClickHouse acceptance verified 2026-09-08. ClickHouse replaces PostgreSQL trace storage under ADR0047. Current results and external configuration boundaries are recorded in
+Status: v5.2, local ClickHouse acceptance verified 2026-09-08. ClickHouse replaces PostgreSQL trace storage under ADR0047. Current results and external configuration boundaries are recorded in
 `docs/VERIFICATION.md`. Completion requires §16.1 item 8 and is not implied by requirement citations.
 See `docs/reviews/codex-review-2026-09-07.md`; v2 is retained for comparison. Owner: rek7. First deployment: ZeroPath. Self-hostable with one or more organizations per
 instance; each organization is an independent data and authorization boundary
@@ -344,6 +344,12 @@ markers ordered by source event time then stable marker ID), `role` (`USER`,
 `receivedAt`, `inputTokens`, `outputTokens` (adapter-defined; null when unknown; retries
 never add), `agentId`, `searchable`, `searchText` (§7.1). Native text indexing and
 latest-version selection share the same expression and publication boundary.
+The native message table stores `payload_bytes` as a MATERIALIZED UInt64 equal to
+`length(content) + length(tool_input)` (UTF-8 bytes of the stored strings). Metadata
+reads select this scalar with the same revision, generation and publication rules as
+other fields, so sizing a page never decompresses full payloads. Migration backfills
+existing parts before switching metadata views, records completion only after the
+backfill finishes, and safely resumes an interrupted upgrade (ADR 0096).
 
 **TraceReceipt** (logical ingest batch): primary key `(organizationId, id)`; `id`, `sessionId`, `apiKeyId`, `userId`, `installationId`, `ip`,
 `userAgent`, `behavior`, `startResume` (explicit native resume, default false), `nativeEvent`, `receivedAt`, `recordCount`, `duplicateCount`,
@@ -967,6 +973,21 @@ SubagentStop confirms the child through agent_transcript_path.
    An incomplete oversized JSONL tail is retained but its cursor is not advanced.
 4. After its own session: flush spooled pending batches of at most one other session
    (oldest `lastSyncAt` first) whose intent is set or whose source grew (**sweep**).
+   An unacknowledged child discovered only by an end event stays dormant while its
+   transcript has no bytes observed by a callback or read and does not consume this
+   sweep slot.
+
+**Stop-only child discovery** (ADR 0097). A child first observed through an end event,
+with no earlier start or acknowledged upload and no transcript bytes observed by a
+callback or read, retains
+its intent and source identity locally without sending an empty lifecycle envelope.
+The uploader checks for the source during the existing post-turn settle window; a
+later parent drain or sweep resumes it when the source appears. The retained event time
+and ordinary pending-batch acknowledgment rules still apply. A child registered at
+start, an already acknowledged child, and a stop-only child with observed transcript
+bytes use the normal lifecycle path, even if those bytes disappear before the drain.
+A later callback with a corrected source path or new source evidence wakes a dormant
+child; revisiting an unchanged dormant child does not repeat its settle window. No recorded server session is removed by this rule.
 
 Lifecycle receipts carry the hook-time source watermark and event time independently
 of later raw-record reads. Duplicate lifecycle deliveries use a stable intent/batch id
@@ -1324,7 +1345,13 @@ Input (`packages/core/schemas/search.ts`):
   weights are user text 1.0, assistant text 0.4, tool input 0.2 and tool result 0.1.
   Embeddings, when enabled, fuse native cosine neighbors with lexical rank. Ordering is
   `(rank desc, session_id, seq)`. Batched neighbor/header queries form and merge touching
-  message windows. The unchanged golden corpus must retain its top-three hit rate.
+  message windows. Reused candidates, embedding eligibility, and ordered context metadata
+  are materialized once as narrow relations (ADR 0096). Ordinary ClickHouse CTEs expand
+  at each reference. Context metadata reads the stored `payload_bytes` scalar (§4.3),
+  so even one context scan cannot allocate transcript payload buffers merely for sizing. Verification includes at least 40,000 messages
+  with a session whose payload exceeds the reader's memory budget, as admin and member
+  readers at four-way concurrency under the unchanged 256 MiB and five-second limits.
+  The unchanged golden corpus must retain its top-three hit rate.
   Before the per-session cap and the page limit, a candidate session authored by a
   different member of the caller's organization has its rank scaled by a modest constant
   (`TEAMMATE_RANK_BOOST = 1.15`), so a teammate's relevant prior work is pulled into the
@@ -1753,7 +1780,11 @@ A tool failure is an `isError` result whose text is the same
 codes (`READ_TIME_LIMIT`, `READ_BUSY`, …) with their hint and `retry_after`, the
 `QUERY_*` codes for its own SQL, and `OPERATION_FAILED` only for an unexpected failure;
 a credential the server could not verify is an HTTP `503 AUTH_UNAVAILABLE` (§9.2), never
-a tool result.
+a tool result. Server failures (status 500 or above) also write one request error log
+before conversion to `isError`, with request id, stable code and bounded cause metadata,
+so HTTP 200 does not hide a failed tool. REST and MCP use the same diagnostic formatter;
+MCP request arguments are never logged. Native ClickHouse causes retain only their
+error name and code, since their messages can contain SQL text and query values.
 
 ### 8.2 Catalog: static, permission-filtered
 

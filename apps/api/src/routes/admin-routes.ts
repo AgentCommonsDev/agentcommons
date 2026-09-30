@@ -432,7 +432,7 @@ export const adminRoutes: readonly AdminRoute[] = [
     method: "PUT",
     path: "/admin/tool-policy",
     summary: "Replace the organization's tool and command policy",
-    body: schema.toolPolicyReplaceInputSchema,
+    body: schema.toolPolicySchema,
     output: schema.toolPolicyDocumentSchema,
     tool: "admin_tool_policy_set",
     readOnly: false,

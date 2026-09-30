@@ -7,6 +7,7 @@ import type {
 /** One recorded ClickHouse query and the `api_ro` relations its text names. */
 interface RecordedQuery {
   sql: string;
+  parameters: TraceParameters;
   relations: string[];
 }
 /**
@@ -15,7 +16,7 @@ interface RecordedQuery {
  * fence, principal and settings are the production ones; only the client is wrapped.
  */
 export function countingReaders(readers: TraceReaders) {
-  const queries: string[] = [];
+  const queries: Array<{ sql: string; parameters: TraceParameters }> = [];
   const proxy = new Proxy(readers, {
     get(target, property, receiver): unknown {
       if (property !== "read") return Reflect.get(target, property, receiver);
@@ -27,7 +28,7 @@ export function countingReaders(readers: TraceReaders) {
               sql: string,
               parameters?: TraceParameters,
             ) => {
-              queries.push(sql);
+              queries.push({ sql, parameters: parameters ?? {} });
               return client.query<Row>(sql, parameters);
             },
           } satisfies TraceReadClient),
@@ -39,8 +40,9 @@ export function countingReaders(readers: TraceReaders) {
     readers: proxy,
     /** The queries recorded since the previous call, oldest first. */
     drain(): RecordedQuery[] {
-      return queries.splice(0).map((sql) => ({
+      return queries.splice(0).map(({ sql, parameters }) => ({
         sql,
+        parameters,
         relations: [
           ...new Set(
             [...sql.matchAll(/api_ro\.(\w+)/g)].map((match) => match[1] ?? ""),

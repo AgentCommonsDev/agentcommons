@@ -290,7 +290,7 @@ export class SearchService {
             const lexicalMatches = `SELECT e.*,l.rank FROM eligible e
             JOIN ${textMatches} l USING(session_id,seq)`;
             const candidates = vector
-              ? `WITH eligible AS (${eligible}), lexical_matches AS (${lexicalMatches}), lexical AS (
+              ? `WITH eligible AS MATERIALIZED (${eligible}), lexical_matches AS (${lexicalMatches}), lexical AS (
                 SELECT message_id,row_number() OVER(ORDER BY rank DESC,session_id,seq) AS position FROM lexical_matches
               ), vector_candidates AS (
                 SELECT c.message_id AS message_id,e.session_id AS session_id,min(cosineDistance(c.embedding,${params.add(vector, "Array(Float32)")})) AS distance
@@ -330,8 +330,11 @@ export class SearchService {
               )`
               : "";
             const rankSource = lexical ? "boosted" : "candidates";
+            // ClickHouse expands ordinary CTEs at each reference. The author lookup also
+            // references candidates, so share this narrow result instead of evaluating
+            // the full eligibility and lexical scans twice (ADR 0096).
             const result = await client.query(
-              `WITH candidates AS (${candidates})${boost}, ranked AS (
+              `WITH candidates AS MATERIALIZED (${candidates})${boost}, ranked AS (
               SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session,
                 count() OVER () AS total_hits,uniqExact(session_id) OVER () AS total_sessions FROM ${rankSource}
             ) SELECT session_id,seq,rank,time,total_hits,total_sessions FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
@@ -377,11 +380,13 @@ export class SearchService {
             const pageHits = hits.slice(0, request.limit);
             const ids = [...new Set(pageHits.map((hit) => hit.session_id))];
             // Fetch all context and headers in two ClickHouse queries and the tree roots
-            // from control, together, for the whole page.
+            // from control, together, for the whole page. Materialize the ordered metadata
+            // once: anchors and neighbors share its stored payload sizes and ordinals,
+            // avoiding duplicate scans, aggregation and ordinal calculation.
             const [neighbours, values, links] = await Promise.all([
               ids.length
                 ? client.query(
-                    `WITH ordered AS (
+                    `WITH ordered AS MATERIALIZED (
               SELECT message_id,session_id,seq,role,kind,tool_name,tool_use_id,payload_bytes,
                 row_number() OVER(PARTITION BY session_id ORDER BY seq) AS ordinal
               FROM api_ro.message_metadata WHERE session_id IN {ids:Array(UUID)} AND kind!='THINKING'

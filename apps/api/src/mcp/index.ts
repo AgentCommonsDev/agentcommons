@@ -18,6 +18,7 @@ import { auditUnavailableError } from "../services/audit.js";
 import { ServiceError } from "../services/context.js";
 import { hijackRaw, requestContext } from "../routes/context.js";
 import type { createRateLimiter } from "../routes/rate-limit.js";
+import { logRequestFailure } from "../logger.js";
 
 const envelopeSchema = z.looseObject({
   method: z.string(),
@@ -96,6 +97,9 @@ export function registerMcpRoutes(
             invocation.params.name,
             invocation.params.arguments,
             (rate) => limit(request, rate),
+            (failure) => {
+              logRequestFailure(request, failure);
+            },
           ),
         ),
       );

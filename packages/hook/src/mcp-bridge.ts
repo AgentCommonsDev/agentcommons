@@ -163,7 +163,7 @@ function forward(
   });
 }
 
-export interface McpBridgeOptions {
+interface McpBridgeOptions {
   /** Injected in tests; the bridge picks `node:http`/`node:https` by protocol otherwise. */
   send?: Requester;
   input?: NodeJS.ReadableStream;
