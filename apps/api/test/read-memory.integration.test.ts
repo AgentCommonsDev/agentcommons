@@ -126,7 +126,7 @@ it("shares candidate and neighbor scans under the reader memory limit for large 
 });
 
 // @req R-GET-10 @req R-SEC-01
-it("keeps payload byte sizes aligned with the latest published message, including multibyte text and pending revisions", async () => {
+it("keeps payload byte sizes and text aligned with the latest published message, including multibyte text and pending revisions", async () => {
   const fixtures = new TraceFixtures(db);
   try {
     const { id } = await fixtures.sessionFor(admin, { visibility: "PUBLIC" });
@@ -157,14 +157,33 @@ it("keeps payload byte sizes aligned with the latest published message, includin
       Buffer.byteLength(row.content) + Buffer.byteLength(row.tool_input);
     const read = (context: ServiceContext) =>
       db.traceReaders.read(requireCaller(context), async (client) => {
-        const result = await client.query(
-          "SELECT payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND message_id={message:UUID}",
-          { id, message: messageId },
-        );
-        return Number(result.rows[0]?.payload_bytes);
+        const [metadata, payload] = await Promise.all([
+          client.query(
+            "SELECT payload_bytes FROM api_ro.message_metadata WHERE session_id={id:UUID} AND message_id={message:UUID}",
+            { id, message: messageId },
+          ),
+          client.query(
+            "SELECT message_id,content,tool_input FROM api_ro.message_payloads(session_ids={sessions:Array(UUID)},message_ids={messages:Array(UUID)})",
+            { sessions: [id], messages: [messageId] },
+          ),
+        ]);
+        return {
+          bytes: Number(metadata.rows[0]?.payload_bytes),
+          payload: payload.rows,
+        };
       });
+    const visible = (row: typeof fields) => ({
+      bytes: bytes(row),
+      payload: [
+        {
+          message_id: messageId,
+          content: row.content,
+          tool_input: row.tool_input,
+        },
+      ],
+    });
     for (const context of [admin, member])
-      expect(await read(context)).toBe(bytes(fields));
+      expect(await read(context)).toEqual(visible(fields));
     await db.prisma.traceSessionControl.update({
       where: {
         organizationId_id: { organizationId: scope.organizationId, id },
@@ -175,7 +194,7 @@ it("keeps payload byte sizes aligned with the latest published message, includin
       },
     });
     for (const context of [admin, member])
-      expect(await read(context)).toBe(bytes(pending));
+      expect(await read(context)).toEqual(visible(pending));
   } finally {
     await fixtures.close();
   }
@@ -234,3 +253,113 @@ it("repairs an interrupted payload-size upgrade before publishing the metadata v
     await native.close();
   }
 });
+
+// @req R-SRCH-06 @req R-SRCH-08 @req R-GET-10
+it("reads small search payloads scattered among wide granules across several sessions", async () => {
+  const fixtures = new TraceFixtures(db);
+  const native = createTraceClient({
+    url: db.traceMigration.url,
+    username: db.traceMigration.username,
+    password: db.traceMigration.password,
+  });
+  const sessions: string[] = [];
+  try {
+    // Keep the part geometry stable across roles and concurrency measurements.
+    await native.command({ query: "SYSTEM STOP MERGES ac_trace.messages" });
+    // Each session has three tiny context rows among 8,000 large tool outputs. The
+    // selected content is less than 1 KiB, but its primary-key ranges span several
+    // physical granules across five sessions. Generate the corpus of over 2 GiB
+    // natively, with bounded insert blocks, instead of allocating it in Node.
+    for (let index = 0; index < 5; index++) {
+      const { id } = await fixtures.sessionFor(admin, {
+        visibility: "PUBLIC",
+        fields: { title: "Sparse payload fixture", message_count: 8000 },
+      });
+      sessions.push(id);
+      await fixtures.client.command({
+        query: `INSERT INTO messages
+          (organization_id,session_id,message_id,seq,role,kind,content,tool_input,
+           search_text,searchable,received_at,revision,generation,deleted,fingerprint)
+          SELECT {organization:String},{session:UUID},generateUUIDv4(),number,
+            'TOOL_RESULT','TOOL_RESULT',
+            if(number BETWEEN 3999 AND 4001,'widegranulefixture',repeat('x',65536)),
+            'null',if(number=4000,'widegranulefixture',''),number=4000,
+            toDateTime64('2026-08-01 00:00:00',6),1,0,0,repeat('a',64)
+          FROM numbers(8000) SETTINGS max_block_size=512`,
+        query_params: {
+          organization: requireCaller(admin).organizationId,
+          session: id,
+        },
+      });
+    }
+    await refreshSearchCorpus(db);
+    const input = { query: "widegranulefixture", limit: 5, context: 1 };
+    for (const [who, context] of [
+      ["admin", admin],
+      ["member", member],
+    ] as const) {
+      const limits = await db.traceReaders.read(
+        requireCaller(context),
+        (client) =>
+          client.query(
+            "SELECT getSetting('readonly') AS readonly,getSetting('max_memory_usage') AS memory,getSetting('max_threads') AS threads,getSetting('max_execution_time') AS seconds,getSetting('max_block_size') AS block,getSetting('read_in_order_use_buffering') AS buffered",
+          ),
+      );
+      expect(
+        Object.fromEntries(
+          Object.entries(limits.rows[0] ?? {}).map(([name, value]) => [
+            name,
+            Number(value),
+          ]),
+        ),
+      ).toEqual({
+        readonly: 1,
+        memory: 268435456,
+        threads: 2,
+        seconds: 5,
+        block: 8192,
+        buffered: 1,
+      });
+      counter.drain();
+      const started = performance.now();
+      const page = (await search.execute(context, input)).result;
+      expect(
+        performance.now() - started,
+        `${who} sparse payload search ms`,
+      ).toBeLessThan(2500);
+      expect(page.total).toEqual({ sessions: 5, hits: 5 });
+      expect(page.partial).toBeNull();
+      expect(page.blocks.map((block) => block.session_id).sort()).toEqual(
+        [...sessions].sort(),
+      );
+      expect(page.blocks.map((block) => block.messages.length)).toEqual([
+        3, 3, 3, 3, 3,
+      ]);
+      expect(
+        page.blocks.flatMap((block) =>
+          block.messages.map((row) => row.content),
+        ),
+      ).toEqual(Array<string>(15).fill("widegranulefixture"));
+      expect(
+        counter
+          .drain()
+          .filter((query) =>
+            query.sql.includes("SELECT message_id,content,tool_input"),
+          ),
+      ).toHaveLength(1);
+      const concurrentStarted = performance.now();
+      const concurrent = await Promise.all(
+        Array.from({ length: 4 }, () => search.execute(context, input)),
+      );
+      for (const value of concurrent) expect(value.result).toEqual(page);
+      expect(
+        performance.now() - concurrentStarted,
+        `${who} four concurrent sparse payload searches wall ms`,
+      ).toBeLessThan(4000);
+    }
+  } finally {
+    await native.command({ query: "SYSTEM START MERGES ac_trace.messages" });
+    await native.close();
+    await fixtures.close();
+  }
+}, 120_000);

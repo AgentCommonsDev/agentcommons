@@ -46,7 +46,7 @@ export async function readMessagePayloads(
 ) {
   if (!metadata.length) return [];
   const result = await client.query(
-    "SELECT message_id,content,tool_input FROM api_ro.messages WHERE session_id IN {sessions:Array(UUID)} AND message_id IN {ids:Array(UUID)}",
+    "SELECT message_id,content,tool_input FROM api_ro.message_payloads(session_ids={sessions:Array(UUID)},message_ids={ids:Array(UUID)})",
     {
       sessions: [...new Set(metadata.map((row) => String(row.session_id)))],
       ids: metadata.map((row) => String(row.message_id)),

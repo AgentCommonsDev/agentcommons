@@ -32,8 +32,9 @@ export function latestRowsSql(
   table: TraceTable,
   columns: Record<string, string> = traceTables[table].columns,
   expressions: Record<string, string> = {},
+  identityParameters?: { sessions: string; rows: string },
 ): string {
-  const { identity } = traceTables[table];
+  const { identity, identityType } = traceTables[table];
   const names = Object.keys(columns);
   const selected = names
     .map((name) =>
@@ -46,7 +47,28 @@ export function latestRowsSql(
   // The one-element tuple preserves a latest null instead of skipping that revision.
   // Native row policies fence organization, generation, publication and visibility; the
   // organization predicate only narrows the scan to the caller's primary-key range.
-  return `SELECT ${selected} FROM ${sqlIdentifier(database)}.${sqlIdentifier(table)} r FINAL WHERE r.organization_id=${traceScopeSql.organization} GROUP BY r.organization_id,r.session_id,r.${sqlIdentifier(identity)} HAVING argMax(r.deleted,r.revision)=0`;
+  // Only identity predicates belong in PREWHERE: every revision and generation of a
+  // selected identity must survive until the native policies and latest-row aggregate.
+  const identityPrewhere = identityParameters
+    ? `r.session_id IN {${identityParameters.sessions}:Array(UUID)} AND r.${sqlIdentifier(identity)} IN {${identityParameters.rows}:Array(${identityType})}`
+    : "";
+  return `SELECT ${selected} FROM ${sqlIdentifier(database)}.${sqlIdentifier(table)} r FINAL${identityPrewhere ? ` PREWHERE ${identityPrewhere}` : ""} WHERE r.organization_id=${traceScopeSql.organization} GROUP BY r.organization_id,r.session_id,r.${sqlIdentifier(identity)} HAVING argMax(r.deleted,r.revision)=0`;
+}
+
+/** The canonical message relation, optionally bounded to requested identity keys. */
+function messageRelationSql(database: string, bounded = false): string {
+  const rows = latestRowsSql(
+    database,
+    "messages",
+    messageColumns,
+    {},
+    bounded ? { sessions: "session_ids", rows: "message_ids" } : undefined,
+  );
+  const projection = liveProjectionSql(database, ["users"]);
+  const sessions = bounded
+    ? `SELECT * FROM (${projection}) WHERE session_id IN {session_ids:Array(UUID)}`
+    : projection;
+  return `SELECT m.*,s.title AS session_title,s.repo_name,s.branch,s.user_email FROM (${rows})m JOIN (${sessions}) s USING(organization_id,session_id)`;
 }
 /** The `sessions` columns in catalog order, before analytics appends the read aggregates. */
 const aggregated: readonly string[] = sessionReadAggregateColumns;
@@ -302,9 +324,10 @@ export function baseViews(database: string): TraceViewDefinition[] {
         payload_bytes: "UInt64",
       }),
     ),
+    traceView("messages", messageRelationSql(database)),
     traceView(
-      "messages",
-      `SELECT m.*,s.title AS session_title,s.repo_name,s.branch,s.user_email FROM (${latestRowsSql(database, "messages")})m JOIN (${liveProjectionSql(database, ["users"])}) s USING(organization_id,session_id)`,
+      "message_payloads",
+      `SELECT message_id,content,tool_input FROM (${messageRelationSql(database, true)})`,
     ),
     traceView(
       "message_chunks",

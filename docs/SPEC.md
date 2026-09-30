@@ -1348,9 +1348,16 @@ Input (`packages/core/schemas/search.ts`):
   message windows. Reused candidates, embedding eligibility, and ordered context metadata
   are materialized once as narrow relations (ADR 0096). Ordinary ClickHouse CTEs expand
   at each reference. Context metadata reads the stored `payload_bytes` scalar (§4.3),
-  so even one context scan cannot allocate transcript payload buffers merely for sizing. Verification includes at least 40,000 messages
-  with a session whose payload exceeds the reader's memory budget, as admin and member
-  readers at four-way concurrency under the unchanged 256 MiB and five-second limits.
+  so even one context scan cannot allocate transcript payload buffers merely for sizing.
+  The shared payload fetch uses a parameterized native relation with `PREWHERE` only
+  on requested session/message identity keys, before reading large payload columns.
+  It preserves every revision and generation of those identities for the unchanged
+  publication policies and latest-row selection. A small returned payload must not
+  require retaining unrelated wide payload granules merely to filter their identities.
+  Verification includes at least 40,000 messages with a session whose payload exceeds
+  the reader's memory budget, and small payloads selected across several sessions of
+  wide messages, as admin and member readers at four-way concurrency under the unchanged
+  256 MiB and five-second limits.
   The unchanged golden corpus must retain its top-three hit rate.
   Before the per-session cap and the page limit, a candidate session authored by a
   different member of the caller's organization has its rank scaled by a modest constant

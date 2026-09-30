@@ -28,6 +28,18 @@ to 1.8–2.0 seconds and initially made the sampled searches succeed, but a late
 still exceeded memory in the single metadata scan. Sharing that scan alone was not a
 complete repair.
 
+Deployment verified that the backfill completed and metadata stopped reading payload
+columns, but ordinary live searches still reached error 241 in the final payload fetch.
+Profiling the same caller and search inputs isolated that failure after successful
+ranking, context and header queries. The returned payload batch was small; sparse
+message IDs still made MergeTree decompress unrelated wide granules. A fixture with
+40,000 64 KiB messages across five sessions reproduces this while requesting only 15
+tiny messages. Native plans confirm identity predicates reach the primary-key index
+and run before aggregation. Reducing `max_block_size` from 8192 to 1024 or 128 alone
+does not reliably contain this allocation. Disabling ordered-read buffering, both at
+the original block size and at 128 rows, also fails the frozen-part fixture with its
+complete read-only, time, thread and memory settings verified.
+
 The same audit recorded 32 caller-authored SQL memory errors. Their statements mostly
 selected or filtered full message content, sometimes with joins or session subqueries.
 A standalone whole-corpus content predicate also exceeded the limit. Those remain
@@ -58,6 +70,15 @@ length(content)+length(tool_input)`. Native `length` counts bytes, including mul
   CTEs once per query. This uses the already-enabled `enable_materialized_cte` setting
   and the already-required ClickHouse 26.8 baseline. Other analytics already use this
   syntax; this change does not introduce a new database version requirement.
+- Add the internal parameterized `message_payloads` relation, generated from the same
+  canonical message/session relation as `messages`. Its explicit `PREWHERE` contains
+  only the requested session and message identity sets. Native readers can filter
+  those small key columns before decompressing unrelated payload columns. Every
+  revision and generation of a selected identity still reaches the existing native
+  policies, `FINAL` and tuple-wrapped `argMax`; pending publications and tombstones keep
+  the same behavior. The shared payload helper uses this relation for every consumer.
+  It is absent from the public SQL catalog. Reader profiles and general-purpose SQL
+  optimization settings remain unchanged.
 
 ## Verification
 
@@ -81,6 +102,27 @@ no pending materialization, and record completion once. A subsequent migration c
 no new materialization. Separate checks exercise multibyte text and pending revisions
 as both admin and member, ensuring sizes advance only when the corresponding message
 revision is published.
+
+A second fixture selects 15 tiny payloads from 40,000 messages across five sessions;
+the surrounding tool outputs are 64 KiB each, over 2 GiB in total. It freezes background
+merges during measurement so the physical parts remain the same. Both roles assert
+the effective native profile (`readonly=1`, five seconds, two threads, 256 MiB, the
+original 8192-row blocks and default ordered buffering), then require exact output in
+one payload fetch, a single search below 2.5 seconds and four concurrent searches
+below four seconds. The new identity-filtered relation passes. The old payload path
+reached native error 241 even with 128-row blocks and ordered buffering disabled.
+Separate native reader checks cover private and foreign sessions, publication,
+tombstones, redaction generation and purge through the parameterized payload view;
+the public SQL guard and catalogs do not expose that internal relation.
+
+A read-only production prototype selected the same ten payloads with the unchanged
+five-second, two-thread and 256 MiB limits. The original filter read 296 MB in 459 ms;
+identity `PREWHERE` read 28 MB in 97 ms, with the same scanned-row count and result
+count. A following original-filter attempt reached error 241. This prototype used a
+writer connection with explicit organization/publication bounds, so it establishes
+physical read cost, not policy enforcement. Production parts changed during the
+comparison; the frozen fixture and native security tests provide the controlled
+reader-principal proof.
 
 The existing short-message performance fixture, lexical golden corpus, teammate rank
 boost and embedding ranking tests remain the ranking and output contracts. Deployment

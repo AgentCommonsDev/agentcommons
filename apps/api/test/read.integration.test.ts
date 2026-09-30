@@ -1757,13 +1757,13 @@ describe("read services on ClickHouse", () => {
         sessions: 1,
         session_details: 1,
         message_metadata: 1,
-        messages: 1,
+        message_payloads: 1,
       });
       expect(
         await perRelation(() =>
           sessions.get(ctx, { session_id: ids.child, header: false }),
         ),
-      ).toEqual({ session_state: 1, message_metadata: 1, messages: 1 });
+      ).toEqual({ session_state: 1, message_metadata: 1, message_payloads: 1 });
       // list: rows and totals come from one scan of `sessions`, relatives from one of
       // `session_details`; a message filter narrows inside the same query through the
       // metadata relation.

@@ -23,6 +23,7 @@ import {
 import { securityStatements } from "../src/security.js";
 import { traceScopeSql } from "../src/views/base.js";
 import {
+  guardTraceSql,
   traceColumnDescriptions,
   traceEmbeddingViews,
   traceViews,
@@ -127,6 +128,174 @@ async function select(
     client.query(sql, parameters),
   );
 }
+// @req R-SEC-01 @req R-ORG-03 @req R-RED-08 @req R-ING-04
+it("keeps bounded message payloads inside visibility, publication, redaction and purge fences", async () => {
+  const visible = await seed(owner);
+  const hidden = await seed(owner, "PRIVATE");
+  const foreign = await seed(other);
+  const current = randomUUID();
+  const deleted = randomUUID();
+  const retired = randomUUID();
+  const privateMessage = randomUUID();
+  const foreignMessage = randomUUID();
+  for (const [revision, content] of [
+    [1n, "superseded payload"],
+    [2n, "published payload"],
+    [3n, "unpublished payload"],
+  ] as const)
+    await row("messages", owner, visible, revision, 0n, {
+      message_id: current,
+      content,
+      tool_input: JSON.stringify({ revision: String(revision) }),
+    });
+  await row("messages", owner, visible, 1n, 0n, {
+    message_id: deleted,
+    content: "deleted payload",
+  });
+  await row("messages", owner, visible, 2n, 0n, {
+    message_id: deleted,
+    content: "deleted payload",
+    deleted: 1,
+  });
+  await row("messages", owner, visible, 1n, 0n, {
+    message_id: retired,
+    content: "old generation only",
+  });
+  await row("messages", owner, visible, 1n, 0n, {
+    message_id: randomUUID(),
+    content: "unrequested payload",
+  });
+  await row("messages", owner, hidden, 1n, 0n, {
+    message_id: privateMessage,
+    content: "private payload",
+  });
+  await row("messages", other, foreign, 1n, 0n, {
+    message_id: foreignMessage,
+    content: "foreign payload",
+  });
+  const control = (id: string, data: Record<string, unknown>) =>
+    db.prisma.traceSessionControl.update({
+      where: {
+        organizationId_id: { organizationId: owner.organizationId, id },
+      },
+      data,
+    });
+  await control(visible, { acceptedRevision: 3n, publishedRevision: 2n });
+  const payloads = (authority: ReadAuthority, condition = "") =>
+    db.traceReaders.read(authority, async (client) => {
+      const result = await client.query(
+        `SELECT message_id,content,tool_input FROM api_ro.message_payloads(session_ids={sessions:Array(UUID)},message_ids={messages:Array(UUID)}) ${condition} ORDER BY content`,
+        {
+          sessions: [visible, hidden, foreign],
+          messages: [current, deleted, retired, privateMessage, foreignMessage],
+        },
+      );
+      return result.rows;
+    });
+  expect(await payloads(member)).toEqual([
+    { message_id: retired, content: "old generation only", tool_input: "null" },
+    {
+      message_id: current,
+      content: "published payload",
+      tool_input: '{"revision":"2"}',
+    },
+  ]);
+  expect((await payloads(owner)).map((item) => item.content)).toEqual([
+    "old generation only",
+    "private payload",
+    "published payload",
+  ]);
+  // Non-key predicates must not move before latest-row selection and resurrect history.
+  expect(
+    await payloads(
+      member,
+      "WHERE content IN ('superseded payload','deleted payload')",
+    ),
+  ).toEqual([]);
+  expect(
+    (
+      await payloads(
+        member,
+        "WHERE throwIf(content IN ('private payload','foreign payload','unpublished payload'))=0",
+      )
+    ).map((item) => item.content),
+  ).toEqual(["old generation only", "published payload"]);
+  await control(hidden, { visibility: "PUBLIC" });
+  expect((await payloads(member)).map((item) => item.content)).toEqual([
+    "old generation only",
+    "private payload",
+    "published payload",
+  ]);
+  const header = await db.traces.readSession(
+    owner.organizationId,
+    visible,
+    2n,
+    0n,
+  );
+  if (!header) throw new Error("Missing test header");
+  await db.traces.writeProjection({
+    organizationId: owner.organizationId,
+    sessionId: visible,
+    revision: 4n,
+    generation: 1n,
+    session: header,
+    messages: [],
+    files: [],
+  });
+  await row("messages", owner, visible, 4n, 1n, {
+    message_id: current,
+    content: "redacted payload",
+  });
+  await control(visible, {
+    acceptedRevision: 4n,
+    publishedRevision: 4n,
+    redactionGeneration: 1n,
+  });
+  for (const authority of [owner, member])
+    expect(await payloads(authority)).toEqual([
+      {
+        message_id: privateMessage,
+        content: "private payload",
+        tool_input: "null",
+      },
+      { message_id: current, content: "redacted payload", tool_input: "null" },
+    ]);
+  await control(visible, { purgedAt: new Date() });
+  for (const authority of [owner, member])
+    expect(await payloads(authority)).toEqual([
+      {
+        message_id: privateMessage,
+        content: "private payload",
+        tool_input: "null",
+      },
+    ]);
+});
+// @req R-SQL-01 @req R-SQL-02
+it("keeps the internal payload function out of SQL discovery and caller-authored SQL", async () => {
+  for (const authority of [owner, member]) {
+    expect(
+      (
+        await select(
+          authority,
+          "SELECT view_name FROM schema_columns WHERE view_name='message_payloads'",
+        )
+      ).rows,
+    ).toEqual([]);
+    expect(
+      (
+        await select(
+          authority,
+          "SELECT function_name FROM schema_functions WHERE function_name='message_payloads'",
+        )
+      ).rows,
+    ).toEqual([]);
+  }
+  expect(() =>
+    guardTraceSql(
+      "SELECT * FROM message_payloads(session_ids=[],message_ids=[])",
+    ),
+  ).toThrow("Use search_messages");
+});
 // @req R-SEC-01 @req R-ORG-03 @req R-RED-01
 it("blocks hidden source rows before caller predicates and joins with native optimization enabled", async () => {
   const visible = await seed(owner);

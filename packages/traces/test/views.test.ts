@@ -30,6 +30,7 @@ describe("session relations read control once per query and scan each base table
       "session_details",
       "sessions",
       "messages",
+      "message_payloads",
       "message_metadata",
       "reuse_edges",
       "session_reuse",
@@ -61,6 +62,8 @@ describe("session relations read control once per query and scan each base table
     );
     expect(scansOf(sql("messages"), "messages")).toBe(1);
     expect(scansOf(sql("messages"), "sessions")).toBe(1);
+    expect(scansOf(sql("message_payloads"), "messages")).toBe(1);
+    expect(scansOf(sql("message_payloads"), "sessions")).toBe(1);
     expect(scansOf(sql("reuse_edges"), "sessions")).toBe(0);
     expect(scansOf(sql("member_impact"), "sessions")).toBe(1);
     expect(scansOf(sql("session_reuse"), "sessions")).toBe(2);
