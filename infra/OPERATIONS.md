@@ -193,6 +193,15 @@ lasts only until the next release re-renders it. To pin a release, set
 Status shows the running version and whether automatic updates are on. A host created
 before ADR 0059 gets the updater from its next release.
 
+ClickHouse memory follows the host (ADR 0100). The defaults fit the 8 GiB `t4g.large`: a
+3.5 GiB ClickHouse container (`CLICKHOUSE_MEMORY_LIMIT`), of which the server keeps 88%, and
+256 MiB per reader query (`CLICKHOUSE_READER_MEMORY_MB`). On a larger host raise both
+together in the stack's `environment`, for example `CLICKHOUSE_MEMORY_LIMIT: 10G` and
+`CLICKHOUSE_READER_MEMORY_MB: "1024"` on a 16 GiB `t4g.xlarge`, then run `pulumi up` and the
+release script with the current commit. Keep the per-query value well under the server's
+share so a few heavy reads at once cannot starve ingest. Each reader principal takes the new
+value at its next provisioning, which every API start repeats.
+
 `single-node-run.sh` copies this checkout's `infra/scripts/single-node/bootstrap.sh`
 to the release bucket and runs it on the host, so bootstrap tooling follows the operator's
 checkout while the application stays the released code. It seeds the owner and organization with `db:seed` (idempotent),

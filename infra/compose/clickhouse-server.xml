@@ -1,10 +1,10 @@
 <!-- Single-node ClickHouse server limits (docker-compose.caddy.yml mounts this into
-     config.d). The container is limited to 3.5 GiB; the server keeps its own usage under
-     3 GiB, bounds concurrency for a 2 vCPU host and keeps caches small. (background_pool_size is
-     left at its default: 26.8 refuses to start with a smaller value.) -->
+     config.d). The server keeps its own usage under 88% of the memory it sees, which is the
+     container's limit (CLICKHOUSE_MEMORY_LIMIT, 3.5 GiB by default, so about 3 GiB; ADR 0100).
+     It bounds concurrency and keeps caches small. (background_pool_size is left at its
+     default: 26.8 refuses to start with a smaller value.) -->
 <clickhouse>
-    <max_server_memory_usage>3221225472</max_server_memory_usage>
-    <max_server_memory_usage_to_ram_ratio>0.9</max_server_memory_usage_to_ram_ratio>
+    <max_server_memory_usage_to_ram_ratio>0.88</max_server_memory_usage_to_ram_ratio>
     <max_concurrent_queries>32</max_concurrent_queries>
     <mark_cache_size>536870912</mark_cache_size>
     <uncompressed_cache_size>268435456</uncompressed_cache_size>

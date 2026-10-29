@@ -1493,8 +1493,9 @@ QUERY_MEMORY_LIMIT` and `400 QUERY_RESULT_LIMIT`.
 2. A native ClickHouse principal binds organization, user, effective authority,
    operator embedding capability and SaaS mode. Its credentials derive from the private
    reader secret. Grants permit only canonical views; the default role has no vector
-   views. Native settings require read-only queries, a five-second deadline, 256 MiB
-   memory and a 32 MiB internal result limit. Hitting a limit is a documented, stable
+   views. Native settings require read-only queries, a five-second deadline, the
+   deployment's reader memory (`CLICKHOUSE_READER_MEMORY_MB`, 256 MiB by default; ADR 0100)
+   and a 32 MiB internal result limit. Hitting a limit is a documented, stable
    failure on every read path (`search`, `get`, lists, tree, reuse, similar, events, CSV
    exports, `sql`, dashboard tiles), REST and MCP alike, classified once in
    `apps/api/src/repositories/read-failure.ts` at the single funnel every read shares
@@ -3753,21 +3754,23 @@ has no warn return.
 
 ## Appendix B. Configuration
 
-| variable                                                     | default                          | purpose                                                                                                                                        |
-| ------------------------------------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLIC_URL`                                                 | required                         | origin for CORS, cookies, callbacks, installer                                                                                                 |
-| `INSTANCE_MODE`                                              | `customer`                       | `public` enables public-site discovery; `saas` additionally enables §9.6; `customer` disables discovery and billing                            |
-| `FREE_MONTHLY_RECORDS`, `PRO_INCLUDED_RECORDS`               | `1000`, `10000`                  | SaaS Free UTC-month and Pro native-period record allowances; Free nonnegative, Pro positive and at least Free; shared by pricing and admission |
-| `CAL_COM_URL`                                                | empty                            | optional HTTPS Cal.com booking URL for Enterprise inquiries; absence is an explicit unavailable state                                          |
-| `DATABASE_URL`                                               | required                         | PostgreSQL application role; no trace SQL reader roles                                                                                         |
-| `DATABASE_MIGRATION_URL`                                     | required for migrations only     | privileged migration principal; runtime app never uses it                                                                                      |
-| `DATABASE_TRACE_CONTROL_URL`                                 | required for migrations only     | restricted PostgreSQL control-reader URL used by native ClickHouse dictionaries; API does not receive it                                       |
-| `CLICKHOUSE_URL`, `CLICKHOUSE_DATABASE`                      | required, `ac_trace`             | native trace server URL and database                                                                                                           |
-| `CLICKHOUSE_WRITER_USER`, `CLICKHOUSE_WRITER_PASSWORD`       | required                         | trace writer principal; no native user-management authority                                                                                    |
-| `CLICKHOUSE_ACCESS_USER`, `CLICKHOUSE_ACCESS_PASSWORD`       | required                         | restricted provisioner for per-caller native reader principals                                                                                 |
-| `CLICKHOUSE_READER_SECRET`                                   | required, at least 32 characters | key for deriving native reader credentials                                                                                                     |
-| `CLICKHOUSE_MIGRATION_USER`, `CLICKHOUSE_MIGRATION_PASSWORD` | required for migrations only     | native ClickHouse schema/access administrator; excluded from API runtime                                                                       |
-| `CLICKHOUSE_POSTGRES_HOST`, `CLICKHOUSE_POSTGRES_PORT`       | original control URL             | optional reachable control host/port override when the migrator and ClickHouse use different network routes; TLS policy is retained            |
+| variable                                                     | default                          | purpose                                                                                                                                                 |
+| ------------------------------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_URL`                                                 | required                         | origin for CORS, cookies, callbacks, installer                                                                                                          |
+| `INSTANCE_MODE`                                              | `customer`                       | `public` enables public-site discovery; `saas` additionally enables §9.6; `customer` disables discovery and billing                                     |
+| `FREE_MONTHLY_RECORDS`, `PRO_INCLUDED_RECORDS`               | `1000`, `10000`                  | SaaS Free UTC-month and Pro native-period record allowances; Free nonnegative, Pro positive and at least Free; shared by pricing and admission          |
+| `CAL_COM_URL`                                                | empty                            | optional HTTPS Cal.com booking URL for Enterprise inquiries; absence is an explicit unavailable state                                                   |
+| `DATABASE_URL`                                               | required                         | PostgreSQL application role; no trace SQL reader roles                                                                                                  |
+| `DATABASE_MIGRATION_URL`                                     | required for migrations only     | privileged migration principal; runtime app never uses it                                                                                               |
+| `DATABASE_TRACE_CONTROL_URL`                                 | required for migrations only     | restricted PostgreSQL control-reader URL used by native ClickHouse dictionaries; API does not receive it                                                |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_DATABASE`                      | required, `ac_trace`             | native trace server URL and database                                                                                                                    |
+| `CLICKHOUSE_WRITER_USER`, `CLICKHOUSE_WRITER_PASSWORD`       | required                         | trace writer principal; no native user-management authority                                                                                             |
+| `CLICKHOUSE_ACCESS_USER`, `CLICKHOUSE_ACCESS_PASSWORD`       | required                         | restricted provisioner for per-caller native reader principals                                                                                          |
+| `CLICKHOUSE_READER_SECRET`                                   | required, at least 32 characters | key for deriving native reader credentials                                                                                                              |
+| `CLICKHOUSE_READER_MEMORY_MB`                                | 256                              | memory one reader query may use, in MiB (64 to 65,536); re-applied to every reader principal on its next provisioning (ADR 0100)                        |
+| `CLICKHOUSE_MEMORY_LIMIT`                                    | `3.5G`                           | single-node ClickHouse container memory; the server keeps 88% of it. Raise it with `CLICKHOUSE_READER_MEMORY_MB` on a host larger than 8 GiB (ADR 0100) |
+| `CLICKHOUSE_MIGRATION_USER`, `CLICKHOUSE_MIGRATION_PASSWORD` | required for migrations only     | native ClickHouse schema/access administrator; excluded from API runtime                                                                                |
+| `CLICKHOUSE_POSTGRES_HOST`, `CLICKHOUSE_POSTGRES_PORT`       | original control URL             | optional reachable control host/port override when the migrator and ClickHouse use different network routes; TLS policy is retained                     |
 
 | `BETTER_AUTH_SECRET` | required | |
 | `AUTH_EMAIL_PASSWORD_ENABLED` | `true` | |

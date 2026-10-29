@@ -9,9 +9,10 @@
 # address whether the DNS record is proxied or not; the API itself trusts forwarded headers
 # only from the Compose network. While a release swaps the api container, Caddy holds and
 # retries requests instead of failing them (infra/caddy/Caddyfile).
-# Memory limits size the stack for one 8 GiB host: ClickHouse 3.5 GiB (server limit 3 GiB
-# in infra/compose/clickhouse-server.xml, 2 GiB per query in clickhouse-users.xml),
-# PostgreSQL 1 GiB with matching shared_buffers, API 1 GiB, Caddy 256 MiB.
+# Memory limits size the stack for one 8 GiB host: ClickHouse 3.5 GiB (CLICKHOUSE_MEMORY_LIMIT
+# on a larger host; the server keeps 88% of it, infra/compose/clickhouse-server.xml, and a
+# reader query CLICKHOUSE_READER_MEMORY_MB; ADR 0100), PostgreSQL 1 GiB with matching
+# shared_buffers, API 1 GiB, Caddy 256 MiB.
 services:
   caddy:
     image: caddy:2.11.4
@@ -74,7 +75,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3.5G
+          memory: ${CLICKHOUSE_MEMORY_LIMIT:-3.5G}
 
 volumes:
   agentcommons-caddy-data:

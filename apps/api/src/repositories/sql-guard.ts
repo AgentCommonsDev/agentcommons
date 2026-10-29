@@ -101,7 +101,7 @@ export function queryFailure(error: unknown): ServiceError {
     return sqlError(
       400,
       "QUERY_MEMORY_LIMIT",
-      "The query exceeded its 256 MiB memory limit. Narrow the query and try again.",
+      "The query exceeded the per-query memory limit. Narrow it, for message text by filtering search_messages(q='words') or a few literal session_id values, and try again.",
     );
   if (error instanceof ClickHouseError && error.code === "396")
     return sqlError(
