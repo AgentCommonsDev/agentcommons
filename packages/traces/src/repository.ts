@@ -64,6 +64,47 @@ const currentColumns = [
   .map(sqlIdentifier)
   .join(",");
 /**
+ * Every corpus column as an expression over one `messages` row aliased `m`, so publication,
+ * the backfill and the metadata reconcile copy the same values (ADR 0098).
+ */
+const currentSource = (
+  m: string,
+): Record<keyof typeof messagesCurrentColumns, string> => ({
+  organization_id: `${m}.organization_id`,
+  session_id: `${m}.session_id`,
+  message_id: `${m}.message_id`,
+  seq: `${m}.seq`,
+  role: `${m}.role`,
+  kind: `${m}.kind`,
+  searchable: `${m}.searchable`,
+  search_terms: `${m}.search_terms`,
+  message_time: `coalesce(${m}.timestamp,${m}.received_at)`,
+  tool_name: `${m}.tool_name`,
+  tool_use_id: `${m}.tool_use_id`,
+  model: `${m}.model`,
+});
+/** The corpus identity, which the backfill groups by instead of taking a latest value. */
+const currentIdentity = new Set([
+  "organization_id",
+  "session_id",
+  "message_id",
+]);
+/** A rescan tombstone over a corpus row: its identity, and empty values FINAL never returns. */
+const currentTombstone: Record<keyof typeof messagesCurrentColumns, string> = {
+  organization_id: "organization_id",
+  session_id: "session_id",
+  message_id: "message_id",
+  seq: "0",
+  role: "''",
+  kind: "''",
+  searchable: "false",
+  search_terms: "''",
+  message_time: "NULL",
+  tool_name: "NULL",
+  tool_use_id: "NULL",
+  model: "NULL",
+};
+/**
  * Rebuilds the published-only search corpus (`messages_current`, ADR 0092) from `messages` and
  * control: the latest published, current-generation, non-deleted row of every message of every
  * unpurged, published session, as a live (deleted=0) corpus row. Idempotent — the corpus is a
@@ -77,7 +118,14 @@ const currentColumns = [
 export function currentBackfillSql(database: string, scoped: boolean): string {
   const db = sqlIdentifier(database);
   const org = scoped ? " AND m.organization_id={organization:String}" : "";
-  return `INSERT INTO ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} (${currentColumns}) SELECT m.organization_id,m.session_id,m.message_id,argMax(m.seq,m.revision),argMax(m.role,m.revision),argMax(m.kind,m.revision),argMax(m.searchable,m.revision),argMax(m.search_terms,m.revision),max(m.revision),0 FROM ${db}.messages m INNER JOIN ${db}.${sqlIdentifier("control_session_scope")} c ON c.organization_id=m.organization_id AND c.session_id=m.session_id WHERE c.purged=0 AND c.published_revision>0 AND m.generation=c.redaction_generation AND m.revision<=c.published_revision${org} GROUP BY m.organization_id,m.session_id,m.message_id HAVING argMax(m.deleted,m.revision)=0`;
+  const latest = Object.entries(currentSource("m"))
+    .map(([name, expression]) =>
+      currentIdentity.has(name)
+        ? expression
+        : `argMax(${expression},m.revision)`,
+    )
+    .join(",");
+  return `INSERT INTO ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} (${currentColumns}) SELECT ${latest},max(m.revision),0 FROM ${db}.messages m INNER JOIN ${db}.${sqlIdentifier("control_session_scope")} c ON c.organization_id=m.organization_id AND c.session_id=m.session_id WHERE c.purged=0 AND c.published_revision>0 AND m.generation=c.redaction_generation AND m.revision<=c.published_revision${org} GROUP BY m.organization_id,m.session_id,m.message_id HAVING argMax(m.deleted,m.revision)=0`;
 }
 const pageInput = z.object({
   after: z.string().nullable(),
@@ -344,16 +392,55 @@ export class TraceRepository {
     const scoped =
       "organization_id={organization:String} AND session_id={session:UUID} AND generation={generation:Int64} AND revision={revision:Int64}";
     await this.client.command({
-      query: `INSERT INTO ${table} (${currentColumns}) SELECT organization_id,session_id,message_id,seq,role,kind,searchable,search_terms,{revision:Int64},deleted FROM ${db}.messages WHERE ${scoped}`,
+      query: `INSERT INTO ${table} (${currentColumns}) SELECT ${Object.values(currentSource("m")).join(",")},{revision:Int64},m.deleted FROM ${db}.messages m WHERE ${scoped}`,
       query_params,
       abort_signal: AbortSignal.timeout(30000),
     });
     if (options.rescan)
       await this.client.command({
-        query: `INSERT INTO ${table} (${currentColumns}) SELECT organization_id,session_id,message_id,0,'','',false,'',{revision:Int64},1 FROM ${table} FINAL WHERE organization_id={organization:String} AND session_id={session:UUID} AND deleted=0 AND message_id NOT IN (SELECT message_id FROM ${db}.messages WHERE ${scoped} AND deleted=0)`,
+        query: `INSERT INTO ${table} (${currentColumns}) SELECT ${Object.values(currentTombstone).join(",")},{revision:Int64},1 FROM ${table} FINAL WHERE organization_id={organization:String} AND session_id={session:UUID} AND deleted=0 AND message_id NOT IN (SELECT message_id FROM ${db}.messages WHERE ${scoped} AND deleted=0)`,
         query_params,
         abort_signal: AbortSignal.timeout(30000),
       });
+  }
+  /**
+   * Copies the corpus metadata columns (ADR 0098) into live corpus rows that lack them, for at
+   * most `sessions` sessions, and returns how many sessions it repaired; the worker repeats it
+   * until none remain. A row lacks them when it was written before the columns existed: the
+   * historical corpus, and publications an older release made while the migration that added
+   * them ran. Each row is re-copied from the `messages` row of its own revision, which is the
+   * row its publication or backfill copied, at that same revision: the ReplacingMergeTree keeps
+   * the later insert of an equal version, and a newer publication still wins. Reads no control,
+   * so the writer principal runs it.
+   */
+  async reconcileCurrentMetadata(sessions: number): Promise<number> {
+    const db = sqlIdentifier(this.config.database);
+    const table = `${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)}`;
+    const lacking = "message_time IS NULL AND deleted=0";
+    const pending = z
+      .array(z.object({ organization_id: z.string(), session_id: z.uuid() }))
+      .parse(
+        (
+          await queryTrace(
+            this.client,
+            `SELECT DISTINCT organization_id,session_id FROM ${table} FINAL WHERE ${lacking} LIMIT {sessions:UInt32}`,
+            { sessions },
+          )
+        ).rows,
+      );
+    if (!pending.length) return 0;
+    const query_params = {
+      organizations: [...new Set(pending.map((row) => row.organization_id))],
+      sessions: pending.map((row) => row.session_id),
+    };
+    const bounded = (alias: string) =>
+      `${alias}organization_id IN {organizations:Array(String)} AND ${alias}session_id IN {sessions:Array(UUID)}`;
+    await this.client.command({
+      query: `INSERT INTO ${table} (${currentColumns}) SELECT ${Object.values(currentSource("m")).join(",")},m.revision,m.deleted FROM ${db}.messages m FINAL WHERE ${bounded("m.")} AND (m.organization_id,m.session_id,m.message_id,m.revision) IN (SELECT organization_id,session_id,message_id,revision FROM ${table} FINAL WHERE ${bounded("")} AND ${lacking})`,
+      query_params,
+      abort_signal: AbortSignal.timeout(30000),
+    });
+    return pending.length;
   }
   async readSession(
     organizationId: string,

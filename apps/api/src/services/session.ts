@@ -47,6 +47,7 @@ import {
   Parameters,
   andSql,
   filterSql,
+  payloadSql,
   rawRecords,
   sessionHeaderById,
   sessionHeaders,
@@ -665,8 +666,10 @@ export class SessionService {
               const params = new Parameters();
               const plan = await filterSql(client, request.filters, params);
               const sort = request.sort ?? "started_at";
-              // Message predicates narrow the sessions through the lightest message
-              // relation that serves them; session predicates stay on the page's own scan.
+              // Message predicates narrow the sessions through the search corpus, which
+              // reads payload only for a payload condition (ADR 0098); session predicates
+              // stay on the page's own scan.
+              const messagePredicates = [...plan.message, ...payloadSql(plan)];
               // parent_session_id is the caller-visible parent, so a child of a hidden
               // session lists as a root.
               const predicate = andSql([
@@ -678,9 +681,9 @@ export class SessionService {
                 // to begin with (row policy `purged=0`), so this is always-true for them.
                 "s.purged_at IS NULL",
                 ...plan.session,
-                ...(plan.message.length
+                ...(messagePredicates.length
                   ? [
-                      `s.session_id IN (SELECT m.session_id FROM api_ro.${plan.messageView} m WHERE ${andSql(plan.message)})`,
+                      `s.session_id IN (SELECT m.session_id FROM api_ro.search_corpus m WHERE ${andSql(messagePredicates)})`,
                     ]
                   : []),
                 ...(request.roots_only ? ["s.parent_session_id IS NULL"] : []),

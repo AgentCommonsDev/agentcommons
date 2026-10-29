@@ -27,8 +27,8 @@ export function catalogViews(database: string): TraceViewDefinition[] {
     ),
     traceView(
       "schema_functions",
-      `SELECT 'search_messages' AS function_name,'q=String' AS arguments,'session_id UUID, seq UInt32, rank Float64' AS result_type,
-        ${sqlString("Uncapped visible lexical matches. Use search_messages(q='words') and order by rank DESC, session_id, seq. All query tokens must match; English inflections share a stem.")} AS description
+      `SELECT 'search_messages' AS function_name,'q=String' AS arguments,${sqlString("session_id UUID, seq UInt32, rank Float64, message_id UUID, role String, kind String, message_time Nullable(DateTime64(6, 'UTC')), tool_name Nullable(String), tool_use_id Nullable(String), model Nullable(String)")} AS result_type,
+        ${sqlString("Uncapped visible lexical matches. Use search_messages(q='words') and order by rank DESC, session_id, seq. All query tokens must match; English inflections share a stem. Filter on role, kind, message_time or tool_name here rather than joining messages, which reads every message.")} AS description
       UNION ALL SELECT 'similar_sessions','source=UUID, max_rows=UInt32','session_id UUID, distance Float32',
         ${sqlString("Visible sessions nearest to one session by cosine distance of their session vectors; the source itself is excluded. Use similar_sessions(source='session UUID', max_rows=5), join sessions on session_id and order by distance ASC.")} WHERE ${enabled}`,
     ),

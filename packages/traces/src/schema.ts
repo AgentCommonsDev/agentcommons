@@ -66,6 +66,19 @@ export const messageColumns = {
   search_text: "String",
 } as const;
 /**
+ * Message metadata the search corpus carries so that every search filter except a payload
+ * condition (`content`, `tool_input`) is evaluated on the corpus alone (ADR 0098).
+ * `message_time` is the message's time, `coalesce(timestamp, received_at)`. It is null only
+ * on a row written before these columns existed, until the worker's corpus reconcile copies
+ * them from the row's own `messages` revision.
+ */
+export const messagesCurrentMetadataColumns = {
+  message_time: "Nullable(DateTime64(6, 'UTC'))",
+  tool_name: "Nullable(String)",
+  tool_use_id: "Nullable(String)",
+  model: "Nullable(String)",
+} as const;
+/**
  * The published-only search corpus (`messages_current`, ADR 0092): the message fields a
  * search reads, no payload. One row per `(organization_id, session_id, message_id)`, versioned
  * by `revision` with a `deleted` tombstone, so a single `FINAL` scan resolves the latest
@@ -83,6 +96,7 @@ export const messagesCurrentColumns = {
   kind: "LowCardinality(String)",
   searchable: "Bool",
   search_terms: "String",
+  ...messagesCurrentMetadataColumns,
 } as const;
 /** Name of the published-only search corpus table and its text index over `search_terms`. */
 export const MESSAGES_CURRENT_TABLE = "messages_current";

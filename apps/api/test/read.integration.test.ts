@@ -1766,7 +1766,7 @@ describe("read services on ClickHouse", () => {
       ).toEqual({ session_state: 1, message_metadata: 1, message_payloads: 1 });
       // list: rows and totals come from one scan of `sessions`, relatives from one of
       // `session_details`; a message filter narrows inside the same query through the
-      // metadata relation.
+      // search corpus (ADR 0098).
       expect(await perRelation(() => sessions.list(ctx, { limit: 2 }))).toEqual(
         { sessions: 1, session_details: 1 },
       );
@@ -1778,7 +1778,7 @@ describe("read services on ClickHouse", () => {
             filters: { tool_name: "Bash", repo_name: "host/team/repo" },
           }),
         ),
-      ).toEqual({ sessions: 1, message_metadata: 1, session_details: 1 });
+      ).toEqual({ sessions: 1, search_corpus: 1, session_details: 1 });
       // tree: control walks the graph; one ClickHouse scan presents the visible nodes and
       // answers whether the requested session is visible.
       expect(await perRelation(() => sessions.tree(ctx, ids.leaf))).toEqual({

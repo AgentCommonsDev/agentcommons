@@ -966,6 +966,7 @@ export class JobService implements AdminJobs {
   }
   async maintenance(now = new Date()): Promise<void> {
     await this.recoverTraceOutboxes();
+    await this.dependencies.traces.reconcileSearchCorpus();
     await this.dependencies.traceAudit.backfill();
     if (this.dependencies.embeddings) await this.catchupEmbeddings();
     const cutoff = new Date(

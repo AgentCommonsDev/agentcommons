@@ -30,10 +30,10 @@ export const schemaContextExamples: readonly {
     sql: "SELECT session_id, title, user_email, repo_name, branch, harness, started_at\nFROM sessions\nORDER BY started_at DESC\nLIMIT 50",
   },
   {
-    title: "Search message content",
+    title: "Sessions that discussed a topic",
     answers:
-      "Which sessions discussed database migrations, with the best-matching excerpt from each message.",
-    sql: "SELECT s.session_id, s.title, m.seq, m.role, left(m.content, 200) AS excerpt\nFROM search_messages(q='database migration') AS h\nJOIN messages AS m ON m.session_id = h.session_id AND m.seq = h.seq\nJOIN sessions AS s ON s.session_id = h.session_id\nORDER BY h.rank DESC\nLIMIT 50",
+      "Which sessions discussed database migrations, newest first. Read a matching message's text from `messages` filtered to its `session_id` and `seq`.",
+    sql: "SELECT session_id, title, user_email, repo_name, started_at\nFROM sessions\nWHERE session_id IN (SELECT session_id FROM search_messages(q='database migration'))\nORDER BY started_at DESC\nLIMIT 50",
   },
   {
     title: "Tool usage per repository",
@@ -105,6 +105,7 @@ export function formatSchemaContext(schema: Schema): string {
     "- `{name:Type}` query parameters are allowed only inside dashboard tiles (see Dashboard parameters). Ad-hoc queries on the SQL page use literal values.",
     "- Timestamps are `DateTime64(6, 'UTC')`. Bucket with `toStartOfDay()` or `toStartOfWeek()` and bound with `now() - toIntervalDay(n)`.",
     "- Filter `messages` by `role` and `kind` rather than pattern-matching content, and keep excerpts short with `left(content, 200)`.",
+    "- `messages` resolves each message's latest revision across every session the query reaches, so a query that reads `messages` beyond a few literal `session_id` values can exceed the memory limit. Narrow it with `session_id = '…'` or `session_id IN ('…', '…')`.",
     "- Alias every aggregate (`count() AS sessions`) and group by the other selected columns.",
     "",
     "## Dashboard parameters",
@@ -139,7 +140,7 @@ export function formatSchemaContext(schema: Schema): string {
   if (schema.functions.length > 0)
     lines.push(
       "",
-      `Call table functions with named literal parameters only, for example \`${schema.functions[0]?.function_name ?? "search_messages"}(...)\`.${hasSearch ? " `search_messages(q='words')` returns one row per matching message with `session_id`, `seq` and `rank`; join `messages` on both `session_id` and `seq` for the content and `sessions` on `session_id` for the header, then order by `rank DESC`." : ""}`,
+      `Call table functions with named literal parameters only, for example \`${schema.functions[0]?.function_name ?? "search_messages"}(...)\`.${hasSearch ? " `search_messages(q='words')` returns one row per matching message with `session_id`, `seq`, `rank` and the message's `message_id`, `role`, `kind`, `message_time` and `tool_name`; filter and order on those columns (`ORDER BY rank DESC`), narrow `sessions` with `session_id IN (SELECT session_id FROM search_messages(q='words'))`, and read a hit's text from `messages` filtered to its literal `session_id` and `seq`." : ""}`,
       "",
     );
   lines.push(
@@ -149,7 +150,7 @@ export function formatSchemaContext(schema: Schema): string {
     "- `messages` already carries `session_title`, `repo_name`, `branch` and `user_email`, so message queries often need no join.",
     ...(hasSearch
       ? [
-          "- `search_messages(q='words')` rows join `messages` on both `session_id` and `seq`, and `sessions` on `session_id`.",
+          "- `search_messages(q='words')` rows name a message by `session_id` and `seq` (or `message_id`); narrow `sessions` or `messages` to them with `session_id IN (SELECT session_id FROM search_messages(q='words'))` rather than a JOIN, which reads the whole joined view.",
         ]
       : []),
     "- `sessions.parent_session_id` points at another `sessions.session_id`; `parent_relation` says whether the child is a SUBAGENT, FORK or SPAWNED session.",
@@ -165,7 +166,7 @@ export function formatSchemaContext(schema: Schema): string {
     "",
     "- Recent sessions: select from `sessions`, filter with `started_at >= now() - toIntervalDay(7)`, `repo_name = 'owner/repo'`, `user_email = 'person@example.com'` or `harness = 'CLAUDE_CODE'`, and `ORDER BY started_at DESC`.",
     hasSearch
-      ? "- Search messages by words: `FROM search_messages(q='words') AS h JOIN messages AS m ON m.session_id = h.session_id AND m.seq = h.seq`, ordered by `h.rank DESC`. For an exact substring use `positionCaseInsensitive(content, 'phrase') > 0` on `messages`."
+      ? "- Search messages by words: `SELECT session_id, seq, role, message_time FROM search_messages(q='words') ORDER BY rank DESC LIMIT 20`, then `SELECT content FROM messages WHERE session_id = '<id>' AND seq = <seq>` for a hit's text. For an exact substring use `positionCaseInsensitive(content, 'phrase') > 0` on `messages` narrowed to a few `session_id` values."
       : "- Search messages by words: filter `messages` with `hasTokenCaseInsensitive(content, 'word')` or `positionCaseInsensitive(content, 'phrase') > 0`.",
     "- Tool usage per repository: join `session_tools` to `sessions` and `GROUP BY repo_name, tool_name`; `tool_call_count` on `sessions` gives totals per session.",
     "- Reuse of prior work: `session_reuse` counts readers per session, `reuse_edges` says which session read which, `metrics_reuse_weekly` gives the weekly rate and `member_impact` ranks members.",

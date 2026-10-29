@@ -389,7 +389,7 @@ export const searchOutputSchema = z.strictObject({
     })
     .nullable()
     .describe(
-      "Set when the full search exceeded the read time limit and this page searched only the most recently active matching sessions; null for a complete search. Narrow the filters to search the rest.",
+      "Set when the full search exceeded the read time or memory limit and this page searched only the most recently active matching sessions; null for a complete search. Narrow the filters to search the rest.",
     ),
   next: z
     .string()

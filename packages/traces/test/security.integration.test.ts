@@ -1319,7 +1319,8 @@ it("discovers actual native columns with catalog descriptions and migration-adde
   expect(functions[0]).toMatchObject({
     function_name: "search_messages",
     arguments: "q=String",
-    result_type: "session_id UUID, seq UInt32, rank Float64",
+    result_type:
+      "session_id UUID, seq UInt32, rank Float64, message_id UUID, role String, kind String, message_time Nullable(DateTime64(6, 'UTC')), tool_name Nullable(String), tool_use_id Nullable(String), model Nullable(String)",
   });
   // The shared catalog names exactly the native columns of every canonical and embeddings
   // view, every visible column carries its catalog meaning, and the assistant reference

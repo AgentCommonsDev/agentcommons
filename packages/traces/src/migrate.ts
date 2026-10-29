@@ -13,6 +13,7 @@ import {
   auditColumns,
   sessionReadColumns,
   messagesCurrentColumns,
+  messagesCurrentMetadataColumns,
   MESSAGES_CURRENT_TABLE,
   MESSAGES_CURRENT_INDEX,
 } from "./schema.js";
@@ -235,6 +236,13 @@ export async function migrateTraces(
     await command(
       `ALTER TABLE ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} ADD INDEX IF NOT EXISTS ${sqlIdentifier(MESSAGES_CURRENT_INDEX)} search_terms TYPE text(tokenizer=splitByNonAlpha)`,
     );
+    // The metadata columns came after the corpus's first CREATE (ADR 0098). Existing rows read
+    // null until the worker's corpus reconcile copies them, which also covers rows an older
+    // release publishes while this migration runs.
+    for (const [name, type] of Object.entries(messagesCurrentMetadataColumns))
+      await command(
+        `ALTER TABLE ${db}.${sqlIdentifier(MESSAGES_CURRENT_TABLE)} ADD COLUMN IF NOT EXISTS ${sqlIdentifier(name)} ${type}`,
+      );
     for (const [name, table] of Object.entries(traceTables))
       if (table.vector)
         await command(

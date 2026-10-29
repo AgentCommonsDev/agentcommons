@@ -416,7 +416,7 @@ it("answers a timed-out first page with one bounded attempt over the most recent
   expect(partial.result.cursor).toBeNull();
   const text = formatSearch(partial.result).text.split("\n\n");
   expect(text[1]).toContain(
-    `Partial result: the full search exceeded the read time limit, so this page covers the ${String(searched)} most recently active sessions`,
+    `Partial result: the full search exceeded the read time or memory limit, so this page covers the ${String(searched)} most recently active sessions`,
   );
   // The bounded set is the most recently active matching sessions, so its totals are a
   // subset of the complete search's.
@@ -448,6 +448,38 @@ it("answers a timed-out first page with one bounded attempt over the most recent
   await expect(
     failingSearch.execute(admin, { query: QUERY, limit: 2 }),
   ).rejects.toMatchObject({ statusCode: 503, code: "READ_TIME_LIMIT" });
+  expect(failNext).toEqual([]);
+});
+
+// @req R-SRCH-16
+it("answers a first page that exceeds the read memory limit with the same bounded attempt, and keeps READ_MEMORY_LIMIT for cursors", async () => {
+  const memoryLimit = () =>
+    new ClickHouseError({
+      code: "241",
+      type: "MEMORY_LIMIT_EXCEEDED",
+      message:
+        "Query memory limit exceeded: would use 259.69 MiB, maximum: 256.00 MiB",
+    });
+  failNext = [memoryLimit()];
+  const partial = await failingSearch.execute(admin, {
+    query: QUERY,
+    filters: { repo_name: "repo-3" },
+    limit: 6,
+    context: 1,
+  });
+  expect(failNext).toEqual([]);
+  expect(partial.result.partial?.sessions_searched).toBeGreaterThan(0);
+  expect(partial.result.blocks.length).toBeGreaterThan(0);
+  expect(partial.result.cursor).toBeNull();
+  const first = await search.execute(admin, { query: QUERY, limit: 2 });
+  failNext = [memoryLimit()];
+  await expect(
+    failingSearch.execute(admin, {
+      query: QUERY,
+      limit: 2,
+      cursor: first.result.cursor,
+    }),
+  ).rejects.toMatchObject({ statusCode: 503, code: "READ_MEMORY_LIMIT" });
   expect(failNext).toEqual([]);
 });
 

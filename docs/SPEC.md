@@ -304,7 +304,7 @@ revision. Canonical views choose the newest published, non-deleted version. The 
 text index uses the shared English Snowball token expression (§7.1); optional vectors
 have native cosine HNSW indexes (§11). There are no PostgreSQL corpus/GIN indexes.
 
-Search reads a separate published-only corpus, `messages_current`: a `ReplacingMergeTree(revision, deleted)` keyed by `(organization_id, session_id, message_id)`, carrying only the search columns (`seq`, `role`, `kind`, `searchable`, `search_terms`) plus `revision` and a `deleted` tombstone, with the `message_terms` text index over `search_terms`. The projection writes it at publish and never for a pending revision, so it holds exactly one row per message at its latest published, current-generation content; a single `FINAL` scan resolves that content and drops tombstones, without the cross-revision `latest` GROUP-BY the primary `messages` table needs. Its row policy fences it by live control identically to `messages` (ADR 0092).
+Search reads a separate published-only corpus, `messages_current`: a `ReplacingMergeTree(revision, deleted)` keyed by `(organization_id, session_id, message_id)`, carrying only the search columns (`seq`, `role`, `kind`, `searchable`, `search_terms`) and the message metadata every non-payload search filter tests (`message_time` = `coalesce(timestamp, received_at)`, `tool_name`, `tool_use_id`, `model`; ADR 0098) plus `revision` and a `deleted` tombstone, with the `message_terms` text index over `search_terms`. The projection writes it at publish and never for a pending revision, so it holds exactly one row per message at its latest published, current-generation content; a single `FINAL` scan resolves that content and drops tombstones, without the cross-revision `latest` GROUP-BY the primary `messages` table needs. Its row policy fences it by live control identically to `messages` (ADR 0092). A row written before the metadata columns existed reads `message_time` null; worker maintenance copies the metadata into such rows from the `messages` row of the same revision, a bounded batch of sessions per statement, so the historical corpus and rows an older release publishes while the migration runs are filled on the next tick. Until then such a row stays out of time-filtered results and browses (stale, never wrong).
 
 ### 4.3 Records and messages
 
@@ -1344,9 +1344,19 @@ Input (`packages/core/schemas/search.ts`):
   Rank is weighted matching-token frequency divided by `1 + log(1 + token_count)`;
   weights are user text 1.0, assistant text 0.4, tool input 0.2 and tool result 0.1.
   Embeddings, when enabled, fuse native cosine neighbors with lexical rank. Ordering is
-  `(rank desc, session_id, seq)`. Batched neighbor/header queries form and merge touching
-  message windows. Reused candidates, embedding eligibility, and ordered context metadata
-  are materialized once as narrow relations (ADR 0096). Ordinary ClickHouse CTEs expand
+  `(rank desc, session_id, seq)`. Candidates are read and filtered on the corpus alone
+  (ADR 0098): `search_messages` returns each match's `message_id`, `role`, `kind`,
+  `message_time`, `tool_name`, `tool_use_id` and `model`, the internal `search_corpus`
+  relation gives every live corpus message for a search without a query and for
+  session-list message filters, and no candidate stage reads the latest-revision
+  aggregate of `messages` or `message_metadata`. Only a payload condition (`content`,
+  `tool_input`) reads `messages`, as a semi-join on `message_id` bounded for a query to
+  the sessions the text matched. Ranking aggregates the candidates per session, keeping each
+  session's best three (`groupArraySorted`) and its count, so ranking memory grows with
+  matching sessions, not matching messages; the totals are window sums over those rows.
+  Batched neighbor/header queries form and merge touching
+  message windows. Reused embedding eligibility, the per-session ranking, and ordered context
+  metadata are materialized once as narrow relations (ADR 0096). Ordinary ClickHouse CTEs expand
   at each reference. Context metadata reads the stored `payload_bytes` scalar (§4.3),
   so even one context scan cannot allocate transcript payload buffers merely for sizing.
   The shared payload fetch uses a parameterized native relation with `PREWHERE` only
@@ -1357,7 +1367,10 @@ Input (`packages/core/schemas/search.ts`):
   Verification includes at least 40,000 messages with a session whose payload exceeds
   the reader's memory budget, and small payloads selected across several sessions of
   wide messages, as admin and member readers at four-way concurrency under the unchanged
-  256 MiB and five-second limits.
+  256 MiB and five-second limits. It also includes a corpus of 2,000,000 messages, larger
+  than the hosted corpus that broke the earlier candidate stage, where a query matching every
+  message, a rare query narrowed by repository, tool and message time, and a filtered browse
+  each succeed alone and four at a time as admin and member under the same limits.
   The unchanged golden corpus must retain its top-three hit rate.
   Before the per-session cap and the page limit, a candidate session authored by a
   different member of the caller's organization has its rank scaled by a modest constant
@@ -1460,8 +1473,13 @@ pagination, and stable database IDs are never shortened (ADR 0022).
   column on a canonical view appears without rebuilding the catalog.
   `schema_functions` describes parameterized search views.
   Both hide embedding capabilities unless available to the current organization.
-- `search_messages(q='words')` returns an uncapped `(session_id, seq, rank)` relation.
-  It composes with ordinary predicates and aggregates. With embeddings enabled,
+- `search_messages(q='words')` returns an uncapped `(session_id, seq, rank, message_id,
+role, kind, message_time, tool_name, tool_use_id, model)` relation over the search corpus
+  (ADR 0098). It composes with ordinary predicates and aggregates; its own columns filter a
+  match without reading `messages`, and `session_id IN (SELECT session_id FROM
+search_messages(…))` narrows another view to the matched sessions. The schema reference
+  (§10) teaches that semi-join and reading a hit's text by literal `session_id` and `seq`,
+  not a JOIN against `messages` or `sessions`, which reads the whole joined view. With embeddings enabled,
   `similar_sessions(source='session UUID',max_rows=5)` returns visible sessions and
   cosine distance. Named literal parameters are native ClickHouse syntax.
 - Response `{ columns: [{name, type}], rows: [[…]], row_count, capped, truncated_cells:
@@ -1505,15 +1523,15 @@ QUERY_MEMORY_LIMIT` and `400 QUERY_RESULT_LIMIT`.
    `TIMEOUT_EXCEEDED`, or the read budget around it) is `READ_TIME_LIMIT` (retry; narrow
    the time range or filters; for text search run `sql` over `search_messages(q=…)`);
    the memory limit is `READ_MEMORY_LIMIT` and the result limit `READ_RESULT_LIMIT`
-   (narrow the range). A first-page `search` whose read hits the time limit makes one
-   bounded second attempt in a fresh fenced read before failing: the same query and
-   filters over the 50 most recently active matching sessions (one `session_details`
-   scan resolves the set; the array bounds the metadata scan and, as a `WHERE` on
-   `search_messages`, the text scan by primary key), `context` 0, no cursor; its result
+   (narrow the range). A first-page `search` whose read hits the time or memory limit
+   makes one bounded second attempt in a fresh fenced read before failing: the same query
+   and filters over the 50 most recently active matching sessions (one `session_details`
+   scan resolves the set; the array bounds the corpus scan by primary key, ADR 0098),
+   `context` 0, no cursor; its result
    carries `partial: { sessions_searched }` and the text rendering says what the page
    covered and how to narrow. The same shape is never retried: the scan cost does not
    depend on `context` or `limit`, and the fenced budget leaves no room for it.
-   Continuation pages and a failing bounded attempt surface `READ_TIME_LIMIT` (ADR 0074);
+   Continuation pages surface the limit they hit and a failing bounded attempt its own (ADR 0074);
    a PostgreSQL lock or statement timeout, serialization failure,
    deadlock or exhausted pool during the read is `READ_BUSY` (retry); an unreachable,
    cancelled or saturated trace database is `TRACE_QUERY_UNAVAILABLE`. A caller's own
