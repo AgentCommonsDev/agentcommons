@@ -736,19 +736,47 @@ async function drain(
         cleanupAcknowledged(path, state, lock);
         continue;
       }
-      // A 409 is the server's verdict on the session; a 401/403 arrives here only confirmed.
-      if (response.status === 409 || rejection !== null) {
+      if (response.status === 409) {
+        const code = await rejectionCode(response);
+        if (code === "BATCH_CONFLICT" && pending.mode === "lifecycle") {
+          // A lifecycle batch id is its event's identity, so the server already holds this
+          // event's receipt, taken at another cursor (§6.2 step 3): the intent is complete.
+          // Nothing is acknowledged; the cursors stay where they are.
+          const recorded =
+            pending.intentId === null
+              ? undefined
+              : intentById(entries, pending.intentId);
+          finishIntent(state, recorded);
+          state.pending = null;
+          state.cleanup = {
+            files: [pending.file],
+            intents: recorded ? [recorded.id] : [],
+          };
+          save(path, state, lock);
+          cleanupAcknowledged(path, state, lock);
+          continue;
+        }
+        // Any other 409 is the server's verdict on the session.
+        suspend(
+          directory,
+          path,
+          state,
+          lock,
+          409,
+          `The server rejected this session (${code ?? "no error code"}).`,
+        );
+        break;
+      }
+      // A 401/403 arrives here only confirmed.
+      if (rejection !== null) {
         suspend(
           directory,
           path,
           state,
           lock,
           response.status,
-          rejection === null
-            ? "The server rejected this session."
-            : `The server rejected this session or credential (${rejection}).`,
+          `The server rejected this session or credential (${rejection}).`,
         );
-        if (rejection === null) await response.body?.cancel();
         break;
       }
       if (response.status === 413 && body.records.length > 1) {
