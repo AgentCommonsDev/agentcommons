@@ -556,36 +556,59 @@ try {
     .object({ sessionId: z.uuid() })
     .parse(captured.json()).sessionId;
   await waitForTracePublication(database.prisma, [reuseSessionId]);
-  const searched = await app.inject({
-    method: "POST",
-    url: "/api/v1/search",
-    headers: readerHeaders,
-    payload: { query: "Dashboard verification" },
+  // Only MCP reads after the key's `tools/list` on its installation are agent reuse
+  // (ADR 0060), so the reader works as a harness does: handshake, then search and get.
+  let rpcId = 0;
+  const mcp = async (method, params) => {
+    const notification = method.startsWith("notifications/");
+    const response = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        ...readerHeaders,
+        accept: "application/json, text/event-stream",
+      },
+      payload: {
+        jsonrpc: "2.0",
+        method,
+        ...(notification ? {} : { id: (rpcId += 1) }),
+        ...(params === undefined ? {} : { params }),
+      },
+    });
+    const failed = () =>
+      new Error(
+        `Reuse fixture ${method} failed: ${String(response.statusCode)} ${response.body}`,
+      );
+    if (response.statusCode !== (notification ? 202 : 200)) throw failed();
+    if (notification) return;
+    // A tool failure is a 200 whose result says isError; a protocol failure has no result.
+    const answer = z
+      .object({ result: z.looseObject({ isError: z.boolean().optional() }) })
+      .safeParse(response.json());
+    if (!answer.success || answer.data.result.isError === true) throw failed();
+  };
+  await mcp("initialize", {
+    protocolVersion: "2025-03-26",
+    capabilities: {},
+    clientInfo: { name: "browser-reuse-reader", version: "1" },
   });
-  if (searched.statusCode !== 200)
-    throw new Error(
-      `Reuse fixture search failed: ${String(searched.statusCode)}`,
-    );
-  const read = await app.inject({
-    method: "GET",
-    url: `/api/v1/sessions/${sessionIds[0]}`,
-    headers: readerHeaders,
+  await mcp("notifications/initialized");
+  await mcp("tools/list");
+  await mcp("tools/call", {
+    name: "search",
+    arguments: { query: "Dashboard verification" },
   });
-  if (read.statusCode !== 200)
-    throw new Error(`Reuse fixture get failed: ${String(read.statusCode)}`);
-  const emptySearch = await app.inject({
-    method: "POST",
-    url: "/api/v1/search",
-    headers: readerHeaders,
-    payload: {
+  await mcp("tools/call", {
+    name: "get",
+    arguments: { session_id: sessionIds[0] },
+  });
+  await mcp("tools/call", {
+    name: "search",
+    arguments: {
       query: "missing-browser-reuse-evidence-7f9a",
       filters: { repo_name: "github.com/absent/browser-repo" },
     },
   });
-  if (emptySearch.statusCode !== 200)
-    throw new Error(
-      `Reuse fixture empty search failed: ${String(emptySearch.statusCode)}`,
-    );
   const ownerEmptySearch = await app.inject({
     method: "POST",
     url: "/api/v1/search",
@@ -700,12 +723,18 @@ try {
   await waitForTracePublication(database.prisma, [
     embeddingAccepted.result.sessionId,
   ]);
-  await new TraceAuditProjectionService({
+  // Reuse and search adoption read the projected, attributed audit rows. Drain the whole
+  // outbox before serving: one batch can stop short of the reader's calls, which would
+  // then wait for the worker's once-a-minute run while the first specs look for them.
+  const auditProjection = new TraceAuditProjectionService({
     prisma: database.prisma,
     audit: database.audit,
     traces: database.traces,
     readers: database.traceReaders,
-  }).flush();
+  });
+  while (await auditProjection.flush()) {
+    /* Until the outbox is empty. */
+  }
   const embeddingCookie = z
     .string()
     .parse(embeddingControl.owner.headers.get("cookie"));

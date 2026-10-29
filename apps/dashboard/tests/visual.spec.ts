@@ -91,7 +91,9 @@ for (const theme of ["dark", "light"] as const)
             page.getByTestId("admin-users-table").locator("tbody tr"),
           ).toHaveCount(2);
         },
-        mask: () => [],
+        // Last seen is this run's own dashboard requests, made on the real weekday, so its
+        // distance from the fixed Sunday clock changes with the day the suite runs.
+        mask: () => [page.getByTestId("admin-users-table").locator("time")],
       },
       {
         name: "settings",
