@@ -1,3 +1,4 @@
+import { sign } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -13,6 +14,18 @@ import type { HookManifest } from "@agentcommons/core/schemas/ingest";
 import { hash, writeAtomic } from "../src/files.js";
 import { configure } from "../src/install.js";
 import { selfUpdate } from "../src/update.js";
+
+/** The release signer the bundle under test pins (ADR 0102). */
+const releaseKey = await vi.hoisted(async () =>
+  (await import("node:crypto")).generateKeyPairSync("ed25519"),
+);
+vi.mock("../src/release-keys.js", () => ({
+  RELEASE_KEYS: [
+    releaseKey.publicKey
+      .export({ format: "der", type: "spki" })
+      .toString("base64"),
+  ],
+}));
 
 /** `writeFileSync` fails with ENOSPC while `disk.full` is set; every other fs call is real. */
 const disk = vi.hoisted(() => ({ full: false, onlyStaged: false }));
@@ -83,18 +96,33 @@ describe("full disk", () => {
       url: "/hook/0.1.0-enospc/hook.js",
       extensionSha256: hash("export const marker = 'old';\n"),
       extensionUrl: "/hook/0.1.0-enospc/pi-extension.mjs",
+      builtAt: "2026-10-29T00:00:00.000Z",
     };
-    const fetcher: typeof fetch = (input) =>
-      Promise.resolve(
-        (input instanceof URL
+    const manifestText = JSON.stringify(manifest);
+    const signatureFile = JSON.stringify({
+      signatures: [
+        sign(null, Buffer.from(manifestText), releaseKey.privateKey).toString(
+          "base64",
+        ),
+      ],
+    });
+    const fetcher: typeof fetch = (input) => {
+      const url =
+        input instanceof URL
           ? input.href
           : typeof input === "string"
             ? input
-            : input.url
-        ).endsWith("manifest.json")
-          ? Response.json(manifest)
-          : new Response(NEW_BUNDLE),
+            : input.url;
+      return Promise.resolve(
+        new Response(
+          url.endsWith("manifest.json")
+            ? manifestText
+            : url.endsWith("manifest.json.sig")
+              ? signatureFile
+              : NEW_BUNDLE,
+        ),
       );
+    };
     disk.full = true;
     disk.onlyStaged = true;
     expect(

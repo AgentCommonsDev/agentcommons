@@ -306,6 +306,15 @@ it("runs the live canary nightly and on every native adapter change, with read-o
   expect(
     canary?.steps.some((step) => step.run?.includes("pnpm test:canary")),
   ).toBe(true);
+  // The stale-bundle swap (R-CAP-16) needs a manifest the built bundle trusts: one key per
+  // run, pinned at build time and signing the served manifest (ADR 0102).
+  const build = canary?.steps.find((step) =>
+    step.run?.includes("pnpm build"),
+  )?.run;
+  expect(build).toContain("AGENTCOMMONS_HOOK_RELEASE_KEYS=");
+  expect(build).toContain(
+    'node packages/hook/sign.ts "$key" apps/api/public/hook/manifest.json',
+  );
   expect(
     canary?.steps.find(usesAction("actions/upload-artifact"))?.with?.path,
   ).toBe(
@@ -387,7 +396,12 @@ it("publishes a signed multi-architecture image per green main commit with only 
   expect(
     job?.steps.some((step) => step.run?.startsWith("cosign sign --yes ")),
   ).toBe(true);
-  // No cloud account: no AWS action, no configured secret beyond the workflow's own token.
+  // The signer the host updater's verifier (scripts/self-host/lib.sh) expects.
+  expect(
+    job?.steps.find(usesAction("sigstore/cosign-installer"))?.with,
+  ).toEqual({ "cosign-release": "v2.6.5" });
+  // No cloud account: no AWS action, no secret beyond the workflow's own token and the
+  // hook signing key of the release environment.
   expect(actions.some((action) => action?.startsWith("aws-actions/"))).toBe(
     false,
   );
@@ -396,5 +410,38 @@ it("publishes a signed multi-architecture image per green main commit with only 
     "utf8",
   );
   expect(text).not.toMatch(/aws|pulumi/i);
-  expect(text.match(/secrets\.[A-Z_]+/g)).toEqual(["secrets.GITHUB_TOKEN"]);
+  expect(new Set(text.match(/secrets\.[A-Z_]+/g))).toEqual(
+    new Set(["secrets.GITHUB_TOKEN", "secrets.HOOK_SIGNING_KEY"]),
+  );
+});
+// @req R-CAP-30
+it("signs the hook manifest inside the release image build with the release environment's key, and refuses to release without it", () => {
+  const job = workflow("release").jobs.image;
+  // An environment secret reaches only jobs that environment admits, never a branch or
+  // pull-request workflow (ADR 0102).
+  expect(job?.environment).toBe("release");
+  const guard = job?.steps[0];
+  expect(guard?.env).toEqual({
+    HOOK_SIGNING_KEY: "${{ secrets.HOOK_SIGNING_KEY }}",
+  });
+  expect(guard?.run).toContain('[ -n "$HOOK_SIGNING_KEY" ]');
+  expect(guard?.run).toContain("exit 1");
+  const build = job?.steps.find(usesAction("docker/build-push-action"))?.with;
+  expect(z.string().parse(build?.secrets).trim()).toBe(
+    "hook_signing_key=${{ secrets.HOOK_SIGNING_KEY }}",
+  );
+  // The Dockerfile mounts it for one step that runs Node on sign.ts and nothing else.
+  const dockerfile = readFileSync(
+    new URL("../../Dockerfile", import.meta.url),
+    "utf8",
+  );
+  const steps = dockerfile
+    .split(/\n(?=[A-Z]+ |#)/)
+    .filter((instruction) => instruction.includes("hook_signing_key"));
+  expect(steps).toHaveLength(1);
+  expect(steps[0]).toMatch(/^RUN --mount=type=secret,id=hook_signing_key /);
+  expect(steps[0]).toContain(
+    "node packages/hook/sign.ts /run/secrets/hook_signing_key apps/api/public/hook/manifest.json",
+  );
+  expect(steps[0]).not.toMatch(/pnpm|npx|tsx/);
 });

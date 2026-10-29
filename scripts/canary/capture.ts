@@ -112,7 +112,6 @@ export async function captureHarness(
       context.member.key,
       "--config-home",
       configHome,
-      "--no-shell-rc",
     ],
     "installer.txt",
   );

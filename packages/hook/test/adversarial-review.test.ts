@@ -25,7 +25,7 @@ it("preserves unowned empty hook groups during install and uninstall", () => {
     server: "http://localhost:3000",
     key: "test-credential",
   });
-  const options = { configHome: home, noShellRc: true };
+  const options = { configHome: home };
   install(join(directory, "collector"), config, options);
   const installed: unknown = JSON.parse(readFileSync(path, "utf8"));
   const hooks = z

@@ -163,7 +163,7 @@ it("recovers after actual SIGKILL before send, after acceptance, and after local
       expect(before.ackedCursor).toEqual({ kind: "jsonl", offset: 0 });
   }
 });
-// @req R-INST-01 @req R-INST-02 @req R-INST-03 @req R-INST-04 @req R-INST-05 @req R-INST-06
+// @req R-INST-01 @req R-INST-02 @req R-INST-03 @req R-INST-04 @req R-INST-05 @req R-INST-06 @req R-INST-09 @req R-INST-10
 it("installs verified artifacts, preserves identity, rejects bad checksums, and uninstalls offline", async () => {
   let corrupt = false;
   let requests = 0;
@@ -226,6 +226,12 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
     "--config-home",
     home,
   ];
+  // The exports an older installer wrote, which this one removes (R-INST-10).
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    join(home, ".bashrc"),
+    "alias ll='ls -l'\n\n# agentcommons-hook begin\nexport AGENTCOMMONS_API_KEY='test-credential'\n# agentcommons-hook end\n",
+  );
   const installed = await run("sh", args, env);
   expect(installed, installed.output).toMatchObject({ code: 0 });
   expect(installed.output).toContain("trust hooks");
@@ -246,19 +252,15 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
   expect(installed.output).toContain(
     "pi reads the AgentCommons guidance from its extension",
   );
-  expect(installed.output).toContain(
-    "Codex reaches AgentCommons through a stdio bridge that carries the key in its own config",
+  // No shell carries the key: every harness reads it from its own MCP entry (R-INST-10).
+  expect(installed.output).not.toContain("AGENTCOMMONS_API_KEY");
+  expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(
+    "alias ll='ls -l'\n",
   );
-  // Every login shell keeps the exports for other tools; Codex uses its bridge config.
-  for (const rc of [".bashrc", ".zshrc"])
-    expect(readFileSync(join(home, rc), "utf8")).toContain(
-      "export AGENTCOMMONS_API_KEY='test-credential'",
-    );
   const fishConfig = join(home, ".config", "fish", "config.fish");
-  if (existsSync(fishConfig))
-    expect(readFileSync(fishConfig, "utf8")).toContain(
-      "set -gx AGENTCOMMONS_API_KEY 'test-credential'",
-    );
+  for (const rc of [".profile", ".zshrc", ".bash_profile", ".zprofile"])
+    expect(existsSync(join(home, rc)), rc).toBe(false);
+  expect(existsSync(fishConfig)).toBe(false);
   const configFile = join(env.AGENTCOMMONS_DIR, "config.json");
   const first = readFileSync(configFile, "utf8");
   expect(statSync(configFile).mode & 0o777).toBe(0o600);
@@ -285,9 +287,6 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
   ).toBe(0);
   expect(requests).toBe(before);
   expect(readFileSync(configFile, "utf8")).toBe(first);
-  for (const rc of [join(home, ".bashrc"), join(home, ".zshrc"), fishConfig])
-    if (existsSync(rc))
-      expect(readFileSync(rc, "utf8")).not.toContain("AGENTCOMMONS_API_KEY");
   // Uninstall removes the guidance block; a file that held only the block is removed.
   for (const file of instructionFiles) expect(existsSync(file)).toBe(false);
   const invalid = await run(
@@ -296,6 +295,22 @@ it("installs verified artifacts, preserves identity, rejects bad checksums, and 
     { ...env, AGENTCOMMONS_API_KEY: "wrong" },
   );
   expect(invalid.code).not.toBe(0);
+  // The self-update self-test runs `version` against the installation's configuration: a
+  // bundle that cannot read it (a plain-HTTP remote server, R-INST-09) fails here instead of
+  // swapping in and failing open in every hook from then on.
+  const plain = await run(
+    process.execPath,
+    [join(env.AGENTCOMMONS_DIR, "hook.js"), "version"],
+    { ...env, AGENTCOMMONS_SERVER: "http://agentcommons.example.test" },
+  );
+  expect(plain.code).not.toBe(0);
+  expect(plain.output).toContain("plain HTTP is accepted only for localhost");
+  const current = await run(
+    process.execPath,
+    [join(env.AGENTCOMMONS_DIR, "hook.js"), "version"],
+    env,
+  );
+  expect(current.output.trim()).toMatch(/^[a-f0-9]{64}$/);
 });
 
 // @req R-CAP-04

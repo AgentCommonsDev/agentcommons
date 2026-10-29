@@ -43,7 +43,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: pnpm build
+      # The canary's bundle trusts a key made for this run, which signs the served manifest,
+      # so its stale-bundle swap passes the same signature check a release does (ADR 0102).
+      - name: Build with a run-local hook signing key
+        run: |
+          key=$(mktemp)
+          openssl genpkey -algorithm ed25519 -outform DER | base64 -w0 >"$key"
+          AGENTCOMMONS_HOOK_RELEASE_KEYS=$(base64 -d "$key" | openssl pkey -inform DER -pubout -outform DER | base64 -w0) pnpm build
+          node packages/hook/sign.ts "$key" apps/api/public/hook/manifest.json
+          rm -f "$key"
       - run: pnpm exec playwright install --with-deps chromium
       # One pin per harness in scripts/harness-versions.json; the canary asserts the same versions.
       - run: npm install --global $(jq -r '[.claude, .codex, .gemini] | map("\(.package)@\(.version)") | join(" ")' scripts/harness-versions.json)

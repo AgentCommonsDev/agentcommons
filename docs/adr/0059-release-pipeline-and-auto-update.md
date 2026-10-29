@@ -2,7 +2,9 @@
 
 Date: 2026-09-09
 Status: Accepted. Supersedes the consequence of ADR 0055 that read "a registry-based image
-path can be added later without changing the shape"; the rest of ADR 0055 stands.
+path can be added later without changing the shape"; the rest of ADR 0055 stands. The open
+question about verifying the Sigstore signature on the host is answered by ADR 0102: the
+updater verifies it before installing.
 
 ## Context
 

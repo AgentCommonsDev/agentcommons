@@ -15,6 +15,14 @@ previous_tag=agentcommons:previous
 # AGENTCOMMONS_CREATED): the full commit and the RFC 3339 build time.
 revision_label=org.opencontainers.image.revision
 created_label=org.opencontainers.image.created
+# A pulled image is installed only with a Sigstore signature by this identity (ADR 0102):
+# the release workflow on main, through GitHub's OIDC issuer. AGENTCOMMONS_IMAGE_SIGNER in
+# .env names another workflow for a fork that publishes its own images.
+release_signer=https://github.com/AgentCommonsDev/agentcommons/.github/workflows/release.yml@refs/heads/main
+release_signer_issuer=https://token.actions.githubusercontent.com
+# The verifier runs from its own image, pinned by digest so no registry can swap it; the
+# release workflow signs with the same cosign version.
+cosign_image=ghcr.io/sigstore/cosign/cosign:v2.6.5@sha256:ad281047f85c5e1fc6ffbc30c2b55be3b07b4032bef715a12122ce5829619aca
 
 # setting KEY [FILE]: one value from the stack's .env (or another rendered env file);
 # surrounding single or double quotes are stripped (the single-node stack quotes every
@@ -114,6 +122,46 @@ release_of() {
   else
     printf 'unknown'
   fi
+}
+# image_digest REF: the registry digest (repository@sha256:...) the local image REF was
+# pulled as, or nothing for an image that never came from REF's repository (a local build).
+# A digest reference (a pin) is its own answer: the pull fetched exactly that content.
+image_digest() {
+  local name=${1%@*} repository
+  case $1 in
+  *@sha256:*)
+    printf '%s' "$1"
+    return 0
+    ;;
+  esac
+  repository=$name
+  # Strip a tag, never a registry port: only the last path segment can carry one.
+  case ${name##*/} in
+  *:*) repository=${name%:*} ;;
+  esac
+  # awk reads to the end: exiting early would turn the inspect into SIGPIPE under pipefail.
+  docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$1" 2>/dev/null |
+    awk -v prefix="$repository@" 'found == "" && index($0, prefix) == 1 { found = $0 } END { if (found != "") print found }'
+}
+# verify_signature REF: true when the local image REF was pulled as a registry digest that
+# carries a Sigstore signature by the release signer. Anything else (no digest, no signature,
+# another signer, Sigstore unreachable) is false, with cosign's reason on stderr, so a
+# registry token or a man in the middle cannot get an image installed.
+verify_signature() {
+  local digest signer output
+  digest=$(image_digest "$1")
+  if [ -z "$digest" ]; then
+    echo "$1 has no registry digest to verify." >&2
+    return 1
+  fi
+  signer=$(setting AGENTCOMMONS_IMAGE_SIGNER)
+  if output=$(docker run --rm "$cosign_image" verify \
+    --certificate-identity "${signer:-$release_signer}" \
+    --certificate-oidc-issuer "$release_signer_issuer" "$digest" 2>&1 >/dev/null); then
+    return 0
+  fi
+  printf '%s\n' "$output" | tail -n 3 >&2
+  return 1
 }
 # image_pinned REF: true when the configured reference names one exact image (a `sha-` tag
 # or a digest), which the updater installs as asked, older or not. Floating tags such as
@@ -333,8 +381,8 @@ prune_build_leftovers() {
   logged docker image prune --force ||
     echo "Dangling images could not be pruned; the deploy continues. Run 'docker image prune' by hand." >&2
 }
-# stack_up MODE [LOG]: MODE pull fetches the configured image, build builds it from the
-# checkout, start uses what is already present. Then starts every service (the migration
+# stack_up MODE [LOG]: MODE pull fetches the configured image and refuses it without the
+# release signature, build builds it from the checkout, start uses what is already present. Then starts every service (the migration
 # runs before the API), waits for /ready and reloads Caddy when it is part of the stack so
 # it refreshes its trusted proxy ranges and applies the shipped Caddyfile without closing
 # its listening sockets. Compose output goes to LOG when given.
@@ -344,7 +392,10 @@ stack_up() {
   # Callers test this function in an `if`, where `set -e` is suspended: every step
   # returns explicitly so a failed pull, build or start is reported as a failure.
   case $mode in
-  pull) logged compose pull --quiet api || return 1 ;;
+  pull)
+    logged compose pull --quiet api || return 1
+    verify_signature "$(configured_image)" || return 1
+    ;;
   build)
     # The build stamps the same release labels as the release workflow, so the updater can
     # tell this image's age from a published one's.
