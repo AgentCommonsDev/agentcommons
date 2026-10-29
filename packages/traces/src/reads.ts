@@ -18,6 +18,8 @@ export const attributedReadRule = {
   status: { min: 200, max: 299 },
   handshake: { action: "mcp.tools.list", status: 200 },
   observationAfterSeconds: 600,
+  /** An active window lasts at most this long after the observation that opened it. */
+  windowHours: 6,
 } as const;
 /** The attributed actions that count as querying AgentCommons for search adoption (ADR 0067). */
 export const searchReadActions = ["search", "sql"] as const;

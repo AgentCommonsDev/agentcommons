@@ -80,17 +80,23 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
     "internal",
   );
   add("audit_base", `SELECT * FROM ${db}.audit_events FINAL`, "internal");
-  add(
-    "metrics_active_windows",
-    `WITH lifecycle AS MATERIALIZED (SELECT * FROM api_ro.receipt_base WHERE behavior IN ('start','end') AND lifecycle_applied), states AS MATERIALIZED (
+  // Each session's active windows on its installation, from its start and its hook receipts.
+  // `sessions`, a session-id set, bounds every receipt and session read to the sessions it
+  // names (they reach the receipts' primary key); without it the relation covers the
+  // organization.
+  const activeWindowsSql = (sessions?: string) => {
+    const bound = (alias: string) =>
+      sessions ? ` AND ${alias}session_id IN ${sessions}` : "";
+    return `WITH lifecycle AS MATERIALIZED (SELECT * FROM api_ro.receipt_base WHERE behavior IN ('start','end') AND lifecycle_applied${bound("")}), states AS MATERIALIZED (
  SELECT b.session_id AS session_id,s.installation_id AS installation_id,b.receipt_id AS receipt_id,b.sent_at AS sent_at,b.behavior AS behavior,b.source_pos AS source_pos,s.started_at AS started_at,argMaxIf(tuple(l.behavior,l.source_pos,l.sent_at),tuple(l.source_pos,l.sent_at,l.receipt_id),l.receipt_id IS NOT NULL) AS lifecycle_state
- FROM api_ro.receipt_base b JOIN ${projection} s ON s.session_id=b.session_id LEFT JOIN lifecycle l ON l.session_id=b.session_id AND l.sent_at<=b.sent_at WHERE s.purged_at IS NULL AND (b.behavior NOT IN ('start','end') OR b.lifecycle_applied) GROUP BY b.session_id,s.installation_id,b.receipt_id,b.sent_at,b.behavior,b.source_pos,s.started_at
+ FROM api_ro.receipt_base b JOIN ${projection} s ON s.session_id=b.session_id LEFT JOIN lifecycle l ON l.session_id=b.session_id AND l.sent_at<=b.sent_at WHERE s.purged_at IS NULL AND (b.behavior NOT IN ('start','end') OR b.lifecycle_applied)${bound("b.")} GROUP BY b.session_id,s.installation_id,b.receipt_id,b.sent_at,b.behavior,b.source_pos,s.started_at
  ), observations AS (
- SELECT session_id,installation_id,started_at AS observed_at,'start' AS behavior,toInt64(-1) AS lifecycle_pos,started_at AS lifecycle_at FROM ${projection} WHERE purged_at IS NULL
+ SELECT session_id,installation_id,started_at AS observed_at,'start' AS behavior,toInt64(-1) AS lifecycle_pos,started_at AS lifecycle_at FROM ${projection} WHERE purged_at IS NULL${bound("")}
  UNION ALL
  SELECT session_id,installation_id,sent_at AS observed_at,if(behavior IN ('start','end'),behavior,coalesce(tupleElement(lifecycle_state,1),'start')) AS behavior,if(behavior IN ('start','end'),source_pos,coalesce(tupleElement(lifecycle_state,2),toInt64(-1))) AS lifecycle_pos,if(behavior IN ('start','end'),sent_at,coalesce(tupleElement(lifecycle_state,3),started_at)) AS lifecycle_at FROM states
- ) SELECT o.session_id AS session_id,o.installation_id AS installation_id,o.observed_at AS active_from,least(o.observed_at+INTERVAL 6 HOUR,coalesce(tupleElement(argMinIf(tuple(l.sent_at),tuple(l.source_pos,l.sent_at,l.receipt_id),l.receipt_id IS NOT NULL),1),o.observed_at+INTERVAL 6 HOUR)) AS active_to FROM observations o LEFT JOIN lifecycle l ON l.session_id=o.session_id AND tuple(l.source_pos,l.sent_at)>tuple(o.lifecycle_pos,o.lifecycle_at) WHERE o.behavior='start' GROUP BY o.session_id,o.installation_id,o.observed_at,o.lifecycle_pos,o.lifecycle_at`,
-  );
+ ) SELECT o.session_id AS session_id,o.installation_id AS installation_id,o.observed_at AS active_from,least(o.observed_at+INTERVAL ${String(attributedReadRule.windowHours)} HOUR,coalesce(tupleElement(argMinIf(tuple(l.sent_at),tuple(l.source_pos,l.sent_at,l.receipt_id),l.receipt_id IS NOT NULL),1),o.observed_at+INTERVAL ${String(attributedReadRule.windowHours)} HOUR)) AS active_to FROM observations o LEFT JOIN lifecycle l ON l.session_id=o.session_id AND tuple(l.source_pos,l.sent_at)>tuple(o.lifecycle_pos,o.lifecycle_at) WHERE o.behavior='start' GROUP BY o.session_id,o.installation_id,o.observed_at,o.lifecycle_pos,o.lifecycle_at`;
+  };
+  add("metrics_active_windows", activeWindowsSql());
   // The audit row's actor and request columns as every audit-derived view projects them.
   const auditColumns = `a.audit_id AS id,a.ts AS ts,a.user_id AS user_id,a.user_email AS user_email,a.installation_id AS installation_id,a.transport AS transport,a.auth_method AS auth_method,a.action AS action`;
   // The session an audit row is about: its first resource id, else the named result field.
@@ -115,17 +121,30 @@ export function analyticsViews(database: string): TraceViewDefinition[] {
   // start, a lifecycle or a sync receipt) is nearest to the read, and only once the same
   // key has completed the MCP handshake on that installation, so a raw tools/call posted by
   // curl is not agent reuse. One row per audit id. This is the one definition of an
-  // attribution: the audit projection worker reads it for the rows it just projected and
-  // copies them into `session_reads`; every caller-facing reuse relation aggregates that
-  // table instead of re-deriving the graph.
+  // attribution: the audit projection worker reads it for the rows it just projected,
+  // parameterized by their ids (`audit_ids`), and copies them into `session_reads`; every
+  // caller-facing reuse relation aggregates that table instead of re-deriving the graph.
+  //
+  // The windows are derived for those reads alone (ADR 0099): only sessions on a read's
+  // installation can be credited, and a window that admits a read began within the rule's
+  // window length before it or its observation allowance after it. Such a session was
+  // active (its control `last_activity_at` advanced with the receipt that opened the
+  // window) after the earliest read's horizon and started before the latest read's, so
+  // that set bounds every receipt read; a day either side absorbs client clock skew.
   const noTarget = `toUUID(${sqlString(NO_TARGET_SESSION_ID)})`;
   const distance = `abs(dateDiff('second',w.active_from,a.ts))`;
+  const batch =
+    "SELECT * FROM api_ro.audit_base WHERE audit_id IN {audit_ids:Array(UUID)}";
+  const windowSessions = `(SELECT session_id FROM ${projection}
+ WHERE installation_id IN (SELECT installation_id FROM (${batch}))
+   AND last_activity_at>=(SELECT min(ts) FROM (${batch}))-INTERVAL ${String(attributedReadRule.windowHours + 24)} HOUR
+   AND started_at<=(SELECT max(ts) FROM (${batch}))+INTERVAL ${String(attributedReadRule.observationAfterSeconds)} SECOND+INTERVAL 24 HOUR)`;
   add(
     "attributed_reads",
     `SELECT a.audit_id AS audit_id,argMin(w.session_id,${distance}) AS session_id,a.ts AS read_at,a.action AS action,if(a.action='get',${auditTarget("session_id")},${noTarget}) AS target_session_id,a.user_id AS reader_user_id,a.user_email AS reader_email,argMin(s.harness,${distance}) AS reader_harness
- FROM api_ro.audit_base a
- JOIN (SELECT h.installation_id AS installation_id,h.api_key_id AS api_key_id,min(h.ts) AS first_ts FROM api_ro.audit_base h WHERE ${handshakeSql("h")} GROUP BY h.installation_id,h.api_key_id) k ON k.installation_id=a.installation_id AND k.api_key_id=a.api_key_id
- JOIN api_ro.metrics_active_windows w ON w.installation_id=a.installation_id AND a.ts>=w.active_from-INTERVAL ${String(attributedReadRule.observationAfterSeconds)} SECOND AND a.ts<w.active_to
+ FROM (${batch}) a
+ JOIN (SELECT h.installation_id AS installation_id,h.api_key_id AS api_key_id,min(h.ts) AS first_ts FROM api_ro.audit_base h WHERE ${handshakeSql("h")} AND h.installation_id IN (SELECT installation_id FROM (${batch})) GROUP BY h.installation_id,h.api_key_id) k ON k.installation_id=a.installation_id AND k.api_key_id=a.api_key_id
+ JOIN (${activeWindowsSql(windowSessions)}) w ON w.installation_id=a.installation_id AND a.ts>=w.active_from-INTERVAL ${String(attributedReadRule.observationAfterSeconds)} SECOND AND a.ts<w.active_to
  JOIN ${projection} s ON s.session_id=w.session_id
  WHERE ${attributedReadSql("a")} AND a.ts>=k.first_ts
  GROUP BY a.audit_id,a.ts,a.action,target_session_id,a.user_id,a.user_email`,

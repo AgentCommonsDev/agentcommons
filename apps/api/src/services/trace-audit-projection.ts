@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@agentcommons/db";
 import {
+  attributedReadRule,
   isAttributableRead,
   SESSION_READS_BACKFILL,
   type TraceAudit,
@@ -27,8 +28,9 @@ const attributedReadSchema = z.object({
   reader_email: z.string().nullable(),
   reader_harness: z.string().min(1),
 });
+/** The attributions of the audit rows `ids` names; the view derives windows for them alone (ADR 0099). */
 const ATTRIBUTED_READS_SQL =
-  "SELECT audit_id,session_id,read_at,action,target_session_id,reader_user_id,reader_email,reader_harness FROM api_ro.attributed_reads";
+  "SELECT audit_id,session_id,read_at,action,target_session_id,reader_user_id,reader_email,reader_harness FROM api_ro.attributed_reads(audit_ids={ids:Array(UUID)})";
 
 /** PostgreSQL owns audit history; this outbox maintains its bounded analytics projection. */
 export class TraceAuditProjectionService {
@@ -145,13 +147,10 @@ export class TraceAuditProjectionService {
     return attributed;
   }
 
-  /**
-   * Copies `api_ro.attributed_reads` for one organization into `session_reads`: every row
-   * when `auditIds` is null (backfill), else the rows of those audit events (flush).
-   */
+  /** Copies the attributions of one organization's audit events `auditIds` into `session_reads`. */
   private async copyAttributedReads(
     organizationId: string,
-    auditIds: readonly string[] | null,
+    auditIds: readonly string[],
   ): Promise<number> {
     const reads = await this.dependencies.readers.read(
       workerCaller(organizationId),
@@ -159,14 +158,7 @@ export class TraceAuditProjectionService {
         z
           .array(attributedReadSchema)
           .parse(
-            (
-              await client.query(
-                auditIds === null
-                  ? ATTRIBUTED_READS_SQL
-                  : `${ATTRIBUTED_READS_SQL} WHERE audit_id IN {ids:Array(UUID)}`,
-                auditIds === null ? {} : { ids: auditIds },
-              )
-            ).rows,
+            (await client.query(ATTRIBUTED_READS_SQL, { ids: auditIds })).rows,
           ),
     );
     await this.dependencies.traces.appendSessionReads(
@@ -179,8 +171,10 @@ export class TraceAuditProjectionService {
    * Derives `session_reads` once per attribution rule from the retained audit history
    * (ADR 0060): each organization's stored rows are cleared and written again under the
    * current `attributed_reads`, so a rule change corrects what an earlier rule credited;
-   * flushes keep the table current afterwards. Clearing and the rows are idempotent, so a
-   * run that fails part-way simply repeats at the next maintenance tick.
+   * flushes keep the table current afterwards. The history is attributed a flush-sized page
+   * of attributable audit events at a time, the same bounded read a flush makes (ADR 0099).
+   * Clearing and the rows are idempotent, so a run that fails part-way simply repeats at the
+   * next maintenance tick.
    */
   async backfill(): Promise<void> {
     const { prisma, traces, audit } = this.dependencies;
@@ -198,7 +192,32 @@ export class TraceAuditProjectionService {
       if (!page.length) break;
       for (const organization of page) {
         await traces.clearSessionReads(organization.id);
-        attributed += await this.copyAttributedReads(organization.id, null);
+        let read: string | undefined;
+        for (;;) {
+          const events = await prisma.auditEvent.findMany({
+            where: {
+              organizationId: organization.id,
+              installationId: { not: null },
+              authMethod: attributedReadRule.authMethod,
+              transport: { in: [...attributedReadRule.transports] },
+              action: { in: [...attributedReadRule.actions] },
+              statusCode: {
+                gte: attributedReadRule.status.min,
+                lte: attributedReadRule.status.max,
+              },
+              ...(read ? { id: { gt: read } } : {}),
+            },
+            orderBy: { id: "asc" },
+            take: AUDIT_PROJECTION_BATCH,
+            select: { id: true },
+          });
+          if (!events.length) break;
+          attributed += await this.copyAttributedReads(
+            organization.id,
+            events.map((event) => event.id),
+          );
+          read = events.at(-1)?.id;
+        }
         organizations += 1;
       }
       after = page.at(-1)?.id;

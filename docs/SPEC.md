@@ -2858,6 +2858,13 @@ flags and memory-assisted attribution aggregate those rows. An edge therefore ap
 the projection flushes, and a window is judged from the receipts known at that time. A
 backfill named for the rule (`session_reads_v2`) clears each organization's rows and
 derives them again from retained audit history once, then records its completion.
+The attribution relation is parameterized by the audit ids it credits
+(`attributed_reads(audit_ids=…)`, ADR 0099) and derives windows for those reads alone: from
+the receipts of sessions on a read's installation that were active within a day of the
+window that could admit it (six hours before the earliest read to ten minutes after the
+latest). A flush therefore reads in proportion to its batch's installations and time
+span, never to the organization's receipt history, and the backfill attributes history a
+flush-sized page of attributable audit events at a time through the same relation.
 Native row policies on the table require the caller's organization, audit retention, and a
 published, unpurged, caller-visible source and target, so both reading and read sessions
 must be caller-visible and nonpurged. Only
