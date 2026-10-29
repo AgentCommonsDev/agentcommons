@@ -20,7 +20,7 @@
 <p align="center">
   Built internally at <a href="https://goodhartlabs.com/">Goodhart Labs</a>, an arm of
   <a href="https://zeropath.com">ZeroPath</a>, to make our own coding agents more productive
-  and cut their spend. Source at <a href="https://github.com/Goodhart-Labs">github.com/Goodhart-Labs</a>.
+  and cut their spend.
 </p>
 
 AgentCommons records every Claude Code, Codex, Gemini CLI and pi session on your team's
