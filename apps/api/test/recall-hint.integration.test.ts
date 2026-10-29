@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +31,13 @@ const GIT = {
   head: null,
 };
 const REPO = "github.com/acme/widgets";
+/** A real checkout with `origin`: the shim names the repository from its `.git/config` (§6.2). */
+function checkout(remoteUrl: string): typeof GIT {
+  const root = mkdtempSync(join(tmpdir(), "agentcommons-recall-api-repo-"));
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["remote", "add", "origin", remoteUrl], { cwd: root });
+  return { ...GIT, root, remoteUrl };
+}
 async function ingest(key: string, git: typeof GIT | null): Promise<void> {
   const response = await app.inject({
     method: "POST",
@@ -78,7 +86,9 @@ it("the uploader's refresh caches the caller-visible session count of the sessio
     installationId: randomUUID(),
     node: process.execPath,
   });
-  expect(await refreshRecallHint(directory, config, GIT)).toBe("refreshed");
+  expect(
+    await refreshRecallHint(directory, config, checkout(GIT.remoteUrl)),
+  ).toBe("refreshed");
   // The cache carries the count and the newest root sessions the same key can list (§6.2).
   const cached = z
     .looseObject({
@@ -105,7 +115,7 @@ it("the uploader's refresh caches the caller-visible session count of the sessio
     }),
   ).toBe(1);
   // A repository nobody indexed caches zero, so the hook stays silent there.
-  const unknown = { ...GIT, remoteUrl: "git@github.com:acme/empty.git" };
+  const unknown = checkout("git@github.com:acme/empty.git");
   expect(await refreshRecallHint(directory, config, unknown)).toBe("refreshed");
   expect(
     JSON.parse(

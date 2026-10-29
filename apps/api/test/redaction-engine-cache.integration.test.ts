@@ -399,23 +399,43 @@ it("stops a rescan whose key is revoked before an unchanged session advances, le
   } finally {
     revoke.mockRestore();
   }
+  // The failed checkpoint leaves the run's empty rescan marker queued; the next projection
+  // of the session (a queued job or maintenance's recovery, whichever comes first) cancels
+  // it at reservation. Drive that projection so the assertions read the settled session.
+  await vi.waitFor(
+    async () => {
+      await services.projection.process(organizationId, sessionId);
+      expect(
+        await database.prisma.traceOutbox.count({
+          where: { organizationId, sessionId },
+        }),
+      ).toBe(0);
+    },
+    { timeout: 10_000, interval: 200 },
+  );
   const after = await database.prisma.traceSessionControl.findUniqueOrThrow({
     where: { organizationId_id: { organizationId, id: sessionId } },
   });
-  // Not advanced, not rewritten: the revoked run left the session as it was.
-  expect(after.publishedRevision).toBe(before.publishedRevision);
+  // Not rewritten: the cancellation steps the published revision over the marker, which
+  // holds no rows, so the session reads exactly as before at the same generation.
+  expect(after.publishedRevision).toBe(before.publishedRevision + 1n);
+  expect(after.publishedRevision).toBe(after.acceptedRevision);
   expect(after.redactionGeneration).toBe(before.redactionGeneration);
+  expect(after.projectionState).toBe("published");
   expect(after.projectionLease).toBeNull();
-  expect(
-    await database.prisma.auditEvent.count({
+  const outcomes = async (statusCode: number) =>
+    database.prisma.auditEvent.count({
       where: {
         organizationId,
-        action: "redaction.rescan.session",
+        action: {
+          in: ["redaction.rescan.session", "redaction.rescan.cancelled"],
+        },
         resourceIds: { has: sessionId },
-        statusCode: 200,
+        statusCode,
       },
-    }),
-  ).toBe(0);
+    });
+  expect(await outcomes(200)).toBe(0);
+  expect(await outcomes(403)).toBe(1);
   expect((await services.header(organizationId, sessionId)).title).toBe(
     "revoked key session",
   );
