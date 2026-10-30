@@ -46,6 +46,7 @@ it("bootstraps the control plane on a TLS-only PostgreSQL owned by a non-superus
       username: "ac_trace_writer",
       password: "native-trace-writer-test-password",
       readerSecret: "native-reader-secret-long-enough-for-tests-only",
+      readerMemoryMb: 256,
       accessUsername: "ac_trace_access",
       accessPassword: "native-trace-access-test-password",
     };

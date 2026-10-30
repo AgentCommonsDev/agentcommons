@@ -100,7 +100,7 @@ export function traceReadFailure(error: unknown): ServiceError | null {
     if (error.code === "241")
       return retryable(
         "READ_MEMORY_LIMIT",
-        "The read exceeded the server's 256 MiB memory limit. Narrow the range, time window or filters and try again.",
+        "The read exceeded the server's per-query memory limit. Narrow the range, time window or filters and try again.",
         error,
       );
     if (error.code === "396")

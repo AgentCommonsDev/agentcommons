@@ -162,7 +162,8 @@ docs              SPEC.md, adr/, reviews/
 
 ## Read-path performance rules
 
-Reads run as ClickHouse reader principals with a 5 s time limit, 2 threads and 256 MiB, while
+Reads run as ClickHouse reader principals with a 5 s time limit, 2 threads and 256 MiB (the
+`CLICKHOUSE_READER_MEMORY_MB` default; measure against the default, not a larger host), while
 holding the organization's publication fence. Measured on the hosted instance, the failures users
 saw came from a class of query shapes, not one query. Every read path follows these rules:
 

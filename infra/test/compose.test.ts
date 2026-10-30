@@ -161,7 +161,7 @@ describe("Compose configuration", () => {
       /^ENV .*AGENTCOMMONS_VERSION=\$AGENTCOMMONS_VERSION/m,
     );
   });
-  // @req R-INF-07
+  // @req R-INF-07 @req R-INF-17
   it("terminates TLS with Caddy in front of the self-host API and trusts only the Compose network as a proxy", () => {
     const services = compose([
       "docker-compose.yml",
@@ -248,6 +248,15 @@ describe("Compose configuration", () => {
       deploy: { resources: { limits: { memory: 3.5 * 1024 ** 3 } } },
       restart: "unless-stopped",
     });
+    // A larger host sizes the ClickHouse container from its environment (ADR 0100).
+    expect(
+      limits.parse(
+        compose(
+          ["docker-compose.yml", "docker-compose.caddy.yml"],
+          "\nCLICKHOUSE_MEMORY_LIMIT=10G\n",
+        ).clickhouse,
+      ).deploy.resources.limits.memory,
+    ).toBe(10 * 1024 ** 3);
     expect(limits.parse(services.db)).toMatchObject({
       deploy: { resources: { limits: { memory: 1024 ** 3 } } },
       restart: "unless-stopped",
@@ -291,8 +300,10 @@ describe("Compose configuration", () => {
       join(repository, "infra", "compose", "clickhouse-server.xml"),
       "utf8",
     );
+    // The server ceiling follows the container's memory limit, not a fixed size (ADR 0100).
+    expect(server).not.toContain("<max_server_memory_usage>");
     expect(server).toContain(
-      "<max_server_memory_usage>3221225472</max_server_memory_usage>",
+      "<max_server_memory_usage_to_ram_ratio>0.88</max_server_memory_usage_to_ram_ratio>",
     );
     expect(server).toContain(
       "<max_concurrent_queries>32</max_concurrent_queries>",

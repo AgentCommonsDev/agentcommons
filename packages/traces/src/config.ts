@@ -10,6 +10,11 @@ export const clickHouseConfigSchema = z.object({
   readerSecret: z.string().min(32),
   accessUsername: z.string().min(1),
   accessPassword: z.string().min(1),
+  /**
+   * Memory one reader query may use, in MiB (§7.5, ADR 0100). The default fits the smallest
+   * supported host; a deployment sizes it with its ClickHouse container.
+   */
+  readerMemoryMb: z.coerce.number().int().min(64).max(65536).default(256),
 });
 export type ClickHouseConfig = z.infer<typeof clickHouseConfigSchema>;
 export interface TraceMigrationConfig {
@@ -33,6 +38,7 @@ export const clickHouseEnvironmentKeys = {
   readerSecret: "CLICKHOUSE_READER_SECRET",
   accessUsername: "CLICKHOUSE_ACCESS_USER",
   accessPassword: "CLICKHOUSE_ACCESS_PASSWORD",
+  readerMemoryMb: "CLICKHOUSE_READER_MEMORY_MB",
 } as const satisfies Record<keyof ClickHouseConfig, string>;
 
 /** Shared runtime/migration environment boundary; no fallback database or credentials. */

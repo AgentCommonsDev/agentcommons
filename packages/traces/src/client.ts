@@ -102,11 +102,13 @@ export function tracePrincipal(
 }
 /**
  * Per-query limits of every reader principal. `max_execution_time=5` is the agent-facing
- * five-second limit (§7.5); the settings are applied when a principal is created and
- * re-applied to principals an earlier release created, so a change here reaches them.
+ * five-second limit and `max_memory_usage` the deployment's reader memory (§7.5, ADR 0100);
+ * the settings are applied when a principal is created and re-applied to principals an
+ * earlier release or configuration created, so a change here reaches them.
  */
-const READER_SETTINGS =
-  "readonly=1, log_queries=0, cancel_http_readonly_queries_on_client_close=1, max_execution_time=5, max_threads=2, max_block_size=8192, enable_join_runtime_filters=0, enable_materialized_cte=1, max_memory_usage=268435456, max_result_bytes=33554432, result_overflow_mode='throw', date_time_output_format='iso', join_use_nulls=1, output_format_json_quote_64bit_integers=1, output_format_json_quote_decimals=1";
+export function readerSettings(memoryMb: number): string {
+  return `readonly=1, log_queries=0, cancel_http_readonly_queries_on_client_close=1, max_execution_time=5, max_threads=2, max_block_size=8192, enable_join_runtime_filters=0, enable_materialized_cte=1, max_memory_usage=${String(memoryMb * 1024 * 1024)}, max_result_bytes=33554432, result_overflow_mode='throw', date_time_output_format='iso', join_use_nulls=1, output_format_json_quote_64bit_integers=1, output_format_json_quote_decimals=1`;
+}
 /**
  * How long one reader callback may wait on ClickHouse. It exceeds the server's
  * `max_execution_time` so the server's own time-limit error (code 159) reaches the caller
@@ -178,12 +180,12 @@ export class TraceReaders {
     const pending = (async () => {
       const user = sqlIdentifier(identity.username);
       await this.access.command({
-        query: `CREATE USER IF NOT EXISTS ${user} IDENTIFIED WITH sha256_password BY ${sqlString(identity.password)} SETTINGS ${READER_SETTINGS}`,
+        query: `CREATE USER IF NOT EXISTS ${user} IDENTIFIED WITH sha256_password BY ${sqlString(identity.password)} SETTINGS ${readerSettings(this.config.readerMemoryMb)}`,
       });
       // An existing principal keeps the limits of the release that created it until they
       // are re-applied; ALTER USER … SETTINGS replaces its whole settings list.
       await this.access.command({
-        query: `ALTER USER ${user} SETTINGS ${READER_SETTINGS}`,
+        query: `ALTER USER ${user} SETTINGS ${readerSettings(this.config.readerMemoryMb)}`,
       });
       await this.access.command({
         query: `GRANT ${sqlIdentifier(`${this.config.database}_reader${this.features.embeddings ? "_vector" : ""}`)} TO ${user}`,
