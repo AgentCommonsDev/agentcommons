@@ -457,6 +457,7 @@ export const adminCopy = {
       "held-newer-running": "Newer release running",
       "held-unknown-age": "Release age unknown",
       "pull-failed": "Pull failed",
+      unverified: "Signature check failed",
       failed: "Start failed",
       "rolled-back": "Rolled back",
       "rollback-failed": "Rollback failed",

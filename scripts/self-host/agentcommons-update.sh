@@ -20,6 +20,11 @@
 # than swapping blindly. AGENTCOMMONS_IMAGE set to a sha- tag or a digest is a pin and is
 # installed as asked, older or not.
 #
+# Whatever the tag, nothing is installed without a Sigstore signature by the release workflow
+# (ADR 0102): an image that fails `cosign verify` is held (last_result=unverified, counted as
+# a failure) and checked again on the next run, so a registry token or a man in the middle
+# cannot get code onto the host.
+#
 # It reads .env as the last release left it and never renders or edits it, so an update can
 # change the image and nothing else: the database the stack runs on (ADR 0063), the Compose
 # file list and every other setting stay exactly as applied. Every run records its outcome in
@@ -161,6 +166,11 @@ else
     exit 0
     ;;
   esac
+fi
+if ! verify_signature "$image"; then
+  record_outcome unverified "last_image=$after"
+  echo "Holding: $image ($after) carries no valid release signature; it is checked again on the next run." >&2
+  exit 1
 fi
 [ -z "$before" ] || docker tag "$before" "$previous_tag"
 record_state "last_result=updating" "previous_image=$before" "last_image=$after"

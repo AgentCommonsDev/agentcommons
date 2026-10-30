@@ -1,4 +1,4 @@
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -6,6 +6,19 @@ import { fileURLToPath } from "node:url";
 import { manifestStamp } from "./manifest-stamp.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
+// A fork or the live canary signs with its own key (ADR 0102): comma-separated SPKI keys in
+// AGENTCOMMONS_HOOK_RELEASE_KEYS replace src/release-keys.ts in this bundle only. The
+// release image build never sets it.
+const releaseKeys = process.env.AGENTCOMMONS_HOOK_RELEASE_KEYS?.split(",");
+const releaseKeysPlugin = (keys: readonly string[]): Plugin => ({
+  name: "release-keys",
+  setup(builder) {
+    builder.onLoad({ filter: /[\\/]src[\\/]release-keys\.ts$/ }, () => ({
+      contents: `export const RELEASE_KEYS = ${JSON.stringify(keys)};`,
+      loader: "ts",
+    }));
+  },
+});
 await mkdir(resolve(root, "dist"), { recursive: true });
 await build({
   entryPoints: [resolve(root, "src/entry.ts")],
@@ -16,6 +29,7 @@ await build({
   format: "cjs",
   minify: true,
   legalComments: "none",
+  plugins: releaseKeys ? [releaseKeysPlugin(releaseKeys)] : [],
 });
 await build({
   entryPoints: [resolve(root, "../pi-extension/src/index.ts")],
@@ -63,9 +77,7 @@ await writeFile(
     url: `/hook/${version}/hook.js`,
     extensionSha256: createHash("sha256").update(extension).digest("hex"),
     extensionUrl: `/hook/${version}/pi-extension.mjs`,
-    // Gated OFF by default (ADR 0075 rollout): today's five-field manifest unless
-    // AGENTCOMMONS_MANIFEST_STAMP=1, so strict clients keep parsing until they heal onto
-    // the loose schema.
+    // The build stamp a signed release must carry (ADR 0075, ADR 0102).
     ...manifestStamp(process.env, root),
   }),
 );

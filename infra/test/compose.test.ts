@@ -161,7 +161,7 @@ describe("Compose configuration", () => {
       /^ENV .*AGENTCOMMONS_VERSION=\$AGENTCOMMONS_VERSION/m,
     );
   });
-  // @req R-INF-07 @req R-INF-17
+  // @req R-INF-07 @req R-INF-17 @req R-INF-18
   it("terminates TLS with Caddy in front of the self-host API and trusts only the Compose network as a proxy", () => {
     const services = compose([
       "docker-compose.yml",
@@ -338,11 +338,26 @@ describe("Compose configuration", () => {
       "utf8",
     );
     expect(caddyfile).toContain("{$PUBLIC_URL} {");
-    expect(caddyfile).toContain("http:// {");
     // One upstream definition, imported by both sites.
     expect(caddyfile.match(/reverse_proxy api:3000/g)).toHaveLength(1);
     expect(caddyfile).toContain("(upstream) {");
-    expect(caddyfile.match(/^\timport upstream$/gm)).toHaveLength(2);
+    expect(caddyfile.match(/^\t+import upstream$/gm)).toHaveLength(2);
+    // Plain HTTP reaches the API for the health and readiness probes only and redirects
+    // every other request to the public URL (ADR 0103), so no key, transcript, MCP call
+    // or hook manifest crosses the network unencrypted.
+    const plain = /^http:\/\/ \{\n([\s\S]*?)^\}$/m.exec(caddyfile)?.[1];
+    expect(plain).toBe(
+      [
+        "\t@probe path /health /ready",
+        "\thandle @probe {",
+        "\t\timport upstream",
+        "\t}",
+        "\thandle {",
+        "\t\tredir {$PUBLIC_URL}{uri} 308",
+        "\t}",
+        "",
+      ].join("\n"),
+    );
     // Forwarded headers are trusted only from configured upstream proxies (empty by
     // default); the API always receives the real client address.
     expect(caddyfile).toContain(

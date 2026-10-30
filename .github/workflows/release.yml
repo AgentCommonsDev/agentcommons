@@ -1,7 +1,9 @@
 name: Release
 # Publishes one image per green main commit to the GitHub Container Registry. Hosts pull it
-# themselves (scripts/self-host/agentcommons-update.sh); nothing here reaches any cloud
-# account, and the only credential is the workflow's own token.
+# themselves (scripts/self-host/agentcommons-update.sh) after checking its Sigstore
+# signature; nothing here reaches any cloud account. The credentials are the workflow's own
+# token and the hook signing key, a secret of the `release` environment (ADR 0102), which
+# GitHub hands only to jobs that environment's deployment rules admit.
 on:
   workflow_run:
     workflows: [CI]
@@ -23,7 +25,19 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    environment: release
     steps:
+      # Installed shims update only from a signed hook manifest (ADR 0102): an unsigned
+      # release would strand every installation on its current bundle, so it fails here,
+      # before anything is pushed.
+      - name: Require the hook signing key
+        env:
+          HOOK_SIGNING_KEY: ${{ secrets.HOOK_SIGNING_KEY }}
+        run: |
+          [ -n "$HOOK_SIGNING_KEY" ] || {
+            echo "::error::The release environment has no HOOK_SIGNING_KEY secret (ADR 0102)."
+            exit 1
+          }
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -58,8 +72,14 @@ jobs:
             AGENTCOMMONS_VERSION=${{ steps.release.outputs.version }}
             AGENTCOMMONS_REVISION=${{ github.event.workflow_run.head_sha || github.sha }}
             AGENTCOMMONS_CREATED=${{ steps.release.outputs.created }}
+          # Mounted for the Dockerfile's signing step only; it never reaches a layer.
+          secrets: |
+            hook_signing_key=${{ secrets.HOOK_SIGNING_KEY }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      # Keyless signing: the certificate binds the image to this workflow and commit.
+      # Keyless signing: the certificate binds the image to this workflow and commit. The
+      # version matches the verifier the host updater runs (scripts/self-host/lib.sh).
       - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.6.5
       - run: cosign sign --yes "${{ steps.release.outputs.image }}@${{ steps.build.outputs.digest }}"

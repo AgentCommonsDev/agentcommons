@@ -144,7 +144,7 @@ describe("MCP registration", () => {
   // @req R-INST-02 @req R-CAP-17
   it("install writes literal entries and a re-run heals a stale placeholder entry from an older bundle", () => {
     const { directory, configHome, config } = home();
-    const options = { configHome, noShellRc: true };
+    const options = { configHome };
     install(directory, config, options);
     const gemini = entry(configHome, "gemini");
     expect(gemini.entry).toEqual({

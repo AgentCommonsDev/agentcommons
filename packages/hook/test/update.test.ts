@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -14,12 +14,33 @@ import {
   ingestEnvelopeSchema,
   type HookManifest,
 } from "@agentcommons/core/schemas/ingest";
+import { loadConfig } from "../src/config.js";
 import { hash } from "../src/files.js";
 import { recordHook } from "../src/hook.js";
 import { configure } from "../src/install.js";
 import { loadState, statePath } from "../src/state.js";
 import { recordConfigured, selfUpdate } from "../src/update.js";
 import { upload } from "../src/upload.js";
+
+/** The release signer these tests stand in for; the bundle under test pins its public key. */
+const releaseKey = await vi.hoisted(async () =>
+  (await import("node:crypto")).generateKeyPairSync("ed25519"),
+);
+vi.mock("../src/release-keys.js", () => ({
+  RELEASE_KEYS: [
+    releaseKey.publicKey
+      .export({ format: "der", type: "spki" })
+      .toString("base64"),
+  ],
+}));
+/** A key the bundle does not pin: what a server, a registry token or a network path could sign with. */
+const strangerKey = generateKeyPairSync("ed25519");
+const signatureFile = (text: string, key = releaseKey): string =>
+  JSON.stringify({
+    signatures: [
+      sign(null, Buffer.from(text), key.privateKey).toString("base64"),
+    ],
+  });
 
 const OLD_BUNDLE = "process.stdout.write('old bundle');\n";
 const OLD_EXTENSION = "export const marker = 'old';\n";
@@ -33,8 +54,21 @@ if (process.argv[2] === "install")
 `;
 const NEW_EXTENSION = "export const marker = 'new';\n";
 const BROKEN_BUNDLE = "process.exit(1);\n";
+/** Every signed release carries a build stamp (ADR 0102); tests of age override it. */
+const RELEASED_AT = "2026-10-29T00:00:00.000Z";
 
-function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
+/**
+ * How the fixture server signs the manifest it serves: with the pinned release key (a real
+ * release), with a key the bundle does not pin, not at all (no signature file), or with a
+ * release signature over other bytes than the ones served.
+ */
+type Signing = "release" | "stranger" | "absent" | "other-bytes";
+
+function fixture(
+  overrides: Partial<HookManifest> = {},
+  bundle = NEW_BUNDLE,
+  signing: Signing = "release",
+) {
   const directory = mkdtempSync(join(tmpdir(), "agentcommons-update-"));
   const executable = join(directory, "hook.js");
   writeFileSync(executable, OLD_BUNDLE, { mode: 0o600 });
@@ -55,8 +89,8 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
     key: "test",
     organizationId: "019939c0-0000-7000-8000-000000000001",
     credentialHash: hash("test"),
-    // A normal install writes the shell exports; reconcile re-runs with the same flags.
-    installOptions: { configHome, noShellRc: false },
+    // Reconcile re-runs install with the flags the installer recorded.
+    installOptions: { configHome },
   });
   // As after `hook.js install`: the wiring record names the installed (old) bundle.
   recordConfigured(directory, executable, ["claude"]);
@@ -68,8 +102,17 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
     url: "/hook/0.1.0-test/hook.js",
     extensionSha256: hash(NEW_EXTENSION),
     extensionUrl: "/hook/0.1.0-test/pi-extension.mjs",
+    builtAt: RELEASED_AT,
     ...overrides,
   };
+  // Served byte for byte as signed: the signature covers the exact text.
+  const manifestText = JSON.stringify(manifest);
+  const signature: string | null = {
+    release: signatureFile(manifestText),
+    stranger: signatureFile(manifestText, strangerKey),
+    absent: null,
+    "other-bytes": signatureFile(`${manifestText} `),
+  }[signing];
   const requests: string[] = [];
   const uploaded: string[] = [];
   /** What the server answers an ingest POST with; a 5xx keeps the batch pending. */
@@ -87,7 +130,13 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
       return Promise.resolve(new Response(null, { status: ingestStatus }));
     }
     if (url.pathname === "/hook/manifest.json")
-      return Promise.resolve(Response.json(manifest));
+      return Promise.resolve(new Response(manifestText));
+    if (url.pathname === "/hook/manifest.json.sig")
+      return Promise.resolve(
+        signature === null
+          ? new Response(null, { status: 404 })
+          : new Response(signature),
+      );
     if (url.pathname === "/hook/0.1.0-test/hook.js")
       return Promise.resolve(new Response(bundle));
     if (url.pathname === "/hook/0.1.0-test/pi-extension.mjs")
@@ -220,12 +269,59 @@ describe("hook self-update", () => {
     expect(f.requests).not.toContain("GET /hook/0.1.0-test/hook.js");
     expect(f.log()).not.toContain("Updated");
   });
+  // @req R-CAP-29
+  it("acts on a manifest only when a pinned release key signed its exact bytes, before any download, age check or self-test", async () => {
+    for (const [signing, reason] of [
+      ["absent", "The hook manifest signature returned HTTP 404."],
+      ["stranger", "The hook manifest is not signed by a release key."],
+      ["other-bytes", "The hook manifest is not signed by a release key."],
+    ] as const) {
+      // An older stamp too: an unsigned manifest must not even reach the age guard.
+      const f = fixture(
+        { builtAt: "2020-01-01T00:00:00.000Z" },
+        NEW_BUNDLE,
+        signing,
+      );
+      seedInstalled(f.directory, hash(OLD_BUNDLE), RELEASED_AT);
+      expect(
+        await selfUpdate(f.directory, f.executable, f.config, {
+          fetch: f.fetcher,
+        }),
+        signing,
+      ).toBe("skipped");
+      expect(f.log(), signing).toContain(`Hook update skipped: ${reason}`);
+      expect(f.log()).not.toContain("older hook build");
+      expect(readFileSync(f.executable, "utf8")).toBe(OLD_BUNDLE);
+      expect(readFileSync(join(f.directory, "pi-extension.mjs"), "utf8")).toBe(
+        OLD_EXTENSION,
+      );
+      expect(f.requests).toEqual([
+        "GET /hook/manifest.json",
+        "GET /hook/manifest.json.sig",
+      ]);
+      expect(staged(f.directory)).toEqual([]);
+    }
+  });
+  // @req R-CAP-29
+  it("needs no signature when the served digests already name the installed files", async () => {
+    const f = fixture(
+      { sha256: hash(OLD_BUNDLE), extensionSha256: hash(OLD_EXTENSION) },
+      NEW_BUNDLE,
+      "absent",
+    );
+    expect(
+      await selfUpdate(f.directory, f.executable, f.config, {
+        fetch: f.fetcher,
+      }),
+    ).toBe("current");
+    expect(f.requests).toEqual(["GET /hook/manifest.json"]);
+    expect(f.log()).toBe("");
+  });
   // @req R-CAP-17
-  it("re-runs the bundle's install with the recorded flags after a swap and when a new harness appears, re-applying the shell exports a normal install wrote, and converges hourly after a failure", async () => {
+  it("re-runs the bundle's install with the recorded flags after a swap and when a new harness appears, and converges hourly after a failure", async () => {
     const f = fixture();
     await f.run();
-    // The swap ran the new bundle's install once with the recorded config home; a normal
-    // install recorded no --no-shell-rc, so reconcile re-applies the (idempotent) exports.
+    // The swap ran the new bundle's install once with the recorded config home.
     expect(f.installRuns()).toEqual([`--config-home ${f.configHome}`]);
     expect(f.log()).toContain("Configured harnesses claude with bundle");
     await f.run();
@@ -240,18 +336,23 @@ describe("hook self-update", () => {
     await f.run();
     expect(f.installRuns(), "steady state").toHaveLength(2);
   });
-  // @req R-CAP-17
-  it("preserves --no-shell-rc on reconcile for a canary install that suppressed the exports", async () => {
+  // @req R-CAP-17 @req R-INST-10
+  it("still reads a configuration an older installer recorded with the retired --no-shell-rc, and reconciles with the config home alone", async () => {
     const f = fixture();
-    // A canary or test install recorded --no-shell-rc so it never edits the real shell;
-    // reconcile honors that and keeps suppressing the exports.
-    await f.run({}, randomUUID(), {
-      ...f.config,
-      installOptions: { configHome: f.configHome, noShellRc: true },
-    });
-    expect(f.installRuns()).toEqual([
-      `--config-home ${f.configHome} --no-shell-rc`,
-    ]);
+    const path = join(f.directory, "config.json");
+    const recorded = JSON.parse(readFileSync(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...recorded,
+        installOptions: { configHome: f.configHome, noShellRc: true },
+      }),
+    );
+    await f.run({}, randomUUID(), loadConfig(f.directory));
+    expect(f.installRuns()).toEqual([`--config-home ${f.configHome}`]);
   });
   // @req R-CAP-17
   it("never runs install for a directory that hook.js install did not set up", async () => {
@@ -547,8 +648,8 @@ describe("hook self-update never moves to an older build", () => {
     expect(readFileSync(f.executable, "utf8")).toBe(OLD_BUNDLE);
   });
   // @req R-CAP-27
-  it("falls back to the digest path when either stamp is unknown", async () => {
-    // Offered stamp present but no stamp recorded yet (a first upgrade): the digest decides.
+  it("updates on the digest when no stamp is recorded for the installed bundle yet", async () => {
+    // A first upgrade after a fresh install: nothing to compare the offered stamp with.
     const first = fixture({ builtAt: OLDER });
     expect(
       await selfUpdate(first.directory, first.executable, first.config, {
@@ -556,14 +657,19 @@ describe("hook self-update never moves to an older build", () => {
       }),
     ).toBe("updated");
     expect(readFileSync(first.executable, "utf8")).toBe(NEW_BUNDLE);
-    // A legacy field-less manifest against a recorded stamp: still the digest path.
-    const legacy = fixture();
-    seedInstalled(legacy.directory, hash(OLD_BUNDLE), INSTALLED_AT);
+  });
+  // @req R-CAP-27 @req R-CAP-29
+  it("refuses a signed manifest without a build stamp, which the age guard could not judge", async () => {
+    const unstamped = fixture({ builtAt: undefined });
     expect(
-      await selfUpdate(legacy.directory, legacy.executable, legacy.config, {
-        fetch: legacy.fetcher,
-      }),
-    ).toBe("updated");
-    expect(readFileSync(legacy.executable, "utf8")).toBe(NEW_BUNDLE);
+      await selfUpdate(
+        unstamped.directory,
+        unstamped.executable,
+        unstamped.config,
+        { fetch: unstamped.fetcher },
+      ),
+    ).toBe("skipped");
+    expect(readFileSync(unstamped.executable, "utf8")).toBe(OLD_BUNDLE);
+    expect(unstamped.requests).not.toContain("GET /hook/0.1.0-test/hook.js");
   });
 });

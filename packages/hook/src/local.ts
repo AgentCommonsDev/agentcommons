@@ -17,5 +17,5 @@ copyFileSync(
   resolve("dist/pi-extension.mjs"),
   join(directory, "pi-extension.mjs"),
 );
-install(directory, config, { noShellRc: true });
+install(directory, config);
 await doctor(directory, config);
