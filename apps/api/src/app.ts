@@ -23,7 +23,7 @@ import {
   registerRequestDecompression,
   INFLATED_LIMIT,
 } from "./routes/compression.js";
-import { createRateLimiter } from "./routes/rate-limit.js";
+import { createRateLimiter, type RateCategory } from "./routes/rate-limit.js";
 import { registerPublicApiRoutes } from "./routes/public.js";
 import { registerApiRoutes } from "./routes/api.js";
 import { domainEnrollmentEnabled } from "./auth/config.js";
@@ -51,6 +51,8 @@ export async function createApp(options: {
   artifactDirectory?: string;
   static?: boolean;
   loggerStream?: DestinationStream;
+  /** Per-minute maxima replacing the §9.4 budgets; only the browser fixture sets one. */
+  rateMaxima?: Partial<Record<RateCategory, number>>;
 }): Promise<FastifyInstance> {
   const { env, services } = options;
   const app = Fastify({
@@ -89,7 +91,7 @@ export async function createApp(options: {
     globalDecompression: false,
   });
   await registerApiReference(app);
-  const limit = await createRateLimiter(app);
+  const limit = await createRateLimiter(app, options.rateMaxima);
   app.addHook("onRequest", async (request, reply) => {
     const path = nativePath(request);
     const context = {

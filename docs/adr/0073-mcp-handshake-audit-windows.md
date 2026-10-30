@@ -58,7 +58,8 @@ proportion, and those rows are protocol plumbing, not operations anyone reads ba
    operation and always writes exactly one row for what it did (`search`, `get`, `sql`,
    ..., or `mcp.call` for a call that failed).
 2. **Identical handshakes are folded per window.** Identity is the API key, the client
-   program (`User-Agent`), the action, the method and the status. The first handshake of a
+   program (`User-Agent`), the key's installation (amended 2026-10-29), the action, the
+   method and the status. The first handshake of a
    window writes its row at once, exactly as before. Repeats inside the window are counted
    in the process and write nothing. The handshake that opens the next window carries the
    count in its detail: `repeats` and `repeats_since` (when the row that opened the previous
@@ -157,3 +158,21 @@ unsupported-method probe changes. Every genuine 4xx/5xx on real API routes, ever
 handshake folding of decision 2 are all unchanged. Expected effect: the ~1,800
 `request.failure` rows/hour from `GET /mcp` fall to zero, while a real Claude Code session's
 `POST` handshake still folds and its `tools/call` rows are still one each.
+
+## Amendment 2026-10-29: the key's installation is part of the identity
+
+ADR 0060 (amended 2026-09-12) credits a read to a session only once the same key has a
+successful `mcp.tools.list` row on the calling installation; that row is the handshake
+evidence. Decision 2 folded handshakes per key and `User-Agent` only, so when a key moved to
+another installation (its latest accepted receipt, the rule every audit row's
+`installation_id` follows) within a window of its last handshake, the new installation's
+`tools/list` was folded into the old window, no row named the new installation, and its
+reads were never credited: a key shared by two machines running the same harness lost the
+second machine's reuse until a later handshake happened to open a fresh window. Found when
+CI ran the reuse-count integration test again on 2026-10-29 with a fixture that lists tools
+on each installation, as a real harness does.
+
+The identity now also carries the caller's installation (resolved with the key at
+authentication, the same receipt rule as the audit row). A crash-looping client on one
+installation folds exactly as before; the first handshake of a key on another installation
+writes its row.

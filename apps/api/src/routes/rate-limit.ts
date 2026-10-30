@@ -26,12 +26,19 @@ const budgets = {
 export type RateCategory = keyof typeof budgets;
 const categories = Object.keys(budgets) as RateCategory[];
 
-export async function createRateLimiter(app: FastifyInstance) {
+/**
+ * `maxima` replaces a category's per-minute maximum. Deployments pass none; the browser
+ * fixture raises `read`, because it drives every spec through one owner's budget.
+ */
+export async function createRateLimiter(
+  app: FastifyInstance,
+  maxima: Partial<Record<RateCategory, number>> = {},
+) {
   await app.register(rateLimit, { global: false });
   const create = (category: RateCategory) => {
     const budget = budgets[category];
     return app.createRateLimit({
-      max: budget.max,
+      max: maxima[category] ?? budget.max,
       timeWindow: 60_000,
       keyGenerator: (request) =>
         [

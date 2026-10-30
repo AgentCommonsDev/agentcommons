@@ -8,6 +8,7 @@ import { workspaceOrigin } from "../playwright.shared";
 import {
   accessible,
   applyFilters,
+  clearFilters,
   expectNoHorizontalOverflow,
   fixture,
   signInAsOwner,
@@ -129,9 +130,11 @@ test("Redaction activity: counts, rescan runs with the sessions they changed, an
       )
       .toBe("completed");
     await messageRedacted(page, before, name);
-    // A session captured after the policy exists is redacted at capture.
+    // A session captured after the policy exists is redacted at capture. Its canary is
+    // longer than 32 characters in every project, so the masked preview reveals its head
+    // (ADR 0068) for the ledger assertion below.
     const after = await capture(request, state, [
-      `Captured later with CANARY_${stamp}_TWO inside.`,
+      `Captured later with CANARY_${stamp}_CAPTUREDAFTERPOLICY inside.`,
     ]);
     await messageRedacted(page, after, name);
 
@@ -303,10 +306,7 @@ test("Recent redactions: the policy chip and name search narrow the ledger, the 
     await expect(rows.first()).toContainText(name);
     await expectNoHorizontalOverflow(page);
     // Clearing the filters takes them out of the URL.
-    await hits
-      .getByRole("button", { name: copy.app.common.clear, exact: true })
-      .first()
-      .click();
+    await clearFilters(page, text.filterLabel);
     await expect(page).not.toHaveURL(/policy_id=/);
   } finally {
     const removed = await page.request.delete(
