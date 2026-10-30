@@ -1,5 +1,8 @@
 import { sqlIdentifier, sqlString } from "../client.js";
-import { MESSAGES_CURRENT_TABLE } from "../schema.js";
+import {
+  MESSAGES_CURRENT_TABLE,
+  messagesCurrentMetadataColumns,
+} from "../schema.js";
 import { traceScopeSql, traceView, type TraceViewDefinition } from "./base.js";
 
 /**
@@ -63,6 +66,9 @@ export function searchViews(database: string): TraceViewDefinition[] {
   const rank = `multiIf(role='USER',1.0,kind='TEXT',0.4,kind='TOOL_USE',0.2,0.1)
         * arrayCount(token -> has(tokens(${query}),token),tokens(${terms}))
         / (1 + log(1 + length(tokens(${terms}))))`;
+  // Every corpus relation returns the message identity and each field a search filter tests,
+  // so a search is filtered and ranked on the corpus alone (ADR 0098).
+  const metadata = `message_id,role,kind,${Object.keys(messagesCurrentMetadataColumns).join(",")}`;
   // Match through the text index over the corpus. `FINAL` resolves the latest published
   // revision of each message intrinsically (revision is the ReplacingMergeTree version and
   // is not in the sort key), so a previous edit that still contains the query cannot
@@ -71,10 +77,19 @@ export function searchViews(database: string): TraceViewDefinition[] {
   return [
     traceView(
       "search_messages",
-      `SELECT session_id,seq,${rank} AS rank
+      `SELECT session_id,seq,${rank} AS rank,${metadata}
       FROM ${corpus}
       WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted AND notEmpty(tokens(${query}))
         AND hasAllTokens(${terms},${query})`,
+    ),
+    // Every live corpus message with no text predicate: the candidates of a search without a
+    // query, the embedding path's searchable eligibility and the message side of
+    // session-list filters. Not in the SQL catalog.
+    traceView(
+      "search_corpus",
+      `SELECT session_id,seq,searchable,${metadata}
+      FROM ${corpus}
+      WHERE organization_id=${traceScopeSql.organization} AND NOT deleted`,
     ),
     // The relaxation fallback (ADR 0081): a session matches when its messages together carry
     // every query token, not one message alone, so a natural-language query whose words are
@@ -82,9 +97,11 @@ export function searchViews(database: string): TraceViewDefinition[] {
     // matcher above returns nothing, so a search that already works is untouched. Every
     // message carrying at least one query token is returned and ranked like a strict hit, so
     // the block assembly, per-session cap and highlighting are identical.
+    // The session's distinct matched tokens are kept per session, not per message, so the
+    // check holds memory proportional to sessions however many messages carry a token.
     traceView(
       "search_messages_session",
-      `SELECT session_id,seq,${rank} AS rank
+      `SELECT session_id,seq,${rank} AS rank,${metadata}
       FROM ${corpus}
       WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted AND notEmpty(tokens(${query}))
         AND hasAnyTokens(${terms},${query})
@@ -93,9 +110,9 @@ export function searchViews(database: string): TraceViewDefinition[] {
           WHERE organization_id=${traceScopeSql.organization} AND searchable AND NOT deleted
             AND hasAnyTokens(${terms},${query})
           GROUP BY session_id
-          HAVING length(arrayDistinct(arrayFlatten(groupArray(
+          HAVING length(groupUniqArrayArray(
             arrayFilter(token -> has(tokens(${terms}),token),tokens(${query}))
-          )))) = length(tokens(${query}))
+          )) = length(tokens(${query}))
         )`,
     ),
     traceView(

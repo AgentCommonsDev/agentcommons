@@ -97,6 +97,13 @@ const SINK_BATCH = 500;
  */
 const SUPERSEDED_CLEANUP_EVERY_REVISIONS = 10n;
 const SUPERSEDED_CLEANUP_ROWS = 1000;
+/**
+ * Sessions one search-corpus reconcile statement repairs, and statements per maintenance
+ * tick (ADR 0098): enough for the whole hosted corpus in one tick, and a bound if some rows
+ * cannot be repaired.
+ */
+const CORPUS_RECONCILE_SESSIONS = 200;
+const CORPUS_RECONCILE_STATEMENTS = 200;
 
 /**
  * Serializes publication of one session: the publication fence, then its control row.
@@ -813,6 +820,25 @@ export class TraceProjectionService {
       });
       return true;
     });
+  }
+  /**
+   * Copies the search corpus's metadata columns into the rows that lack them (ADR 0098), a
+   * bounded batch of sessions per statement until a batch comes back short. Maintenance runs
+   * it, so the historical corpus is filled after the release that added the columns, and so
+   * are rows an older release published while that release's migration ran.
+   */
+  async reconcileSearchCorpus(): Promise<void> {
+    for (
+      let statement = 0;
+      statement < CORPUS_RECONCILE_STATEMENTS;
+      statement += 1
+    )
+      if (
+        (await this.dependencies.repository.reconcileCurrentMetadata(
+          CORPUS_RECONCILE_SESSIONS,
+        )) < CORPUS_RECONCILE_SESSIONS
+      )
+        return;
   }
   /**
    * Advance the published-only search corpus for a committed publication (ADR 0092). Run after

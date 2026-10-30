@@ -24,6 +24,7 @@ import { z } from "zod";
 import {
   andSql,
   filterSql,
+  payloadSql,
   Parameters,
   sessionLinks,
 } from "../repositories/read-model.js";
@@ -74,9 +75,9 @@ export const searchAuditStructure = protocolObject(["input", "result"], {
   }),
 });
 /**
- * Sessions the one bounded attempt after a time limit searches (§7.5): the most recently
- * active ones matching the filters. With time-ordered session ids they are the newest
- * primary-key ranges, so the bound prunes both message scans instead of only the page.
+ * Sessions the one bounded attempt after a time or memory limit searches (§7.5): the most
+ * recently active ones matching the filters. With time-ordered session ids they are the
+ * newest primary-key ranges, so the bound prunes the corpus scan instead of only the page.
  */
 const PARTIAL_SEARCH_SESSIONS = 50;
 /**
@@ -89,13 +90,21 @@ const PARTIAL_SEARCH_SESSIONS = 50;
  * cursor consistent.
  */
 const TEAMMATE_RANK_BOOST = 1.15;
-const positionSchema = z.strictObject({
+/** A hit of a query, ordered by `(rank desc, session_id, seq)`. */
+const rankedPositionSchema = z.strictObject({
   strategy: z.enum(["lexical", "rrf"]),
   rank: z.number(),
   session_id: z.uuid(),
   seq: z.number().int(),
-  time: z.string(),
 });
+/** The anchor of a search without a query, ordered by `(time desc, session_id)`. */
+const browsePositionSchema = z.strictObject({
+  strategy: z.literal("browse"),
+  time: z.string(),
+  session_id: z.uuid(),
+  seq: z.number().int(),
+});
+const positionSchema = z.union([rankedPositionSchema, browsePositionSchema]);
 type Position = z.infer<typeof positionSchema>;
 const searchHeaderSchema = searchBlockSchema.omit({ messages: true });
 type SearchHeader = z.infer<typeof searchHeaderSchema>;
@@ -270,27 +279,37 @@ export class SearchService {
             const order = lexical
               ? "rank DESC, session_id, seq"
               : "time DESC, session_id, seq DESC";
-            // Eligible messages come from the lightest message relation the predicates
-            // allow; session predicates narrow them through one `session_details` scan
-            // only when the filters name a session field.
-            const eligible = `SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq,coalesce(m.timestamp,m.received_at) AS time
-            FROM api_ro.${plan.messageView} m
-            WHERE ${andSql([...plan.message, ...(sessionScope ? [sessionScope] : [])])} AND ${lexical ? "m.searchable" : "m.kind!='THINKING'"}`;
-            // The text scan is a hash-join side and reads the whole organization unless a
-            // WHERE on the parameterized view bounds it; a session set there reaches the
-            // base scan's primary-key condition (verified with EXPLAIN indexes=1).
-            // The relaxation fallback swaps in the session-level matcher (ADR 0081); the
-            // service runs it only after the strict matcher returns nothing.
-            const matcher = relaxed
-              ? "search_messages_session"
-              : "search_messages";
-            const textMatches = scopeParam
-              ? `(SELECT * FROM api_ro.${matcher}(q=${query}) WHERE session_id IN ${scopeParam})`
-              : `api_ro.${matcher}(q=${query})`;
-            const lexicalMatches = `SELECT e.*,l.rank FROM eligible e
-            JOIN ${textMatches} l USING(session_id,seq)`;
-            const candidates = vector
-              ? `WITH eligible AS MATERIALIZED (${eligible}), lexical_matches AS (${lexicalMatches}), lexical AS (
+            // Candidates come from the search corpus alone (ADR 0098), which carries every
+            // message field a filter tests: the text index's matches of a query, or every
+            // live message for a search without one. A search therefore reads in proportion
+            // to what it matches, never to the organization's whole corpus. The relaxation
+            // fallback swaps in the session-level matcher (ADR 0081); the service runs it
+            // only after the strict matcher returns nothing.
+            const matcher = `api_ro.${relaxed ? "search_messages_session" : "search_messages"}(q=${query})`;
+            // A payload condition (`content`, `tool_input`) joins the same message in the
+            // payload-carrying view. `payloadBound` names the sessions that read may cover:
+            // the bounded attempt's own set, or the sessions the text matched; a relation
+            // without a text predicate has no such bound.
+            const filtered = (
+              relation: string,
+              extra: readonly string[],
+              payloadBound?: string,
+            ) =>
+              `${relation} m WHERE ${andSql([
+                ...plan.message,
+                ...(sessionScope ? [sessionScope] : []),
+                ...payloadSql(plan, payloadBound),
+                ...extra,
+              ])}`;
+            const matches = `SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq,m.rank AS rank FROM ${filtered(matcher, [], scopeParam ?? `(SELECT session_id FROM ${matcher})`)}`;
+            const candidates = !lexical
+              ? // A message whose time the corpus reconcile has not copied yet has no place
+                // in a time order, so a browse leaves it out until then (ADR 0098).
+                `SELECT m.session_id AS session_id,m.seq AS seq,assumeNotNull(m.message_time) AS time FROM ${filtered("api_ro.search_corpus", ["m.kind!='THINKING'", "m.message_time IS NOT NULL"], scopeParam ?? undefined)}`
+              : vector
+                ? `WITH lexical_matches AS (${matches}), eligible AS MATERIALIZED (
+                SELECT m.message_id AS message_id,m.session_id AS session_id,m.seq AS seq FROM ${filtered("api_ro.search_corpus", ["m.searchable"], scopeParam ?? undefined)}
+              ), lexical AS (
                 SELECT message_id,row_number() OVER(ORDER BY rank DESC,session_id,seq) AS position FROM lexical_matches
               ), vector_candidates AS (
                 SELECT c.message_id AS message_id,e.session_id AS session_id,min(cosineDistance(c.embedding,${params.add(vector, "Array(Float32)")})) AS distance
@@ -304,49 +323,56 @@ export class SearchService {
                   SELECT message_id,1.0/(60+position) AS score FROM lexical
                   UNION ALL SELECT message_id,1.0/(60+position) AS score FROM semantic
                 ) GROUP BY message_id
-              ) SELECT e.message_id AS message_id,e.session_id AS session_id,e.seq AS seq,e.time AS time,f.rank AS rank FROM fused f JOIN eligible e USING(message_id)`
-              : `WITH eligible AS (${eligible}) ${lexical ? lexicalMatches : "SELECT *,toFloat64(0) AS rank FROM eligible"}`;
-            // The totals are window aggregates of the same candidate scan, taken before
-            // the per-session cap, the cursor and the limit cut the page.
+              ) SELECT e.session_id AS session_id,e.seq AS seq,f.rank AS rank FROM fused f JOIN eligible e USING(message_id)`
+                : matches;
             const totalParameters = { ...params.values };
-            const continuation = after
-              ? lexical
-                ? `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`
-                : `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
-              : "true";
-            // Cross-user reuse boost (ADR 0090): lift teammate-authored sessions into the
-            // ranked page before the limit, so one member's prior work reaches another. The
-            // author of each candidate session comes from one bounded scan of the
-            // session→author map (`session_authors`), joined to the candidate sessions only;
-            // a session the caller did not write has its rank scaled by TEAMMATE_RANK_BOOST.
-            // The boosted value replaces `rank` for the rest of the pipeline, so the
-            // per-session order, the page order and the keyset cursor stay consistent. Only
-            // the rank-ordered (lexical or rrf) query boosts; the time-ordered browse leaves
-            // rank at zero and is untouched, and its candidate set is not author-joined.
-            const boost = lexical
-              ? `,authors AS (SELECT session_id,any(user_id) AS user_id FROM api_ro.session_authors WHERE session_id IN (SELECT session_id FROM candidates) GROUP BY session_id), boosted AS (
-                SELECT c.session_id AS session_id,c.seq AS seq,c.time AS time,c.rank*if(a.user_id!=${params.add(caller.userId)} AND a.user_id!='',${String(TEAMMATE_RANK_BOOST)},1.0) AS rank
-                FROM candidates c LEFT JOIN authors a ON a.session_id=c.session_id
-              )`
-              : "";
-            const rankSource = lexical ? "boosted" : "candidates";
-            // ClickHouse expands ordinary CTEs at each reference. The author lookup also
-            // references candidates, so share this narrow result instead of evaluating
-            // the full eligibility and lexical scans twice (ADR 0096).
+            const continuation =
+              after === null
+                ? "true"
+                : after.strategy === "browse"
+                  ? `(time < ${params.add(after.time, "DateTime64(6, 'UTC')")} OR (time = ${params.add(after.time, "DateTime64(6, 'UTC')")} AND session_id > ${params.add(after.session_id, "UUID")}))`
+                  : `(rank < ${params.add(after.rank, "Float64")} OR (rank = ${params.add(after.rank, "Float64")} AND (session_id,seq) > (${params.add(after.session_id, "UUID")},${params.add(after.seq, "UInt32")})))`;
+            // One row per session: its best candidates in the page order (three per query,
+            // one per browse) and its share of the totals, so ranking holds memory per
+            // session however many messages match (ADR 0098). The totals count every
+            // candidate before the per-session cap, the cursor and the limit cut the page.
+            const best = lexical
+              ? "groupArraySorted(3)((-rank,seq))"
+              : "groupArraySorted(1)((-toUnixTimestamp64Micro(time),-toInt64(seq),seq,time))";
+            // Cross-user reuse boost (ADR 0090): a session the caller did not write has its
+            // rank scaled by TEAMMATE_RANK_BOOST before the page limit, so one member's prior
+            // work reaches another. The author comes from one scan of the session→author map
+            // (`session_authors`) bounded to the candidate sessions. The factor is constant
+            // within a session, so it leaves each session's best candidates unchanged and is
+            // applied after that cut; the boosted value is the rank the page order and the
+            // keyset cursor use. Only the rank-ordered query boosts.
+            const page = lexical
+              ? `SELECT session_id,tupleElement(b,2) AS seq,-tupleElement(b,1)*if(author!=${params.add(caller.userId)} AND author!='',${String(TEAMMATE_RANK_BOOST)},1.0) AS rank,total_hits,total_sessions
+                FROM (SELECT p.*,a.user_id AS author FROM per_session p LEFT JOIN (
+                  SELECT session_id,any(user_id) AS user_id FROM api_ro.session_authors WHERE session_id IN (SELECT session_id FROM per_session) GROUP BY session_id
+                ) a ON a.session_id=p.session_id) ARRAY JOIN best AS b`
+              : `SELECT session_id,tupleElement(b,3) AS seq,tupleElement(b,4) AS time,total_hits,total_sessions
+                FROM per_session ARRAY JOIN best AS b`;
             const result = await client.query(
-              `WITH candidates AS MATERIALIZED (${candidates})${boost}, ranked AS (
-              SELECT *,row_number() OVER(PARTITION BY session_id ORDER BY ${lexical ? "rank DESC,seq" : "time DESC,seq DESC"}) AS per_session,
-                count() OVER () AS total_hits,uniqExact(session_id) OVER () AS total_sessions FROM ${rankSource}
-            ) SELECT session_id,seq,rank,time,total_hits,total_sessions FROM ranked WHERE per_session<=${lexical ? "3" : "1"} AND ${continuation}
+              `WITH candidates AS (${candidates}), per_session AS MATERIALIZED (
+                SELECT session_id,${best} AS best,sum(count()) OVER () AS total_hits,count() OVER () AS total_sessions
+                FROM candidates GROUP BY session_id
+              ) SELECT * FROM (${page}) WHERE ${continuation}
               ORDER BY ${order} LIMIT ${params.add(request.limit + 1, "UInt32")}`,
               params.values,
             );
-            const hits = result.rows.map((row) =>
-              positionSchema.parse({
-                ...pickSchema(wireRow(row), positionSchema),
-                strategy: vector ? "rrf" : "lexical",
-              }),
-            );
+            const hits: Position[] = result.rows.map((row) => {
+              const wire = wireRow(row);
+              return lexical
+                ? rankedPositionSchema.parse({
+                    ...pickSchema(wire, rankedPositionSchema),
+                    strategy: vector ? "rrf" : "lexical",
+                  })
+                : browsePositionSchema.parse({
+                    ...pickSchema(wire, browsePositionSchema),
+                    strategy: "browse",
+                  });
+            });
             // A continuation past the last hit carries no aggregate; only then is a count
             // of the candidates (with no window) needed to state the totals.
             const first = result.rows[0];
@@ -543,10 +569,14 @@ export class SearchService {
           // retry once with the session-level matcher so words spread across a session match.
           return await attempt(null, true);
         } catch (error) {
-          // One bounded attempt after a time limit (§7.5). The scan cost does not depend on
-          // context or limit, so the same shape is not retried; a first page over the most
-          // recently active matching sessions is returned as a partial result instead.
-          if (after || traceReadFailure(error)?.code !== "READ_TIME_LIMIT")
+          // One bounded attempt after a time or memory limit (§7.5). The scan cost does not
+          // depend on context or limit, so the same shape is not retried; a first page over
+          // the most recently active matching sessions is returned as a partial result instead.
+          const code = traceReadFailure(error)?.code;
+          if (
+            after ||
+            (code !== "READ_TIME_LIMIT" && code !== "READ_MEMORY_LIMIT")
+          )
             throw error;
           return attempt(PARTIAL_SEARCH_SESSIONS, false);
         }

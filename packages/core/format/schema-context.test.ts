@@ -168,7 +168,10 @@ describe("assistant schema reference", () => {
     );
     expect(text).toContain("named literal parameters only");
     expect(text).toContain(
-      "join `messages` on both `session_id` and `seq` for the content and `sessions` on `session_id` for the header",
+      "narrow `sessions` with `session_id IN (SELECT session_id FROM search_messages(q='words'))`, and read a hit's text from `messages` filtered to its literal `session_id` and `seq`",
+    );
+    expect(text).not.toContain(
+      "JOIN messages AS m ON m.session_id = h.session_id",
     );
     expect(text).toContain("Per-session views join `sessions` on `session_id`");
     expect(text).toContain(
@@ -266,7 +269,7 @@ describe("assistant schema reference", () => {
     const text = formatSchemaContext({ ...schema, functions: [] });
     expect(text).toContain("None are available to this caller.");
     expect(text).not.toContain("named literal parameters");
-    expect(text).not.toContain("`search_messages(q='words')` rows join");
+    expect(text).not.toContain("`search_messages(q='words')` rows name");
     expect(text).toContain("hasTokenCaseInsensitive(content, 'word')");
   });
 });

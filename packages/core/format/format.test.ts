@@ -230,7 +230,7 @@ describe("shared text and structured formatters", () => {
       partial: { sessions_searched: 50 },
     }).text.split("\n\n");
     expect(partial[1]).toBe(
-      "Partial result: the full search exceeded the read time limit, so this page covers the 50 most recently active sessions that match the filters. Narrow with filters (repo_name, since, until, user_email) to search the rest.",
+      "Partial result: the full search exceeded the read time or memory limit, so this page covers the 50 most recently active sessions that match the filters. Narrow with filters (repo_name, since, until, user_email) to search the rest.",
     );
     expect(partial.some((line) => line.startsWith("cursor:"))).toBe(false);
   });

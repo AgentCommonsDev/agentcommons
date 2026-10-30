@@ -62,13 +62,31 @@ export function traceJson(value: unknown) {
     typeof value === "string" ? JSON.parse(value) : value,
   );
 }
+/**
+ * The relation a filter predicate reads (ADR 0098): the session relation aliased `s`, the
+ * search corpus aliased `m` (`search_messages`, `search_corpus`), which carries every message
+ * field but the payload, or the payload-carrying `api_ro.messages` aliased `p`.
+ */
+type FilterRelation = "session" | "message" | "payload";
+const relationAlias: Record<FilterRelation, string> = {
+  session: "s",
+  message: "m",
+  payload: "p",
+};
+/** The message fields only the payload-carrying `messages` view has. */
+const PAYLOAD_FIELDS = new Set<SearchCondition["field"]>([
+  "content",
+  "tool_input",
+]);
+const relationOf = (field: SearchCondition["field"]): FilterRelation =>
+  PAYLOAD_FIELDS.has(field) ? "payload" : searchConditionFields[field];
 function conditionSql(condition: SearchCondition, params: Parameters): string {
   if (condition.field === "tool_input") {
     // Traverse with native JSON functions. Object keys remain strings; array offsets are zero-based,
     // including negative offsets, matching the shared filter contract.
     const path = params.add(condition.path ?? [], "Array(String)");
     const offset = "accurateCastOrNull(key,'Int64')";
-    const json = `arrayFold((value,key)->if(toString(JSONType(value))='Array' AND match(key,'^-?[0-9]+$'),JSONExtractRaw(value,ifNull(if(${offset}<0,${offset},if(${offset}<9223372036854775807,${offset}+1,NULL)),0)),JSONExtractRaw(value,key)),${path},m.tool_input)`;
+    const json = `arrayFold((value,key)->if(toString(JSONType(value))='Array' AND match(key,'^-?[0-9]+$'),JSONExtractRaw(value,ifNull(if(${offset}<0,${offset},if(${offset}<9223372036854775807,${offset}+1,NULL)),0)),JSONExtractRaw(value,key)),${path},p.tool_input)`;
     const exists = `${json}!=''`;
     const type = `toString(JSONType(${json}))`;
     const text = `JSONExtractString(${json})`;
@@ -89,7 +107,7 @@ function conditionSql(condition: SearchCondition, params: Parameters): string {
         : `startsWith(lowerUTF8(${text}),lowerUTF8(${value}))`;
     return `(${type}='String' AND ${comparison})`;
   }
-  const expression = `${searchConditionFields[condition.field] === "message" ? "m" : "s"}.${condition.field}`;
+  const expression = `${relationAlias[relationOf(condition.field)]}.${condition.field}`;
   if (condition.op === "exists") return `${expression} IS NOT NULL`;
   if (condition.op === "eq")
     return condition.value === null
@@ -100,45 +118,38 @@ function conditionSql(condition: SearchCondition, params: Parameters): string {
     ? `positionCaseInsensitiveUTF8(${expression},${value})>0`
     : `startsWith(lowerUTF8(${expression}),lowerUTF8(${value}))`;
 }
-/** The message columns only the payload-carrying `messages` view has. */
-const PAYLOAD_FIELDS = new Set<SearchCondition["field"]>([
-  "content",
-  "tool_input",
-]);
 /**
- * One filter set split by the relation each predicate reads, so a caller scans each
- * relation once: session predicates over the alias `s` (`api_ro.sessions` or
- * `api_ro.session_details`), message predicates over the alias `m`, and the lightest
- * message relation that serves them (`message_metadata` unless a predicate needs content).
+ * One filter set split by the relation each predicate reads (`FilterRelation`), so a caller
+ * scans each relation once and reads payload only for a payload condition.
  */
-interface FilterPlan {
-  session: string[];
-  message: string[];
-  messageView: "messages" | "message_metadata";
-}
+type FilterPlan = Record<FilterRelation, string[]>;
 /** Predicates joined with AND; `true` when there are none. */
 export function andSql(predicates: readonly string[]): string {
   return predicates.length
     ? predicates.map((predicate) => `(${predicate})`).join(" AND ")
     : "true";
 }
+/**
+ * The plan's payload predicates as one semi-join of a corpus relation aliased `m`: the same
+ * message must satisfy them in `api_ro.messages`. `sessions`, a session-id set (a
+ * parenthesized subquery or an `Array(UUID)` parameter), bounds that payload read to the
+ * sessions it names, which reach the primary key.
+ */
+export function payloadSql(plan: FilterPlan, sessions?: string): string[] {
+  if (!plan.payload.length) return [];
+  const bound = sessions ? [`p.session_id IN ${sessions}`] : [];
+  return [
+    `m.message_id IN (SELECT p.message_id FROM api_ro.messages p WHERE ${andSql([...bound, ...plan.payload])})`,
+  ];
+}
 export async function filterSql(
   client: TraceQueryClient,
   filters: SearchFilters,
   params: Parameters,
 ): Promise<FilterPlan> {
-  const where = filters.where ?? [];
-  const plan: FilterPlan = {
-    session: [],
-    message: [],
-    messageView: where.some((condition) => PAYLOAD_FIELDS.has(condition.field))
-      ? "messages"
-      : "message_metadata",
-  };
-  for (const condition of where)
-    plan[searchConditionFields[condition.field]].push(
-      conditionSql(condition, params),
-    );
+  const plan: FilterPlan = { session: [], message: [], payload: [] };
+  for (const condition of filters.where ?? [])
+    plan[relationOf(condition.field)].push(conditionSql(condition, params));
   const conditions = plan.session;
   if (filters.repo_name !== undefined) {
     // Three accepted forms (§7.2): the canonical `host/org/repo` (exact), the `org/repo`
@@ -232,7 +243,7 @@ export async function filterSql(
     const value = filters[key];
     if (value !== undefined)
       plan.message.push(
-        `arrayExists(bound -> coalesce(m.timestamp,m.received_at) ${key === "since" ? ">=" : "<"} parseDateTime64BestEffort(bound,6,'UTC'),${params.add(array(value))})`,
+        `arrayExists(bound -> m.message_time ${key === "since" ? ">=" : "<"} parseDateTime64BestEffort(bound,6,'UTC'),${params.add(array(value))})`,
       );
   }
   return plan;
