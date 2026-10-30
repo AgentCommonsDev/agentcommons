@@ -3826,6 +3826,7 @@ has no warn return.
 | `CLICKHOUSE_READER_SECRET`                                   | required, at least 32 characters | key for deriving native reader credentials                                                                                                              |
 | `CLICKHOUSE_READER_MEMORY_MB`                                | 256                              | memory one reader query may use, in MiB (64 to 65,536); re-applied to every reader principal on its next provisioning (ADR 0100)                        |
 | `CLICKHOUSE_MEMORY_LIMIT`                                    | `3.5G`                           | single-node ClickHouse container memory; the server keeps 88% of it. Raise it with `CLICKHOUSE_READER_MEMORY_MB` on a host larger than 8 GiB (ADR 0100) |
+| `API_MEMORY_LIMIT`                                           | `1G`                             | single-node API container memory; the heap is 75% of it. A publish holds its whole session, so raise it when sessions grow (ADR 0105)                   |
 | `CLICKHOUSE_MIGRATION_USER`, `CLICKHOUSE_MIGRATION_PASSWORD` | required for migrations only     | native ClickHouse schema/access administrator; excluded from API runtime                                                                                |
 | `CLICKHOUSE_POSTGRES_HOST`, `CLICKHOUSE_POSTGRES_PORT`       | original control URL             | optional reachable control host/port override when the migrator and ClickHouse use different network routes; TLS policy is retained                     |
 
