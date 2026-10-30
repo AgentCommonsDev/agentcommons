@@ -67,6 +67,10 @@ try {
     },
     {
       jobs: true,
+      // Every spec reads as the same owner, so the whole suite shares one 300/min read
+      // budget (§9.4) that a few session pages in a row exhaust, and a refused events
+      // stream then shows Reconnecting. The fixture is many users' traffic, not one user's.
+      rateMaxima: { read: 3000 },
       ...(process.env.DASHBOARD_BROWSER_ASSETS
         ? { dashboardDirectory: process.env.DASHBOARD_BROWSER_ASSETS }
         : { static: true }),
