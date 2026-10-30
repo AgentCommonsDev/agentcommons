@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  builtinPolicies,
   CompiledRedactors,
   Redactor,
   PolicyCache,
@@ -19,6 +20,9 @@ const custom: RedactionPolicy = {
   enabled: true,
   builtin: false,
 };
+// Fake credentials shaped like real ones: a 40-character AWS secret and a password.
+const aws = "A1b2".repeat(10);
+const password = "Tr0ub4dor3xyzAbc";
 
 describe("redaction before persistence", () => {
   // @req R-RED-01
@@ -50,6 +54,90 @@ describe("redaction before persistence", () => {
       value: text,
       counts: [],
     });
+  });
+
+  // @req R-RED-01
+  it("keeps no part of a secret however its key is named, padded or quoted", async () => {
+    for (const [text, secret] of [
+      [`AWS_SECRET_ACCESS_KEY=${aws}`, aws],
+      [`aws_secret_access_key = ${aws}`, aws],
+      [`AWS_SECRET_ACCESS_KEY:${" ".repeat(30)}${aws}`, aws],
+      [`{"SecretAccessKey":"${aws}"}`, aws],
+      [`secret_key = "${aws}"`, aws],
+      [`AKIA${"Q".repeat(16)}`, "Q".repeat(16)],
+      [`export DB_PASSWORD=${password}`, password],
+      ["password=Tr0ub4!dor$3#xyz", "Tr0ub4!dor$3#xyz"],
+      [`curl -H "Authorization: Bearer ${"b".repeat(32)}"`, "b".repeat(32)],
+      ["Authorization: Basic YWRtaW46VHIwdWI0ZG9yM3h5eg==", "YWRtaW46"],
+      [`redis://:${password}@cache:6379`, password],
+      [`postgresql+psycopg2://app:${password}@db/app`, password],
+      [`whsec_${"c".repeat(32)}`, "c".repeat(32)],
+      [
+        `https://${"d".repeat(40)}:x-oauth-basic@github.com/o/r.git`,
+        "d".repeat(16),
+      ],
+    ] satisfies [string, string][]) {
+      const result = await new Redactor().text(text);
+      expect(result.value, text).not.toContain(secret.slice(-8));
+      expect((await new Redactor().text(result.value)).value).toBe(
+        result.value,
+      );
+    }
+  });
+
+  // @req R-RED-01
+  it("replaces the AWS scanner's captured secret, not a secret-length span from the key name", async () => {
+    // The generic token pattern also matches this line; disable it to see the scanner alone.
+    const token = builtinPolicies.find((policy) => policy.name === "token");
+    if (!token) throw new Error("Missing token policy");
+    const scanner = new Redactor([{ ...token, enabled: false }]);
+    const line = `AWS_SECRET_ACCESS_KEY=${aws} AWS_REGION=us-east-1`;
+    const patched = (await scanner.text(line)).value;
+    expect(patched).toBe(
+      "AWS_SECRET_ACCESS_KEY=[REDACTED:aws] AWS_REGION=us-east-1",
+    );
+    // Text after a patched marker survives a rescan; what the unpatched scanner left (the
+    // tail, or the whole secret after padding) does not.
+    expect((await scanner.text(patched)).value).toBe(patched);
+    for (const stored of [
+      `[REDACTED:aws]${aws.slice(18)}\n`,
+      `[REDACTED:aws]            ${aws}\n`,
+    ]) {
+      const rescanned = (await new Redactor().text(stored)).value;
+      expect(rescanned).toBe("[REDACTED:aws-residue]\n");
+      expect((await new Redactor().text(rescanned)).value).toBe(rescanned);
+    }
+  });
+
+  // @req R-RED-01
+  it("leaves a JSON-encoded command valid JSON after redacting secrets inside it", async () => {
+    for (const command of [
+      `export PASSWORD="${password}" && run`,
+      `psql "postgres://app:${password}@db/app" -c 1`,
+      `curl -H "Authorization: Bearer ${"b".repeat(32)}" x`,
+      JSON.stringify({ SecretAccessKey: "A1b/".repeat(10) }),
+      JSON.stringify({ Authorization: "Basic YWRtaW46VHIwdWI0ZG9yM3h5eg==" }),
+    ]) {
+      // Codex stores tool arguments as a JSON string, which the projection parses after redaction.
+      const result = await new Redactor().text(JSON.stringify({ command }));
+      expect(() => JSON.parse(result.value) as unknown, command).not.toThrow();
+      expect(result.counts.length, command).toBeGreaterThan(0);
+      expect(result.value, command).not.toContain(password);
+    }
+  });
+
+  it("keeps code and prose that only mention credentials", async () => {
+    for (const text of [
+      "max_tokens: 4096, input_tokens=123456789012345",
+      "const token = await getToken();",
+      "Use Bearer authentication for the API.",
+      "https://example.com:8080/path@foo and git@github.com:org/repo.git",
+      "ssh://git@github.com/org/repo",
+    ])
+      expect(await new Redactor().text(text), text).toEqual({
+        value: text,
+        counts: [],
+      });
   });
 
   it("does not let transcript comments disable shipped scanners", async () => {

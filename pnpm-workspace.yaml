@@ -13,3 +13,4 @@ onlyBuiltDependencies:
 
 patchedDependencies:
   "@better-auth/stripe@1.7.3": patches/@better-auth__stripe@1.7.3.patch
+  "@secretlint/secretlint-rule-preset-recommend@13.0.5": patches/@secretlint__secretlint-rule-preset-recommend@13.0.5.patch

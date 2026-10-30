@@ -8,6 +8,9 @@ patchedDependencies:
   '@better-auth/stripe@1.7.3':
     hash: ec36e86eb9480133f04d7c3ff5e49d002c34af13a65e1be3cd85117cbf29167a
     path: patches/@better-auth__stripe@1.7.3.patch
+  '@secretlint/secretlint-rule-preset-recommend@13.0.5':
+    hash: 3a284c722ac6219c629584d3b37b260f379f297e85b37f178283b204718c8522
+    path: patches/@secretlint__secretlint-rule-preset-recommend@13.0.5.patch
 
 importers:
 
@@ -411,7 +414,7 @@ importers:
         version: 13.0.5
       '@secretlint/secretlint-rule-preset-recommend':
         specifier: 13.0.5
-        version: 13.0.5
+        version: 13.0.5(patch_hash=3a284c722ac6219c629584d3b37b260f379f297e85b37f178283b204718c8522)
       papaparse:
         specifier: ^5.5.3
         version: 5.7.0
@@ -9539,7 +9542,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@secretlint/secretlint-rule-preset-recommend@13.0.5': {}
+  '@secretlint/secretlint-rule-preset-recommend@13.0.5(patch_hash=3a284c722ac6219c629584d3b37b260f379f297e85b37f178283b204718c8522)': {}
 
   '@secretlint/source-creator@13.0.5':
     dependencies:

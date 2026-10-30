@@ -24,6 +24,14 @@ export const preinstalledRules: Map<string, Rule> = new Map<string, Rule>([
 export const allowedRuleIds = [...preinstalledRules.keys()];
 export { preset, pattern };
 
+/**
+ * An optional quote, possibly JSON-escaped. A command inside a JSON string (Codex tool
+ * arguments) escapes its quotes, so patterns step over `\"` around a value but never consume
+ * a backslash before a closing quote: the redacted arguments must stay valid JSON for the
+ * projection to parse them.
+ */
+const quote = String.raw`\\?["']?`;
+
 export const builtinPatterns = [
   { name: "anthropic", pattern: "\\bsk-ant-[A-Za-z0-9_-]{20,}\\b" },
   { name: "openai", pattern: "\\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}\\b" },
@@ -33,14 +41,35 @@ export const builtinPatterns = [
       "(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])",
   },
   {
+    // Any scheme, since a password in a URL is a secret whatever the driver (`rediss`,
+    // `postgresql+psycopg2`), and the user may be empty (`redis://:password@host`).
     name: "connection-string",
-    pattern:
-      "\\b(?:postgres(?:ql)?|mysql|mongodb(?:\\+srv)?|redis|amqps?|https?|ssh)://[^\\s/:@]+:[^\\s/@]+@[^\\s]+",
+    pattern: String.raw`(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,31}://[^\s/:@]*:[^\s/@]+@[^\s"'\\]+`,
   },
   {
+    // The secret word may end a longer name (`DB_PASSWORD`, `client_secret`, `clientSecret`,
+    // `aws_secret_access_key`, `_authToken`); the match starts at the word, so the name's
+    // head stays readable. A value may contain JSON-escaped slashes (`\/`).
     name: "token",
+    pattern: String.raw`(?:(?:api|access|account)[_-]?key|token|secret|password|passwd)(?:[_-]?key)?${quote}\s*(?:=>|[:=])\s*${quote}(?:[A-Za-z0-9_./+=!@#$%^&*~-]|\\/){12,}`,
+  },
+  {
+    name: "authorization",
+    pattern: String.raw`\b(?:authorization${quote}\s*[:=]\s*${quote}(?:bearer|basic|token)|bearer)\s+[A-Za-z0-9._~+/=-]{16,}`,
+  },
+  {
+    name: "aws-access-key-id",
     pattern:
-      "\\b(?:api[_-]?key|access[_-]?token|token|secret|password)[\"']?\\s*[:=]\\s*[\"']?[A-Za-z0-9_./+=-]{12,}",
+      "\\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\\b",
+  },
+  { name: "stripe-webhook", pattern: "\\bwhsec_[A-Za-z0-9]{24,}\\b" },
+  {
+    // Until secretlint's AWS rule was patched, its range was the secret's length from the
+    // start of the key name, so text stored then keeps the secret's tail right after the
+    // marker, or the whole 40-character secret after the separator when the name and padding
+    // filled the range. A rescan replaces the marker with what it left.
+    name: "aws-residue",
+    pattern: String.raw`\[REDACTED:aws\](?:[A-Za-z0-9/+=]{1,40}|[ \t:=>"']+[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=]))`,
   },
   { name: "agentcommons", pattern: "\\bac_[A-Za-z0-9_-]{20,}\\b" },
 ] as const;

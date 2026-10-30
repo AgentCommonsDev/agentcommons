@@ -40,8 +40,51 @@ it("rejects settings, caller parameters, network and file access, hidden tables 
     "SELECT dictGet('private', 'secret', 1)",
     "SELECT sleep(60)",
     "SELECT * FROM sessions WHERE session_id IN (SELECT session_id FROM internal.raw_record)",
+    "SELECT count() FROM sessions WHERE 0 IN system.one",
+    "SELECT count() FROM sessions WHERE 7 NOT IN raw_records",
   ])
     expect(() => guardTraceSql(sql), sql).toThrow(TraceSqlError);
+});
+
+// @req R-SQL-02
+it("rejects text the formatter would turn into a different query than the one vetted", () => {
+  // The formatter writes CAST types and lambda parameters back verbatim, so each of these
+  // vets as harmless and formats into SQL calling functions the guard never saw.
+  for (const sql of [
+    "SELECT CAST(1 AS `String) AS a, version() AS v, CAST(1 AS String`) AS b",
+    "SELECT 1::`String) AS a, version() AS v, CAST(1 AS String` AS b",
+    "SELECT arrayMap(`a b` -> 1, [1]) AS x",
+  ])
+    expect(() => guardTraceSql(sql), sql).toThrow(TraceSqlError);
+  for (const sql of [
+    "WITH ids AS (SELECT session_id FROM sessions) SELECT count() FROM sessions WHERE session_id IN ids",
+    "SELECT count() FROM sessions WHERE session_id NOT IN api_ro.sessions",
+    "SELECT arrayMap(x -> x + 1, [1, 2]) AS y, 1::UInt8 AS z",
+  ]) {
+    const executed = guardTraceSql(sql);
+    expect(guardTraceSql(executed), sql).toBe(executed);
+  }
+});
+
+// @req R-SQL-02
+it("checks every relation's database and the name right of IN, whatever else admits the query", () => {
+  // Declaring the parameter leaves the relation check as the only thing that can refuse these.
+  for (const sql of [
+    "SELECT count() FROM {db:Identifier}.sessions",
+    "SELECT count() FROM sessions WHERE 1 IN {db:Identifier}.sessions",
+    "SELECT count() FROM sessions WHERE 1 IN a.b.sessions",
+  ])
+    expect(() => guardTraceSql(sql, false, { db: "Identifier" }), sql).toThrow(
+      TraceSqlError,
+    );
+  // ClickHouse would resolve a same-named view before a WITH expression alias.
+  expect(() =>
+    guardTraceSql(
+      "WITH [1, 2] AS ids SELECT count() FROM sessions WHERE input_tokens IN ids",
+    ),
+  ).toThrow(
+    "Use a list, a subquery or a view from the schema browser after IN.",
+  );
 });
 
 // @req R-SQL-01

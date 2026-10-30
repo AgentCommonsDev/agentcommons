@@ -243,6 +243,12 @@ export const traceSqlFunctions = [
 const allowedFunctions = new Set<string>(
   traceSqlFunctions.map((name) => name.toLowerCase()),
 );
+/**
+ * Allowlisted functions whose second argument ClickHouse resolves as a table when it is a
+ * bare name (`x IN view`), so the guard checks that name like a FROM clause. A function added
+ * to the allowlist with the same behaviour (`globalIn`, `nullIn`) belongs here too.
+ */
+const relationOperandFunctions = new Set(["in", "notin"]);
 const allowedViews = new Set<string>(traceViews);
 const embeddingViews = new Set<string>(traceEmbeddingViews);
 const nodes = new Set([
@@ -331,9 +337,14 @@ function failEmbeddings(
 }
 
 /**
- * Serialize the vetted AST so syntax discarded by the parser never reaches the server.
- * `parameters` maps declared ClickHouse query parameters (dashboard variables) to their
- * required types; every other `{name:Type}` reference is rejected.
+ * Vet a caller's query and return the text the server runs. `parameters` maps declared
+ * ClickHouse query parameters (dashboard variables) to their required types; every other
+ * `{name:Type}` reference is rejected.
+ *
+ * The server parses the formatter's output, not the caller's text, and the formatter writes
+ * some node text back verbatim (CAST type names, lambda parameters), so a vetted tree can
+ * format into SQL that parses as a different query. The output is therefore vetted again and
+ * must format to itself: what runs is exactly what was checked.
  */
 export function guardTraceSql(
   sql: string,
@@ -344,6 +355,23 @@ export function guardTraceSql(
     throw new TraceSqlError(
       `Keep the query within ${String(sqlLimits.sqlBytes / 1024)} KB.`,
     );
+  const executed = vet(sql, embeddings, parameters);
+  try {
+    if (vet(executed, embeddings, parameters) === executed) return executed;
+  } catch (error) {
+    if (!(error instanceof TraceSqlError)) throw error;
+  }
+  throw new TraceSqlError(
+    "This query would run differently from how it was checked. Write CAST types and lambda parameters without backquotes.",
+  );
+}
+
+/** One vetting pass: parse, check every node, and serialize the vetted AST without comments. */
+function vet(
+  sql: string,
+  embeddings: boolean,
+  parameters: Readonly<Record<string, string>>,
+): string {
   let ast: Statement[];
   try {
     ast = parse(sql);
@@ -368,6 +396,48 @@ export function guardTraceSql(
     if (node.type === "WithElement" && typeof node.name === "string")
       bindings.add(node.name);
   });
+  /**
+   * A relation the query reads: a canonical view, an enabled vector view, or a WITH binding.
+   * `database` is the parsed node's value as given; anything but absent or `api_ro` (another
+   * database, a query parameter) is rejected.
+   */
+  const checkRelation = (
+    node: Record<string, unknown>,
+    database: unknown,
+    name: string,
+    message = "Select from the views listed in the schema browser.",
+  ) => {
+    const local = database === undefined || database === "api_ro";
+    if (!embeddings && local && embeddingViews.has(name) && !bindings.has(name))
+      failEmbeddings(node, name);
+    if (
+      !local ||
+      (!allowedViews.has(name) &&
+        !(embeddings && embeddingViews.has(name)) &&
+        !(database === undefined && bindings.has(name)))
+    )
+      fail(node, message);
+  };
+  /**
+   * A bare name right of IN. ClickHouse resolves it as a table before anything else, so a WITH
+   * expression alias there is refused too: a view of the same name would win over it.
+   */
+  const checkRelationOperand = (operand: Record<string, unknown>) => {
+    const message =
+      "Use a list, a subquery or a view from the schema browser after IN.";
+    const parts: unknown[] = Array.isArray(operand.name_parts)
+      ? operand.name_parts
+      : [operand.name];
+    if (parts.length > 2) fail(operand, message);
+    const [database, table] =
+      parts.length === 2 ? parts : [undefined, parts[0]];
+    checkRelation(
+      operand,
+      database,
+      typeof table === "string" ? table : "",
+      message,
+    );
+  };
   visit(ast, (node) => {
     // SQL is embedded in a bounded SELECT. Comments cannot carry a terminal delimiter into it.
     delete node.leadingComments;
@@ -430,23 +500,12 @@ export function guardTraceSql(
       }
       parameterizedViews.add(fn);
     }
-    if (node.type === "TableIdentifier") {
-      const name = typeof node.name === "string" ? node.name : "";
-      if (
-        !embeddings &&
-        (node.database === undefined || node.database === "api_ro") &&
-        embeddingViews.has(name) &&
-        !bindings.has(name)
-      )
-        failEmbeddings(node, name);
-      if (
-        (node.database !== undefined && node.database !== "api_ro") ||
-        (!allowedViews.has(name) &&
-          !(embeddings && embeddingViews.has(name)) &&
-          !(node.database === undefined && bindings.has(name)))
-      )
-        fail(node, "Select from the views listed in the schema browser.");
-    }
+    if (node.type === "TableIdentifier")
+      checkRelation(
+        node,
+        node.database,
+        typeof node.name === "string" ? node.name : "",
+      );
     if (node.type === "QueryParameter") {
       const name = typeof node.name === "string" ? node.name : "";
       const declared = parameters[name];
@@ -464,6 +523,10 @@ export function guardTraceSql(
     }
     if (node.type === "Function") {
       const name = typeof node.name === "string" ? node.name.toLowerCase() : "";
+      if (relationOperandFunctions.has(name) && Array.isArray(node.arguments)) {
+        const operand = object(node.arguments[1]);
+        if (operand?.type === "Identifier") checkRelationOperand(operand);
+      }
       if (!embeddings && vectorFunctions.has(name))
         failEmbeddings(node, typeof node.name === "string" ? node.name : name);
       if (

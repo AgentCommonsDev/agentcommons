@@ -550,9 +550,15 @@ own machine); they are `0600` in a `0700` directory. Public copy describes serve
 redaction and custom policies.
 
 Rules = shipped secretlint preset + pattern rule (Anthropic, OpenAI, JWTs, connection
-strings with passwords, generic `token=…`, `ac_` keys) + `RedactionPolicy` rows,
+strings with passwords in any scheme, generic `token=…` including names that end in the
+secret word and escaped quotes, `Authorization` bearer/basic values, AWS access key ids,
+Stripe webhook secrets, `ac_` keys) + `RedactionPolicy` rows,
 composed into one secretlint configuration, validated on save (regex compiles, bounded
-length, catastrophic-backtracking check). The backtracking analysis runs once when an admin saves a pattern (and over the shipped patterns in the unit suite); stored rows load structurally, so sign-in, session creation and rescans never re-run it. JSON object values retain assignment-name
+length, catastrophic-backtracking check). The preset is patched so the AWS secret, GitHub
+`x-oauth-basic` and npm `_authToken` scanners report the captured secret's own range;
+upstream they report the secret's length from the start of the whole match, which left
+the secret's tail stored after the marker. An `aws-residue` pattern removes such tails
+from text stored before the patch when a rescan runs. The backtracking analysis runs once when an admin saves a pattern (and over the shipped patterns in the unit suite); stored rows load structurally, so sign-in, session creation and rescans never re-run it. JSON object values retain assignment-name
 context for secret scanners. Regex policies additionally scan the unprefixed value,
 so anchors have the same meaning on standalone strings, object values and array items.
 Matches from both native scans merge before replacement/counting; overlaps count once
@@ -1555,7 +1561,11 @@ QUERY_MEMORY_LIMIT` and `400 QUERY_RESULT_LIMIT`.
    returned (context rows, headers and payloads of a page), never the base view again.
 5. The shared official `@clickhouse/parser` guard accepts one SELECT/CTE, canonical
    relations and reviewed scalar/aggregate functions, at most 20 KB. It serializes the
-   vetted AST without comments. Writes, settings, caller query parameters, external
+   vetted AST without comments, then vets that text again and requires it to serialize
+   to itself, because the formatter writes some node text (CAST types, lambda
+   parameters) back verbatim and the server parses the serialized text, not the
+   caller's. A bare name on the right of `IN` is a relation and passes the same relation
+   check as `FROM`. Writes, settings, caller query parameters, external
    databases, system catalogs, arbitrary table functions, files, networks and output
    destinations are rejected. Only the named canonical search views accept table
    parameters. Native grants independently deny underlying tables and mutations.
