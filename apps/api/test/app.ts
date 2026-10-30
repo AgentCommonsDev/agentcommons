@@ -44,6 +44,8 @@ interface StartAppOptions {
   dashboardDirectory?: string;
   /** Adjust the parsed environment before the runtime is built (e.g. a Stripe client). */
   configure?: (env: Env) => Env;
+  /** Per-minute rate maxima replacing the product budgets (`createApp`'s `rateMaxima`). */
+  rateMaxima?: Parameters<typeof createApp>[0]["rateMaxima"];
 }
 export interface StartedApp {
   env: Env;
@@ -96,6 +98,7 @@ export async function startApp(
         ? { dashboardDirectory: options.dashboardDirectory }
         : {}),
       ...(options.captureLogs ? { loggerStream: stream } : {}),
+      ...(options.rateMaxima ? { rateMaxima: options.rateMaxima } : {}),
     });
     release.unshift(() => app.close());
     const address = options.listen
