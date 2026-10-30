@@ -27,8 +27,9 @@ visual-only clock bridge (`tests/visual-time.ts`) translates date filters to tha
 week and translates known timestamp fields and ISO date cells in SQL result rows back to
 the reference week of 2026-09-07; the browser clock is fixed to Sunday of that week.
 Requests reach the authenticated API and native views; counters, content, identifiers
-and cursors are unchanged. The only masks are the "Rendered … ago" footer of a dashboard
-and the generated organization id on Settings. Before axe analyzes colors, the helper
+and cursors are unchanged. The only masks are the "Rendered … ago" footer of a dashboard,
+the People page's Last seen times (the run's own requests, made on the real weekday) and
+the generated organization id on Settings. Before axe analyzes colors, the helper
 waits for running finite CSS transitions to finish. No product route responses are
 fabricated for screenshot comparisons.
 

@@ -529,9 +529,11 @@ export class McpService {
   }
   /**
    * Whether this handshake writes its audit row now. Identity is the key, the client
-   * program (`User-Agent`), the action, the method and the status: one client repeating
-   * its connection is the storm being folded, two harnesses sharing an installation key
-   * are not. The first handshake of a window writes at once; repeats inside the window
+   * program (`User-Agent`), the key's installation, the action, the method and the status:
+   * one client repeating its connection is the storm being folded, two harnesses sharing
+   * an installation key are not, and neither is the key's first handshake on another
+   * installation, whose `mcp.tools.list` row is what credits that installation's reads
+   * (ADR 0060). The first handshake of a window writes at once; repeats inside the window
    * are counted; the handshake that opens the next window reports them (`repeats`, and
    * `repeats_since`, when the previous row was written). A window that no later handshake
    * closes reports nothing: the count exists only in this process.
@@ -545,6 +547,7 @@ export class McpService {
     if (this.options.handshakeWindowMs <= 0) return {};
     const identity = [
       ...identities.client(context),
+      context.caller?.installationId ?? "",
       action,
       method,
       String(statusCode),

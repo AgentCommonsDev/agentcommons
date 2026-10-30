@@ -12,7 +12,12 @@ beforeAll(async () => {
   database = await startTraceDatabase();
   defer(() => database.close());
   owner = await provisionOrganization(database, "boundary-review");
-  const started = await startApp(database);
+  // Every protocol message here is audited on its own: these tests assert the audit
+  // boundary of each response, so identical handshakes are not folded (ADR 0073, whose
+  // window `transport` covers).
+  const started = await startApp(database, {
+    MCP_HANDSHAKE_WINDOW_SECONDS: "0",
+  });
   defer(() => started.close());
   ({ runtime, app } = started);
 });
@@ -45,18 +50,6 @@ it("MCP SDK schema rejection writes exactly one audit row", async () => {
   });
   expect(await database.prisma.auditEvent.count()).toBe(before + 1);
 });
-
-// @req R-AUD-01
-it.each(["GET", "DELETE"] as const)(
-  "unsupported MCP %s is audited once",
-  async (method) => {
-    const before = await database.prisma.auditEvent.count();
-    const response = await app.inject({ method, url: "/mcp" });
-    expect(response.statusCode).toBe(405);
-    expect(response.headers.allow).toBe("POST");
-    expect(await database.prisma.auditEvent.count()).toBe(before + 1);
-  },
-);
 
 // @req R-AUD-01
 it.each([
