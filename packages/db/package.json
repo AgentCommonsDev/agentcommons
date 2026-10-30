@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@better-auth/api-key": "1.7.3",
-    "@better-auth/sso": "1.7.3",
+    "@better-auth/sso": "1.7.4",
     "@better-auth/stripe": "1.7.3",
     "@prisma/client": "6.19.0",
     "better-auth": "1.7.3",
