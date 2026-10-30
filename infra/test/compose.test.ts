@@ -265,6 +265,15 @@ describe("Compose configuration", () => {
       deploy: { resources: { limits: { memory: 1024 ** 3 } } },
       restart: "unless-stopped",
     });
+    // A larger host sizes the API container from its environment (ADR 0105).
+    expect(
+      limits.parse(
+        compose(
+          ["docker-compose.yml", "docker-compose.caddy.yml"],
+          "\nAPI_MEMORY_LIMIT=5G\n",
+        ).api,
+      ).deploy.resources.limits.memory,
+    ).toBe(5 * 1024 ** 3);
     expect(limits.parse(services.migrate)).toMatchObject({
       deploy: { resources: { limits: { memory: 1024 ** 3 } } },
     });
@@ -281,8 +290,9 @@ describe("Compose configuration", () => {
     expect(start).toContain("-c ssl=on");
     expect(start).toContain("-c hba_file=/etc/postgresql/pg_hba.conf");
     expect(start.trim().endsWith('exec docker-entrypoint.sh "$@"')).toBe(true);
+    // The heap follows the container limit, whichever size the host sets (ADR 0105).
     expect(services.api?.environment).toMatchObject({
-      NODE_OPTIONS: "--max-old-space-size=768",
+      NODE_OPTIONS: "--max-old-space-size-percentage=75",
     });
     expect(services.clickhouse?.volumes).toEqual(
       expect.arrayContaining([

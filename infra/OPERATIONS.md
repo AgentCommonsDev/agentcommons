@@ -202,6 +202,15 @@ release script with the current commit. Keep the per-query value well under the 
 share so a few heavy reads at once cannot starve ingest. Each reader principal takes the new
 value at its next provisioning, which every API start repeats.
 
+The API container follows the host too (ADR 0105). It also publishes traces, and a
+session's publish holds that whole session in memory, so the default 1 GiB
+(`API_MEMORY_LIMIT`, with a heap of 75% of it) stops fitting once sessions reach a few
+hundred MiB of raw records. The symptom is a restart loop with `JavaScript heap out of
+memory` in `docker compose logs api`. The hosted 16 GiB host, whose PostgreSQL is external,
+runs `API_MEMORY_LIMIT: 5G` with `CLICKHOUSE_MEMORY_LIMIT: 7G` and
+`CLICKHOUSE_READER_MEMORY_MB: "1024"`. Set them in the stack's `environment`, because a
+release re-renders `.env` from it.
+
 `single-node-run.sh` copies this checkout's `infra/scripts/single-node/bootstrap.sh`
 to the release bucket and runs it on the host, so bootstrap tooling follows the operator's
 checkout while the application stays the released code. It seeds the owner and organization with `db:seed` (idempotent),

@@ -12,7 +12,8 @@
 # Memory limits size the stack for one 8 GiB host: ClickHouse 3.5 GiB (CLICKHOUSE_MEMORY_LIMIT
 # on a larger host; the server keeps 88% of it, infra/compose/clickhouse-server.xml, and a
 # reader query CLICKHOUSE_READER_MEMORY_MB; ADR 0100), PostgreSQL 1 GiB with matching
-# shared_buffers, API 1 GiB, Caddy 256 MiB.
+# shared_buffers, API 1 GiB (API_MEMORY_LIMIT, of which the heap takes 75%; ADR 0105), Caddy
+# 256 MiB.
 services:
   caddy:
     image: caddy:2.11.4
@@ -50,11 +51,11 @@ services:
   api:
     environment:
       TRUST_PROXY: uniquelocal
-      NODE_OPTIONS: --max-old-space-size=768
+      NODE_OPTIONS: --max-old-space-size-percentage=75
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: ${API_MEMORY_LIMIT:-1G}
   migrate:
     deploy:
       resources:
