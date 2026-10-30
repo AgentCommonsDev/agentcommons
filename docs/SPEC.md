@@ -1773,7 +1773,9 @@ Handshakes are not operations (ADR 0073). An MCP message that invokes no tool
 (`initialize`, `notifications/initialized`, `ping`, `tools/list` and every protocol
 rejection, such as Claude Code's `server/discover` probe) is audited once per identical
 handshake per window, where identity is the API key, the client program (`User-Agent`),
-the action, the method and the status. The first handshake of a window writes its row at
+the key's installation, the action, the method and the status. The installation keeps the
+key's first `tools/list` on another installation from folding into the last one, because
+that row is what credits the installation's reads (§9.3, ADR 0060). The first handshake of a window writes its row at
 once; repeats inside the window are counted in the process and write nothing; the
 handshake that opens the next window carries `repeats` and `repeats_since` in its detail.
 Two harnesses sharing an installation key differ in `User-Agent` and keep separate rows.

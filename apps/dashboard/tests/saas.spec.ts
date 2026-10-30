@@ -462,10 +462,12 @@ test("SaaS public, account and billing screens preserve mobile access, ownership
     for (const value of ["light", "dark"] as const) {
       await theme(page, value, isMobile);
       await accessible(page);
-      await expect(page).toHaveScreenshot(
-        `saas-${path.slice(1) || "landing"}-${value}.png`,
-        { fullPage: true },
-      );
+      // Soft, as in visual.spec.ts: one mismatch must not hide the screens after it.
+      await expect
+        .soft(page)
+        .toHaveScreenshot(`saas-${path.slice(1) || "landing"}-${value}.png`, {
+          fullPage: true,
+        });
     }
   }
   await page.goto(paths.login);
@@ -529,7 +531,7 @@ test("SaaS public, account and billing screens preserve mobile access, ownership
   for (const value of ["light", "dark"] as const) {
     await theme(page, value, isMobile);
     await accessible(page);
-    await expect(page).toHaveScreenshot(`saas-billing-${value}.png`, {
+    await expect.soft(page).toHaveScreenshot(`saas-billing-${value}.png`, {
       fullPage: true,
       mask: [page.getByTestId("billing-plan").locator("dd")],
     });

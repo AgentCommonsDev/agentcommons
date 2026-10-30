@@ -624,7 +624,7 @@ it("sorts and filters installation rollout rows on the server and bounds oversiz
   ).toEqual([]);
 });
 
-// @req R-GET-04 @req R-DASH-17
+// @req R-GET-04 @req R-DASH-17 @req R-MCP-14
 it("exposes distinct visible reuse counts and pages both directions from real attributed get audits", async () => {
   const org = z.string().parse(owner.context.caller?.organizationId);
   const recorded = async (key: string) => {
@@ -637,21 +637,28 @@ it("exposes distinct visible reuse counts and pages both directions from real at
   };
   const target = await recorded(owner.key);
   const secondTarget = await recorded(owner.key);
-  const firstReader = await recorded(member.key);
-  const mcp = await client(member.key);
-  const get = async (id: string) => {
-    const result = await mcp.callTool({
-      name: "get",
-      arguments: { session_id: id },
-    });
-    expect(result.isError).not.toBe(true);
-    await native.drainTraceAudit();
+  // A reading session is a harness on its own installation: it lists the tools there, the
+  // handshake an attributed read needs from the key on that installation (R-AUD-05).
+  const reader = async () => {
+    const session = await recorded(member.key);
+    const harness = await client(member.key);
+    await harness.listTools();
+    const get = async (id: string) => {
+      const result = await harness.callTool({
+        name: "get",
+        arguments: { session_id: id },
+      });
+      expect(result.isError).not.toBe(true);
+      await native.drainTraceAudit();
+    };
+    return { session, get };
   };
-  await get(target);
-  await get(target);
-  await get(secondTarget);
-  const secondReader = await recorded(member.key);
-  await get(target);
+  const { session: firstReader, get: firstGet } = await reader();
+  await firstGet(target);
+  await firstGet(target);
+  await firstGet(secondTarget);
+  const { session: secondReader, get: secondGet } = await reader();
+  await secondGet(target);
   const count = async (context = owner.owner) =>
     (await runtime.services.sessions.get(context, { session_id: target }))
       .result.header?.reuse_count;
@@ -689,8 +696,8 @@ it("exposes distinct visible reuse counts and pages both directions from real at
   });
   expect(first.result.items).toHaveLength(1);
   expect(first.result.cursor).not.toBeNull();
-  const thirdReader = await recorded(member.key);
-  await get(target);
+  const { session: thirdReader, get: thirdGet } = await reader();
+  await thirdGet(target);
   const second = await runtime.services.sessions.reuse(member.context, target, {
     direction: "by",
     limit: 1,
