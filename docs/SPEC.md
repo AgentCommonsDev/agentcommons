@@ -434,8 +434,9 @@ There is no partial batch admission. Projection is asynchronous; queued data is 
 claimed searchable. The durable outbox survives queue terminal failures and is removed
 only in the transaction publishing the complete ClickHouse revision.
 Errors: `401/403` (suspend and report, once the shim has confirmed the rejection with a
-second verdict, §6.2 step 3), `409` (session owned by another user, or
-tombstoned), `413` (split), `422` (permanently invalid record: quarantined client-side,
+second verdict, §6.2 step 3), `409` (`SESSION_OWNED`: session owned by another user;
+`SESSION_PURGED`: tombstoned; `BATCH_CONFLICT`: the batch id already holds a receipt for
+another cursor or session), `413` (split), `422` (permanently invalid record: quarantined client-side,
 other records accepted on resend without it), `429/5xx` (retry with backoff). A server
 that could not verify the key answers `503 AUTH_UNAVAILABLE` with `Retry-After` (§9.2),
 never a 401: an overloaded server is a retry, not a lost session.
@@ -967,7 +968,15 @@ SubagentStop confirms the child through agent_transcript_path.
    unconfirmed one (no code in the body, or a 5xx, 429, network failure or timeout on
    the confirmation) is retried through the same backoff and then left pending, so a
    server that answered a valid key wrongly under load never parks a session. `409` →
-   suspend at once (the server resolved the session). The first credential check of a
+   suspend at once with the body's error code in the reason (`SESSION_OWNED`,
+   `SESSION_PURGED`: the server resolved the session), except `BATCH_CONFLICT` on a
+   lifecycle batch: its batch id derives from the intent id, which names the event, so
+   the server already holds that event's receipt at another cursor; the intent completes
+   as processed, cursors and source snapshot unchanged, and the drain continues
+   (ADR 0101). A state an earlier bundle suspended on an ingest `409` without recording
+   its code (reason `The server rejected this session.`) is read as not suspended: its own
+   uploader, or the sweep once the session has ended, resends its pending batch, and a
+   genuine verdict suspends it again with its code. The first credential check of a
    state (`GET /api/v1/me` when no organization is verified yet) follows the same rule:
    a 401/403 is confirmed with a second `/me` before suspending, and a server that could
    not answer leaves the spool for the next hook. `413` → split
@@ -997,8 +1006,12 @@ child; revisiting an unchanged dormant child does not repeat its settle window. 
 
 Lifecycle receipts carry the hook-time source watermark and event time independently
 of later raw-record reads. Duplicate lifecycle deliveries use a stable intent/batch id
-based on the owning native process PID/birth identity and preceding lifecycle phase;
-a later process launch or an intervening shutdown produces a distinct resume. The pi
+based on the owning native process PID/birth identity, the preceding lifecycle phase and
+the signature of the transcript the callback observed (device, inode, size and
+modification time, as a sync intent carries); a later process launch or an intervening
+shutdown produces a distinct resume, and a later lifecycle event in the same phase
+observes a grown transcript and gets its own intent: Claude Code runs `SessionStart`
+again at every auto-compaction, from the same process (Appendix A, ADR 0101). The pi
 bridge additionally assigns each native event object a shared observation id and monotonic
 callback timestamp; duplicate observers share them, and detached callback arrival order
 cannot invert lifecycle order or merge distinct empty resumes. JSONL
@@ -3491,6 +3504,13 @@ contract is identical to 2.1.263 with one addition: `PreToolUse`, `PostToolUse`,
 `UserPromptSubmit`, `SubagentStart` and `SessionEnd` are unchanged; `SessionEnd.reason` is
 still `other` in `-p` mode and the subagent path convention is unchanged. Unknown fields pass
 through the hook schemas, so no normalizer change was needed.
+
+**Claude Code 2.1.309 auto-compaction, 2026-10-28** (observed in a live interactive
+session's shim journal and transcript; no payload captured). Each auto-compaction
+(`compact_boundary` record, `compactMetadata.trigger: "auto"`) runs `SessionStart` again
+from the same process (same launch PID and birth), with no `SessionEnd` between and a
+transcript that has grown since the previous start; it is not a resume. Two compactions
+of one session produced two such starts (ADR 0101).
 
 **Gemini Code Assist 2.75.0 restart loop, 2026-09-11.** The code-oss extension
 `google.geminicodeassist` spawns `agent/a2a-server.mjs`, whose startup runs a

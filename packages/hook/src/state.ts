@@ -76,6 +76,21 @@ const pendingSchema = z.strictObject({
   // Split continuations are unsent source material, not additional in-flight batches.
   remainderFile: z.string().nullable().default(null),
 });
+/**
+ * The reason bundles before ADR 0101 recorded for every ingest 409, whatever its code. Their
+ * own lifecycle ids caused `BATCH_CONFLICT`s, which are no verdict, so a state carrying it is
+ * read as unsuspended and its pending batch is sent again; a genuine `SESSION_OWNED` or
+ * `SESSION_PURGED` suspends it again under a reason that names the code.
+ */
+const UNCODED_SESSION_REJECTION = "The server rejected this session.";
+const suspensionSchema = z
+  .strictObject({ code: z.number(), reason: z.string() })
+  .nullable()
+  .transform((suspended) =>
+    suspended?.code === 409 && suspended.reason === UNCODED_SESSION_REJECTION
+      ? null
+      : suspended,
+  );
 export const stateSchema = z.strictObject({
   v: z.literal(1),
   harness: cliHarnessSchema,
@@ -97,9 +112,7 @@ export const stateSchema = z.strictObject({
   children: z.array(z.string()),
   processed: z.array(z.string()),
   lastSyncAt: z.number(),
-  suspended: z
-    .strictObject({ code: z.number(), reason: z.string() })
-    .nullable(),
+  suspended: suspensionSchema,
   retryGeneration: z.number().int().nonnegative(),
 });
 export type HookState = z.infer<typeof stateSchema>;

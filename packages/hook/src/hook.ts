@@ -200,6 +200,9 @@ export function recordHook(
       ? phase.preceding
       : (phase?.id ?? "initial");
   const nativeId = event.tool_use_id ?? event.prompt_id ?? event.turn_id ?? "";
+  // A lifecycle event is its launch, its preceding phase and the transcript it observed:
+  // duplicate callbacks of one event see the same file and coalesce, while a later start in
+  // the same phase (Claude Code's SessionStart after each compaction) sees a grown one.
   const id = hash(
     JSON.stringify([
       harness,
@@ -211,7 +214,7 @@ export function recordHook(
         ? null
         : mapping.behavior === "sync"
           ? [nativeId, event.agent_id, source.signature, event.activeLeafId]
-          : null,
+          : source.signature,
     ]),
   );
   const child = mapping.child
