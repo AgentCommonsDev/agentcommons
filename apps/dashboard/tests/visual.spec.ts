@@ -91,7 +91,9 @@ for (const theme of ["dark", "light"] as const)
             page.getByTestId("admin-users-table").locator("tbody tr"),
           ).toHaveCount(2);
         },
-        mask: () => [],
+        // Last seen is this run's own dashboard requests, made on the real weekday, so its
+        // distance from the fixed Sunday clock changes with the day the suite runs.
+        mask: () => [page.getByTestId("admin-users-table").locator("time")],
       },
       {
         name: "settings",
@@ -134,7 +136,9 @@ for (const theme of ["dark", "light"] as const)
       await page.evaluate(() => {
         scrollTo(0, 0);
       });
-      await expect(page).toHaveScreenshot(`${screen.name}-${theme}.png`, {
+      // Soft, so one run compares every screen: a hard failure hid every screen after the
+      // first mismatch from comparison and from the run's actual images.
+      await expect.soft(page).toHaveScreenshot(`${screen.name}-${theme}.png`, {
         fullPage: true,
         mask: screen.mask(),
       });

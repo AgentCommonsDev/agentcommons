@@ -530,10 +530,12 @@ it("lists every control session for moderation with its publication, visibility 
     },
   });
   const expected = [root, child, hidden, purged, pending];
-  // The member list, the page's former source, never shows the unpublished capture.
+  // The member list, the page's former source, never shows the unpublished capture, and
+  // a purge removes the session from browsing even for admins (ADR 0088).
   const readModel = await sessions.list(moderator, { limit: 100 });
   const listed = readModel.result.items.map((item) => item.session_id);
-  expect(listed).toEqual(expect.arrayContaining([root, child, hidden, purged]));
+  expect(listed).toEqual(expect.arrayContaining([root, child, hidden]));
+  expect(listed).not.toContain(purged);
   expect(listed).not.toContain(pending);
   // The moderation list pages through every control row and states one total.
   const items = new Map<

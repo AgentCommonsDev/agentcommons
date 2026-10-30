@@ -340,6 +340,20 @@ export async function applyFilters(
     .click();
   await expect(sheet).toHaveCount(0);
 }
+/** Clear sits beside Apply in the same two layouts: inline from 640px, in the sheet below it. */
+export async function clearFilters(page: Page, label: string) {
+  const wide = (page.viewportSize()?.width ?? 1440) >= 640;
+  const clear = (scope: Locator) =>
+    scope.getByRole("button", { name: copy.app.common.clear, exact: true });
+  if (wide) {
+    await clear(page.getByRole("search", { name: label, exact: true })).click();
+    return;
+  }
+  await page.getByRole("button", { name: label, exact: true }).click();
+  const sheet = page.getByRole("dialog");
+  await clear(sheet).click();
+  await expect(sheet).toHaveCount(0);
+}
 /** When a provider is configured, the password form sits behind one explicit switch. */
 export async function openPasswordSignIn(page: Page, isMobile: boolean) {
   const toggle = page.getByTestId(/^(login|signup)-use-password$/);
