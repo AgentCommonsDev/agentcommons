@@ -187,4 +187,25 @@ describe("installer independence", () => {
       readFileSync(join(home, ".claude", "settings.json"), "utf8"),
     ).toContain("agentcommons-hook");
   });
+
+  // @req R-INST-09
+  it("a machine with Claude Code's ~/.claude but no claude on PATH (the desktop app) is configured without a native registration", () => {
+    const { directory, home, config } = machine(0, { gemini: false });
+    const empty = join(directory, "empty-bin");
+    mkdirSync(empty);
+    vi.stubEnv("PATH", empty);
+    // Without the home directory nothing is detected, as before.
+    expect(install(directory, config, { noShellRc: true }).harnesses).toEqual(
+      [],
+    );
+    mkdirSync(join(home, ".claude"));
+    const result = install(directory, config, { noShellRc: true });
+    expect(result.harnesses).toEqual(["claude"]);
+    // No `claude mcp add` was attempted, so there is no notice to report.
+    expect(result.failures).toEqual([]);
+    expect(claudeEntry(home)).toEqual(HARNESSES.claude.mcp(URL_, KEY));
+    expect(
+      readFileSync(join(home, ".claude", "settings.json"), "utf8"),
+    ).toContain("agentcommons-hook");
+  });
 });

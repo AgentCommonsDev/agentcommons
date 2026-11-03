@@ -278,10 +278,14 @@ function shellRc(home: string, config: HookConfig, uninstall: boolean): void {
     );
   }
 }
-/** Supported harnesses whose CLI is on PATH right now; the installer wires exactly these. */
-export function detectHarnesses(): CliHarness[] {
-  return (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
-    present(HARNESSES[name].binary),
+/** Supported harnesses whose CLI is on PATH or whose home directory exists; the installer wires exactly these. */
+export function detectHarnesses(home: string): CliHarness[] {
+  return (Object.keys(HARNESSES) as CliHarness[]).filter(
+    (name) =>
+      present(HARNESSES[name].binary) ||
+      (HARNESSES[name].homeMarkers ?? []).some((marker) =>
+        existsSync(join(home, ...marker)),
+      ),
   );
 }
 const registrySchema = z.record(
@@ -430,7 +434,12 @@ function wireHarness(
   saveConfig(format, mcpPath, mcpConfig);
   const nativeCommand = definition.mcpCommand(url, config.key, mcpContext);
   try {
-    if (!uninstall && options.configHome === undefined && nativeCommand) {
+    if (
+      !uninstall &&
+      options.configHome === undefined &&
+      nativeCommand &&
+      present(definition.binary)
+    ) {
       const registrationConfig = {
         ...mcpConfig,
         [format.mcpKey]: Object.fromEntries(
@@ -510,7 +519,7 @@ export function install(
     ? (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
         existsSync(join(home, ...HARNESSES[name].configPath)),
       )
-    : detectHarnesses();
+    : detectHarnesses(home);
   const url = mcpUrl(config);
   const failures: InstallFailure[] = [];
   for (const harness of selected) {
@@ -552,7 +561,7 @@ export async function doctor(
     throw new Error("The installed hook.js file is missing.");
   const home = options.configHome ?? homedir();
   const url = mcpUrl(config);
-  for (const harness of detectHarnesses()) {
+  for (const harness of detectHarnesses(home)) {
     const definition = HARNESSES[harness];
     const format = FORMATS[definition.configFormat];
     const settings = readConfig(format, join(home, ...definition.configPath));

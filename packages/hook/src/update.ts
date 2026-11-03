@@ -1,6 +1,7 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import * as z from "zod";
 import {
@@ -390,7 +391,9 @@ export async function reconcileInstall(
   if (!config.installOptions) return "skipped";
   const current = hookIdentity(directory, executable).sha256;
   const { detectHarnesses } = await import("./install.js");
-  const detected = detectHarnesses();
+  const detected = detectHarnesses(
+    config.installOptions.configHome ?? homedir(),
+  );
   if (
     state.configured &&
     state.configured.sha256 === current &&

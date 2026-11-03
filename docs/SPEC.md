@@ -799,7 +799,9 @@ key: installed hooks update themselves (§6.2, **Self-update**).
 3. Write `config.json` (0600): server, key, `installationId` (generated once), node
    path, `realtime`, `syncIntervalSeconds` (10), `syncBytesThreshold` (65536),
    `disabledPaths`. Existing values preserved.
-4. `node hook.js install`: for each harness present, merge hooks into its config keyed by
+4. `node hook.js install`: for each harness present (its CLI on `PATH`, or one of its
+   `homeMarkers` directories such as `~/.claude`, which the Claude Code desktop app creates
+   without putting `claude` on `PATH`; Appendix A), merge hooks into its config keyed by
    an exact marker (`agentcommons-hook` in the command); register the MCP server (`claude
 mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add agentcommons
 --env AGENTCOMMONS_API_KEY=… -- <node> <dir>/hook.js mcp` (a stdio bridge, ADR 0089), Gemini `mcpServers` entry with
@@ -808,8 +810,9 @@ mcp add -s user -t http … -H "Authorization: Bearer <key>"`, `codex mcp add ag
    without a shell (Appendix A, Gemini Code Assist); Codex carries the literal key in its
    stdio bridge's `env` table, so it needs no shell either; a reconcile run (§6.2 **Reconfiguration**) rewrites an existing
    entry, so installed machines heal on their next hook run after a bundle swap; each
-   harness is wired independently, so a `claude mcp add` that fails (the CLI missing
-   from the detached uploader's PATH, a slow first start, a refused add) is reported as a
+   harness is wired independently; the native command runs only when the CLI is on `PATH`,
+   so a desktop-only Claude Code gets the installer's entry with no notice; a
+   `claude mcp add` that fails (a slow first start, a refused add) is reported as a
    notice after the "Configured" summary while the Gemini and Codex entries are still
    rewritten: the installer restores its own entry, reads it back to confirm it is in
    place, and names the CLI's exit status or timeout (30 s) and first stderr line with the
@@ -1143,11 +1146,12 @@ reinstall; `hook.js doctor` is unchanged.
 install` records its flags (`--config-home`, `--no-shell-rc`) in `config.json` and the
 digest plus harness set it wired in `update.json`. On every uploader run, and only when
 `config.json` carries the install flags (a directory the installer never set up is left
-alone), the shim compares that record with the installed digest and the supported CLIs
-present on `PATH`; after a swap, when a newly supported or newly installed harness
-appears, or when the wiring record is missing (an older uploader's strict read of
-`update.json` dropped it), it runs the installed bundle's own `install` with the recorded
-flags. It honors the recorded shell-rc choice: a normal install re-applies the shell
+alone), the shim compares that record with the installed digest and the supported
+harnesses present (CLI on `PATH` or a `homeMarkers` directory); after a swap, when a newly
+supported or newly installed harness appears, or when the wiring record is missing (an
+older uploader's strict read of `update.json` dropped it), it runs the installed bundle's
+own `install` with the recorded flags. It honors the recorded shell-rc choice: a normal
+install re-applies the shell
 exports, which are marked blocks, so a re-write that changes nothing is a no-op and a swap
 heals an install whose exports an older bundle wrote to fewer files (the login files were
 added later); a `--no-shell-rc` canary keeps suppressing them. The installer adds or replaces only entries carrying
@@ -3511,6 +3515,18 @@ session's shim journal and transcript; no payload captured). Each auto-compactio
 from the same process (same launch PID and birth), with no `SessionEnd` between and a
 transcript that has grown since the previous start; it is not a resume. Two compactions
 of one session produced two such starts (ADR 0101).
+
+**Claude Code desktop app (Claude Code 2.1.309), 2026-11-03** (observed on macOS). The
+desktop app runs its own bundled Claude Code from
+`~/Library/Application Support/Claude/claude-code/<version>/<build>/claude.app` and puts no
+`claude` on `PATH`, so detection by CLI alone found no harness on a desktop-only machine.
+It starts that binary with `--setting-sources=user,project,local` and no
+`CLAUDE_CONFIG_DIR`, so it reads `~/.claude/settings.json` hooks and keeps transcripts
+under `~/.claude/projects/`; `~/.claude` exists once a Code tab session has run. Hooks the
+installer wrote while a session was open were picked up by that running session within a
+minute, and its full transcript uploaded. The desktop docs state that MCP servers in
+`~/.claude.json` apply to Code tab sessions; the bundled binary's `claude mcp add -s user
+-t http` writes the same entry shape as the installer.
 
 **Gemini Code Assist 2.75.0 restart loop, 2026-09-11.** The code-oss extension
 `google.geminicodeassist` spawns `agent/a2a-server.mjs`, whose startup runs a
