@@ -503,8 +503,9 @@ never a 401: an overloaded server is a retry, not a lost session.
 - A `sync` batch that accepts no new record and changes neither lifecycle, normalizer
   context nor parent link creates no revision and no outbox and takes no fence: it
   commits its receipt (revision equal to the accepted revision it observed, published
-  when that revision is), the installation digest, `lastActivityAt` and the context
-  watermark, its audit row and a projection job; its `publication` reports whether the
+  when that revision is), the installation digest, `lastActivityAt` (returning an
+  `INACTIVE` session to `ACTIVE`, R-ING-21) and the context watermark, its audit row
+  and a projection job; its `publication` reports whether the
   session has published that revision. The worker appends such receipts to ClickHouse
   at the current published revision as a receipt-only publication (fence and control
   row, no rebuild) when no revision is pending, or with the pending publish otherwise,
