@@ -5,27 +5,121 @@ The [SDK release workflow](../.github/workflows/release-sdks.yml) publishes
 `sdk-vX.Y.Z` tag. The tag must point to a commit on `main`, and both package versions
 must match it. Merging a PR does not publish packages.
 
-## Configure the registries once
+## First-time setup
 
-Create GitHub environments named `npm` and `pypi`. The workflow uses these names
-when requesting registry credentials.
+You need permission to manage this repository's GitHub environments and accounts on
+[npm](https://www.npmjs.com/signup) and [PyPI](https://pypi.org/account/register/).
+Complete each site's email verification and two-factor authentication setup. The
+workflow creates the package listings on the first successful upload.
 
-For npm, the publishing account needs access to the `@agentcommons` scope. For the
-first release, set a publishing token as the `NPM_TOKEN` secret in the `npm` GitHub
-environment. Once the package exists, configure its trusted publisher with GitHub
-owner `AgentCommonsDev`, repository `agentcommons`, workflow `release-sdks.yml` and
-environment `npm`. Enable direct `npm publish` for that publisher, then remove
-`NPM_TOKEN`. Later releases use GitHub's OIDC identity and include provenance.
-See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+### 1. Create the GitHub environments
 
-For PyPI, create a pending trusted publisher for project `agentcommons`, owner
-`AgentCommonsDev`, repository `agentcommons`, workflow `release-sdks.yml` and
-environment `pypi`. It creates the project on the first successful release;
-no PyPI token is needed. If the project already exists under your account, add
-the same publisher in its settings. A pending publisher does not reserve a name.
+Open [Settings → Environments](https://github.com/AgentCommonsDev/agentcommons/settings/environments).
+Click **New environment**, enter `npm`, and click **Configure environment**. Repeat
+for `pypi`. These names must match the release workflow and registry forms below.
+If you restrict deployment branches and tags, allow tags matching `sdk-v*`.
+
+### 2. Set up the npm organization and first-release token
+
+The package name `@agentcommons/sdk` belongs to the npm scope `@agentcommons`.
+The GitHub organization does not create that npm scope for you.
+
+1. Sign in to npm. Open your profile menu → **Add an Organization**. Enter
+   `agentcommons`, choose the free **Unlimited public packages** plan, and create it.
+   If your team already owns it, use an account with publishing access. If someone
+   else owns the scope, choose a scope you control and update the SDK package name,
+   release guard and documentation before publishing.
+2. Open your profile menu → **Access Tokens** → **Generate New Token**. Configure:
+
+   | Setting                          | Value                                                         |
+   | -------------------------------- | ------------------------------------------------------------- |
+   | Token name                       | `agentcommons-first-release`                                  |
+   | Packages and scopes permission   | Read and write (publish and stage)                            |
+   | Selected scope                   | `@agentcommons`                                               |
+   | Bypass two-factor authentication | Enabled, so GitHub Actions can publish unattended             |
+   | Organizations permission         | No access; package publishing uses the scope permission above |
+   | Expiration                       | A short period that covers the first release                  |
+
+3. Generate the token and copy it. In GitHub's `npm` environment, under
+   **Environment secrets**, click **Add environment secret**. Name it `NPM_TOKEN`,
+   paste the token as its value, and save.
+
+The first tag uses this token to create `@agentcommons/sdk`. After that release,
+replace it with the trusted publisher in step 5.
+See npm's [organization setup](https://docs.npmjs.com/creating-an-organization/) and
+[token settings](https://docs.npmjs.com/creating-and-viewing-access-tokens/).
+
+### 3. Set up PyPI's pending publisher
+
+Sign in to PyPI and open [Your account → Publishing](https://pypi.org/manage/account/publishing/).
+Under **Add a new pending publisher**, select **GitHub** and enter:
+
+| Field             | Value              |
+| ----------------- | ------------------ |
+| PyPI project name | `agentcommons`     |
+| Owner             | `AgentCommonsDev`  |
+| Repository name   | `agentcommons`     |
+| Workflow name     | `release-sdks.yml` |
+| Environment name  | `pypi`             |
+
+Click **Add**. Enter only the workflow filename, including `.yml`.
+No PyPI API token or GitHub secret is needed. The first successful upload creates
+the project and makes this publisher permanent. A pending publisher does not
+reserve the package name. If you already own the project, add the same publisher
+under that project's **Publishing** settings instead.
 See [PyPI's first-release setup](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/).
 
-## Release a version
+### 4. Publish version 0.1.0
+
+Once both registries are configured and CI is green on `main`, run these commands
+from the repository with Node.js 24, pnpm 10 and [uv](https://docs.astral.sh/uv/) installed:
+
+```bash
+git switch main
+git pull --ff-only
+pnpm install --frozen-lockfile
+uv sync --project packages/sdk-python --locked
+pnpm sdk:release:check sdk-v0.1.0
+git tag -a sdk-v0.1.0 -m "SDK 0.1.0"
+git push origin sdk-v0.1.0
+```
+
+The final command starts publication. Open
+[Actions → SDK release](https://github.com/AgentCommonsDev/agentcommons/actions/workflows/release-sdks.yml)
+and wait for `build`, `npm` and `pypi` to succeed. If a registry job fails, fix its
+settings and use **Re-run failed jobs** for that run. Keep the original tag; a
+registry that already accepted the version will reject a second upload.
+
+Confirm the versions on [npm](https://www.npmjs.com/package/@agentcommons/sdk) and
+[PyPI](https://pypi.org/project/agentcommons/), then install them in your project:
+
+```bash
+npm install @agentcommons/sdk
+pip install agentcommons
+```
+
+Update the main and SDK READMEs' first-release installation notes once both packages
+are available.
+
+### 5. Switch npm to trusted publishing
+
+Open `@agentcommons/sdk` on npm → **Settings** → **Trusted Publisher**. Select
+**GitHub Actions**, then enter:
+
+| Field                | Value                       |
+| -------------------- | --------------------------- |
+| Organization or user | `AgentCommonsDev`           |
+| Repository           | `agentcommons`              |
+| Workflow filename    | `release-sdks.yml`          |
+| Environment name     | `npm`                       |
+| Allowed actions      | Enable direct `npm publish` |
+
+Save the publisher. Delete `NPM_TOKEN` from GitHub's `npm` environment and revoke
+`agentcommons-first-release` in npm's **Access Tokens** page. Later releases use
+GitHub's OIDC identity and include provenance. PyPI already uses this mechanism.
+See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+## Later releases
 
 1. Update `version` in `packages/sdk/package.json` and `packages/sdk-python/pyproject.toml`
    to the same `X.Y.Z`. Run `uv lock --project packages/sdk-python` and `pnpm install`
@@ -46,14 +140,9 @@ rebuild packages. Watch both jobs; a successful upload to one registry does not 
 the other succeeded. For a transient failure, rerun only the failed job. Published
 versions cannot be replaced; fixes need a new version.
 
-After the first successful release, users can install with:
+## Inspect artifacts without publishing
 
-```bash
-npm install @agentcommons/sdk
-pip install agentcommons
-```
-
-To inspect release artifacts locally without uploading:
+To build the same distribution formats locally:
 
 ```bash
 pnpm --filter @agentcommons/sdk pack --out /tmp/agentcommons-sdk.tgz
