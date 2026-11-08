@@ -203,6 +203,9 @@ importers:
       '@agentcommons/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@agentcommons/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@calcom/embed-react':
         specifier: 1.5.3
         version: 1.5.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -293,12 +296,6 @@ importers:
       lucide-react:
         specifier: ^0.577.0
         version: 0.577.0(react@19.2.8)
-      openapi-fetch:
-        specifier: ^0.17.0
-        version: 0.17.0
-      qs:
-        specifier: ^6.16.0
-        version: 6.16.0
       react:
         specifier: ^19.2.4
         version: 19.2.8
@@ -327,9 +324,6 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.1
         version: 4.3.3(vite@7.3.6(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.13)(yaml@2.9.0))
-      '@types/qs':
-        specifier: ^6.15.1
-        version: 6.15.1
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.18
@@ -348,9 +342,6 @@ importers:
       oidc-provider:
         specifier: 9.12.2
         version: 9.12.2
-      openapi-typescript:
-        specifier: ^7.13.0
-        version: 7.13.0(typescript@5.9.3)
       tailwindcss:
         specifier: ^4.2.1
         version: 4.3.3
@@ -504,6 +495,25 @@ importers:
       '@mariozechner/pi-coding-agent':
         specifier: 0.73.1
         version: 0.73.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(@opentelemetry/api@1.9.1)(@opentelemetry/resources@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(ws@8.21.3)(zod@4.5.4)
+
+  packages/sdk:
+    dependencies:
+      openapi-fetch:
+        specifier: ^0.17.0
+        version: 0.17.0
+      qs:
+        specifier: ^6.16.0
+        version: 6.16.0
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/qs':
+        specifier: ^6.15.1
+        version: 6.15.1
+      openapi-typescript:
+        specifier: ^7.13.0
+        version: 7.13.0(typescript@5.9.3)
 
   packages/traces:
     dependencies:

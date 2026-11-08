@@ -1,5 +1,6 @@
 .git
 **/node_modules
+packages/sdk-python
 **/dist
 apps/api/public/hook
 **/coverage

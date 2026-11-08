@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test:workspace": "pnpm build && pnpm test:workspace:built",
     "test:browser": "pnpm build && pnpm test:browser:built",
-    "api:generate": "node scripts/generate-client.mjs && node scripts/generate-options.mjs && prettier --write src/lib/api/generated.ts src/lib/api/options.ts",
+    "api:generate": "pnpm --filter @agentcommons/sdk generate && node scripts/generate-options.mjs && prettier --write src/lib/api/options.ts",
     "test:browser:built": "playwright test -c playwright.config.ts",
     "test:workspace:built": "playwright test -c playwright.workspace.config.ts",
     "test:saas:built": "playwright test -c playwright.saas.config.ts",
@@ -49,8 +49,6 @@
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
     "lucide-react": "^0.577.0",
-    "openapi-fetch": "^0.17.0",
-    "qs": "^6.16.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-grid-layout": "^2.2.4",
@@ -58,18 +56,17 @@
     "remark-gfm": "^4.0.1",
     "shiki": "^3.23.0",
     "tailwind-merge": "^3.5.0",
-    "zod": "4.5.4"
+    "zod": "4.5.4",
+    "@agentcommons/sdk": "workspace:*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.1",
-    "@types/qs": "^6.15.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "gray-matter": "^4.0.3",
     "jose": "6.2.12",
     "oidc-provider": "9.12.2",
-    "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.2.1",
     "vite": "^7.3.1"
   }

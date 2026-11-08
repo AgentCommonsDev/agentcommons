@@ -1,5 +1,8 @@
 # Documentation
 
+For API integrations, start with the [TypeScript SDK](../packages/sdk/README.md) or
+[Python SDK](../packages/sdk-python/README.md). Both use the generated OpenAPI contract.
+
 Read in this order. Everything in the spec is built; there is no roadmap.
 
 1. [`SPEC.md`](SPEC.md): the specification. Implementation-ready; every hook contract in it

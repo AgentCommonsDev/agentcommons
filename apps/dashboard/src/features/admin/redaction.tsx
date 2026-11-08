@@ -4,7 +4,7 @@ import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 import { z } from "zod";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
-import type { paths } from "../../lib/api/generated";
+import type { paths } from "@agentcommons/sdk";
 import { redactionRuleIds } from "../../lib/api/options";
 import { errorMessage, number } from "../../lib/display";
 import type { Policy } from "../../lib/types";

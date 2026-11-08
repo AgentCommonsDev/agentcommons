@@ -47,7 +47,8 @@ function fixture(overrides: Partial<HookManifest> = {}, bundle = NEW_BUNDLE) {
     writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   };
   fakeCli("claude");
-  vi.stubEnv("PATH", bin);
+  // macOS process identity uses ps; keep system tools while excluding installed CLIs.
+  vi.stubEnv("PATH", `${bin}:/usr/bin:/bin`);
   const configHome = join(directory, "home");
   mkdirSync(configHome);
   const config = configure(directory, {

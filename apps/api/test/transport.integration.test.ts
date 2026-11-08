@@ -8,6 +8,13 @@ import { OrganizationEmbeddingsService } from "../src/services/organization-embe
 import { OrganizationSsoService } from "../src/services/organization-sso.js";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { gzipSync } from "node:zlib";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import {
+  createClient as createSdkClient,
+  unwrap,
+} from "../../../packages/sdk/src/index.js";
 import type { FastifyInstance } from "fastify";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -213,6 +220,76 @@ beforeAll(async () => {
   );
 }, 120_000);
 afterAll(release);
+
+// @req R-SDK-02
+it("reads real scoped API data through the generated TypeScript and Python SDKs", async () => {
+  const client = createSdkClient({ baseUrl: address, apiKey: readKey });
+  const search = unwrap(
+    await client.POST("/api/v1/search", { body: { query: "transport" } }),
+  );
+  expect(JSON.stringify(search)).toContain(publicId);
+  const page = unwrap(
+    await client.GET("/api/v1/sessions", {
+      params: {
+        query: {
+          filters: { repo_name: "github.com/rek7/agentcommons" },
+          limit: 1,
+        },
+      },
+    }),
+  );
+  expect(page.items[0]?.session_id).toBe(publicId);
+  const empty = unwrap(
+    await client.GET("/api/v1/sessions", {
+      params: { query: { filters: { repo_name: "example/missing" } } },
+    }),
+  );
+  expect(empty.items).toEqual([]);
+  const session = unwrap(
+    await client.GET("/api/v1/sessions/{id}", {
+      params: { path: { id: publicId } },
+    }),
+  );
+  expect(session.messages.length).toBeGreaterThan(0);
+  const csv = unwrap(
+    await client.GET("/api/v1/sessions", {
+      params: { query: { format: "csv" } },
+      parseAs: "text",
+    }),
+  );
+  expect(csv).toContain(publicId);
+  const foreign = await createSdkClient({
+    baseUrl: address,
+    apiKey: other.key,
+  }).GET("/api/v1/sessions/{id}", { params: { path: { id: publicId } } });
+  expect(() => unwrap(foreign)).toThrow(
+    expect.objectContaining({ status: 404, code: "SESSION_NOT_FOUND" }),
+  );
+  const { stdout } = await promisify(execFile)(
+    "uv",
+    [
+      "run",
+      "--project",
+      "packages/sdk-python",
+      "--locked",
+      "python",
+      "packages/sdk-python/tests/live_client.py",
+    ],
+    {
+      cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+      env: {
+        ...process.env,
+        SDK_TEST_CONFIGURATION: JSON.stringify({
+          url: address,
+          key: readKey,
+          foreign_key: other.key,
+          session: publicId,
+        }),
+      },
+    },
+  );
+  expect(stdout).toContain("Python SDK real API checks passed");
+}, 60_000);
 
 // @req R-ARCH-03
 it("serves real persisted sessions through the same REST search/get/SQL schemas and bounded CSV page", async () => {

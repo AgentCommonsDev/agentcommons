@@ -5,12 +5,15 @@ docs/reviews/
 .claude/
 .codex/
 node_modules/
+.venv/
 dist/
 coverage/
 test-results/
 playwright-report/
 packages/db/prisma/auth.prisma
 apps/dashboard/src/lib/api/generated.ts
+packages/sdk/src/generated.ts
+packages/sdk-python/uv.lock
 apps/api/openapi.json
 apps/api/public/hook/
 

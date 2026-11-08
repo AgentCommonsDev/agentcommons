@@ -4,7 +4,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { presetRules } from "@agentcommons/core/policy";
 import { copy } from "../../copy";
 import { api, unwrap } from "../../lib/api/client";
-import type { paths } from "../../lib/api/generated";
+import type { paths } from "@agentcommons/sdk";
 import { errorMessage } from "../../lib/display";
 import { Button } from "../../components/ui/button";
 import {

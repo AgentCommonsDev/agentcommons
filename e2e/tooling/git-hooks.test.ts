@@ -80,10 +80,12 @@ it("real commits and pushes run the checked-in gates and stop on failures", () =
     env.AC_FAIL_GATE = "";
     expect(git("push", "origin", "main").status).toBe(0);
     const calls = readFileSync(log, "utf8").trim().split("\n");
-    expect(calls.slice(-4)).toEqual([
+    expect(calls.slice(-6)).toEqual([
       "typecheck",
       "test",
       "openapi:check",
+      "sdk:check",
+      "test:sdk:python",
       "spec:check",
     ]);
     expect(calls).toContain("exec lint-staged");

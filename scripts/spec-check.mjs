@@ -52,7 +52,11 @@ function* walk(dir) {
       continue;
     const p = join(dir, name);
     if (statSync(p).isDirectory()) yield* walk(p);
-    else if (/\.(test|spec|e2e)\.[cm]?[jt]sx?$/.test(name)) yield p;
+    else if (
+      /\.(test|spec|e2e)\.[cm]?[jt]sx?$/.test(name) ||
+      /^test_.*\.py$/.test(name)
+    )
+      yield p;
   }
 }
 const covered = new Map(rows.map((r) => [r.id, []]));

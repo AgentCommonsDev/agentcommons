@@ -21,7 +21,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.7"
+          python-version: "3.12"
+      - run: uv sync --project packages/sdk-python --locked
       - run: pnpm build
+      - run: pnpm sdk:check
+      - run: pnpm test:sdk:python
+      - run: uv run --project packages/sdk-python --locked ruff check packages/sdk-python
       # The API reference integration test drives a real browser; install before the suites.
       - run: pnpm exec playwright install --with-deps
       - run: pnpm lint
