@@ -17,7 +17,7 @@
     "prepare": "husky",
     "dev": "pnpm --parallel --filter @agentcommons/api --filter @agentcommons/dashboard dev",
     "build": "pnpm --filter @agentcommons/hook build && pnpm -r --filter '!agentcommons' --filter '!@agentcommons/hook' --if-present build",
-    "typecheck": "pnpm -r --if-present typecheck && tsc --noEmit -p tsconfig.json",
+    "typecheck": "pnpm --filter @agentcommons/sdk build && pnpm -r --if-present typecheck && tsc --noEmit -p tsconfig.json",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
     "test": "vitest run --exclude '**/*.integration.test.ts' --exclude '**/*.e2e.test.ts' --exclude '**/*.perf.test.ts'",
@@ -36,10 +36,17 @@
     "db:domain": "pnpm --filter @agentcommons/api domain",
     "hook:link": "pnpm --filter @agentcommons/hook link:local",
     "knip": "knip",
-    "verify": "pnpm build && pnpm typecheck && pnpm lint && pnpm test && pnpm test:integration && pnpm test:e2e:built && pnpm db:validate && pnpm db:diff && pnpm fixtures:check && pnpm openapi:check && pnpm knip && pnpm spec:check && pnpm test:performance",
+    "verify": "pnpm build && pnpm typecheck && pnpm lint && pnpm test && pnpm test:integration && pnpm test:e2e:built && pnpm db:validate && pnpm db:diff && pnpm fixtures:check && pnpm openapi:check && pnpm sdk:check && pnpm test:sdk:python && pnpm knip && pnpm spec:check && pnpm test:performance",
     "test:e2e:built": "vitest run .e2e.test.ts --maxWorkers=1 --no-file-parallelism && pnpm --filter @agentcommons/dashboard test:browser:built && pnpm --filter @agentcommons/dashboard test:workspace:built && pnpm --filter @agentcommons/dashboard test:saas:built",
     "test:canary": "LIVE_HARNESS_CANARY=1 vitest run e2e/live-harness.e2e.test.ts",
-    "test:performance": "vitest run packages/hook/test/timing.perf.test.ts --maxWorkers=1 --no-file-parallelism"
+    "test:performance": "vitest run packages/hook/test/timing.perf.test.ts --maxWorkers=1 --no-file-parallelism",
+    "sdk:generate:typescript": "pnpm --filter @agentcommons/sdk generate",
+    "sdk:check:typescript": "pnpm --filter @agentcommons/sdk generate:check",
+    "sdk:generate:python": "uv run --project packages/sdk-python --locked python packages/sdk-python/scripts/generate.py",
+    "sdk:check:python": "uv run --project packages/sdk-python --locked python packages/sdk-python/scripts/generate.py --check",
+    "sdk:generate": "pnpm sdk:generate:typescript && pnpm sdk:generate:python",
+    "sdk:check": "pnpm sdk:check:typescript && pnpm sdk:check:python",
+    "test:sdk:python": "uv run --project packages/sdk-python --locked pytest packages/sdk-python/tests"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.1",

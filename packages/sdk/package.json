@@ -1,0 +1,43 @@
+{
+  "name": "@agentcommons/sdk",
+  "version": "0.1.0",
+  "description": "Typed TypeScript client for the AgentCommons API",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentCommonsDev/agentcommons.git",
+    "directory": "packages/sdk"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "generate": "node scripts/generate.mjs",
+    "generate:check": "node scripts/generate.mjs --check",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0",
+    "qs": "^6.16.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/qs": "^6.15.1",
+    "openapi-typescript": "^7.13.0"
+  }
+}

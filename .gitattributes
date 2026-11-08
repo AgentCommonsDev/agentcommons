@@ -1,0 +1,6 @@
+packages/sdk/src/generated.ts linguist-generated=true
+packages/sdk-python/src/agentcommons/api/** linguist-generated=true
+packages/sdk-python/src/agentcommons/models/** linguist-generated=true
+packages/sdk-python/src/agentcommons/client.py linguist-generated=true
+packages/sdk-python/src/agentcommons/errors.py linguist-generated=true
+packages/sdk-python/src/agentcommons/types.py linguist-generated=true

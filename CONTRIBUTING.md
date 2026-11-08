@@ -21,6 +21,13 @@ pnpm dev
 Run `pnpm test`, `pnpm lint`, and `pnpm typecheck` before opening a PR. Integration
 tests need Docker (testcontainers).
 
+The SDK checks also need [uv](https://docs.astral.sh/uv/). Run
+`uv sync --project packages/sdk-python --locked` once. When API schemas change, run
+`pnpm openapi:generate`, `pnpm sdk:generate` and
+`pnpm --filter @agentcommons/dashboard api:generate`. Commit the regenerated clients.
+`pnpm sdk:check` detects drift; `pnpm test:sdk:python` checks the Python client and its
+wheel. TypeScript SDK and tarball tests run with `pnpm test`.
+
 ## Pull requests
 
 - One concern per PR. Link the spec section you are implementing or changing.

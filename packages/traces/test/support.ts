@@ -43,7 +43,8 @@ export async function startClickHouse() {
     ])
     // Bounded by the machine so the same fixture starts on a 2-vCPU CI runner.
     .withResourcesQuota({
-      memory: Math.min(4 * 1024 * 1024 * 1024, Math.floor(totalmem() / 2)),
+      // Testcontainers takes GiB here, while os.totalmem() returns bytes.
+      memory: Math.min(4, totalmem() / 2 / 1024 ** 3),
       cpu: Math.min(4, availableParallelism()),
     })
     .withWaitStrategy(Wait.forHttp("/ping", 8123))

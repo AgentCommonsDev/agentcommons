@@ -1,0 +1,30 @@
+[project]
+name = "agentcommons"
+version = "0.1.0"
+description = "Typed Python client for the AgentCommons API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["httpx>=0.27,<0.29", "attrs>=25.3"]
+
+[project.urls]
+Repository = "https://github.com/AgentCommonsDev/agentcommons"
+Documentation = "https://github.com/AgentCommonsDev/agentcommons/tree/main/packages/sdk-python"
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentcommons"]
+
+[dependency-groups]
+dev = ["openapi-python-client==0.29.1", "pytest>=8,<10", "ruff==0.15.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

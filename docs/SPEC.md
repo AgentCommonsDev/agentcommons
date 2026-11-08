@@ -1,6 +1,6 @@
 # AgentCommons — Specification
 
-Status: v5.2, local ClickHouse acceptance verified 2026-09-08. ClickHouse replaces PostgreSQL trace storage under ADR0047. Current results and external configuration boundaries are recorded in
+Status: v5.3, local ClickHouse acceptance verified 2026-09-08. ClickHouse replaces PostgreSQL trace storage under ADR0047. Current results and external configuration boundaries are recorded in
 `docs/VERIFICATION.md`. Completion requires §16.1 item 8 and is not implied by requirement citations.
 See `docs/reviews/codex-review-2026-09-07.md`; v2 is retained for comparison. Owner: rek7. First deployment: ZeroPath. Self-hostable with one or more organizations per
 instance; each organization is an independent data and authorization boundary
@@ -145,6 +145,8 @@ agentcommons/
   packages/core                   zod schemas, normalizers, redaction, link rules, formatters
   packages/hook                   zero-dependency shim → dist/hook.js
   packages/pi-extension           pi bridge emitting canonical behaviors
+  packages/sdk                    standalone generated TypeScript API client; also used by dashboard
+  packages/sdk-python             standalone generated Python API client
   infra/                          Pulumi TypeScript (@pulumi/awsx): dev, prod
   fixtures/hooks  fixtures/transcripts  fixtures/search-golden.yaml
   docs/SPEC.md  docs/adr/  docs/reviews/
@@ -152,7 +154,7 @@ agentcommons/
 
 Dependency rules: `hook` has no runtime dependencies. `core` depends on zod and
 secretlint. `api` depends on `core`, `db`, and `traces`. `dashboard` depends on `core` types and the
-generated client.
+generated client from `@agentcommons/sdk`. Both SDKs are independent of private workspace packages.
 
 ### 3.1 Core tenet and internal architecture
 
@@ -193,7 +195,7 @@ apiKeyId, permissions }` and return `{ result, audit }`. Mutation audit rows are
   entry with its config, MCP and global instructions paths (and a reader only for a new
   storage format); add the harness to the live canary
   (§16). Support is announced only when the canary is green.
-- **Generated, not written**: OpenAPI from routes, dashboard client from OpenAPI, MCP
+- **Generated, not written**: OpenAPI from routes, TypeScript/Python SDKs from OpenAPI, MCP
   input schemas from zod, Better Auth models from its generator, Appendix C examples from
   contract-test fixtures.
 
@@ -210,6 +212,34 @@ preset-recommend, rule-pattern) · `@clickhouse/parser` · `@modelcontextprotoco
 Router/Query/Table/Virtual, `shiki` · Pulumi + `@pulumi/awsx` · Vitest,
 `@testcontainers/postgresql`, Playwright, `@axe-core/playwright` · ESLint 9 +
 typescript-eslint strict, Prettier, knip, Husky, lint-staged, commitlint.
+
+### 3.3 API SDKs
+
+`@agentcommons/sdk` (Node 20+ and browsers) and `agentcommons` (Python 3.11+) derive
+all REST operations and request/response types from the checked-in OpenAPI document,
+including optional route groups. TypeScript uses `openapi-typescript` and
+`openapi-fetch`; Python uses pinned `openapi-python-client` over HTTPX (ADR 0102).
+The dashboard imports the same TypeScript client and preserves its cookie credentials
+and UI error fallback. Neither package depends on private workspace code.
+
+Each client accepts a server origin, organization bearer key or existing cookie session,
+custom headers and an injectable transport. Object-valued query members are JSON and
+arrays use bracket keys, matching §7.6. Each language retains HTTP status, API error
+code/message and optional SQL position/detail. TypeScript exposes native `{data,error,response}`
+and an `unwrap` helper; Python endpoint calls raise `ApiError` on HTTP failure. Native
+network exceptions propagate. Requests have no automatic retries or pagination.
+CSV remains available as raw text/bytes. TypeScript supports `parseAs: "stream"`;
+Python streaming uses the client's native HTTPX interface, with native status errors.
+Neither SDK parses or reconnects SSE. Cookie-only operations, admin authority and
+feature flags retain the server's existing checks.
+
+Python schema preparation preserves wire semantics: dynamic recursive JSON becomes
+an unrestricted JSON leaf, homogeneous fixed tuples become bounded homogeneous arrays,
+and object union alternatives get stable component names. Unsupported new tuples,
+generator warnings, missing operations and template changes fail generation. Generated
+code is committed and never hand-edited. CI checks regeneration, runtime contracts,
+and installation of an npm tarball and Python wheel outside the workspace. Package
+metadata and build commands support releases; this change does not publish to npm/PyPI.
 
 ---
 

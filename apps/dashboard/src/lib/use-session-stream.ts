@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { z } from "zod";
 import { sessionEventSchema } from "@agentcommons/core/schemas/get";
-import type { paths } from "./api/generated";
+import type { paths } from "@agentcommons/sdk";
 import { registerStream } from "./streams";
 
 const endpoint = "/api/v1/sessions/{id}/events" satisfies keyof paths;

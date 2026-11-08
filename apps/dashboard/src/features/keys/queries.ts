@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "../../lib/api/client";
-import type { paths } from "../../lib/api/generated";
+import type { paths } from "@agentcommons/sdk";
 import type { keySortKeys } from "../../lib/api/options";
 import type { ApiKey, Page } from "../../lib/types";
 
