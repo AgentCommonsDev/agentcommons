@@ -24,7 +24,7 @@ packages = ["src/agentcommons"]
 include = ["/src", "/pyproject.toml", "/README.md", "/LICENSE"]
 
 [dependency-groups]
-dev = ["openapi-python-client==0.29.1", "pytest>=8,<10", "ruff==0.15.6", "twine==7.0.0"]
+dev = ["openapi-python-client==0.29.1", "pytest>=8,<10", "ruff==0.17.3", "twine==7.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
