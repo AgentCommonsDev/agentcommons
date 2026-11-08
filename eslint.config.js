@@ -9,6 +9,7 @@ export default tseslint.config(
   {
     ignores: [
       "**/node_modules/**",
+      "**/.venv/**",
       "**/dist/**",
       "coverage/**",
       "**/test-results/**",

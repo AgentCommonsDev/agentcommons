@@ -3,7 +3,8 @@
 Typed synchronous and asynchronous clients for the AgentCommons REST API, generated
 from its OpenAPI contract. Requires Python 3.11 or newer.
 
-The package is available from this checkout; it has not been published to PyPI.
+After the first PyPI release, install with `pip install agentcommons`.
+Until then, install from this checkout:
 
 ```bash
 pip install ./packages/sdk-python
@@ -86,4 +87,5 @@ uv build --project packages/sdk-python
 
 The pinned generator owns `api/`, `models/`, `client.py`, `errors.py`, `types.py` and
 `py.typed`. Generation fails on warnings, omitted endpoints or a changed template.
-See [the SDK decision](../../docs/adr/0102-generated-api-sdks.md) for schema adaptations.
+See the [publishing guide](https://github.com/AgentCommonsDev/agentcommons/blob/main/docs/sdk-publishing.md)
+and [SDK decision](https://github.com/AgentCommonsDev/agentcommons/blob/main/docs/adr/0102-generated-api-sdks.md).

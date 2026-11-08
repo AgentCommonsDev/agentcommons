@@ -12,11 +12,12 @@ const stepSchema = z.object({
   with: z.record(z.string(), z.unknown()).optional(),
 });
 type Step = z.infer<typeof stepSchema>;
-// Third-party actions are written `owner/name@v<major>` and Dependabot bumps the major, so
-// assertions name the action and accept whichever major the workflow runs.
-const actionReference = /^[\w.-]+\/[\w.-]+@v\d+$/;
+// Third-party actions use major tags, or PyPA's documented release/v1 branch.
+// Assertions name the action and accept whichever major the workflow runs.
+const actionReference =
+  /^[\w.-]+\/[\w.-]+@v\d+$|^pypa\/gh-action-pypi-publish@release\/v1$/;
 function actionName(step: Step) {
-  return step.uses?.replace(/@v\d+$/, "");
+  return step.uses?.replace(/@(?:release\/)?v\d+$/, "");
 }
 function usesAction(name: string) {
   return (step: Step) => actionName(step) === name;
@@ -68,7 +69,7 @@ const workflowNames = [
   "live-canary",
 ];
 
-it("references every third-party action as owner/name at a major version tag", () => {
+it("references every third-party action at its maintained major release", () => {
   const steps = readdirSync(
     new URL("../../.github/workflows/", import.meta.url),
   )
@@ -89,6 +90,43 @@ it("references every third-party action as owner/name at a major version tag", (
   expect(references.length).toBeGreaterThan(0);
   for (const reference of references)
     expect(reference).toMatch(actionReference);
+});
+
+// @req R-SDK-04
+it("publishes SDKs only from versioned tags after testing the distributions", () => {
+  const config = workflow("release-sdks");
+  expect(config.on).toEqual({ push: { tags: ["sdk-v*"] } });
+  expect(config.permissions).toEqual({ contents: "read" });
+  const build = config.jobs.build;
+  expect(build?.steps.map((step) => step.run).join("\n")).toContain(
+    'git merge-base --is-ancestor "$GITHUB_SHA" origin/main',
+  );
+  for (const command of [
+    "pnpm sdk:release:check",
+    "pnpm sdk:check",
+    "pnpm test:sdk:python",
+    "twine check --strict",
+  ])
+    expect(build?.steps.map((step) => step.run).join("\n")).toContain(command);
+  for (const registry of ["npm", "pypi"]) {
+    const job = config.jobs[registry];
+    expect(job).toMatchObject({
+      needs: "build",
+      environment: registry,
+      permissions: { "id-token": "write" },
+    });
+    expect(
+      job?.steps.find(usesAction("actions/download-artifact"))?.with?.name,
+    ).toBe(`sdk-${registry}`);
+    expect(job?.steps.some(usesAction("actions/checkout"))).toBe(false);
+  }
+  expect(
+    config.jobs.npm?.steps.find((step) => step.run?.startsWith("npm publish"))
+      ?.run,
+  ).toContain("--access public --provenance --ignore-scripts");
+  expect(
+    config.jobs.pypi?.steps.some(usesAction("pypa/gh-action-pypi-publish")),
+  ).toBe(true);
 });
 it("sets up every job through the shared composite action right after checkout", () => {
   for (const name of workflowNames)

@@ -46,7 +46,8 @@
     "sdk:check:python": "uv run --project packages/sdk-python --locked python packages/sdk-python/scripts/generate.py --check",
     "sdk:generate": "pnpm sdk:generate:typescript && pnpm sdk:generate:python",
     "sdk:check": "pnpm sdk:check:typescript && pnpm sdk:check:python",
-    "test:sdk:python": "uv run --project packages/sdk-python --locked pytest packages/sdk-python/tests"
+    "test:sdk:python": "uv run --project packages/sdk-python --locked pytest packages/sdk-python/tests",
+    "sdk:release:check": "tsx scripts/sdk-release.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.1",

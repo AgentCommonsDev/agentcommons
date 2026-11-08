@@ -239,7 +239,15 @@ and object union alternatives get stable component names. Unsupported new tuples
 generator warnings, missing operations and template changes fail generation. Generated
 code is committed and never hand-edited. CI checks regeneration, runtime contracts,
 and installation of an npm tarball and Python wheel outside the workspace. Package
-metadata and build commands support releases; this change does not publish to npm/PyPI.
+metadata and build commands support releases. Explicit `sdk-vX.Y.Z` tags on commits
+reachable from `main` publish through `.github/workflows/release-sdks.yml`; both
+package versions must match the stable tag. The build job checks generation and
+standalone installs, then uploads npm tarball and Python wheel/sdist artifacts.
+Separate npm/PyPI jobs publish those artifacts using OIDC; npm permits a bootstrap
+`NPM_TOKEN` environment secret for its first release. PyPI metadata passes strict
+Twine checks. Merges and PRs never publish packages. Registry accounts, namespace
+ownership and trusted-publisher configuration are external setup, documented in
+`docs/sdk-publishing.md`; no registry publication is implied by local verification.
 
 ---
 

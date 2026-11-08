@@ -15,8 +15,11 @@ Extract the TypeScript client to `packages/sdk` (`@agentcommons/sdk`) and have t
 dashboard consume it. Generate Python models and synchronous/asynchronous operations
 with pinned `openapi-python-client` in `packages/sdk-python` (`agentcommons`). Both
 consume the same checked-in OpenAPI artifact, including optional feature groups, and
-have no dependency on private workspace packages. Public registries are not published
-as part of this change.
+have no dependency on private workspace packages. Release on explicit matching
+`sdk-vX.Y.Z` tags from `main` through GitHub Actions. A build job verifies and packages
+both clients; separate OIDC publishing jobs upload its artifacts to npm and PyPI.
+The first npm release can use an environment-scoped bootstrap token before configuring
+trusted publishing. Registry setup remains an operator action; merging does not publish.
 
 Keep transport conventions in a small shared runtime per language: JSON object query
 values, bracketed arrays, caller-supplied authentication and structured HTTP errors.

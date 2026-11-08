@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = ["httpx>=0.27,<0.29", "attrs>=25.3"]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Typing :: Typed", "Development Status :: 3 - Alpha"]
 
 [project.urls]
 Repository = "https://github.com/AgentCommonsDev/agentcommons"
@@ -19,8 +20,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/agentcommons"]
 
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/pyproject.toml", "/README.md", "/LICENSE"]
+
 [dependency-groups]
-dev = ["openapi-python-client==0.29.1", "pytest>=8,<10", "ruff==0.15.6"]
+dev = ["openapi-python-client==0.29.1", "pytest>=8,<10", "ruff==0.15.6", "twine==7.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -4,7 +4,8 @@ A typed client for the AgentCommons REST API, generated from its OpenAPI contrac
 Works in Node.js 20+ and browsers with `fetch`. Each client has its own server URL,
 headers and credentials. Requests are not retried automatically.
 
-The package is available from this checkout; it has not been published to npm.
+After the first npm release, install with `npm install @agentcommons/sdk`.
+Until then, install from this checkout:
 
 ```bash
 pnpm install
@@ -58,4 +59,6 @@ set `format: "csv"` and `parseAs: "text"`. For session events, use `parseAs: "st
 and read the returned `ReadableStream`; the SDK does not reconnect or parse SSE frames.
 
 Regenerate with `pnpm sdk:generate:typescript`; verify with `pnpm sdk:check:typescript`.
-Generated source is never edited by hand. See [the SDK decision](../../docs/adr/0102-generated-api-sdks.md).
+Generated source is never edited by hand. See the
+[publishing guide](https://github.com/AgentCommonsDev/agentcommons/blob/main/docs/sdk-publishing.md)
+and [SDK decision](https://github.com/AgentCommonsDev/agentcommons/blob/main/docs/adr/0102-generated-api-sdks.md).
