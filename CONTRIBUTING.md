@@ -25,8 +25,10 @@ The SDK checks also need [uv](https://docs.astral.sh/uv/). Run
 `uv sync --project packages/sdk-python --locked` once. When API schemas change, run
 `pnpm openapi:generate`, `pnpm sdk:generate` and
 `pnpm --filter @agentcommons/dashboard api:generate`. Commit the regenerated clients.
-`pnpm sdk:check` detects drift; `pnpm test:sdk:python` checks the Python client and its
-wheel. TypeScript SDK and tarball tests run with `pnpm test`.
+`pnpm sdk:check` detects drift; `pnpm test:sdk:python` checks the Python client, wheel
+and source distribution. TypeScript SDK and tarball tests run with `pnpm test`.
+The [publishing guide](docs/sdk-publishing.md) covers npm/PyPI account setup, the
+first release and later version tags.
 
 ## Pull requests
 

@@ -79,6 +79,8 @@ Build integrations with the [TypeScript SDK](packages/sdk/README.md) or
 OpenAPI contract and support API keys, filters, pagination and CSV. Python supports
 sync and async calls. The guides cover installation from this checkout and examples;
 the packages have not been published to npm or PyPI.
+Maintainers can follow the [publishing guide](docs/sdk-publishing.md) for registry
+setup and releases.
 
 ## What you get
 

@@ -2,6 +2,7 @@
 
 For API integrations, start with the [TypeScript SDK](../packages/sdk/README.md) or
 [Python SDK](../packages/sdk-python/README.md). Both use the generated OpenAPI contract.
+For npm/PyPI account setup and releases, follow [Publishing the SDKs](sdk-publishing.md).
 
 Read in this order. Everything in the spec is built; there is no roadmap.
 
