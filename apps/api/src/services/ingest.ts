@@ -527,6 +527,16 @@ export class IngestService {
                 "SESSION_PURGED",
                 "This session was purged and cannot accept more records.",
               );
+            // A receipt ends inactivity (§4.2). This path holds no fence, so the database
+            // checks the status the inactivity sweep may have just written.
+            await tx.traceSessionControl.updateMany({
+              where: {
+                organizationId: caller.organizationId,
+                id: session.id,
+                status: "INACTIVE",
+              },
+              data: { status: "ACTIVE" },
+            });
             await upsertInstallation();
             const created = await receipt(session.acceptedRevision, false);
             // The worker appends the receipt to ClickHouse at the current published revision
@@ -617,6 +627,11 @@ export class IngestService {
                   status: request.behavior === "end" ? "ENDED" : "ACTIVE",
                   endedAt: request.behavior === "end" ? sentAt : null,
                 }
+              : {}),
+            // A receipt ends inactivity (§4.2); ENDED stays ended until a start reopens it.
+            // The control row was re-read under the fence, so its status is current.
+            ...(!newerLifecycle && session.status === "INACTIVE"
+              ? { status: "ACTIVE" }
               : {}),
           },
         });

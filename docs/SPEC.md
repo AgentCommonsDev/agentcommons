@@ -313,7 +313,7 @@ physical columns and native types are declared in `packages/traces/src/schema.ts
 | `observedCommits`, `observedDiffStat`, `dirtyFileCount`        | observations at session end (`startCommit..endCommit`, `git diff --shortstat`); labeled _observed_, not attributed (§12)                                                                                                                                                                                    |
 | `model`, `modelsUsed`                                          |                                                                                                                                                                                                                                                                                                             |
 | `startedAt`, `endedAt`, `lastActivityAt`                       | `startedAt` uses the normalized source timestamp when available, otherwise first receipt time; publication synchronizes the compact control timestamp for tree ordering and cursors. `lastActivityAt` is server receipt time.                                                                               |
-| `status`, `endReason`                                          | `ACTIVE`, `ENDED`, `INACTIVE` (no receipt for 6 h; displayed as inactivity, not death)                                                                                                                                                                                                                      |
+| `status`, `endReason`                                          | `ACTIVE`, `ENDED`, `INACTIVE` (no receipt for 6 h; displayed as inactivity, not death; the next accepted receipt returns it to `ACTIVE`, while `ENDED` waits for a `start`)                                                                                                                                 |
 | `lifecyclePos`, `lifecycleAt`                                  | persisted source ordering markers for lifecycle replay                                                                                                                                                                                                                                                      |
 | `normalizerContext`, `projectedContext`                        | redacted latest source context and last successfully projected context; a pending pi leaf retains the prior projection, and rescan rebuilds that prior branch from redacted raw records; neither context is exposed through `api_ro`                                                                        |
 | `title`, `firstPrompt`                                         | Claude `aiTitle` → Codex thread name → first prompt (120 chars); first prompt ≤ 4 KB, redacted                                                                                                                                                                                                              |
@@ -541,8 +541,9 @@ never a 401: an overloaded server is a retry, not a lost session.
 - A `sync` batch that accepts no new record and changes neither lifecycle, normalizer
   context nor parent link creates no revision and no outbox and takes no fence: it
   commits its receipt (revision equal to the accepted revision it observed, published
-  when that revision is), the installation digest, `lastActivityAt` and the context
-  watermark, its audit row and a projection job; its `publication` reports whether the
+  when that revision is), the installation digest, `lastActivityAt` (returning an
+  `INACTIVE` session to `ACTIVE`, R-ING-21) and the context watermark, its audit row
+  and a projection job; its `publication` reports whether the
   session has published that revision. The worker appends such receipts to ClickHouse
   at the current published revision as a receipt-only publication (fence and control
   row, no rebuild) when no revision is pending, or with the pending publish otherwise,
@@ -3171,7 +3172,8 @@ Purge removes all message chunks and session vectors. See ADR 0021.
 - **Subagent rows are not in the parent transcript** (verified): children are sessions
   linked `SUBAGENT`.
 - **Crash, kill, lid close**: `ackedCursor` never advances without `202`; the next hook
-  or a sweep resumes; `INACTIVE` after 6 h without receipt, shown as inactivity.
+  or a sweep resumes; `INACTIVE` after 6 h without receipt, shown as inactivity; any later
+  accepted receipt (a plain `sync` included) sets it back to `ACTIVE`.
 - **Codex `SessionEnd` clamp (3 s)**: hook mode finishes in ~150 ms; upload is detached.
 - **No PATH in hooks**: installer writes the absolute node path.
 - **Resume after days**: same session; `status` back to `ACTIVE`; a `SYSTEM META` marker;

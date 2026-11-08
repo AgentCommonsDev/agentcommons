@@ -668,6 +668,62 @@ describe("native pg-boss rescan and maintenance", () => {
     expect(embeddings).toEqual([{ count: 0 }]);
     expect(workerErrors).toEqual([]);
   });
+
+  // @req R-ING-21
+  it("returns an inactive session to ACTIVE on any later sync, but never an ended one", async () => {
+    const control = (id: string) =>
+      database.prisma.traceSessionControl.findFirstOrThrow({ where: { id } });
+    const idle = async (id: string) => {
+      await database.prisma.traceSessionControl.updateMany({
+        where: { id },
+        data: { lastActivityAt: new Date(Date.now() - 7 * 3_600_000) },
+      });
+      await jobs.maintenance();
+      expect(await control(id)).toMatchObject({ status: "INACTIVE" });
+    };
+    const later = (body: IngestEnvelope, text?: string): IngestEnvelope => ({
+      ...body,
+      batchId: uuidv7(),
+      behavior: "sync",
+      start: null,
+      end: null,
+      sentAt: new Date().toISOString(),
+      records:
+        text === undefined
+          ? []
+          : [sourceRecord(body.sourcePos, textRecord(text), text)],
+      sourcePos: body.sourcePos + (text === undefined ? 0 : 1),
+    });
+
+    const body = request([textRecord("before idle")]);
+    const id = (await services.publish(first.context, body)).result.sessionId;
+
+    // A sync that carries new records takes the fenced publish path.
+    await idle(id);
+    const resumed = later(body, "back again");
+    await services.publish(first.context, resumed);
+    expect(await control(id)).toMatchObject({
+      status: "ACTIVE",
+      endedAt: null,
+    });
+
+    // A receipt-only sync takes the unfenced path and must restore it too.
+    await idle(id);
+    await services.publish(first.context, later(resumed));
+    expect(await control(id)).toMatchObject({
+      status: "ACTIVE",
+      endedAt: null,
+    });
+
+    // ENDED is not inactivity: only a start event reopens it.
+    await database.prisma.traceSessionControl.updateMany({
+      where: { id },
+      data: { status: "ENDED", endedAt: new Date() },
+    });
+    await services.publish(first.context, later(resumed, "late record"));
+    await services.publish(first.context, later(resumed));
+    expect(await control(id)).toMatchObject({ status: "ENDED" });
+  });
 });
 
 // @req R-RED-01 @req R-RED-02 @req R-RED-06 @req R-AUD-03
