@@ -68,6 +68,6 @@
     "jose": "6.2.12",
     "oidc-provider": "9.12.2",
     "tailwindcss": "^4.2.1",
-    "vite": "^7.3.1"
+    "vite": "^8.3.6"
   }
 }
