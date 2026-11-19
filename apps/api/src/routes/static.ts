@@ -231,9 +231,11 @@ export async function registerStaticRoutes(
     decorateReply: false,
     cacheControl: false,
     setHeaders(response, path) {
+      // The manifest and its release signature (ADR 0102) name the current release; every
+      // other file sits under a version directory and never changes.
       response.setHeader(
         "cache-control",
-        path.endsWith("manifest.json")
+        /[\\/]manifest\.json(\.sig)?$/.test(path)
           ? "no-cache"
           : "public, max-age=31536000, immutable",
       );

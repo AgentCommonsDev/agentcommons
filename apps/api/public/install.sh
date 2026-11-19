@@ -5,14 +5,12 @@ umask 077
 server='__PUBLIC_URL__'
 key=''
 config_home=''
-no_shell_rc=''
 uninstall=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --server) server=$2; shift 2 ;;
     --key) key=$2; shift 2 ;;
     --config-home) config_home=$2; shift 2 ;;
-    --no-shell-rc) no_shell_rc=1; shift ;;
     --uninstall) uninstall=1; shift ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
@@ -26,7 +24,6 @@ chmod 700 "$data_dir"
 export AGENTCOMMONS_DIR="$data_dir"
 set --
 if [ -n "$config_home" ]; then set -- "$@" --config-home "$config_home"; fi
-if [ -n "$no_shell_rc" ]; then set -- "$@" --no-shell-rc; fi
 if [ -n "$uninstall" ]; then
   "$node_path" "$data_dir/hook.js" uninstall "$@"
   exit

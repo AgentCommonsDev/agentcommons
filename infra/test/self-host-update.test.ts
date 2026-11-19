@@ -19,6 +19,14 @@ const repository = fileURLToPath(new URL("../..", import.meta.url));
 const selfHost = join(repository, "scripts", "self-host");
 const updater = join(selfHost, "agentcommons-update.sh");
 const stable = "ghcr.io/agentcommonsdev/agentcommons:stable";
+/** The registry digest the fake pull resolves :stable to, and the identity that signed it. */
+const pulledDigest = `ghcr.io/agentcommonsdev/agentcommons@sha256:${"1".repeat(64)}`;
+const releaseSigner =
+  "https://github.com/AgentCommonsDev/agentcommons/.github/workflows/release.yml@refs/heads/main";
+const cosign =
+  "ghcr.io/sigstore/cosign/cosign:v2.6.5@sha256:ad281047f85c5e1fc6ffbc30c2b55be3b07b4032bef715a12122ce5829619aca";
+const verifyCall = (digest: string, signer = releaseSigner) =>
+  `run --rm ${cosign} verify --certificate-identity ${signer} --certificate-oidc-issuer https://token.actions.githubusercontent.com ${digest}`;
 // The release step's Caddy reload (scripts/self-host/lib.sh stack_up).
 const reloadCaddy =
   "compose exec -T caddy sh /etc/caddy/entrypoint.sh caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile";
@@ -37,6 +45,12 @@ case "$*" in
   printf 'PATH=/usr/bin\\nAGENTCOMMONS_VERSION=%s\\n' "$FAKE_VERSION" ;;
 "compose config") printf 'services:\\n  api:\\n    image: %s\\n  db:\\n    image: postgres:16\\n' "\${AGENTCOMMONS_IMAGE:-${stable}}" ;;
 "compose pull --quiet api") [ "$FAKE_PULL_FAIL" != 1 ] || exit 1 ;;
+# The registry digests the pulled image carries; empty for a local build.
+"image inspect --format {{range .RepoDigests}}{{println .}}{{end}} "*) [ -z "$FAKE_REPO_DIGESTS" ] || printf '%s\\n' $FAKE_REPO_DIGESTS ;;
+# cosign verify: valid only when the scenario signed the digest with the identity asked for.
+"run --rm ghcr.io/sigstore/cosign/cosign:"*" verify --certificate-identity "*)
+  [ "$FAKE_SIGNER" = "$6" ] || { echo "Error: no matching signatures: none of the expected identities matched" >&2; exit 1; }
+  echo '[{"critical":{"type":"cosign container image signature"}}]' ;;
 "image inspect --format {{.Id}} agentcommons:previous") echo "$FAKE_RUNNING" ;;
 "image inspect --format {{.Id}} "*) echo "$FAKE_PULLED" ;;
 # The release stamps: the running image id answers with the running stamps, any other
@@ -127,6 +141,10 @@ interface Scenario {
   ready?: boolean;
   upFails?: boolean;
   pullFails?: boolean;
+  /** The registry digests the pulled image carries; defaults to one in the stable repository. */
+  repoDigests?: string;
+  /** The Sigstore identity that signed the pulled digest; defaults to the release workflow. */
+  signer?: string;
   /** Override what the fake API serves the post-deploy self-check that follows a start. */
   manifest?: string;
   bundle?: string;
@@ -175,14 +193,22 @@ function fixture(env = "AUTO_UPDATE=true\nPUBLIC_URL=http://localhost:3000\n") {
   const readyFile = join(root, "ready");
   writeFileSync(log, "");
   writeFileSync(`${log}.curl`, "");
-  function run(args: string[], scenario: Scenario = {}) {
+  /**
+   * Runs the updater with `args`, or with `{ source }` a script that sources lib.sh inside
+   * the stack, as the single-node apply does.
+   */
+  function run(args: string[] | { source: string }, scenario: Scenario = {}) {
     writeFileSync(readyFile, scenario.ready === false ? "0\n" : "1\n");
     writeFileSync(log, "");
     const envFile = join(stack, ".env");
     const envBefore = existsSync(envFile)
       ? readFileSync(envFile, "utf8")
       : null;
-    const result = spawnSync("bash", [updater, ...args], {
+    const command = Array.isArray(args)
+      ? [updater, ...args]
+      : ["-c", `. scripts/self-host/lib.sh && enter_stack && ${args.source}`];
+    const result = spawnSync("bash", command, {
+      cwd: stack,
       encoding: "utf8",
       env: {
         PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -206,6 +232,8 @@ function fixture(env = "AUTO_UPDATE=true\nPUBLIC_URL=http://localhost:3000\n") {
         FAKE_VERSION: "0123456789ab",
         FAKE_UP_FAIL: scenario.upFails ? "1" : "0",
         FAKE_PULL_FAIL: scenario.pullFails ? "1" : "0",
+        FAKE_REPO_DIGESTS: scenario.repoDigests ?? pulledDigest,
+        FAKE_SIGNER: scenario.signer ?? releaseSigner,
         FAKE_MANIFEST: scenario.manifest ?? hookManifest,
         FAKE_BUNDLE: scenario.bundle ?? hookBundle,
         FAKE_MCP_CODE: scenario.mcpCode ?? "",
@@ -696,6 +724,118 @@ describe("self-host updater", () => {
     expect(off.state()).toContain("last_result=disabled");
     expect(off.state()).toMatch(/^last_check=/m);
     expect(off.state()).toContain("failures=0");
+  });
+  // @req R-INF-19
+  it("verifies the release workflow's Sigstore signature on the pulled digest before it installs anything, and only then", () => {
+    const { run } = fixture();
+    const updated = run([], { running: "sha256:aaa", pulled: "sha256:bbb" });
+    expect(updated.status, updated.stderr).toBe(0);
+    const order = (line: string) => updated.docker.indexOf(line);
+    expect(order(verifyCall(pulledDigest))).toBeGreaterThan(
+      order("compose pull --quiet api"),
+    );
+    expect(order("tag sha256:aaa agentcommons:previous")).toBeGreaterThan(
+      order(verifyCall(pulledDigest)),
+    );
+    // Holds and a current stack install nothing, so they need no signature check.
+    const current = run([], { running: "sha256:aaa", pulled: "sha256:aaa" });
+    const held = run([], {
+      running: "sha256:aaa",
+      runningRelease: newestRelease,
+      pulled: "sha256:bbb",
+    });
+    for (const quiet of [current, held])
+      expect(quiet.docker.some((line) => line.startsWith("run "))).toBe(false);
+  });
+  // @req R-INF-19
+  it("holds an image signed by anyone else, or pulled from nowhere it can be checked, as a failed run, and installs it once it verifies", () => {
+    const { run } = fixture();
+    const forged = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:bbb",
+      signer:
+        "https://github.com/AgentCommonsDev/agentcommons/.github/workflows/evil.yml@refs/heads/main",
+    });
+    expect(forged.status).toBe(1);
+    expect(forged.stderr).toContain("no matching signatures");
+    expect(forged.stderr).toContain("carries no valid release signature");
+    const stopped = (result: typeof forged) => {
+      expect(result.docker.some((line) => line.startsWith("tag "))).toBe(false);
+      expect(result.docker.some((line) => line.startsWith("compose up"))).toBe(
+        false,
+      );
+    };
+    stopped(forged);
+    expect(forged.state()).toContain("last_result=unverified");
+    expect(forged.state()).toContain("failures=1");
+    expect(forged.state()).not.toContain("failed_image=sha256:bbb");
+    // A local image has no registry digest: nothing to verify, nothing installed.
+    const local = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:bbb",
+      repoDigests: "",
+    });
+    expect(local.status).toBe(1);
+    expect(local.stderr).toContain("has no registry digest to verify");
+    expect(local.docker.some((line) => line.startsWith("run "))).toBe(false);
+    stopped(local);
+    expect(local.state()).toContain("failures=2");
+    // A digest from another repository does not stand in for the configured one.
+    const elsewhere = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:bbb",
+      repoDigests: `ghcr.io/someone/agentcommons@sha256:${"2".repeat(64)}`,
+    });
+    expect(elsewhere.status).toBe(1);
+    stopped(elsewhere);
+    // Not held as a failed release: the next run checks it again and installs it.
+    const verified = run([], { running: "sha256:aaa", pulled: "sha256:bbb" });
+    expect(verified.status, verified.stderr).toBe(0);
+    expect(verified.state()).toContain("last_result=updated");
+    expect(verified.state()).toContain("failures=0");
+  });
+  // @req R-INF-19
+  it("verifies a pinned image too, checks a fork's own signer from .env, and refuses an unsigned pull in the single-node apply", () => {
+    const pinnedDigest = `ghcr.io/agentcommonsdev/agentcommons@sha256:${"3".repeat(64)}`;
+    const { run } = fixture();
+    const pinned = run([], {
+      running: "sha256:aaa",
+      pulled: "sha256:bbb",
+      repoDigests: `${pulledDigest} ${pinnedDigest}`,
+      env: { AGENTCOMMONS_IMAGE: pinnedDigest },
+    });
+    expect(pinned.status, pinned.stderr).toBe(0);
+    expect(pinned.docker).toContain(verifyCall(pinnedDigest));
+    const fork =
+      "https://github.com/example/agentcommons/.github/workflows/release.yml@refs/heads/main";
+    const { run: forked } = fixture(
+      `AUTO_UPDATE=true\nPUBLIC_URL=http://localhost:3000\nAGENTCOMMONS_IMAGE_SIGNER='${fork}'\n`,
+    );
+    const theirs = forked([], {
+      running: "sha256:aaa",
+      pulled: "sha256:bbb",
+      signer: fork,
+    });
+    expect(theirs.status, theirs.stderr).toBe(0);
+    expect(theirs.docker).toContain(verifyCall(pulledDigest, fork));
+    // apply.sh pulls through stack_up: an unsigned image never starts.
+    const apply = run(
+      { source: "stack_up pull" },
+      { running: "sha256:aaa", pulled: "sha256:bbb", signer: "nobody" },
+    );
+    expect(apply.status).not.toBe(0);
+    expect(apply.docker).toContain(verifyCall(pulledDigest));
+    expect(apply.docker.some((line) => line.startsWith("compose up"))).toBe(
+      false,
+    );
+    const signed = run(
+      { source: "stack_up pull" },
+      { running: "sha256:aaa", pulled: "sha256:bbb" },
+    );
+    expect(signed.status, signed.stderr).toBe(0);
+    expect(signed.docker).toContain(
+      "compose up -d --no-build --remove-orphans",
+    );
   });
   it("refuses to run outside a checkout with docker-compose.yml and .env", () => {
     const { run, stack } = fixture();

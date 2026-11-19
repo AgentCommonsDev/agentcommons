@@ -79,8 +79,10 @@ Elastic IP, and a Data Lifecycle Manager policy keeping seven daily snapshots. T
 no load balancer, NAT gateway, RDS instance or Secrets Manager secret, and no SSH. The
 host runs `docker-compose.yml` with `docker-compose.caddy.yml`: Caddy serves
 `https://<hostname>` with an automatic Let's Encrypt certificate, retrying until the DNS
-A record points at the Elastic IP, and answers plain HTTP on the bare address so the host
-can be checked before DNS exists. The API receives `TRUST_PROXY=uniquelocal`, so Better
+A record points at the Elastic IP, and answers `/health` and `/ready` over plain HTTP on the
+bare address so the host can be checked before DNS exists; every other plain-HTTP request is
+redirected to `https://<hostname>` (ADR 0103), and the shim refuses a remote `http:` server
+URL. The API receives `TRUST_PROXY=uniquelocal`, so Better
 Auth sees HTTPS and sets secure cookies.
 
 Configuration: `hostname`; optional `instanceType` (`t4g.medium`, `t4g.large`,
@@ -148,7 +150,8 @@ do this yet.
 
 Automatic updates. `.github/workflows/release.yml` publishes an image for every commit on
 `main` whose CI run succeeded, tagged `sha-<12-hex commit>` and `stable`, signed with
-Sigstore. On the host, `agentcommons-update.timer` runs
+Sigstore, with its hook manifest signed by the release key. On the host,
+`agentcommons-update.timer` runs
 `/opt/agentcommons/agentcommons-update.sh` every hour with a random delay of up to 15
 minutes: it pulls the configured image, does nothing when its digest matches the running
 API, and otherwise keeps the running image as `agentcommons:previous`, starts the stack
@@ -175,6 +178,32 @@ and offered releases (commit and build time), the pin, and the reason nothing mo
 release script itself has no such guard: without `--build` it pulls `stable`, whatever
 commit that tag holds, so release by pull only once CI has published the commit you name
 (its `sha-<12 hex>` tag exists on GHCR), and pass `--build` otherwise.
+
+Only signed releases run (ADR 0102). Before installing an image the updater runs
+`cosign verify` from a digest-pinned cosign image and requires the release workflow's
+signature; an image that fails it records `unverified` ("Signature check failed" on Admin →
+Status), counts as a failed run and is checked again next hour, and the release script's
+pull refuses it too. The host needs outbound HTTPS to Sigstore (Rekor and its TUF root) for
+this. Installed shims likewise update only from a hook manifest signed with the release key,
+so **a release built by hand with `--build` updates the server but not the members'
+machines**: they keep their bundle until a CI release ships.
+
+The hook signing key lives only in the `release` GitHub environment. Set it up once, from a
+machine you trust, with no output of the private key anywhere else:
+
+```sh
+openssl genpkey -algorithm ed25519 -outform DER | base64 | tr -d '\n' >hook-release-key  # private, 0600
+base64 -d <hook-release-key | openssl pkey -inform DER -pubout -outform DER | base64     # public, goes in packages/hook/src/release-keys.ts
+gh secret set HOOK_SIGNING_KEY --env release --repo AgentCommonsDev/agentcommons <hook-release-key
+```
+
+Restrict the `release` environment's deployment branches to `main` (and add required
+reviewers to approve each release by hand). To rotate, release a bundle whose
+`release-keys.ts` lists the old and the new public key while the secret still holds the old
+key, wait until Admin → Installations shows machines current, then replace the secret and
+drop the old key in a later release. A fork that publishes its own images sets its own key
+the same way and names its workflow in `AGENTCOMMONS_IMAGE_SIGNER` on its hosts.
+
 Useful commands on the host (`aws ssm start-session`):
 
 ```sh

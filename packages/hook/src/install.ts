@@ -63,7 +63,6 @@ export function configure(directory: string, input: unknown): HookConfig {
 }
 export interface InstallOptions {
   configHome?: string;
-  noShellRc?: boolean;
 }
 function present(binary: string): boolean {
   return (process.env.PATH ?? "").split(delimiter).some((directory) => {
@@ -231,52 +230,25 @@ function saveConfig(
     writeUserFile(`${path}.agentcommons-backup`, readFileSync(path, "utf8"));
   writeUserFile(path, format.stringify(value));
 }
+/** Every shell startup file an earlier installer wrote the exports to. */
+const SHELL_STARTUP_FILES: readonly (readonly string[])[] = [
+  [".profile"],
+  [".bashrc"],
+  [".zshrc"],
+  [".bash_profile"],
+  [".zprofile"],
+  [".config", "fish", "config.fish"],
+];
 /**
- * Every login shell a person may start a coding agent from gets the exports: bash and zsh
- * always, fish when it is installed or configured. Codex no longer depends on this export —
- * its `agentcommons` MCP entry is a stdio bridge that carries the key in its own config (ADR
- * 0089) — but the export stays for other tools that read AGENTCOMMONS_API_KEY. The block is
- * marker-delimited and replaced in place on every install.
+ * Earlier installers exported AGENTCOMMONS_SERVER and AGENTCOMMONS_API_KEY from every shell's
+ * startup files. No harness reads them — every MCP entry carries the key itself (ADR 0089) —
+ * and a read key in every shell's environment reaches every process and agent started from
+ * it, so install and uninstall remove that marked block wherever it was written, and a file
+ * that held only the block (a `.profile` the installer created) goes with it (ADR 0104).
  */
-function shellRcPaths(home: string): string[] {
-  // Interactive rc files cover a terminal-launched shell; the login files cover a login
-  // shell, which reads them instead. macOS Terminal starts a login bash that reads
-  // `.bash_profile`/`.profile` and never `.bashrc`, and display managers source `.profile`.
-  // Codex's own MCP entry no longer needs the export (ADR 0089), but other tools reading
-  // AGENTCOMMONS_API_KEY still do. `.profile` is the POSIX login fallback, written always; a
-  // shell's own login file (`.bash_profile`, `.zprofile`) shadows it, so extend one that
-  // already exists but never create it, so the shell's startup order is unchanged.
-  const paths = [
-    join(home, ".profile"),
-    join(home, ".bashrc"),
-    join(home, ".zshrc"),
-  ];
-  for (const login of [".bash_profile", ".zprofile"]) {
-    const path = join(home, login);
-    if (existsSync(path)) paths.push(path);
-  }
-  const fishDirectory = join(home, ".config", "fish");
-  if (existsSync(fishDirectory) || present("fish"))
-    paths.push(join(fishDirectory, "config.fish"));
-  return paths;
-}
-function shellRc(home: string, config: HookConfig, uninstall: boolean): void {
-  for (const path of shellRcPaths(home)) {
-    const exports = path.endsWith("config.fish")
-      ? [
-          `set -gx AGENTCOMMONS_SERVER ${shellQuote(config.server)}`,
-          `set -gx AGENTCOMMONS_API_KEY ${shellQuote(config.key)}`,
-        ]
-      : [
-          `export AGENTCOMMONS_SERVER=${shellQuote(config.server)}`,
-          `export AGENTCOMMONS_API_KEY=${shellQuote(config.key)}`,
-        ];
-    replaceMarkedBlock(
-      path,
-      SHELL_MARKERS,
-      uninstall ? null : exports.join("\n"),
-    );
-  }
+function removeShellExports(home: string): void {
+  for (const path of SHELL_STARTUP_FILES)
+    replaceMarkedBlock(join(home, ...path), SHELL_MARKERS, null);
 }
 /** Supported harnesses whose CLI is on PATH right now; the installer wires exactly these. */
 export function detectHarnesses(): CliHarness[] {
@@ -534,7 +506,7 @@ export function install(
       });
     }
   }
-  if (!options.noShellRc) shellRc(home, config, uninstall);
+  removeShellExports(home);
   return { harnesses: selected, failures };
 }
 export async function doctor(

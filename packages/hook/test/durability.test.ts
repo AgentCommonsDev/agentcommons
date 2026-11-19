@@ -273,7 +273,7 @@ describe("source readers and installer", () => {
     for (const name of Object.keys(HARNESSES))
       writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     vi.stubEnv("PATH", bin);
-    const options = { configHome: home, noShellRc: true };
+    const options = { configHome: home };
     install(f.directory, f.config, options);
     const path = join(home, ".claude/settings.json");
     const original = JSON.parse(readFileSync(path, "utf8")) as {

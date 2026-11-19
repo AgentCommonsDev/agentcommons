@@ -84,6 +84,20 @@ try {
       "--config-home",
       home,
     ];
+    const rc =
+      shell === "fish"
+        ? join(home, ".config/fish/config.fish")
+        : join(home, shell === "zsh" ? ".zshrc" : ".bashrc");
+    // The exports an older installer wrote after the user's own line; install removes them.
+    const exported =
+      shell === "fish"
+        ? "set -gx AGENTCOMMONS_API_KEY 'platform-test-credential'"
+        : "export AGENTCOMMONS_API_KEY='platform-test-credential'";
+    await mkdir(join(rc, ".."), { recursive: true });
+    await writeFile(
+      rc,
+      `set_by_user=1\n\n# agentcommons-hook begin\n${exported}\n# agentcommons-hook end\n`,
+    );
     const first = await run("sh", args, env);
     assert.equal(first.code, 0, first.output);
     assert.match(first.output, /trust hooks/);
@@ -92,14 +106,12 @@ try {
     const configPath = join(data, "config.json");
     const original = await readFile(configPath, "utf8");
     assert.equal((await stat(configPath)).mode & 0o777, 0o600);
-    const rc =
-      shell === "fish"
-        ? join(home, ".config/fish/config.fish")
-        : join(home, shell === "zsh" ? ".zshrc" : ".bashrc");
+    // A real shell sourcing its startup file no longer gets the key (R-INST-10).
+    assert.equal(await readFile(rc, "utf8"), "set_by_user=1\n");
     const rcCheck =
       shell === "fish"
-        ? 'source "$argv[1]"; test "$AGENTCOMMONS_API_KEY" = platform-test-credential'
-        : '. "$1"; test "$AGENTCOMMONS_API_KEY" = platform-test-credential';
+        ? 'source "$argv[1]"; not set -q AGENTCOMMONS_API_KEY'
+        : '. "$1"; test -z "${AGENTCOMMONS_API_KEY+set}"';
     const sourced = await run(
       shell,
       ["-c", rcCheck, ...(shell === "fish" ? [] : ["agentcommons-test"]), rc],
@@ -123,11 +135,7 @@ try {
     assert.equal(uninstall.code, 0, uninstall.output);
     assert.equal(requests, before);
     assert.equal(await readFile(configPath, "utf8"), original);
-    // Uninstall removes an rc file that held only our block, so absence also passes.
-    const rcAfter = await readFile(rc, "utf8").catch((error) =>
-      error.code === "ENOENT" ? "" : Promise.reject(error),
-    );
-    assert.doesNotMatch(rcAfter, /AGENTCOMMONS_API_KEY/);
+    assert.equal(await readFile(rc, "utf8"), "set_by_user=1\n");
     process.stdout.write(
       JSON.stringify({
         platform: process.platform,

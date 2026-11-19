@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Resolves the item deferred in ADR 0083 ("A stdio MCP bridge with the key in the
-per-server `env` table").
+per-server `env` table"). ADR 0104 drops the shell exports this ADR kept "for other tools".
 
 ## Context
 

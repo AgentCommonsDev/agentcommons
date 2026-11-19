@@ -49,7 +49,11 @@ async function main(): Promise<void> {
     return;
   }
   if (mode === "version") {
-    // Prints this bundle's own digest; the self-update self-test compares it with the manifest.
+    // Prints this bundle's own digest; the self-update self-test compares it with the
+    // manifest. It reads this installation's configuration first, because hook mode fails
+    // open on a configuration it cannot read: a release whose schema rejects the installed
+    // one (a plain-HTTP server, ADR 0103) would otherwise swap in and never upload again.
+    loadConfig(directory);
     const { hookIdentity } = await import("./update.js");
     process.stdout.write(`${hookIdentity(directory, executable).sha256}\n`);
     return;
@@ -100,10 +104,8 @@ async function main(): Promise<void> {
   const home = homeIndex >= 0 ? args[homeIndex + 1] : undefined;
   if (homeIndex >= 0 && !home)
     throw new Error("--config-home requires a directory.");
-  const options: InstallOptions = {
-    ...(home ? { configHome: home } : {}),
-    noShellRc: args.includes("--no-shell-rc"),
-  };
+  // An older bundle's reconcile may still pass the retired --no-shell-rc; nothing reads it.
+  const options: InstallOptions = home ? { configHome: home } : {};
   if (mode === "install" || mode === "uninstall") {
     const {
       configure,
@@ -138,14 +140,6 @@ async function main(): Promise<void> {
       const wired = names.map((name) => HARNESSES[name]);
       const files = instructionFiles(home ?? homedir(), names);
       const lines = [
-        ...(options.noShellRc
-          ? []
-          : [
-              "AGENTCOMMONS_API_KEY is exported from your bash, zsh, fish and login shell startup files.",
-              ...wired.flatMap((definition) =>
-                definition.shellExportNote ? [definition.shellExportNote] : [],
-              ),
-            ]),
         ...(files.length
           ? [
               `Your agents read the AgentCommons guidance from ${files.join(", ")}.`,

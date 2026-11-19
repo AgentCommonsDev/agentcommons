@@ -5,15 +5,23 @@ import { readJson } from "./files.js";
 
 /** Any JSON object; the shape harness settings files and stored configuration are read as. */
 export const objectSchema = z.record(z.string(), z.unknown());
+/** Hosts whose plain-HTTP traffic never leaves the machine: a local development server. */
+const loopback = (hostname: string): boolean =>
+  hostname === "localhost" ||
+  hostname === "[::1]" ||
+  /^127(?:\.\d{1,3}){3}$/.test(hostname);
 export const configSchema = z.looseObject({
+  // Every request carries the key, and transcripts and the manifest travel over it, so the
+  // server is reached over TLS; plain HTTP only to this machine (ADR 0103).
   server: z.url().refine((value) => {
     const url = new URL(value);
     return (
       !url.username &&
       !url.password &&
-      ["http:", "https:"].includes(url.protocol)
+      (url.protocol === "https:" ||
+        (url.protocol === "http:" && loopback(url.hostname)))
     );
-  }, "Use an HTTP or HTTPS server URL without embedded credentials."),
+  }, "Use an HTTPS server URL without embedded credentials; plain HTTP is accepted only for localhost."),
   key: z.string().min(1),
   installationId: z.uuid(),
   node: z.string().min(1),
@@ -28,12 +36,14 @@ export const configSchema = z.looseObject({
     .max(50 * 1024 * 1024)
     .default(65536),
   disabledPaths: z.array(z.string()).default([]),
-  /** Flags the installer was run with; self-update re-runs `install` with the same ones. */
+  /**
+   * Flags the installer was run with; self-update re-runs `install` with the same ones. Loose
+   * because an older installer also recorded the retired `noShellRc` (ADR 0104): a field this
+   * bundle no longer reads must not make the configuration unreadable, which would silently
+   * stop capture and every later self-update.
+   */
   installOptions: z
-    .strictObject({
-      configHome: z.string().min(1).optional(),
-      noShellRc: z.boolean().optional(),
-    })
+    .looseObject({ configHome: z.string().min(1).optional() })
     .optional(),
 });
 export type HookConfig = z.infer<typeof configSchema>;

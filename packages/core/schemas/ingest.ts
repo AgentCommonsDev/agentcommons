@@ -42,10 +42,9 @@ export const hookManifestSchema = z.looseObject({
    * The bundle's monotonic build stamp: the RFC 3339 UTC build time and full commit the
    * release image is stamped with (`org.opencontainers.image.created`/`revision`, ADR
    * 0059). It lets a client refuse a strictly older bundle even if the server regresses
-   * (ADR 0075). Emission is gated OFF by default and turned on only after installs have
-   * healed onto this loose schema (ADR 0075 rollout), so both fields are absent on a
-   * phase-1 manifest and on any older one; a client then treats the stamp as unknown and
-   * updates on the digest as before.
+   * (ADR 0075). Optional because a build that can resolve neither (no build arguments, no
+   * git checkout) omits it; such a manifest cannot be signed, and a shim acts only on a
+   * signed one (ADR 0102), so every manifest a shim installs from carries it.
    */
   builtAt: utcDateTimeSchema.optional(),
   revision: z.string().min(1).max(64).optional(),

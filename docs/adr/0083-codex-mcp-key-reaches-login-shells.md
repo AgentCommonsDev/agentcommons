@@ -4,7 +4,8 @@
 
 Accepted. The deferred item below (a stdio MCP bridge with the key in Codex's per-server
 `env` table, for shell-less GUI/IDE launches) is now **resolved by ADR 0089**; the
-login-shell exports and reconcile behavior this ADR introduced remain in force.
+login-shell exports and reconcile behavior this ADR introduced remain in force. ADR 0104
+(2026-10-29) removes the exports: reconcile now removes the block this ADR wrote.
 
 ## Context
 

@@ -34,6 +34,7 @@ beforeAll(async () => {
     ),
     writeFile(join(directory, "assets", "app.js"), "window.testAsset=true"),
     writeFile(join(directory, "hook", "manifest.json"), "{}"),
+    writeFile(join(directory, "hook", "manifest.json.sig"), "{}"),
     writeFile(join(directory, "hook", "1.0.js"), "// fixture artifact"),
     writeFile(join(directory, "install.sh"), "#!/bin/sh\n# __PUBLIC_URL__"),
     ...["sitemap.xml", "llms.txt", "llms-full.txt"].map((file) =>
@@ -108,9 +109,9 @@ it("exposes only public discovery and marks versioned artifacts immutable", asyn
   expect((await app.inject("/hook/1.0.js")).headers["cache-control"]).toContain(
     "immutable",
   );
-  expect(
-    (await app.inject("/hook/manifest.json")).headers["cache-control"],
-  ).toBe("no-cache");
+  // The manifest and its release signature change together on every release (ADR 0102).
+  for (const path of ["/hook/manifest.json", "/hook/manifest.json.sig"])
+    expect((await app.inject(path)).headers["cache-control"]).toBe("no-cache");
 });
 
 // @req R-WEB-09

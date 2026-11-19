@@ -3,7 +3,8 @@
 Date: 2026-09-11
 Status: Accepted. Extends ADR 0059 (releases are published images that self-hosted
 instances install themselves) and its 2026-09-11 amendment (a floating tag never moves a
-host backwards) to the hook shim's own self-update.
+host backwards) to the hook shim's own self-update. ADR 0102 (2026-10-29) ends the rollout:
+every build stamps its manifest, the gate is gone, and the stamp a shim compares is signed.
 
 ## Context
 

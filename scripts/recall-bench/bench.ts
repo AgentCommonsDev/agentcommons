@@ -691,9 +691,7 @@ async function main() {
         node: process.execPath,
       }),
     );
-    console.log(
-      shim("install", ["--config-home", configHome, "--no-shell-rc"]).trim(),
-    );
+    console.log(shim("install", ["--config-home", configHome]).trim());
     const config = configSchema.parse(
       JSON.parse(await readFile(join(installation, "config.json"), "utf8")),
     );

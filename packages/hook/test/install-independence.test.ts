@@ -71,19 +71,34 @@ const geminiEntry = (home: string) =>
   servers(join(home, ".gemini", "settings.json"))?.agentcommons;
 
 describe("installer independence", () => {
-  // @req R-INST-02
-  it("exports the key to interactive and login shell startup files, extending an existing login file but never creating one", () => {
+  // @req R-INST-10
+  it("exports no key to any shell, and removes the exports an older installer wrote while keeping the user's own lines", () => {
     const { directory, home, config } = machine(1);
-    // A login shell reads its own profile, not .bashrc: macOS Terminal starts login bash
-    // that reads .bash_profile. One already exists here; .zprofile does not.
-    writeFileSync(join(home, ".bash_profile"), "# user login file\n");
+    const block = [
+      "# agentcommons-hook begin",
+      "export AGENTCOMMONS_SERVER='https://example.test'",
+      `export AGENTCOMMONS_API_KEY='${KEY}'`,
+      "# agentcommons-hook end",
+    ].join("\n");
+    // As an older installer left them: the block after the user's lines in .bashrc and
+    // config.fish, and alone in a .profile it created.
+    writeFileSync(join(home, ".bashrc"), `alias ll='ls -l'\n\n${block}\n`);
+    writeFileSync(join(home, ".profile"), `${block}\n`);
+    mkdirSync(join(home, ".config", "fish"), { recursive: true });
+    const fish = join(home, ".config", "fish", "config.fish");
+    writeFileSync(
+      fish,
+      `set -gx EDITOR vim\n\n${block.replaceAll("export ", "set -gx ").replaceAll("=", " ")}\n`,
+    );
     install(directory, config, {});
-    const exported = (name: string) =>
-      readFileSync(join(home, name), "utf8").includes("AGENTCOMMONS_API_KEY");
-    for (const name of [".profile", ".bashrc", ".zshrc", ".bash_profile"])
-      expect(exported(name), name).toBe(true);
-    // An absent login file stays absent, so the shell's startup order is unchanged.
-    expect(existsSync(join(home, ".zprofile"))).toBe(false);
+    expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(
+      "alias ll='ls -l'\n",
+    );
+    expect(readFileSync(fish, "utf8")).toBe("set -gx EDITOR vim\n");
+    // A file that held only the block was the installer's and goes with it, and nothing new
+    // is created: the key lives only in the harnesses' own 0600 MCP entries.
+    for (const name of [".profile", ".zshrc", ".bash_profile", ".zprofile"])
+      expect(existsSync(join(home, name)), name).toBe(false);
   });
   // @req R-INST-02
   it("a failing `claude mcp add` is reported, Gemini's stale entry is still rewritten, and the run succeeds", () => {
@@ -102,7 +117,7 @@ describe("installer independence", () => {
         },
       }),
     );
-    const result = install(directory, config, { noShellRc: true });
+    const result = install(directory, config);
     expect(result.harnesses).toEqual(["claude", "gemini"]);
     expect(result.failures).toEqual([
       {
@@ -133,7 +148,7 @@ describe("installer independence", () => {
     const { directory, home, config } = machine(0);
     // Gemini's settings path is a directory: nothing of Gemini's can be read or written.
     mkdirSync(join(home, ".gemini", "settings.json"), { recursive: true });
-    const result = install(directory, config, { noShellRc: true });
+    const result = install(directory, config);
     expect(
       result.failures.map((failure) => [failure.harness, failure.native]),
     ).toEqual([
@@ -158,7 +173,7 @@ describe("installer independence", () => {
       gemini: false,
       stderr: `Error: MCP server agentcommons already exists (header Authorization: Bearer ${KEY})`,
     });
-    const result = install(directory, config, { noShellRc: true });
+    const result = install(directory, config);
     expect(result.harnesses).toEqual(["claude"]);
     expect(result.failures).toEqual([
       {

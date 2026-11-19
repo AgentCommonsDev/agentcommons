@@ -13,9 +13,17 @@ import { hash, readJson, removeFile, writeAtomic } from "./files.js";
 import type { CliHarness } from "./harnesses.js";
 import { acquireLock } from "./lock.js";
 import { note } from "./paths.js";
+import { RELEASE_KEYS } from "./release-keys.js";
+import { signedByRelease } from "./signature.js";
 
 /** Installed shims check the served manifest at most this often (§6.2 self-update). */
 const UPDATE_CHECK_INTERVAL_MS = 60 * 60_000;
+const MANIFEST_PATH = "/hook/manifest.json";
+/** The release signer's signature over the manifest's bytes (ADR 0102). */
+const SIGNATURE_PATH = `${MANIFEST_PATH}.sig`;
+/** A manifest the release key vouches for; the signer refuses one without its build stamp. */
+const signedManifestSchema = hookManifestSchema.required({ builtAt: true });
+type SignedManifest = z.infer<typeof signedManifestSchema>;
 const MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const SELF_TEST_TIMEOUT_MS = 10_000;
@@ -57,18 +65,13 @@ function writeState(directory: string, state: UpdateState): void {
   writeAtomic(join(directory, "update.json"), state);
 }
 /**
- * Reconcile follows the recorded install flags, so an install that wrote the shell exports
- * re-writes them on a bundle swap and one that suppressed them (a canary with
- * `--no-shell-rc`) still does. The exports are marked blocks, so a re-write that changes
- * nothing is a no-op; a swap heals an install whose exports were missing or incomplete
- * (an older bundle wrote fewer files), the same way it heals a stale MCP entry.
+ * Reconcile follows the recorded install flags, so a canary wired under `--config-home`
+ * stays there. The same run removes the shell exports an older installer wrote (ADR 0104),
+ * the way it heals a stale MCP entry.
  */
 function installFlags(config: HookConfig): string[] {
-  const options = config.installOptions ?? {};
-  return [
-    ...(options.configHome ? ["--config-home", options.configHome] : []),
-    ...(options.noShellRc ? ["--no-shell-rc"] : []),
-  ];
+  const configHome = config.installOptions?.configHome;
+  return configHome ? ["--config-home", configHome] : [];
 }
 /** The installer (or a reconcile run) just wired these harnesses with this bundle. */
 export function recordConfigured(
@@ -121,28 +124,71 @@ function installedBuiltAt(
     : undefined;
 }
 /**
- * Forward-only guard: true only when both bundles carry a stamp and the offered one is
- * strictly older. It is the same never-downgrade rule the host updater applies to images
- * (ADR 0059), here at the client so a server that regresses to an older bundle (the
- * 2026-09-11 incident) cannot pull an installation backwards, even one whose manifest lies
- * about its digest. Either stamp missing or unparseable is unknown and the caller updates
- * on the digest as before, so a first upgrade and a legacy field-less manifest still work.
+ * Forward-only guard: true when the offered build is strictly older than the installed one.
+ * It is the same never-downgrade rule the host updater applies to images (ADR 0059), here
+ * at the client so a server that regresses to an older bundle (the 2026-09-11 incident), or
+ * replays an older signed release, cannot pull an installation backwards. The offered stamp
+ * is signed (ADR 0102); the installed one is unknown until the first swap records it, and
+ * the caller then updates on the digest.
  */
 function offersOlderBuild(
   installed: string | undefined,
-  offered: string | undefined,
+  offered: string,
 ): boolean {
-  if (installed === undefined || offered === undefined) return false;
+  if (installed === undefined) return false;
   const here = Date.parse(installed);
-  const there = Date.parse(offered);
-  if (Number.isNaN(here) || Number.isNaN(there)) return false;
-  return there < here;
+  if (Number.isNaN(here)) return false;
+  return Date.parse(offered) < here;
 }
 function sameOrigin(server: string, path: string): URL {
   const url = new URL(path, server);
   if (url.origin !== new URL(server).origin)
     throw new Error("The manifest points outside the configured server.");
   return url;
+}
+/** The manifest or its signature, both served `no-cache`. */
+async function fetchBytes(
+  fetcher: typeof fetch,
+  url: URL,
+  what: string,
+): Promise<Buffer> {
+  const response = await fetcher(url, {
+    headers: { "cache-control": "no-cache" },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`The ${what} returned HTTP ${String(response.status)}.`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+/**
+ * The served manifest, once the release key has vouched for its exact bytes (ADR 0102).
+ * Nothing it names is downloaded, compared by age or run before this passes, so a server, a
+ * registry token or a network path that can change what is served still cannot change what
+ * an installation runs.
+ */
+async function verifiedManifest(
+  fetcher: typeof fetch,
+  server: string,
+  bytes: Buffer,
+): Promise<SignedManifest> {
+  const signature = await fetchBytes(
+    fetcher,
+    sameOrigin(server, SIGNATURE_PATH),
+    "hook manifest signature",
+  );
+  // An unreadable signature file is no signature.
+  const signatureFile = ((): unknown => {
+    try {
+      return JSON.parse(signature.toString("utf8"));
+    } catch {
+      return null;
+    }
+  })();
+  if (!signedByRelease(bytes, signatureFile, RELEASE_KEYS))
+    throw new Error("The hook manifest is not signed by a release key.");
+  return signedManifestSchema.parse(JSON.parse(bytes.toString("utf8")));
 }
 async function download(
   fetcher: typeof fetch,
@@ -201,12 +247,13 @@ const PROBE_HARNESS: CliHarness = "claude";
 const failure = (result: SpawnSyncReturns<string>): string =>
   `exit ${String(result.status)}${result.stderr.trim() ? `: ${result.stderr.trim().slice(0, 200)}` : ""}`;
 /**
- * The new bundle must run and print its own digest, then survive one hook-mode invocation,
- * before it replaces the installed one. The hook-mode probe feeds a synthetic event with
- * capture disabled, so it loads the bundle, the configuration and the event schema without
- * writing state or starting an uploader: a release that starts but cannot run as a hook is
- * refused here, because once installed such a bundle would never run the uploader that
- * fetches the release fixing it.
+ * The new bundle must read this installation's configuration and print its own digest, then
+ * survive one hook-mode invocation, before it replaces the installed one. The hook-mode
+ * probe feeds a synthetic event with capture disabled, so it loads the bundle and the event
+ * schema without writing state or starting an uploader: a release that starts but cannot
+ * run as a hook, or cannot read the configuration it would run with, is refused here,
+ * because once installed such a bundle would never run the uploader that fetches the
+ * release fixing it. Only a signed bundle reaches this (ADR 0102).
  */
 function selfTest(
   config: HookConfig,
@@ -253,10 +300,10 @@ interface UpdateOptions {
 }
 /**
  * Upload mode only. Once an hour the uploader compares the installed bundle and pi
- * extension with the server's manifest and, when they differ, downloads the versioned
- * artifacts from the same origin, verifies their digests, self-tests the bundle and
- * renames both into place atomically. Every failure is logged and ignored; the pending
- * batch and acknowledged cursor are never involved.
+ * extension with the server's manifest and, when they differ and the release key signed
+ * that manifest, downloads the versioned artifacts from the same origin, verifies their
+ * digests, self-tests the bundle and renames both into place atomically. Every failure is
+ * logged and ignored; the pending batch and acknowledged cursor are never involved.
  */
 export async function selfUpdate(
   directory: string,
@@ -278,33 +325,27 @@ export async function selfUpdate(
       return "skipped";
     writeState(directory, { ...readState(directory), checkedAt: now });
     const fetcher = options.fetch ?? fetch;
-    const response = await fetcher(
-      sameOrigin(config.server, "/hook/manifest.json"),
-      {
-        headers: { "cache-control": "no-cache" },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      },
+    const bytes = await fetchBytes(
+      fetcher,
+      sameOrigin(config.server, MANIFEST_PATH),
+      "hook manifest",
     );
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(
-        `The hook manifest returned HTTP ${String(response.status)}.`,
-      );
-    }
-    const manifest: HookManifest = hookManifestSchema.parse(
-      await response.json(),
+    const served: HookManifest = hookManifestSchema.parse(
+      JSON.parse(bytes.toString("utf8")),
     );
     const installed = hookIdentity(directory, executable);
-    const bundleUrl = sameOrigin(config.server, manifest.url);
-    const extensionUrl = sameOrigin(config.server, manifest.extensionUrl);
+    // Matching digests change nothing, so an unsigned manifest that names the installed
+    // files is not worth a signature check.
     if (
-      installed.sha256 === manifest.sha256 &&
-      installed.extensionSha256 === manifest.extensionSha256
+      installed.sha256 === served.sha256 &&
+      installed.extensionSha256 === served.extensionSha256
     )
       return "current";
-    // Defense in depth against a regressed server: a bundle whose build stamp is strictly
-    // older than the installed one is never taken, whatever its digest. The download and
-    // self-test never run, so a lying digest cannot get past this.
+    const manifest = await verifiedManifest(fetcher, config.server, bytes);
+    const bundleUrl = sameOrigin(config.server, manifest.url);
+    const extensionUrl = sameOrigin(config.server, manifest.extensionUrl);
+    // A signed release whose build stamp is strictly older than the installed one is never
+    // taken, whatever its digest: the download and self-test never run.
     const recordedBuiltAt = installedBuiltAt(
       readState(directory),
       installed.sha256,
@@ -312,9 +353,7 @@ export async function selfUpdate(
     if (offersOlderBuild(recordedBuiltAt, manifest.builtAt)) {
       note(
         directory,
-        `Hook update skipped: the server offers an older hook build (${String(
-          manifest.builtAt,
-        )}, installed ${String(recordedBuiltAt)}); keeping the current one.`,
+        `Hook update skipped: the server offers an older hook build (${manifest.builtAt}, installed ${String(recordedBuiltAt)}); keeping the current one.`,
       );
       return "skipped";
     }
@@ -339,14 +378,10 @@ export async function selfUpdate(
       renamed.push(basename(target));
     }
     // Record the new bundle's build stamp beside its digest so the next check can refuse a
-    // later regression to an older build. A field-less manifest records the digest alone,
-    // which reads back as unknown and keeps the digest-only path.
+    // later regression to an older build.
     writeState(directory, {
       ...readState(directory),
-      installed: {
-        sha256: manifest.sha256,
-        ...(manifest.builtAt ? { builtAt: manifest.builtAt } : {}),
-      },
+      installed: { sha256: manifest.sha256, builtAt: manifest.builtAt },
     });
     note(directory, `Updated to hook ${manifest.version}.`);
     return "updated";
