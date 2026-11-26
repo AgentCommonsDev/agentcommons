@@ -127,6 +127,8 @@ export interface HarnessDefinition {
   reader: ReaderKind;
   recordKeyFields: readonly string[];
   binary: string;
+  /** Home-relative directories that mean the harness is installed even without `binary` on PATH (Claude Code's desktop app ships no `claude` command). */
+  homeMarkers?: readonly (readonly string[])[];
   processMarkers: readonly string[];
   configPath: readonly string[];
   /** Global instructions file that receives the §8.3 guidance block; null when the harness's extension carries it. */
@@ -213,6 +215,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     reader: "jsonl-append",
     recordKeyFields: ["uuid"],
     binary: "claude",
+    homeMarkers: [[".claude"]],
     processMarkers: ["claude", "@anthropic-ai/claude-code"],
     // Claude Code 2.1.x defers every MCP tool behind ToolSearch unless the server is
     // marked always-loaded; the budgeted catalog (ADR 0053) makes eager loading cheap.
