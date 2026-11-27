@@ -8,7 +8,7 @@ import {
  * The shipped default preset (ADR 0080): high-value guardrails against the commands most
  * likely to destroy data, exfiltrate secrets, or disable safety. Every rule matches any
  * harness and any tool that carries a command, so it applies across Claude Code, Codex,
- * Gemini CLI and pi. The preset is delivered with the policy DISABLED, so it enforces
+ * Gemini CLI, pi and opencode. The preset is delivered with the policy DISABLED, so it enforces
  * nothing until an admin turns the policy on; admins can then keep, edit, or remove rules.
  */
 const PRESET_RULES: ToolPolicyRule[] = [

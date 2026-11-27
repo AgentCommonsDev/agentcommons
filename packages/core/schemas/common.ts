@@ -6,6 +6,7 @@ export const harnessSchema = /* @__PURE__ */ z.enum([
   "CODEX",
   "GEMINI_CLI",
   "PI",
+  "OPENCODE",
 ]);
 export const messageRoleSchema = /* @__PURE__ */ z.enum([
   "USER",

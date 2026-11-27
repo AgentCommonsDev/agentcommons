@@ -722,6 +722,7 @@ it("has one explicit adapter per supported harness and leaves unknown records ra
     "CODEX",
     "GEMINI_CLI",
     "PI",
+    "OPENCODE",
   ]);
   for (const normalizer of Object.values(NORMALIZERS))
     expect(

@@ -261,9 +261,31 @@ it("collects end observations in a detached worktree with committed and dirty fi
   );
 });
 // @req R-HRN-07 @req R-ARCH-06
-it("all four captured harness entries choose their reader, timeout, MCP shape, and a dependency-free artifact", () => {
-  expect(Object.keys(HARNESSES)).toEqual(["claude", "codex", "gemini", "pi"]);
+it("every captured harness entry chooses its reader, timeout, MCP shape, and a dependency-free artifact", () => {
+  expect(Object.keys(HARNESSES)).toEqual([
+    "claude",
+    "codex",
+    "gemini",
+    "pi",
+    "opencode",
+  ]);
   expect(HARNESSES.gemini.reader).toBe("json-document");
+  expect(HARNESSES.opencode.reader).toBe("json-document");
+  expect(HARNESSES.opencode.pluginPath).toEqual([
+    ".config",
+    "opencode",
+    "plugin",
+    "agentcommons.js",
+  ]);
+  expect(HARNESSES.opencode.mcp("https://example.test/mcp", "ac_test")).toEqual(
+    {
+      type: "remote",
+      url: "https://example.test/mcp",
+      headers: { Authorization: "Bearer ac_test" },
+      oauth: false,
+      enabled: true,
+    },
+  );
   expect(HARNESSES.gemini.timeout).toBe(3000);
   expect(HARNESSES.pi.events.session_tree?.behavior).toBe("sync");
   expect(
@@ -340,7 +362,7 @@ it("transports the explicit parent environment as a SPAWNED hint for every harne
       sweep: false,
     });
   }
-  expect(f.received).toHaveLength(4);
+  expect(f.received).toHaveLength(Object.keys(HARNESSES).length);
   expect(
     f.received.every(
       (body) =>

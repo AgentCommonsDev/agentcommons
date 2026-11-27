@@ -3,6 +3,7 @@ enum Harness {
   CODEX
   GEMINI_CLI
   PI
+  OPENCODE
 }
 
 enum SessionStatus {

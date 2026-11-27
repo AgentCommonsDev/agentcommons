@@ -1,7 +1,7 @@
 from typing import Literal
 
 PostSearchResponse200BlocksItemHarness = Literal[
-    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
 ]
 
 POST_SEARCH_RESPONSE_200_BLOCKS_ITEM_HARNESS_VALUES: set[
@@ -10,6 +10,7 @@ POST_SEARCH_RESPONSE_200_BLOCKS_ITEM_HARNESS_VALUES: set[
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

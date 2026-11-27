@@ -3597,7 +3597,7 @@ export interface operations {
           /** @enum {number} */
           envelopeVersion: 2;
           /** @enum {string} */
-          harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+          harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
           harnessSessionId: string;
           /** @enum {string} */
           behavior: "start" | "sync" | "end";
@@ -3909,10 +3909,11 @@ export interface operations {
               /** @description Short title derived from the session */
               title: string | null;
               /**
-               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
                * @enum {string}
                */
-              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               /** @description Primary model used */
               model: string | null;
               /** @description Repository name such as owner/repo; joins repos.repo_name */
@@ -4349,10 +4350,11 @@ export interface operations {
               /** @description Short title derived from the session */
               title: string | null;
               /**
-               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
                * @enum {string}
                */
-              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               /** @description Harness version, if reported */
               harness_version: string | null;
               /** @description How the harness was launched, if reported */
@@ -4569,10 +4571,11 @@ export interface operations {
               /** @description Short title derived from the session */
               title: string | null;
               /**
-               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
                * @enum {string}
                */
-              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               /** @description Harness version, if reported */
               harness_version: string | null;
               /** @description How the harness was launched, if reported */
@@ -4793,10 +4796,11 @@ export interface operations {
               /** @description Short title derived from the session */
               title: string | null;
               /**
-               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
                * @enum {string}
                */
-              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               /** @description Harness version, if reported */
               harness_version: string | null;
               /** @description How the harness was launched, if reported */
@@ -5143,10 +5147,11 @@ export interface operations {
               /** @description Short title derived from the session */
               title: string | null;
               /**
-               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
                * @enum {string}
                */
-              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               /** @description Subagent type when the session is a subagent */
               agent_type: string | null;
               /** @description SUBAGENT, FORK or SPAWNED */
@@ -5465,7 +5470,8 @@ export interface operations {
                * @description Harness of the reading session
                * @enum {string}
                */
-              reader_harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              reader_harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               /**
                * Format: date-time
                * @description When the read happened
@@ -6152,7 +6158,9 @@ export interface operations {
               id: string;
               description?: string;
               /** @default [] */
-              harnesses: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+              harnesses: (
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE"
+              )[];
               tool: string;
               /** @default [] */
               command_patterns: {
@@ -6217,7 +6225,7 @@ export interface operations {
             /** Format: uuid */
             session_id: string;
             /** @enum {string} */
-            harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+            harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
             tool: string;
             /** @default null */
             command?: string | null;
@@ -7031,7 +7039,7 @@ export interface operations {
            * @description Sessions of this coding agent
            * @enum {string}
            */
-          harness?: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+          harness?: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
           /**
            * @description ACTIVE, ENDED or INACTIVE
            * @enum {string}
@@ -7084,10 +7092,11 @@ export interface operations {
                */
               session_id: string;
               /**
-               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+               * @description Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
                * @enum {string}
                */
-              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               /** @description Session id assigned by the harness */
               harness_session_id: string;
               /** @description Email of the member who ran it */
@@ -8756,7 +8765,9 @@ export interface operations {
               id: string;
               description?: string;
               /** @default [] */
-              harnesses: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+              harnesses: (
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE"
+              )[];
               tool: string;
               /** @default [] */
               command_patterns: {
@@ -8822,7 +8833,9 @@ export interface operations {
             id: string;
             description?: string;
             /** @default [] */
-            harnesses?: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+            harnesses?: (
+              "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE"
+            )[];
             tool: string;
             /** @default [] */
             command_patterns?: {
@@ -8851,7 +8864,9 @@ export interface operations {
               id: string;
               description?: string;
               /** @default [] */
-              harnesses: ("CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI")[];
+              harnesses: (
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE"
+              )[];
               tool: string;
               /** @default [] */
               command_patterns: {
@@ -8915,7 +8930,7 @@ export interface operations {
           /** @enum {string} */
           source?: "projection" | "hook";
           /** @enum {string} */
-          harness?: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+          harness?: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
           rule_id?: string;
           /** @enum {string} */
           decision?: "deny" | "warn" | "allow";
@@ -8946,7 +8961,8 @@ export interface operations {
               source: "projection" | "hook";
               seq: number | null;
               /** @enum {string} */
-              harness: "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI";
+              harness:
+                "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE";
               tool: string;
               rule_id: string | null;
               /** @enum {string} */

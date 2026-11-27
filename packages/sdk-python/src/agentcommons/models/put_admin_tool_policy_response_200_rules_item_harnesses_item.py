@@ -1,7 +1,7 @@
 from typing import Literal
 
 PutAdminToolPolicyResponse200RulesItemHarnessesItem = Literal[
-    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
 ]
 
 PUT_ADMIN_TOOL_POLICY_RESPONSE_200_RULES_ITEM_HARNESSES_ITEM_VALUES: set[
@@ -10,6 +10,7 @@ PUT_ADMIN_TOOL_POLICY_RESPONSE_200_RULES_ITEM_HARNESSES_ITEM_VALUES: set[
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

@@ -13,7 +13,13 @@ import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import * as z from "zod";
 import { replaceMarkedBlock, type BlockMarkers } from "./blocks.js";
 import { configSchema, objectSchema, type HookConfig } from "./config.js";
-import { hash, readJsonOr, writeAtomic, writeUserFile } from "./files.js";
+import {
+  hash,
+  readJsonOr,
+  removeFile,
+  writeAtomic,
+  writeUserFile,
+} from "./files.js";
 import { credentialOrganization } from "./identity.js";
 import {
   HARNESSES,
@@ -21,6 +27,7 @@ import {
   type HarnessDefinition,
   type McpRegistrationContext,
 } from "./harnesses.js";
+import { opencodePlugin } from "./opencode-plugin.js";
 
 import {
   agentInstructions,
@@ -74,6 +81,13 @@ function present(binary: string): boolean {
       return false;
     }
   });
+}
+/** On PATH, or one of the harness's own folders exists (the opencode desktop app has no command). */
+function installed(definition: HarnessDefinition, home: string): boolean {
+  return (
+    present(definition.binary) ||
+    definition.presence.some((path) => existsSync(join(home, ...path)))
+  );
 }
 /** What a harness's configuration document carries for this installation. */
 interface Wiring {
@@ -211,6 +225,13 @@ const FORMATS: Readonly<
   },
   // A JSON settings file that lists extension modules instead of shell hooks (pi).
   extension: { ...json, wire: wireExtension, verify: verifyExtension },
+  // opencode loads the plugin file from its plugin folder; its config carries only MCP.
+  opencode: {
+    ...json,
+    mcpKey: "mcp",
+    wire: (config) => config,
+    verify: () => undefined,
+  },
 };
 /** A harness configuration document, or null when the file does not exist. */
 function readConfig(
@@ -278,10 +299,10 @@ function shellRc(home: string, config: HookConfig, uninstall: boolean): void {
     );
   }
 }
-/** Supported harnesses whose CLI is on PATH right now; the installer wires exactly these. */
-export function detectHarnesses(): CliHarness[] {
+/** Supported harnesses installed right now; the installer wires exactly these. */
+export function detectHarnesses(home: string = homedir()): CliHarness[] {
   return (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
-    present(HARNESSES[name].binary),
+    installed(HARNESSES[name], home),
   );
 }
 const registrySchema = z.record(
@@ -387,6 +408,11 @@ function wireHarness(
   const path = join(home, ...definition.configPath);
   const output = format.wire(readConfig(format, path) ?? {}, wiring, uninstall);
   saveConfig(format, path, output);
+  if (definition.pluginPath) {
+    const plugin = join(home, ...definition.pluginPath);
+    if (uninstall) removeFile(plugin);
+    else writeUserFile(plugin, opencodePlugin);
+  }
   if (definition.instructionsPath)
     replaceMarkedBlock(
       join(home, ...definition.instructionsPath),
@@ -510,7 +536,7 @@ export function install(
     ? (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
         existsSync(join(home, ...HARNESSES[name].configPath)),
       )
-    : detectHarnesses();
+    : detectHarnesses(home);
   const url = mcpUrl(config);
   const failures: InstallFailure[] = [];
   for (const harness of selected) {
@@ -537,6 +563,9 @@ export function install(
   if (!options.noShellRc) shellRc(home, config, uninstall);
   return { harnesses: selected, failures };
 }
+function readText(path: string): string | null {
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
+}
 export async function doctor(
   directory: string,
   config: HookConfig,
@@ -552,13 +581,18 @@ export async function doctor(
     throw new Error("The installed hook.js file is missing.");
   const home = options.configHome ?? homedir();
   const url = mcpUrl(config);
-  for (const harness of detectHarnesses()) {
+  for (const harness of detectHarnesses(home)) {
     const definition = HARNESSES[harness];
     const format = FORMATS[definition.configFormat];
     const settings = readConfig(format, join(home, ...definition.configPath));
     if (!settings)
       throw new Error(`The ${harness} configuration file is missing.`);
     format.verify(settings, wiringFor(directory, config, harness));
+    if (
+      definition.pluginPath &&
+      readText(join(home, ...definition.pluginPath)) !== opencodePlugin
+    )
+      throw new Error(`The ${harness} plugin is missing or out of date.`);
     if (!definition.mcpConfigPath) continue;
     const mcpConfig = readConfig(
       format,

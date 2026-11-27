@@ -29,7 +29,8 @@ class GetSessionsIdTreeResponse200NodesItem:
     Attributes:
         session_id (UUID): Primary key; every other view joins on it
         title (None | str): Short title derived from the session
-        harness (GetSessionsIdTreeResponse200NodesItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+        harness (GetSessionsIdTreeResponse200NodesItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or
+            OPENCODE
         agent_type (None | str): Subagent type when the session is a subagent
         parent_relation (GetSessionsIdTreeResponse200NodesItemParentRelationType0 | None): SUBAGENT, FORK or SPAWNED
         parent_session_id (None | UUID): Parent session of a subagent, fork or spawned session

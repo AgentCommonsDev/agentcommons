@@ -51,6 +51,7 @@ it("native pnpm selects each downstream workspace and excludes the recursive roo
     "@agentcommons/dashboard",
     "@agentcommons/db",
     "@agentcommons/infra",
+    "@agentcommons/opencode-plugin",
     "@agentcommons/pi-extension",
     "@agentcommons/sdk",
     "@agentcommons/traces",

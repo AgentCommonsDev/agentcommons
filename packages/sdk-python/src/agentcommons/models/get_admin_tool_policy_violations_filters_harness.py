@@ -1,7 +1,7 @@
 from typing import Literal
 
 GetAdminToolPolicyViolationsFiltersHarness = Literal[
-    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
 ]
 
 GET_ADMIN_TOOL_POLICY_VIOLATIONS_FILTERS_HARNESS_VALUES: set[
@@ -10,6 +10,7 @@ GET_ADMIN_TOOL_POLICY_VIOLATIONS_FILTERS_HARNESS_VALUES: set[
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

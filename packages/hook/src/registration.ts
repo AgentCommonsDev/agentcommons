@@ -10,7 +10,12 @@ const MAX_CONFIG_BYTES = 1024 * 1024;
 /** The table that names MCP servers in each configuration format; pi has no MCP client. */
 const MCP_KEYS: Readonly<
   Record<(typeof HARNESSES)[CliHarness]["configFormat"], string | null>
-> = { json: "mcpServers", toml: "mcp_servers", extension: null };
+> = {
+  json: "mcpServers",
+  toml: "mcp_servers",
+  extension: null,
+  opencode: "mcp",
+};
 
 /**
  * Whether the harness can act on a recall hint: `ok` when its MCP configuration carries a

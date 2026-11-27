@@ -1,11 +1,14 @@
 from typing import Literal
 
-GetAdminSessionsFiltersHarness = Literal["CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"]
+GetAdminSessionsFiltersHarness = Literal[
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
+]
 
 GET_ADMIN_SESSIONS_FILTERS_HARNESS_VALUES: set[GetAdminSessionsFiltersHarness] = {
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

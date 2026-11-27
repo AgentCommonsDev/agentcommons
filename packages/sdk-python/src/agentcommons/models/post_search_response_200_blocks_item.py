@@ -38,7 +38,7 @@ class PostSearchResponse200BlocksItem:
         parent_tool_use_id (None | str): The parent's tool call that spawned this run, when recorded and the parent is
             visible; null for a root session.
         title (None | str): Short title derived from the session
-        harness (PostSearchResponse200BlocksItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+        harness (PostSearchResponse200BlocksItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
         model (None | str): Primary model used
         repo_name (None | str): Repository name such as owner/repo; joins repos.repo_name
         branch (None | str): Git branch last observed in the session

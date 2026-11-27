@@ -87,7 +87,7 @@ export function formatSchemaContext(schema: Schema): string {
   const lines: string[] = [
     "# AgentCommons schema reference",
     "",
-    "You are helping someone write SQL for AgentCommons, a searchable index of the coding-agent sessions their organization captured from Claude Code, Codex, Gemini CLI and pi. This is the authoritative schema reference for the read-only ClickHouse views their account can query (the `api_ro` database). Use it to construct queries for them: take view and column names only from the listing below, follow the rules, and adapt the patterns and examples to their question.",
+    "You are helping someone write SQL for AgentCommons, a searchable index of the coding-agent sessions their organization captured from Claude Code, Codex, Gemini CLI, pi and opencode. This is the authoritative schema reference for the read-only ClickHouse views their account can query (the `api_ro` database). Use it to construct queries for them: take view and column names only from the listing below, follow the rules, and adapt the patterns and examples to their question.",
     "",
     "## What the data is",
     "",

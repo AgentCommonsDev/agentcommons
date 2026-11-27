@@ -25,6 +25,7 @@
       "entry": ["src/entry.ts", "test/**/*.test.ts", "test/kill-worker.ts"]
     },
     "packages/pi-extension": { "entry": ["src/index.ts"] },
+    "packages/opencode-plugin": { "entry": ["src/index.ts"] },
     "infra": {
       "entry": ["index.ts", "scripts/*.ts", "test/**/*.test.ts"],
       "ignoreDependencies": ["tsx"],

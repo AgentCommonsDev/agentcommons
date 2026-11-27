@@ -513,5 +513,95 @@
     },
     "capturedAt": "2026-09-14",
     "sourceSha256": "4200272299da35a584d376e5fd5fc8bd74fa54b7b3c5b53662df54d2e8865235"
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/opencode-1.19.6/events.jsonl",
+    "destination": "fixtures/hooks/opencode-1.19.6-plugin-events.jsonl",
+    "jsonl": true,
+    "sourceSha256": "4ef8c3e002f906e65f2800241e68663913493985f7af7a1bd7bc7a13f5b16f8c",
+    "sha256": "fb80dc9b9fc902d6a022d556ce8b7f181693ab973680522e0dfbd4837c0cc411",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/opencode-1.19.6/agentcommons/opencode/ses_de0c028b3ffe0abUfylpQ4vEOe.json",
+    "destination": "fixtures/transcripts/opencode/1.19.6-parent.json",
+    "jsonl": false,
+    "sourceSha256": "979e830f1d0a97bc1bef452ea1af00bc9b06e646b8b9e7e98a0887812137169a",
+    "sha256": "f66d526d056dd4370e4a4afd2288c29a472438ac7ad286e9f956477dccb0a372",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/opencode-1.19.6/agentcommons/opencode/ses_de0c012adffe7P6cIpL0drIShT.json",
+    "destination": "fixtures/transcripts/opencode/1.19.6-child.json",
+    "jsonl": false,
+    "sourceSha256": "8b8a51abfca0b73a3c431edcf72def928b9d407b14fa6a07e9e22e681785314f",
+    "sha256": "b86e04cb2e3591150a7012b3f99169e7fc99c30b4c5e378acea193e54fd633d5",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/opencode-2.4.1/events.jsonl",
+    "destination": "fixtures/hooks/opencode-2.4.1-plugin-events.jsonl",
+    "jsonl": true,
+    "sourceSha256": "74b5152b5befb39bd05f264e84587161c6e181b69123924d1d6a11a5e3e83303",
+    "sha256": "704cc8555c598e6b092fbb56cb8fabb537db9516afa325967ad48f7585c279fa",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/opencode-2.4.1/agentcommons/opencode/ses_de0c00368ffeoFRx3VXeh5rlZG.json",
+    "destination": "fixtures/transcripts/opencode/2.4.1-parent.json",
+    "jsonl": false,
+    "sourceSha256": "c132f08fbdf304e351639f5897113531a11eb5befa1384ff79f1a32f87875c04",
+    "sha256": "0d11f490c860682ad4a6c633e99d4368cd954b4775efafd4fe69813fdab9a874",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
+  },
+  {
+    "source": "/tmp/agentcommons-live-capture/opencode-2.4.1/agentcommons/opencode/ses_de0bff958ffeSAPikH5G0bo8KE.json",
+    "destination": "fixtures/transcripts/opencode/2.4.1-child.json",
+    "jsonl": false,
+    "sourceSha256": "1bab56ba5af81f260b9c6ebe5f5ad74a5ccbb1d1393ad98bf1fed6a894ede22d",
+    "sha256": "dd8edf2db66dd0f261da260737c60be56b7a7ed15ccafcd92d38b4633b32f5ff",
+    "redaction": {
+      "engine": "production Redactor.json + @secretlint/core",
+      "rules": [
+        "preset-recommend",
+        "pattern"
+      ],
+      "matches": 0
+    }
   }
 ]

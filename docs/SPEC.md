@@ -301,7 +301,7 @@ physical columns and native types are declared in `packages/traces/src/schema.ts
 | column                                                         | notes                                                                                                                                                                                                                                                                                                       |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                                                           |                                                                                                                                                                                                                                                                                                             |
-| `harness`                                                      | `CLAUDE_CODE`, `CODEX`, `GEMINI_CLI`, `PI`                                                                                                                                                                                                                                                                  |
+| `harness`                                                      | `CLAUDE_CODE`, `CODEX`, `GEMINI_CLI`, `PI`, `OPENCODE`                                                                                                                                                                                                                                                      |
 | `harnessSessionId`                                             | native id; Claude subagents `<sessionId>:agent-<agentId>`; unique with `organizationId, harness`                                                                                                                                                                                                            |
 | `organizationId`                                               | immutable tenant; taken from authenticated key, never ingest JSON                                                                                                                                                                                                                                           |
 | `harnessVersion`, `entrypoint`                                 | from the transcript (`version`/`cli_version`; `entrypoint`/`originator`)                                                                                                                                                                                                                                    |
@@ -443,7 +443,7 @@ Fresh migrations create the final control schema without a corpus backfill.
 ```jsonc
 {
   "envelopeVersion": 2,
-  "harness": "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI",
+  "harness": "CLAUDE_CODE" | "CODEX" | "GEMINI_CLI" | "PI" | "OPENCODE",
   "harnessSessionId": "415cee4b-…",             // the harness's own id; subagents ship as their own sessions with parentHint
   "behavior": "start" | "sync" | "end",          // canonical (§6.3)
   "nativeEvent": "UserPromptSubmit",              // diagnostics only
@@ -794,14 +794,33 @@ without appending transcript bytes and therefore always requests a sync. A fork'
 `parentSession` is the parent transcript file path; resolve its native session ID from
 that header or the observed filename, never infer a relationship from timing.
 
+**opencode**. opencode keeps sessions in SQLite (`~/.local/share/opencode/opencode.db`),
+not in a transcript file. The AgentCommons plugin writes one JSON document per session to
+`<data directory>/opencode/<sessionId>.json`: `{ sessionId, parentSessionId, title,
+directory, harnessVersion, startedAt, agent, messages: [...] }`, read by the
+`json-document` reader; the session facts reach the normalizer as `transcriptMetadata`.
+`messages` holds the engine's own messages, merged by message id across reads so that a
+message keeps its position, takes its newest content, and is never dropped (opencode 2.x
+returns only the messages after the last compaction). Two shapes occur and are told apart
+per record, never by version: opencode 1.x `{ info: { id, role, modelID, tokens, time,
+parentID }, parts: [...] }` with parts `text` (`synthetic` → `SYSTEM`), `reasoning` →
+`THINKING`, `tool { callID, tool, state: { status, input, output | error } }` →
+`TOOL_USE` plus `TOOL_RESULT` once finished, `file` → `META`; opencode 2.x flat messages
+with `type` ∈ `user`, `assistant` (`content[]`: `text`, `reasoning`, `tool { id, name,
+state: { status, input, content | error } }`, `model.id`, `tokens`), `synthetic` (harness
+input such as a subagent's report) → `SYSTEM TEXT`, `compaction` (`summary`) → `SYSTEM
+TEXT`, `agent-/model-/location-switched` → `META`; `idle`, `system`, `skill`, `shell` are
+raw-only. Usage counts cached tokens as input and reasoning tokens as output. Other
+records are raw-only.
+
 ### 5.5 Links
 
-| relation                                                                                 | Claude Code                                                                                                                                   | Codex                                                                                                                                                       | Gemini CLI                     | pi                     |
-| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ---------------------- |
-| `SUBAGENT`                                                                               | child path known from `SubagentStart` (`agent_id`) via the verified layout; shipped with `parentHint`; `SubagentStop` confirms                | child rollout `session_meta.source.subagent.thread_spawn.parent_thread_id`; hooks verified by name, payloads captured during implementation                 | captured during implementation | none                   |
-| `FORK`                                                                                   | none (no native metadata)                                                                                                                     | `forked_from` marker when present                                                                                                                           | n/a                            | header `parentSession` |
-| `SPAWNED`                                                                                | env `AGENTCOMMONS_PARENT_SESSION_ID`                                                                                                          | same                                                                                                                                                        | same                           | same                   |
-| spawning call (`parentToolUseId`)                                                        | parent `Agent` result record: `toolUseResult.agentId` beside the `tool_result` block's `tool_use_id`; child ref `<sessionId>:agent-<agentId>` | parent `event_msg item_completed` `SubAgentActivity` `kind: started`: `item.id` is the `spawn_agent` `call_id`, `item.agent_thread_id` the child rollout id | none (delegation is inline)    | none (forks only)      |
+| relation                                                                                 | Claude Code                                                                                                                                   | Codex                                                                                                                                                       | Gemini CLI                     | pi                     | opencode                                                                                                                                         |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SUBAGENT`                                                                               | child path known from `SubagentStart` (`agent_id`) via the verified layout; shipped with `parentHint`; `SubagentStop` confirms                | child rollout `session_meta.source.subagent.thread_spawn.parent_thread_id`; hooks verified by name, payloads captured during implementation                 | captured during implementation | none                   | the plugin's `subagent.*` events name the child on its parent (the session's `parentID`); shipped with `parentHint`                              |
+| `FORK`                                                                                   | none (no native metadata)                                                                                                                     | `forked_from` marker when present                                                                                                                           | n/a                            | header `parentSession` | none                                                                                                                                             |
+| `SPAWNED`                                                                                | env `AGENTCOMMONS_PARENT_SESSION_ID`                                                                                                          | same                                                                                                                                                        | same                           | same                   | same                                                                                                                                             |
+| spawning call (`parentToolUseId`)                                                        | parent `Agent` result record: `toolUseResult.agentId` beside the `tool_result` block's `tool_use_id`; child ref `<sessionId>:agent-<agentId>` | parent `event_msg item_completed` `SubAgentActivity` `kind: started`: `item.id` is the `spawn_agent` `call_id`, `item.agent_thread_id` the child rollout id | none (delegation is inline)    | none (forks only)      | parent `task` (1.x, `state.metadata.sessionId`) or `subagent` (2.x, `state.metadata.sessionID`) tool result; child ref is the child's session id |
 | Native metadata outranks env hints; conflicts are recorded, never relinked silently.     |
 | Unresolved parents stay in `parentNativeRef` until the parent arrives. Native references |
 | and hook hints use the same redaction-aware identity mapping as session creation.        |
@@ -1197,17 +1216,29 @@ machine that has that CLI within an hour of its next session.
 
 ### 6.3 Harness table
 
-| behavior                                                                                               | Claude Code                                               | Codex                | Gemini CLI                               | pi                                                  |
-| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- | -------------------- | ---------------------------------------- | --------------------------------------------------- |
-| `start`                                                                                                | `SessionStart`                                            | `SessionStart`       | `SessionStart`                           | `session_start`                                     |
-| `sync`                                                                                                 | `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStop` | same                 | `BeforeAgent`, `AfterTool`, `AfterAgent` | `input`, `tool_result`, `agent_end`, `session_tree` |
-| child source                                                                                           | `SubagentStart` (+ `SubagentStop` confirms)               | `SubagentStart/Stop` | —                                        | —                                                   |
-| `end`                                                                                                  | `SessionEnd`                                              | `SessionEnd`         | `SessionEnd`                             | `session_shutdown`                                  |
-| `hint` (model context)                                                                                 | `SessionStart` (start), `UserPromptSubmit` (prompt)       | `UserPromptSubmit`   | `SessionStart` (start), `BeforeAgent`    | —                                                   |
-| repository instructions file (the §8.3 block, written by the explicit guidance command)                | `CLAUDE.md`                                               | `AGENTS.md`          | `GEMINI.md`                              | `AGENTS.md`                                         |
+| behavior                                                                                               | Claude Code                                               | Codex                | Gemini CLI                               | pi                                                  | opencode (plugin)                                                 |
+| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- | -------------------- | ---------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------- |
+| `start`                                                                                                | `SessionStart`                                            | `SessionStart`       | `SessionStart`                           | `session_start`                                     | `session.start`                                                   |
+| `sync`                                                                                                 | `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStop` | same                 | `BeforeAgent`, `AfterTool`, `AfterAgent` | `input`, `tool_result`, `agent_end`, `session_tree` | `prompt`, `tool.after`, `idle`                                    |
+| child source                                                                                           | `SubagentStart` (+ `SubagentStop` confirms)               | `SubagentStart/Stop` | —                                        | —                                                   | `subagent.start` / `subagent.sync` / `subagent.end` on the parent |
+| `end`                                                                                                  | `SessionEnd`                                              | `SessionEnd`         | `SessionEnd`                             | `session_shutdown`                                  | `session.end`                                                     |
+| `hint` (model context)                                                                                 | `SessionStart` (start), `UserPromptSubmit` (prompt)       | `UserPromptSubmit`   | `SessionStart` (start), `BeforeAgent`    | —                                                   | — (the plugin adds the §8.3 guidance to the system prompt)        |
+| repository instructions file (the §8.3 block, written by the explicit guidance command)                | `CLAUDE.md`                                               | `AGENTS.md`          | `GEMINI.md`                              | `AGENTS.md`                                         | `AGENTS.md`                                                       |
 | Readers: `jsonl-append` (byte offset) and `json-document` (per-index content hashes and                |
 | source versions; acknowledged only with the pending batch). Each entry also carries config path, hooks |
 | key, timeout unit (Gemini: ms), and MCP registration shape.                                            |
+
+opencode has no shell hooks. One plugin file, written by the installer to
+`~/.config/opencode/plugin/agentcommons.js` and carried inside `hook.js` (so self-update
+delivers it with no new manifest field), serves both plugin interfaces: opencode 1.x calls
+its `server()` hooks, opencode 2.x its `setup()`. It writes each session's document (§5.4)
+and runs `hook.js opencode` with the event on stdin, detached during a session and waited
+for at shutdown. A child session's events reach the shim on its parent and name the child
+(`agent_id`, `agent_transcript_path`), so it is registered as a child source. The
+installer counts opencode as present when `opencode` is on PATH or `~/.config/opencode`
+exists (the desktop app bundles its own engine), writes the MCP entry under `mcp` in
+`opencode.json`, and writes no global instructions file: `~/.config/opencode/AGENTS.md`
+would stop opencode from reading `~/.claude/CLAUDE.md`.
 
 ### 6.4 Environment
 
@@ -1233,7 +1264,10 @@ with `evaluateToolCall`, and writes the decision. The three shell harnesses shar
 shape, `{"decision":"block","reason":R}` at exit 0; `warn` uses each harness's channel
 (Codex `hookSpecificOutput.additionalContext`, Gemini `systemMessage`, Claude both), and
 `allow` writes nothing except, for an edit/write tool whose target a prior session worked on, one before-edit recall line (§6.2) on the harness's informational `context` channel (Claude Code/Codex `additionalContext`, Gemini `systemMessage`) — no decision or permission field, so the allow is unchanged. pi's handler returns `{block:true,reason:R}` or notifies the user
-and returns nothing. This path is local and offline: the shell harnesses fail open on a
+and returns nothing. The opencode plugin's `tool.execute.before` (1.x) and
+`execute.before` (2.x) hooks throw `R` on a deny, which opencode reports to the model as
+the tool's error without running it; a warn runs silently, since a plugin has no channel
+to the model or user there. This path is local and offline: the shell harnesses fail open on a
 slow or crashing hook, so it never touches the network and never reads more than the small
 cached policy.
 
@@ -3741,6 +3775,30 @@ to `harness_version`/`entrypoint`. A 2026-09-08 live run (SDK driver with fork/r
 `pi -p`) confirmed every other header field is populated from the transcript, the hook
 git observations, or the end observation, and that the detached uploads acknowledged the
 final `session_shutdown` bytes within seconds of process exit.
+
+**opencode 1.19.6 and 2.4.1, 2026-11-27** (`fixtures/hooks/opencode-1.19.6-plugin-events.jsonl`,
+`opencode-2.4.1-plugin-events.jsonl`, `fixtures/transcripts/opencode/`; method and raw
+observations in `docs/harness-capture-2026-11-27-opencode.md`). Captured with
+`scripts/capture-opencode.mjs`: the real plugin in private XDG directories, a stand-in
+`hook.js` that records each payload and document, and a cached policy that denies one
+command. opencode 1.x (npm `opencode-ai`) runs plugins in-process per invocation and
+calls the v1 `server()` hooks: `event` (`session.created`, `session.idle`,
+`session.deleted`), `chat.message`, `tool.execute.before/after`,
+`experimental.chat.system.transform`, `dispose`; `client.session.get/messages` return the
+session and every message. 1.19.6 also runs an early 2.x loader that calls `setup()` with
+a context holding only `options, agent, aisdk, catalog, command, integration, plugin,
+reference, skill`; the plugin does nothing there. `run` exits without waiting for a child
+started during `dispose`, so shutdown ends are sent with a waited `hook.js` run. opencode
+2.x (the desktop app's `opencode-cli`, npm `@opencode/cli`) runs plugins in its
+long-lived service (or a `--standalone` private server) and rejects 1.x plugins:
+`ctx.event.subscribe()` (`session.created` for child sessions but not for a top-level
+`run` session, `session.execution.succeeded/failed/interrupted`, `session.deleted`),
+`ctx.session.hook("prompt" | "context")`, `ctx.tool.hook("execute.before" | "execute.after")`;
+`ctx.session.get` returns the session with `parentID`, and `ctx.session.context` the
+messages after the last compaction only (verified by forcing a compaction), hence the
+merge. A thrown `execute.before` error became the call's `error` in both generations.
+Child sessions carry `parentID`; the parent's `task`/`subagent` result metadata names
+the child.
 
 **Gemini Code Assist and env placeholders, 2026-09-11 (production).** The VS Code Gemini
 Code Assist extension reads `~/.gemini/settings.json` `mcpServers` in the extension host,

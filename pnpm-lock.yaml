@@ -487,6 +487,12 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
 
+  packages/opencode-plugin:
+    devDependencies:
+      '@agentcommons/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/pi-extension:
     devDependencies:
       '@agentcommons/core':

@@ -204,6 +204,7 @@ describe("post-turn settle", () => {
       codex: ["Stop", "SubagentStop"],
       gemini: ["AfterAgent"],
       pi: ["agent_end"],
+      opencode: ["idle"],
     });
   });
 });

@@ -1,7 +1,7 @@
 from typing import Literal
 
 GetAdminSessionsResponse200ItemsItemHarness = Literal[
-    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
 ]
 
 GET_ADMIN_SESSIONS_RESPONSE_200_ITEMS_ITEM_HARNESS_VALUES: set[
@@ -10,6 +10,7 @@ GET_ADMIN_SESSIONS_RESPONSE_200_ITEMS_ITEM_HARNESS_VALUES: set[
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 
