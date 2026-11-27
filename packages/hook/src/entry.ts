@@ -157,7 +157,7 @@ async function main(): Promise<void> {
           .filter((name) => HARNESSES[name].instructionsPath === null)
           .map(
             (name) =>
-              `${name} reads the AgentCommons guidance from its ${HARNESSES[name].pluginPath ? "plugin" : "extension"}.`,
+              `${name} reads the AgentCommons guidance from its ${HARNESSES[name].plugin ? "plugin" : "extension"}.`,
           ),
         ...wired.flatMap((definition) =>
           definition.installNote ? [definition.installNote] : [],

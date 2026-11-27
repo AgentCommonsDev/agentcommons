@@ -5,10 +5,19 @@ import {
   constants,
   existsSync,
   readFileSync,
+  rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  applyEdits,
+  modify,
+  parse as parseJsonc,
+  type ParseError,
+  // The ESM build: the package's default UMD build loads its parts at run time, which the
+  // single-file bundle cannot carry.
+} from "jsonc-parser/lib/esm/main.js";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import * as z from "zod";
 import { replaceMarkedBlock, type BlockMarkers } from "./blocks.js";
@@ -23,11 +32,11 @@ import {
 import { credentialOrganization } from "./identity.js";
 import {
   HARNESSES,
+  harnessPath,
   type CliHarness,
   type HarnessDefinition,
   type McpRegistrationContext,
 } from "./harnesses.js";
-import { opencodePlugin } from "./opencode-plugin.js";
 
 import {
   agentInstructions,
@@ -47,7 +56,7 @@ export function instructionFiles(
 ): string[] {
   return harnesses.flatMap((name) => {
     const path = HARNESSES[name].instructionsPath;
-    return path ? [join(home, ...path)] : [];
+    return path ? [harnessPath(home, path)] : [];
   });
 }
 const shellQuote = (value: string): string =>
@@ -86,7 +95,7 @@ function present(binary: string): boolean {
 function installed(definition: HarnessDefinition, home: string): boolean {
   return (
     present(definition.binary) ||
-    definition.presence.some((path) => existsSync(join(home, ...path)))
+    definition.presence.some((path) => existsSync(harnessPath(home, path)))
   );
 }
 /** What a harness's configuration document carries for this installation. */
@@ -115,6 +124,11 @@ function wiringFor(
 interface ConfigFormat {
   parse(text: string): unknown;
   stringify(value: Record<string, unknown>): string;
+  /**
+   * Rewrites an existing document as `value` while keeping its comments and layout, for a
+   * format that allows comments (opencode's JSONC); absent, the document is re-serialized.
+   */
+  update?(text: string, value: Record<string, unknown>): string;
   /** The table naming MCP servers in documents of this format. */
   mcpKey: string;
   /** Adds this installation to a document, or removes it. Entries the user wrote are kept. */
@@ -226,13 +240,38 @@ const FORMATS: Readonly<
   // A JSON settings file that lists extension modules instead of shell hooks (pi).
   extension: { ...json, wire: wireExtension, verify: verifyExtension },
   // opencode loads the plugin file from its plugin folder; its config carries only MCP.
+  // opencode reads `opencode.json` as JSONC, so comments and trailing commas are kept.
   opencode: {
     ...json,
+    parse: parseOpencodeConfig,
+    update: updateJsonc,
     mcpKey: "mcp",
     wire: (config) => config,
     verify: () => undefined,
   },
 };
+function parseOpencodeConfig(text: string): unknown {
+  const errors: ParseError[] = [];
+  const value: unknown = parseJsonc(text, errors, { allowTrailingComma: true });
+  if (errors.length)
+    throw new Error("The opencode configuration is not valid JSONC.");
+  return value;
+}
+/** Edits only the top-level keys whose values changed, so comments elsewhere survive. */
+function updateJsonc(text: string, value: Record<string, unknown>): string {
+  const current = objectSchema.parse(parseOpencodeConfig(text));
+  let output = text;
+  for (const key of new Set([...Object.keys(current), ...Object.keys(value)])) {
+    if (JSON.stringify(current[key]) === JSON.stringify(value[key])) continue;
+    output = applyEdits(
+      output,
+      modify(output, [key], value[key], {
+        formattingOptions: { insertSpaces: true, tabSize: 2 },
+      }),
+    );
+  }
+  return output;
+}
 /** A harness configuration document, or null when the file does not exist. */
 function readConfig(
   format: ConfigFormat,
@@ -248,9 +287,15 @@ function saveConfig(
   path: string,
   value: Record<string, unknown>,
 ): void {
-  if (existsSync(path) && !existsSync(`${path}.agentcommons-backup`))
-    writeUserFile(`${path}.agentcommons-backup`, readFileSync(path, "utf8"));
-  writeUserFile(path, format.stringify(value));
+  const original = existsSync(path) ? readFileSync(path, "utf8") : null;
+  if (original !== null && !existsSync(`${path}.agentcommons-backup`))
+    writeUserFile(`${path}.agentcommons-backup`, original);
+  writeUserFile(
+    path,
+    original !== null && format.update
+      ? format.update(original, value)
+      : format.stringify(value),
+  );
 }
 /**
  * Every login shell a person may start a coding agent from gets the exports: bash and zsh
@@ -405,22 +450,28 @@ function wireHarness(
   const definition = HARNESSES[harness];
   const format = FORMATS[definition.configFormat];
   const wiring = wiringFor(directory, config, harness);
-  const path = join(home, ...definition.configPath);
+  const path = harnessPath(home, definition.configPath);
   const output = format.wire(readConfig(format, path) ?? {}, wiring, uninstall);
   saveConfig(format, path, output);
-  if (definition.pluginPath) {
-    const plugin = join(home, ...definition.pluginPath);
-    if (uninstall) removeFile(plugin);
-    else writeUserFile(plugin, opencodePlugin);
+  if (definition.plugin) {
+    const plugin = harnessPath(home, definition.plugin.path);
+    if (uninstall) {
+      removeFile(plugin);
+      // The plugin's local session copies go with it.
+      rmSync(join(directory, ...definition.plugin.documents), {
+        recursive: true,
+        force: true,
+      });
+    } else writeUserFile(plugin, definition.plugin.source(directory));
   }
   if (definition.instructionsPath)
     replaceMarkedBlock(
-      join(home, ...definition.instructionsPath),
+      harnessPath(home, definition.instructionsPath),
       guidanceMarkers,
       uninstall ? null : agentInstructions,
     );
   if (!definition.mcpConfigPath) return;
-  const mcpPath = join(home, ...definition.mcpConfigPath);
+  const mcpPath = harnessPath(home, definition.mcpConfigPath);
   const mcpConfig =
     mcpPath === path ? output : (readConfig(format, mcpPath) ?? {});
   const servers = objectSchema.parse(mcpConfig[format.mcpKey] ?? {});
@@ -534,7 +585,7 @@ export function install(
   const registry: Registry = readJsonOr(registryPath, registrySchema, {});
   const selected = uninstall
     ? (Object.keys(HARNESSES) as CliHarness[]).filter((name) =>
-        existsSync(join(home, ...HARNESSES[name].configPath)),
+        existsSync(harnessPath(home, HARNESSES[name].configPath)),
       )
     : detectHarnesses(home);
   const url = mcpUrl(config);
@@ -584,19 +635,23 @@ export async function doctor(
   for (const harness of detectHarnesses(home)) {
     const definition = HARNESSES[harness];
     const format = FORMATS[definition.configFormat];
-    const settings = readConfig(format, join(home, ...definition.configPath));
+    const settings = readConfig(
+      format,
+      harnessPath(home, definition.configPath),
+    );
     if (!settings)
       throw new Error(`The ${harness} configuration file is missing.`);
     format.verify(settings, wiringFor(directory, config, harness));
     if (
-      definition.pluginPath &&
-      readText(join(home, ...definition.pluginPath)) !== opencodePlugin
+      definition.plugin &&
+      readText(harnessPath(home, definition.plugin.path)) !==
+        definition.plugin.source(directory)
     )
       throw new Error(`The ${harness} plugin is missing or out of date.`);
     if (!definition.mcpConfigPath) continue;
     const mcpConfig = readConfig(
       format,
-      join(home, ...definition.mcpConfigPath),
+      harnessPath(home, definition.mcpConfigPath),
     );
     if (!mcpConfig)
       throw new Error(`The ${harness} MCP configuration file is missing.`);

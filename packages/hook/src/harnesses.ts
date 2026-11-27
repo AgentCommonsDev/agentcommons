@@ -1,5 +1,7 @@
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
 import * as z from "zod";
+import { opencodePlugin } from "./opencode-plugin.js";
 
 export const nativeHookSchema = z.looseObject({
   session_id: z.string().min(1),
@@ -140,8 +142,16 @@ export interface HarnessDefinition {
   repositoryInstructionsFile: string;
   mcpConfigPath: readonly string[] | null;
   configFormat: "json" | "toml" | "extension" | "opencode";
-  /** Home-relative file the installer writes with the bundled plugin (opencode); null otherwise. */
-  pluginPath: readonly string[] | null;
+  /**
+   * A plugin file the installer writes (opencode): its home-relative `path`, its text for an
+   * installation directory, and the data-directory folder it keeps session documents in,
+   * which uninstall removes. Null for a harness without one.
+   */
+  plugin: {
+    path: readonly string[];
+    source(directory: string): string;
+    documents: readonly string[];
+  } | null;
   /**
    * The MCP entry the installer writes. `key` is written literally where the client's IDE
    * host cannot expand `${VAR}` (Claude Code's `~/.claude.json`, Gemini's `settings.json`,
@@ -235,7 +245,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: [".claude", "CLAUDE.md"],
     repositoryInstructionsFile: "CLAUDE.md",
     configFormat: "json",
-    pluginPath: null,
+    plugin: null,
     editTools: ["Edit", "Write", "MultiEdit", "NotebookEdit"],
     timeout: 3,
     events: shellEvents,
@@ -311,7 +321,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: [".codex", "AGENTS.md"],
     repositoryInstructionsFile: "AGENTS.md",
     configFormat: "toml",
-    pluginPath: null,
+    plugin: null,
     // Codex edits run through the shell tool (apply_patch), which carries no file field.
     editTools: [],
     timeout: 3,
@@ -363,7 +373,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: [".gemini", "GEMINI.md"],
     repositoryInstructionsFile: "GEMINI.md",
     configFormat: "json",
-    pluginPath: null,
+    plugin: null,
     editTools: ["write_file", "replace"],
     timeout: 3000,
     events: {
@@ -395,7 +405,7 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     instructionsPath: null,
     repositoryInstructionsFile: "AGENTS.md",
     configFormat: "extension",
-    pluginPath: null,
+    plugin: null,
     // pi has no shell hook; its tool enforcement runs in the extension, not this bundle.
     editTools: [],
     timeout: 3,
@@ -434,7 +444,11 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     }),
     configFormat: "opencode",
     // Both opencode generations load every plugin file in this folder.
-    pluginPath: [".config", "opencode", "plugin", "agentcommons.js"],
+    plugin: {
+      path: [".config", "opencode", "plugin", "agentcommons.js"],
+      source: opencodePlugin,
+      documents: ["opencode"],
+    },
     // Tool enforcement runs in the plugin, not this bundle.
     editTools: [],
     timeout: 3,
@@ -470,6 +484,16 @@ export const HARNESSES: Readonly<Record<CliHarness, HarnessDefinition>> = {
     },
   },
 };
+/**
+ * A harness path under the user's home. A path in `.config` follows `XDG_CONFIG_HOME`, as
+ * opencode does, unless the installer was pointed at another home (`--config-home`).
+ */
+export function harnessPath(home: string, path: readonly string[]): string {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  return path[0] === ".config" && xdg && isAbsolute(xdg) && home === homedir()
+    ? join(xdg, ...path.slice(1))
+    : join(home, ...path);
+}
 export const cliHarnessSchema = z.enum([
   "claude",
   "codex",

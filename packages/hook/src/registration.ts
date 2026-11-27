@@ -1,7 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { objectSchema } from "./config.js";
-import { HARNESSES, type CliHarness } from "./harnesses.js";
+import { HARNESSES, harnessPath, type CliHarness } from "./harnesses.js";
 
 /** The MCP server name the installer registers (§8.4). */
 const MCP_NAME = "agentcommons";
@@ -32,7 +31,7 @@ export function registrationStatus(
   const definition = HARNESSES[harness];
   const key = MCP_KEYS[definition.configFormat];
   if (!definition.mcpConfigPath || key === null) return "ok";
-  const path = join(configHome, ...definition.mcpConfigPath);
+  const path = harnessPath(configHome, definition.mcpConfigPath);
   let text: string;
   try {
     if (statSync(path).size > MAX_CONFIG_BYTES) return "unknown";
@@ -60,5 +59,5 @@ export function registrationFile(
   configHome: string,
 ): string | null {
   const path = HARNESSES[harness].mcpConfigPath;
-  return path ? join(configHome, ...path) : null;
+  return path ? harnessPath(configHome, path) : null;
 }

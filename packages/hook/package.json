@@ -14,8 +14,9 @@
   "devDependencies": {
     "@agentcommons/core": "workspace:*",
     "esbuild": "0.28.2",
+    "jsonc-parser": "3.3.1",
     "smol-toml": "1.8.0",
-    "zod": "4.5.4",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "zod": "4.5.4"
   }
 }

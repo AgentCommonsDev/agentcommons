@@ -25,7 +25,9 @@ SUBAGENT parent hint. The plugin also adds the §8.3 guidance to the system prom
 enforces the cached tool policy, as the pi extension does.
 
 The plugin is bundled into `hook.js` as text at build time, and `hook.js install` writes
-it into opencode's plugin folder. Self-update re-runs the installer, so a new plugin
+it into opencode's plugin folder with the installation directory filled in, since the
+desktop app's service has no `AGENTCOMMONS_DIR`. Only the built bundle carries the
+plugin, so `hook:link` installs through it. Self-update re-runs the installer, so a new plugin
 reaches machines with no manifest change. The installer treats `~/.config/opencode` as
 evidence that opencode is installed, through a `presence` list on the `HARNESSES` entry.
 

@@ -1229,16 +1229,22 @@ machine that has that CLI within an hour of its next session.
 | key, timeout unit (Gemini: ms), and MCP registration shape.                                            |
 
 opencode has no shell hooks. One plugin file, written by the installer to
-`~/.config/opencode/plugin/agentcommons.js` and carried inside `hook.js` (so self-update
+`<config>/opencode/plugin/agentcommons.js` and carried inside `hook.js` (so self-update
 delivers it with no new manifest field), serves both plugin interfaces: opencode 1.x calls
-its `server()` hooks, opencode 2.x its `setup()`. It writes each session's document (§5.4)
-and runs `hook.js opencode` with the event on stdin, detached during a session and waited
-for at shutdown. A child session's events reach the shim on its parent and name the child
-(`agent_id`, `agent_transcript_path`), so it is registered as a child source. The
-installer counts opencode as present when `opencode` is on PATH or `~/.config/opencode`
-exists (the desktop app bundles its own engine), writes the MCP entry under `mcp` in
-`opencode.json`, and writes no global instructions file: `~/.config/opencode/AGENTS.md`
-would stop opencode from reading `~/.claude/CLAUDE.md`.
+its `server()` hooks, opencode 2.x its `setup()`. The installer writes its own directory
+into the plugin, because the desktop app's service starts without `AGENTCOMMONS_DIR`, and
+the plugin passes it to `hook.js`. The plugin writes each session's document (§5.4) and
+runs `hook.js opencode` with the event on stdin, detached and not awaited during a
+session; at shutdown it waits, and ends only sessions with an event in the last 30
+minutes. A child session's events reach the shim on its parent and name the child
+(`agent_id`, `agent_transcript_path`), so it is registered as a child source. `<config>`
+is `$XDG_CONFIG_HOME`, else `~/.config`, as opencode resolves it; `--config-home` replaces
+the home and ignores `XDG_CONFIG_HOME`. The installer counts opencode as present when
+`opencode` is on PATH or `<config>/opencode` exists (the desktop app bundles its own
+engine), writes the MCP entry under `mcp` in `opencode.json`, which it edits as JSONC so
+comments survive, and writes no global instructions file: `<config>/opencode/AGENTS.md`
+would stop opencode from reading `~/.claude/CLAUDE.md`. Uninstall removes the plugin and
+the plugin's session documents.
 
 ### 6.4 Environment
 

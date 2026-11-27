@@ -30,12 +30,23 @@ import {
  * recorded once.
  */
 
+/**
+ * The installer writes its own directory over this placeholder (hook `opencodePlugin`): the
+ * desktop app's service starts without `AGENTCOMMONS_DIR`. Unreplaced, as in tests, the
+ * shared default applies.
+ */
+const INSTALLATION = "__AGENTCOMMONS_INSTALL_DIRECTORY__";
+export function installationDirectory(): string {
+  return INSTALLATION.startsWith("__AGENTCOMMONS_")
+    ? dataDirectory()
+    : INSTALLATION;
+}
 /** A session's facts, the same for both generations; the document carries them at the top. */
 export interface SessionFacts {
   id: string;
   parentId: string | null;
   title: string | null;
-  directory: string;
+  directory: string | null;
   harnessVersion: string;
   startedAt: string | null;
   agent: string | null;
@@ -142,6 +153,8 @@ export function writeDocument(directory: string, read: SessionRead): string {
   renameSync(temporary, path);
   return path;
 }
+/** Sessions without an event for this long are not ended at shutdown. */
+const SHUTDOWN_END_WINDOW_MS = 30 * 60 * 1000;
 /** How long a shutdown waits for `hook.js` to record an event; hook mode does no network. */
 const SHUTDOWN_HOOK_TIMEOUT_MS = 3000;
 /**
@@ -157,9 +170,12 @@ export function sendEvent(
   const node = nodePath(directory);
   if (!node) return;
   const args = [join(directory, "hook.js"), "opencode"];
+  // The shim finds its installation through this, as the shell harnesses' hook commands set it.
+  const env = { ...process.env, AGENTCOMMONS_DIR: directory };
   try {
     if (wait) {
       spawnSync(node, args, {
+        env,
         input: JSON.stringify(payload),
         stdio: ["pipe", "ignore", "ignore"],
         timeout: SHUTDOWN_HOOK_TIMEOUT_MS,
@@ -167,6 +183,7 @@ export function sendEvent(
       return;
     }
     const child = spawn(node, args, {
+      env,
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
     });
@@ -188,12 +205,17 @@ export function sendEvent(
  * order; a failed read or write drops that event, never the agent's work.
  */
 export class Recorder {
-  private readonly seen = new Map<string, string | null>();
+  /** Recorded sessions: their parent and when their last event was handled. */
+  private readonly seen = new Map<
+    string,
+    { parent: string | null; active: number }
+  >();
   private readonly queues = new Map<string, Promise<void>>();
   constructor(
     private readonly read: (sessionId: string) => Promise<SessionRead | null>,
-    private readonly directory: () => string = dataDirectory,
+    private readonly directory: () => string = installationDirectory,
     private readonly deliver: typeof sendEvent = sendEvent,
+    private readonly now: () => number = Date.now,
   ) {}
   record(sessionId: string, lifecycle: Lifecycle): Promise<void> {
     const next = (this.queues.get(sessionId) ?? Promise.resolve())
@@ -209,11 +231,15 @@ export class Recorder {
     await Promise.all(this.queues.values());
   }
   /**
-   * Ends every session this process recorded, for process shutdown. Synchronous, so it also
-   * works from an exit handler; ending twice sends one end.
+   * Ends the sessions active in the last half hour, for process shutdown. Synchronous, so it
+   * also works from an exit handler; ending twice sends one end. A long-lived service has
+   * seen many sessions; the older ones are left inactive rather than each delaying exit.
    */
   close(): void {
-    for (const sessionId of [...this.seen.keys()]) this.end(sessionId, true);
+    const recent = this.now() - SHUTDOWN_END_WINDOW_MS;
+    for (const [sessionId, { active }] of [...this.seen])
+      if (active >= recent) this.end(sessionId, true);
+    this.seen.clear();
   }
   /** Sends the end of a recorded session with the document as stored; the session may be gone. */
   private end(sessionId: string, shutdown = false): void {
@@ -223,7 +249,7 @@ export class Recorder {
       !existsSync(join(directory, "config.json"))
     )
       return;
-    const parent = this.seen.get(sessionId) ?? null;
+    const parent = this.seen.get(sessionId)?.parent ?? null;
     this.seen.delete(sessionId);
     this.send(
       directory,
@@ -258,7 +284,7 @@ export class Recorder {
       if (!parentRead) return;
       writeDocument(directory, parentRead);
     }
-    this.seen.set(sessionId, parent);
+    this.seen.set(sessionId, { parent, active: this.now() });
     this.send(directory, sessionId, parent, path, {
       first,
       lifecycle,
@@ -289,7 +315,7 @@ export class Recorder {
     const base = {
       event_id: randomUUID(),
       timestamp: new Date().toISOString(),
-      cwd: event.cwd ?? storedDirectory(path) ?? directory,
+      cwd: event.cwd ?? storedDirectory(path) ?? process.cwd(),
     };
     if (parent) {
       this.deliver(
@@ -348,7 +374,7 @@ export function enforceToolCall(
   tool: string,
   input: unknown,
   sessionId: string,
-  directory: string = dataDirectory(),
+  directory: string = installationDirectory(),
 ): void {
   if (process.env.AGENTCOMMONS_DISABLE === "1") return;
   const policy = readCachedPolicy(directory);
@@ -400,7 +426,7 @@ export function readV1(input: V1Input) {
         id: sessionId,
         parentId: text(session.parentID),
         title: text(session.title),
-        directory: text(session.directory) ?? "",
+        directory: text(session.directory),
         harnessVersion: text(session.version) ?? "1",
         startedAt:
           typeof time === "number" ? new Date(time).toISOString() : null,
@@ -423,18 +449,21 @@ export function v1Hooks(
   recorder = new Recorder(readV1(input)),
 ) {
   return {
-    event: async ({ event }: { event: V1Event }): Promise<void> => {
+    // Recording is not awaited: opencode 1.x waits for its hooks before going on.
+    event: ({ event }: { event: V1Event }): Promise<void> => {
       const sessionId = v1Session(event);
-      if (!sessionId) return;
+      if (!sessionId) return Promise.resolve();
       if (event.type === "session.created")
-        await recorder.record(sessionId, "created");
+        void recorder.record(sessionId, "created");
       else if (event.type === "session.idle")
-        await recorder.record(sessionId, "idle");
+        void recorder.record(sessionId, "idle");
       else if (event.type === "session.deleted")
-        await recorder.record(sessionId, "end");
+        void recorder.record(sessionId, "end");
+      return Promise.resolve();
     },
-    "chat.message": async (data: { sessionID: string }): Promise<void> => {
-      await recorder.record(data.sessionID, "prompt");
+    "chat.message": (data: { sessionID: string }): Promise<void> => {
+      void recorder.record(data.sessionID, "prompt");
+      return Promise.resolve();
     },
     "tool.execute.before": (
       data: { tool: string; sessionID: string },
@@ -443,10 +472,9 @@ export function v1Hooks(
       enforceToolCall(data.tool, output.args, data.sessionID);
       return Promise.resolve();
     },
-    "tool.execute.after": async (data: {
-      sessionID: string;
-    }): Promise<void> => {
-      await recorder.record(data.sessionID, "tool");
+    "tool.execute.after": (data: { sessionID: string }): Promise<void> => {
+      void recorder.record(data.sessionID, "tool");
+      return Promise.resolve();
     },
     "experimental.chat.system.transform": (
       _data: unknown,
@@ -503,10 +531,9 @@ export function readV2(context: V2Context) {
         id: sessionId,
         parentId: text(session.parentID),
         title: text(session.title),
-        directory:
-          (isRecord(session.location)
-            ? text(session.location.directory)
-            : null) ?? "",
+        directory: isRecord(session.location)
+          ? text(session.location.directory)
+          : null,
         harnessVersion: context.app.version,
         startedAt:
           typeof time === "number" ? new Date(time).toISOString() : null,

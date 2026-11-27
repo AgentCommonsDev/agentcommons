@@ -9,6 +9,7 @@ import {
   enforceToolCall,
   isFullContext,
   mergeMessages,
+  sendEvent,
   v1Hooks,
   v2Setup,
   type SessionRead,
@@ -310,5 +311,78 @@ describe("opencode plugin", () => {
       | undefined;
     contextHook?.({ sessionID: "s1", system: parts });
     expect(parts).toEqual([{ type: "text", text: agentInstructions }]);
+  });
+
+  // @req R-HRN-09
+  it("does not hold up opencode 1.x: its hooks return before the session is read", async () => {
+    let release: () => void = () => undefined;
+    const pending = new Promise<{ data?: unknown }>((resolve) => {
+      release = () => {
+        resolve({});
+      };
+    });
+    const hooks = v1Hooks({
+      client: { session: { get: () => pending, messages: () => pending } },
+    });
+    let returned = false;
+    await hooks["chat.message"]({ sessionID: "s1" }).then(() => {
+      returned = true;
+    });
+    expect(returned).toBe(true);
+    release();
+  });
+
+  // @req R-HRN-09
+  it("ends at shutdown only the sessions active in the last half hour", async () => {
+    const directory = installation();
+    let now = 0;
+    const sent: Sent[] = [];
+    const instance = new Recorder(
+      (id) => Promise.resolve(session(id, [])),
+      () => directory,
+      (_directory, payload, wait) => sent.push({ payload, wait }),
+      () => now,
+    );
+    await instance.record("old", "idle");
+    now = 31 * 60 * 1000;
+    await instance.record("recent", "idle");
+    sent.length = 0;
+    instance.close();
+    expect(sent.map(({ payload }) => payload.session_id)).toEqual(["recent"]);
+  });
+
+  // @req R-HRN-09
+  it("never sends an empty working directory", async () => {
+    const directory = installation();
+    const read = session("s1", []);
+    const { instance, sent } = recorder(directory, {
+      s1: { ...read, session: { ...read.session, directory: null } },
+    });
+    await instance.record("s1", "idle");
+    expect(sent[0]?.payload.cwd).toBe(process.cwd());
+  });
+
+  // @req R-HRN-09
+  it("runs hook.js with its installation directory and the event on stdin", () => {
+    const directory = installation();
+    writeFileSync(
+      join(directory, "config.json"),
+      JSON.stringify({ node: process.execPath }),
+    );
+    writeFileSync(
+      join(directory, "hook.js"),
+      'require("node:fs").writeFileSync(process.env.AGENTCOMMONS_DIR + "/received.json", JSON.stringify({ dir: process.env.AGENTCOMMONS_DIR, argv: process.argv.slice(2), input: require("node:fs").readFileSync(0, "utf8") }));',
+    );
+    vi.stubEnv("AGENTCOMMONS_DIR", "/elsewhere");
+    sendEvent(directory, { hook_event_name: "session.end" }, true);
+    expect(
+      JSON.parse(
+        readFileSync(join(directory, "received.json"), "utf8"),
+      ) as unknown,
+    ).toEqual({
+      dir: directory,
+      argv: ["opencode"],
+      input: JSON.stringify({ hook_event_name: "session.end" }),
+    });
   });
 });

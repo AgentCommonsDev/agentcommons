@@ -271,7 +271,7 @@ it("every captured harness entry chooses its reader, timeout, MCP shape, and a d
   ]);
   expect(HARNESSES.gemini.reader).toBe("json-document");
   expect(HARNESSES.opencode.reader).toBe("json-document");
-  expect(HARNESSES.opencode.pluginPath).toEqual([
+  expect(HARNESSES.opencode.plugin?.path).toEqual([
     ".config",
     "opencode",
     "plugin",
