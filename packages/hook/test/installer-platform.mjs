@@ -10,7 +10,7 @@ const artifacts = resolve(process.argv[2] ?? "apps/api/public");
 const directory = await mkdtemp(join(tmpdir(), "agentcommons-platform-"));
 const bin = join(directory, "bin");
 await mkdir(bin);
-for (const name of ["claude", "codex", "gemini", "pi"])
+for (const name of ["claude", "codex", "gemini", "pi", "opencode"])
   await writeFile(join(bin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
 let corrupt = false;
 let requests = 0;
@@ -89,6 +89,15 @@ try {
     assert.match(first.output, /trust hooks/);
     // The guidance lands in each harness's global instructions file, named in the output.
     assert.match(first.output, /AgentCommons guidance from .*CLAUDE\.md/);
+    // opencode gets the plugin bound to this installation and its MCP entry.
+    const plugin = join(home, ".config/opencode/plugin/agentcommons.js");
+    assert.ok((await readFile(plugin, "utf8")).includes(JSON.stringify(data)));
+    assert.equal(
+      JSON.parse(
+        await readFile(join(home, ".config/opencode/opencode.json"), "utf8"),
+      ).mcp.agentcommons.url,
+      `${origin}/mcp`,
+    );
     const configPath = join(data, "config.json");
     const original = await readFile(configPath, "utf8");
     assert.equal((await stat(configPath)).mode & 0o777, 0o600);
@@ -128,6 +137,7 @@ try {
       error.code === "ENOENT" ? "" : Promise.reject(error),
     );
     assert.doesNotMatch(rcAfter, /AGENTCOMMONS_API_KEY/);
+    await assert.rejects(stat(plugin), { code: "ENOENT" });
     process.stdout.write(
       JSON.stringify({
         platform: process.platform,
