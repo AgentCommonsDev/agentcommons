@@ -44,7 +44,7 @@ class GetSessionsResponse200ItemsItem:
         session_id (UUID): Primary key; every other view joins on it
         organization_id (str): Owning organization (already scoped)
         title (None | str): Short title derived from the session
-        harness (GetSessionsResponse200ItemsItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+        harness (GetSessionsResponse200ItemsItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE
         harness_version (None | str): Harness version, if reported
         entrypoint (None | str): How the harness was launched, if reported
         model (None | str): Primary model used

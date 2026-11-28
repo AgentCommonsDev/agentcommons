@@ -151,12 +151,13 @@ async function main(): Promise<void> {
               `Your agents read the AgentCommons guidance from ${files.join(", ")}.`,
             ]
           : []),
-        // A harness without a global instructions file carries the guidance in its extension.
+        // A harness without a global instructions file carries the guidance in its extension
+        // (pi) or plugin (opencode).
         ...names
           .filter((name) => HARNESSES[name].instructionsPath === null)
           .map(
             (name) =>
-              `${name} reads the AgentCommons guidance from its extension.`,
+              `${name} reads the AgentCommons guidance from its ${HARNESSES[name].plugin ? "plugin" : "extension"}.`,
           ),
         ...wired.flatMap((definition) =>
           definition.installNote ? [definition.installNote] : [],

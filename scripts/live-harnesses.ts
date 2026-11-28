@@ -49,6 +49,16 @@ export interface LiveHarness {
   deferralTool: string | null;
   /** How the harness names the AgentCommons MCP tools. */
   mcpTool: (tool: string) => string;
+  /**
+   * Whether the harness may reuse the MCP catalog an earlier process listed instead of
+   * listing it again (opencode stores it), so the tool stage itself need not list it.
+   */
+  cachesCatalog: boolean;
+  /**
+   * A tool through which the model's code calls other tools (opencode 2.x `execute`), and the
+   * prefix those inner AgentCommons calls carry in the recorded `toolCalls`; null otherwise.
+   */
+  codeMode: { tool: string; prefix: string } | null;
   /** Hooked session that calls every required MCP tool through the installed registration. */
   tools: (options: ToolStageEnvironment) => Promise<void>;
   /** Hooked capture session, returning the native shutdown checkpoints it can name (pi). */
@@ -322,6 +332,130 @@ async function geminiProjectSettings(options: CanaryEnvironment, cwd: string) {
 const doubleUnderscoreTool = (tool: string) => `mcp__agentcommons__${tool}`;
 const geminiTool = (tool: string) => `mcp_agentcommons_${tool}`;
 const piTool = (tool: string) => `agentcommons_${tool}`;
+// opencode names an MCP server's tools <server>_<tool>.
+const opencodeTool = (tool: string) => `agentcommons_${tool}`;
+/**
+ * opencode's model: Claude through the canary's Anthropic key by default; CANARY_OPENCODE_MODEL
+ * picks another provider/model (e.g. openrouter/anthropic/claude-sonnet-5.5).
+ */
+const opencodeModel =
+  process.env.CANARY_OPENCODE_MODEL ?? "anthropic/claude-sonnet-5-5";
+/**
+ * opencode reads its configuration, store and working directory from XDG_* and PWD. The
+ * installer wrote the configuration under the private config home; each engine keeps its
+ * own store, because 1.x refuses a database a 2.x engine created.
+ */
+function runOpencode(
+  cli: string,
+  options: CanaryEnvironment,
+  cwd: string,
+  args: string[],
+  log: string,
+) {
+  const store = join(options.directory, "opencode-store");
+  return runNative(
+    cli,
+    [
+      "run",
+      // 2.x would otherwise use, or start, the desktop app's shared service.
+      ...(cli === "opencode-cli" ? ["--standalone"] : []),
+      "--auto",
+      "--format",
+      "json",
+      "--model",
+      opencodeModel,
+      ...args,
+    ],
+    {
+      cwd,
+      env: {
+        ...options.env,
+        PWD: cwd,
+        XDG_CONFIG_HOME: join(options.configHome, ".config"),
+        XDG_DATA_HOME: join(store, "data"),
+        XDG_STATE_HOME: join(store, "state"),
+        XDG_CACHE_HOME: join(store, "cache"),
+      },
+      log,
+    },
+  );
+}
+/** The session id opencode's JSON output reports. */
+async function opencodeSession(log: string): Promise<string> {
+  for (const line of (await readFile(log, "utf8")).split("\n")) {
+    const parsed = z
+      .object({ sessionID: z.string().min(1) })
+      .safeParse(JSON.parse(line || "null") as unknown);
+    if (parsed.success) return parsed.data.sessionID;
+  }
+  throw new Error(`opencode reported no session; private log: ${log}`);
+}
+/**
+ * One entry per opencode engine line: 1.x (`opencode`, npm opencode-ai) and 2.x
+ * (`opencode-cli`, the desktop app's engine, npm @opencode/cli). They load the same plugin
+ * through different plugin interfaces and store sessions in different shapes.
+ */
+function opencodeHarness(cli: "opencode" | "opencode-cli"): LiveHarness {
+  return {
+    cli,
+    harness: "OPENCODE",
+    version: harnessVersions[cli].version,
+    links: "SUBAGENT",
+    // The parent's task/subagent result names the child session (§5.5).
+    spawningCall: true,
+    // A second process continues the session, so the plugin reports a resume.
+    resume: true,
+    delegationTool: null,
+    deferralTool: null,
+    cachesCatalog: true,
+    // 2.x runs MCP tools from the model's code; 1.x calls them directly.
+    codeMode:
+      cli === "opencode-cli"
+        ? { tool: "execute", prefix: "agentcommons." }
+        : null,
+    mcpTool: opencodeTool,
+    async tools(options) {
+      await runOpencode(
+        cli,
+        options,
+        options.repository,
+        [nativeToolPrompt(options, opencodeTool)],
+        toolsLog(options),
+      );
+    },
+    async recall(options) {
+      await runRecall(
+        (prompt, cwd, log) => runOpencode(cli, options, cwd, [prompt], log),
+        options,
+      );
+    },
+    async run(options) {
+      await seedNotes(options);
+      const log = captureLog(options);
+      await runOpencode(
+        cli,
+        options,
+        options.repository,
+        [
+          `${options.marker}. Do these steps in order. 1) Use the read tool to read probe.txt. 2) Read notes.txt, then use the edit tool to append the line "AgentCommons canary note ${options.marker}" to notes.txt. 3) Use the shell tool to run: git status --short. 4) Use the shell tool to run: git add notes.txt && git commit -m "test: ${cli} canary note". 5) Start a general subagent that reads probe.txt and reports its exact content; wait for its report. Reply with the probe.txt content, the final notes.txt content, and the new commit hash.`,
+        ],
+        log,
+      );
+      await runOpencode(
+        cli,
+        options,
+        options.repository,
+        [
+          "--session",
+          await opencodeSession(log),
+          `${options.marker}. Reply with the single word RESUMED.`,
+        ],
+        join(options.directory, "native-resume.jsonl"),
+      );
+      return [];
+    },
+  };
+}
 
 export const liveHarnesses: LiveHarness[] = [
   {
@@ -336,6 +470,8 @@ export const liveHarnesses: LiveHarness[] = [
     // Claude Code loads MCP tools through this built-in once their combined definitions
     // pass 10% of the context window; a direct first call proves the catalog fits.
     deferralTool: "ToolSearch",
+    cachesCatalog: false,
+    codeMode: null,
     mcpTool: doubleUnderscoreTool,
     async tools(options) {
       await runNative(
@@ -391,6 +527,8 @@ export const liveHarnesses: LiveHarness[] = [
     resume: false,
     delegationTool: null,
     deferralTool: null,
+    cachesCatalog: false,
+    codeMode: null,
     // Codex persists typed McpToolCall items; the adapter projects mcp__<server>__<tool>.
     mcpTool: doubleUnderscoreTool,
     async tools(options) {
@@ -457,6 +595,8 @@ export const liveHarnesses: LiveHarness[] = [
     resume: false,
     delegationTool: "generalist",
     deferralTool: null,
+    cachesCatalog: false,
+    codeMode: null,
     mcpTool: geminiTool,
     async tools(options) {
       // The capture step copied the installed settings (hooks and mcpServers) into the
@@ -512,6 +652,8 @@ export const liveHarnesses: LiveHarness[] = [
     resume: true,
     delegationTool: null,
     deferralTool: null,
+    cachesCatalog: false,
+    codeMode: null,
     mcpTool: piTool,
     async tools(options) {
       await runPi(
@@ -553,4 +695,6 @@ export const liveHarnesses: LiveHarness[] = [
       return result.completion;
     },
   },
+  opencodeHarness("opencode"),
+  opencodeHarness("opencode-cli"),
 ];

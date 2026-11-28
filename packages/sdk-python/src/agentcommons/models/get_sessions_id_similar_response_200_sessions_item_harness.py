@@ -1,7 +1,7 @@
 from typing import Literal
 
 GetSessionsIdSimilarResponse200SessionsItemHarness = Literal[
-    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
 ]
 
 GET_SESSIONS_ID_SIMILAR_RESPONSE_200_SESSIONS_ITEM_HARNESS_VALUES: set[
@@ -10,6 +10,7 @@ GET_SESSIONS_ID_SIMILAR_RESPONSE_200_SESSIONS_ITEM_HARNESS_VALUES: set[
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

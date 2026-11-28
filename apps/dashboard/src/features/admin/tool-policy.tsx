@@ -40,6 +40,7 @@ const harnesses: readonly Harness[] = [
   "CODEX",
   "GEMINI_CLI",
   "PI",
+  "OPENCODE",
 ];
 const actions: readonly Action[] = ["deny", "warn", "allow"];
 const severities: readonly Severity[] = ["low", "medium", "high", "critical"];

@@ -5,6 +5,7 @@ export const appCopy = {
     CODEX: "Codex",
     GEMINI_CLI: "Gemini CLI",
     PI: "pi",
+    OPENCODE: "opencode",
   },
   navigation: {
     label: "App navigation",

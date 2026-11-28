@@ -178,7 +178,7 @@ const wired = (status: "ok" | "placeholder" | "missing" = "ok") => {
 
 describe("recall hint", () => {
   // @req R-CAP-20
-  it("hints on the events HARNESSES flags: a session overview for Claude Code and Gemini, prompts for every shell harness, nothing for pi", () => {
+  it("hints on the events HARNESSES flags: a session overview for Claude Code and Gemini, prompts for every shell harness, nothing for pi or opencode", () => {
     const hinted = Object.fromEntries(
       (Object.keys(HARNESSES) as CliHarness[]).map((name) => [
         name,
@@ -193,6 +193,7 @@ describe("recall hint", () => {
       codex: ["UserPromptSubmit:prompt"],
       gemini: ["SessionStart:start", "BeforeAgent:prompt"],
       pi: [],
+      opencode: [],
     });
     expect(
       JSON.parse(hookContextOutput("BeforeAgent", "x")) as unknown,

@@ -1,11 +1,12 @@
 from typing import Literal
 
-PostIngestBodyHarness = Literal["CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"]
+PostIngestBodyHarness = Literal["CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"]
 
 POST_INGEST_BODY_HARNESS_VALUES: set[PostIngestBodyHarness] = {
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

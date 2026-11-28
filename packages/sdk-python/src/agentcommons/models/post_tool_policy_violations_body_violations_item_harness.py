@@ -1,7 +1,7 @@
 from typing import Literal
 
 PostToolPolicyViolationsBodyViolationsItemHarness = Literal[
-    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
 ]
 
 POST_TOOL_POLICY_VIOLATIONS_BODY_VIOLATIONS_ITEM_HARNESS_VALUES: set[
@@ -10,6 +10,7 @@ POST_TOOL_POLICY_VIOLATIONS_BODY_VIOLATIONS_ITEM_HARNESS_VALUES: set[
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

@@ -26,7 +26,7 @@ import {
 import { gitContext, gitEnd } from "./git.js";
 import { HARNESSES, type HarnessDefinition } from "./harnesses.js";
 import { spawnUpload } from "./hook.js";
-import { acquireLock, MAX_UPLOADER_MS, type Lock } from "./lock.js";
+import { acquireLock, liveOwner, MAX_UPLOADER_MS, type Lock } from "./lock.js";
 import { note } from "./paths.js";
 import { flushToolPolicyViolations, refreshToolPolicy } from "./policy-sync.js";
 import { refreshRecallHint } from "./recall.js";
@@ -935,10 +935,27 @@ export async function upload(
   if (
     !retry &&
     !current.suspended &&
-    journalEntries(path, current.processed).length &&
-    hasWork(path, current)
+    ((journalEntries(path, current.processed).length &&
+      hasWork(path, current)) ||
+      current.children.some(childWaiting))
   )
     spawnUpload(config, executable, path);
+}
+/**
+ * A child's intents can land while another uploader holds the child: that uploader may
+ * finish before reading them, and the uploader that published them skipped the busy child.
+ * Only the parent's uploader drains children, so whichever uploader ends while a free child
+ * still has work starts the next one.
+ */
+function childWaiting(path: string): boolean {
+  try {
+    const state = loadState(path);
+    return (
+      !state.suspended && !liveOwner(ownerPath(path)) && hasWork(path, state)
+    );
+  } catch {
+    return false;
+  }
 }
 /** Drains every session this run covers; true when a send failed and the next hook retries it. */
 async function drainAll(

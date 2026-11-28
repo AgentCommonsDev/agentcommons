@@ -31,7 +31,7 @@ export const traceViewCatalog: Readonly<
     columns: {
       session_id: "Primary key; every other view joins on it",
       organization_id: scoped,
-      harness: "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI",
+      harness: "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE",
       harness_session_id: "Session id assigned by the harness",
       harness_version: "Harness version, if reported",
       entrypoint: "How the harness was launched, if reported",

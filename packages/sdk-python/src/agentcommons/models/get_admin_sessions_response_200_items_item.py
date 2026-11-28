@@ -36,7 +36,8 @@ class GetAdminSessionsResponse200ItemsItem:
     """
     Attributes:
         session_id (UUID): Primary key; every other view joins on it
-        harness (GetAdminSessionsResponse200ItemsItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI
+        harness (GetAdminSessionsResponse200ItemsItemHarness): Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or
+            OPENCODE
         harness_session_id (str): Session id assigned by the harness
         user_email (None | str): Email of the member who ran it
         installation_hostname (None | str): Hostname of the capturing machine

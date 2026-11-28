@@ -25,7 +25,13 @@ const SPOOL_CAP = 1000;
 /** The command the server accepts; longer commands are truncated before they leave. */
 const MAX_COMMAND = 16_384;
 
-const HARNESS = z.enum(["CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"]);
+const HARNESS = z.enum([
+  "CLAUDE_CODE",
+  "CODEX",
+  "GEMINI_CLI",
+  "PI",
+  "OPENCODE",
+]);
 const SEVERITY = z.enum(["low", "medium", "high", "critical"]);
 
 /** The rule shape, mirrored from `core/schemas/tool-policy`; loose so a newer server that

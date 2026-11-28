@@ -12614,7 +12614,8 @@
                       "CLAUDE_CODE",
                       "CODEX",
                       "GEMINI_CLI",
-                      "PI"
+                      "PI",
+                      "OPENCODE"
                     ]
                   },
                   "harnessSessionId": {
@@ -13700,9 +13701,10 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ],
-                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
+                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE"
                           },
                           "model": {
                             "description": "Primary model used",
@@ -15043,9 +15045,10 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ],
-                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
+                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE"
                           },
                           "harness_version": {
                             "description": "Harness version, if reported",
@@ -15746,9 +15749,10 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ],
-                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
+                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE"
                           },
                           "harness_version": {
                             "description": "Harness version, if reported",
@@ -16489,9 +16493,10 @@
                                 "CLAUDE_CODE",
                                 "CODEX",
                                 "GEMINI_CLI",
-                                "PI"
+                                "PI",
+                                "OPENCODE"
                               ],
-                              "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
+                              "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE"
                             },
                             "harness_version": {
                               "description": "Harness version, if reported",
@@ -17655,9 +17660,10 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ],
-                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
+                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE"
                           },
                           "agent_type": {
                             "description": "Subagent type when the session is a subagent",
@@ -18731,7 +18737,8 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ],
                             "description": "Harness of the reading session"
                           },
@@ -20780,7 +20787,8 @@
                                 "CLAUDE_CODE",
                                 "CODEX",
                                 "GEMINI_CLI",
-                                "PI"
+                                "PI",
+                                "OPENCODE"
                               ]
                             }
                           },
@@ -20980,7 +20988,8 @@
                             "CLAUDE_CODE",
                             "CODEX",
                             "GEMINI_CLI",
-                            "PI"
+                            "PI",
+                            "OPENCODE"
                           ]
                         },
                         "tool": {
@@ -23392,7 +23401,8 @@
                     "CLAUDE_CODE",
                     "CODEX",
                     "GEMINI_CLI",
-                    "PI"
+                    "PI",
+                    "OPENCODE"
                   ]
                 },
                 "status": {
@@ -23488,9 +23498,10 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ],
-                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI or PI"
+                            "description": "Agent product: CLAUDE_CODE, CODEX, GEMINI_CLI, PI or OPENCODE"
                           },
                           "harness_session_id": {
                             "type": "string",
@@ -28752,7 +28763,8 @@
                                 "CLAUDE_CODE",
                                 "CODEX",
                                 "GEMINI_CLI",
-                                "PI"
+                                "PI",
+                                "OPENCODE"
                               ]
                             }
                           },
@@ -28956,7 +28968,8 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ]
                           }
                         },
@@ -29067,7 +29080,8 @@
                                 "CLAUDE_CODE",
                                 "CODEX",
                                 "GEMINI_CLI",
-                                "PI"
+                                "PI",
+                                "OPENCODE"
                               ]
                             }
                           },
@@ -29328,7 +29342,8 @@
                     "CLAUDE_CODE",
                     "CODEX",
                     "GEMINI_CLI",
-                    "PI"
+                    "PI",
+                    "OPENCODE"
                   ]
                 },
                 "rule_id": {
@@ -29420,7 +29435,8 @@
                               "CLAUDE_CODE",
                               "CODEX",
                               "GEMINI_CLI",
-                              "PI"
+                              "PI",
+                              "OPENCODE"
                             ]
                           },
                           "tool": {

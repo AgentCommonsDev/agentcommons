@@ -13,8 +13,8 @@ import { isCode, writeAtomic } from "./files.js";
 
 /**
  * Tool/command policy enforcement (ADR 0080), the on-machine half. This module is the ONE
- * decision path shared by both bundles: `hook.js` (the shell-harness pre-tool hook) and
- * `pi-extension.mjs` (pi's in-process `tool_call` handler). It is deliberately zod-free so
+ * decision path shared by every bundle: `hook.js` (the shell-harness pre-tool hook),
+ * `pi-extension.mjs` (pi's in-process `tool_call` handler) and the opencode plugin. It is deliberately zod-free so
  * importing it does not pull zod into the pi extension bundle (kept ~6 KB); the only core
  * code it reaches is `evaluateToolCall`, a pure function whose own imports are types and so
  * erase to nothing (importing the policy index or the zod schema would pull the

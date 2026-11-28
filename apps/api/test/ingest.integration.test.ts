@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { z } from "zod";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { IngestService } from "../src/services/ingest.js";
@@ -667,6 +668,46 @@ describe("transactional ingest", () => {
           where: { sessionId: result.result.sessionId },
         }),
       ).toBe(request.records.length);
+    },
+  );
+
+  // @req R-HRN-10 @req R-ING-12
+  it.each(["1.19.6", "2.4.1"] as const)(
+    "accepts a live opencode %s session document and projects its tool calls",
+    async (version) => {
+      const document = z
+        .looseObject({ messages: z.array(z.json()) })
+        .parse(
+          JSON.parse(
+            await readFile(
+              new URL(
+                `../../../fixtures/transcripts/opencode/${version}-parent.json`,
+                import.meta.url,
+              ),
+              "utf8",
+            ),
+          ) as unknown,
+        );
+      const { messages, ...metadata } = document;
+      const request = envelope("OPENCODE");
+      request.records = messages.map((value, pos) => ({
+        pos,
+        sourceVersion: 0,
+        key: null,
+        line: JSON.stringify(value),
+      }));
+      request.sourcePos = messages.length;
+      request.context.transcriptMetadata = z
+        .record(z.string(), z.json())
+        .parse({ ...metadata, sourceRecordCount: messages.length });
+      const result = await services.publish(organization.context, request);
+      expect(result.result.accepted).toBe(messages.length);
+      const rows = await services.messages(
+        organizationId,
+        result.result.sessionId,
+      );
+      expect(rows.some((row) => row.kind === "TOOL_USE")).toBe(true);
+      expect(rows.some((row) => row.kind === "TOOL_RESULT")).toBe(true);
     },
   );
 });

@@ -1,6 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { bundleOpencodePlugin } from "./packages/hook/opencode-plugin-bundle.js";
 
 export default defineConfig({
+  define: {
+    AGENTCOMMONS_OPENCODE_PLUGIN: JSON.stringify(bundleOpencodePlugin()),
+  },
   test: {
     include: [
       "packages/**/*.test.ts",

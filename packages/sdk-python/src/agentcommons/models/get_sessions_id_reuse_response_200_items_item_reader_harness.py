@@ -1,7 +1,7 @@
 from typing import Literal
 
 GetSessionsIdReuseResponse200ItemsItemReaderHarness = Literal[
-    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "PI"
+    "CLAUDE_CODE", "CODEX", "GEMINI_CLI", "OPENCODE", "PI"
 ]
 
 GET_SESSIONS_ID_REUSE_RESPONSE_200_ITEMS_ITEM_READER_HARNESS_VALUES: set[
@@ -10,6 +10,7 @@ GET_SESSIONS_ID_REUSE_RESPONSE_200_ITEMS_ITEM_READER_HARNESS_VALUES: set[
     "CLAUDE_CODE",
     "CODEX",
     "GEMINI_CLI",
+    "OPENCODE",
     "PI",
 }
 

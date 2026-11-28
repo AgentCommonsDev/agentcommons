@@ -12,6 +12,7 @@ import {
 } from "../live-harnesses.js";
 import type { CapturedHarness } from "./capture.js";
 import {
+  agentcommonsCalls,
   initRepository,
   nativeSessions,
   plain,
@@ -157,21 +158,24 @@ export async function organicRecallStage(
   const decided = await valueIn(environment.repository);
   const restored = await valueIn(recallRepository);
   const uses = toolUses(task);
-  const searchTool = definition.mcpTool("search");
-  const searches = uses.filter((use) => use.tool_name === searchTool);
-  const firstSearch = uses.findIndex((use) => use.tool_name === searchTool);
+  const calls = agentcommonsCalls(task, definition);
+  const agentcommonsUses = new Set(calls.map((call) => call.use));
+  const searches = calls.filter((call) => call.tool === "search");
+  const firstSearch = uses.findIndex((use) =>
+    searches.some((call) => call.use === use),
+  );
   // The value appears in neither the prompt nor the repository, so the first call
   // outside AgentCommons that carries it is the write that used what search returned.
   const carriesValue = new RegExp(`\\b${String(recallDecision.right)}\\b`);
   const firstWrite = uses.findIndex(
     (use) =>
-      !use.tool_name?.startsWith(definition.mcpTool("")) &&
+      !agentcommonsUses.has(use) &&
       carriesValue.test(
         `${use.content} ${JSON.stringify(use.tool_input ?? null)}`,
       ),
   );
-  const searchFoundDecision = searches.some((use) =>
-    plain(resultOf(task, use)?.content ?? "").includes(decision.id),
+  const searchFoundDecision = searches.some((call) =>
+    plain(resultOf(task, call.use)?.content ?? "").includes(decision.id),
   );
   const reply =
     [...task.messages]
@@ -196,7 +200,7 @@ export async function organicRecallStage(
     task_session_id: task.id,
     task_native_session_id: task.harnessSessionId,
     invoked: uses.map((use) => use.tool_name),
-    search_queries: searches.map((use) => use.tool_input),
+    search_queries: searches.map((call) => call.input),
     searched_before_write: searchedBeforeWrite,
     search_found_decision: searchFoundDecision,
     decided_value: decided,
