@@ -7,6 +7,7 @@ on:
     paths:
       - "packages/hook/**"
       - "packages/pi-extension/**"
+      - "packages/opencode-plugin/**"
       - "packages/traces/**"
       - "packages/core/normalizers/**"
       - "packages/core/redaction/**"
@@ -46,8 +47,15 @@ jobs:
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       # One pin per harness in scripts/harness-versions.json; the canary asserts the same versions.
-      - run: npm install --global $(jq -r '[.claude, .codex, .gemini] | map("\(.package)@\(.version)") | join(" ")' scripts/harness-versions.json)
-      - name: Run all four native harnesses and retrieve their sessions through MCP
+      # opencode 2.x installs a command also named opencode; it is linked as opencode-cli, the
+      # name the desktop app bundles it under.
+      - run: |
+          npm install --global $(jq -r '[.claude, .codex, .gemini, .opencode] | map("\(.package)@\(.version)") | join(" ")' scripts/harness-versions.json)
+          npm install --global --prefix "$HOME/.opencode-cli" "$(jq -r '.["opencode-cli"] | "\(.package)@\(.version)"' scripts/harness-versions.json)"
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$HOME/.opencode-cli/bin/opencode" "$HOME/.local/bin/opencode-cli"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run every native harness and retrieve its sessions through MCP
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { z } from "zod";
 import type { Page } from "@playwright/test";
 import type {
   provisionMember,
@@ -9,7 +10,7 @@ import type {
 } from "../../apps/api/test/support.js";
 import type { Harness } from "../../packages/core/schemas/common.js";
 import type { startTraceDatabase } from "../../packages/traces/test/support.js";
-import { runNative } from "../live-harnesses.js";
+import { runNative, type LiveHarness } from "../live-harnesses.js";
 
 export type TraceDatabase = Awaited<ReturnType<typeof startTraceDatabase>>;
 /** Report rows the stages append to; a failing stage records what it saw before throwing. */
@@ -138,6 +139,43 @@ export const toolUses = (session: NativeSession) =>
   [...session.messages]
     .sort((a, b) => a.seq - b.seq)
     .filter((message) => message.kind === "TOOL_USE");
+/**
+ * The AgentCommons tool calls a session made, in transcript order, with the bare tool name
+ * and its input: calls under the harness's MCP tool names, and calls a code-mode tool ran
+ * (opencode 2.x `execute`, whose recorded input lists them as `toolCalls`).
+ */
+export function agentcommonsCalls(
+  session: NativeSession,
+  definition: Pick<LiveHarness, "mcpTool" | "codeMode">,
+) {
+  const prefix = definition.mcpTool("");
+  const input = (value: unknown) =>
+    z.record(z.string(), z.unknown()).catch({}).parse(value);
+  return toolUses(session).flatMap((use) => {
+    if (use.tool_name?.startsWith(prefix))
+      return [
+        {
+          use,
+          tool: use.tool_name.slice(prefix.length),
+          input: input(use.tool_input),
+        },
+      ];
+    const mode = definition.codeMode;
+    if (mode === null || use.tool_name !== mode.tool) return [];
+    const inner = z
+      .object({
+        toolCalls: z.array(z.object({ tool: z.string(), input: z.unknown() })),
+      })
+      .safeParse(use.tool_input);
+    return (inner.data?.toolCalls ?? [])
+      .filter((call) => call.tool.startsWith(mode.prefix))
+      .map((call) => ({
+        use,
+        tool: call.tool.slice(mode.prefix.length),
+        input: input(call.input),
+      }));
+  });
+}
 /** Gemini and Codex persist MCP text results inside JSON strings; compare unescaped. */
 export const plain = (content: string) => content.replaceAll("\\", "");
 

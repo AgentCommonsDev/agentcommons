@@ -8,6 +8,7 @@ import { chromium } from "@playwright/test";
 import { z } from "zod";
 import { startMailpit } from "../apps/api/test/mailpit.js";
 import {
+  contextFor,
   provisionMember,
   provisionOrganization,
   testAuthConfiguration,
@@ -54,7 +55,7 @@ const settings = z
       .transform((value) => value === "true"),
   })
   .parse(process.env);
-/** CANARY_HARNESSES=claude,codex limits a run to some CLIs; the default runs all four. */
+/** CANARY_HARNESSES=claude,codex limits a run to some CLIs; the default runs all of them. */
 const selectedHarnesses = liveHarnesses.filter(
   (definition) =>
     !process.env.CANARY_HARNESSES ||
@@ -127,6 +128,12 @@ try {
     // The canary exercises dashboard_render, which the default catalog no longer exposes.
     permissions: { sessions: ["read"], tools: ["dashboards"] },
   });
+  // The key the hook is installed with: capture, and the same dashboards tool group, which
+  // the native tool stage calls through the installed registration.
+  const install = await runtime.services.auth.createKey(member.owner, {
+    name: "Live canary install",
+    permissions: { sessions: ["ingest", "read"], tools: ["dashboards"] },
+  });
   const userClient = await connectMcp(publicUrl, read.result.key);
   handles.clients.push(userClient);
   const adminClient = await connectMcp(publicUrl, administrator.key);
@@ -148,7 +155,14 @@ try {
     database,
     organizationId,
     administrator,
-    member,
+    member: {
+      ...member,
+      key: install.result.key,
+      context: await contextFor(
+        database,
+        new Headers({ authorization: `Bearer ${install.result.key}` }),
+      ),
+    },
     readKey: read.result.key,
     userClient,
     page,
@@ -190,7 +204,7 @@ try {
     organic_recall: report.organic_recall,
     catalog,
   });
-  console.log(`All four live canaries passed. Report: ${path}`);
+  console.log(`Every selected live canary passed. Report: ${path}`);
   if (settings.CANARY_KEEP_RUNNING)
     await keepRunning(handles, {
       publicUrl,

@@ -153,6 +153,8 @@ it("pins the native harness CLIs in one file that the workflows and the canary r
     "claude",
     "codex",
     "gemini",
+    "opencode",
+    "opencode-cli",
     "pi",
   ]);
   for (const entry of Object.values(harnessVersions))

@@ -2,5 +2,7 @@
   "claude": { "package": "@anthropic-ai/claude-code", "version": "2.1.265" },
   "codex": { "package": "@openai/codex", "version": "0.153.4" },
   "gemini": { "package": "@google/gemini-cli", "version": "0.35.3" },
-  "pi": { "package": "@mariozechner/pi-coding-agent", "version": "0.73.1" }
+  "pi": { "package": "@mariozechner/pi-coding-agent", "version": "0.73.1" },
+  "opencode": { "package": "opencode-ai", "version": "1.19.6" },
+  "opencode-cli": { "package": "@opencode/cli", "version": "2.4.2" }
 }

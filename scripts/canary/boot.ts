@@ -8,6 +8,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { startApp, type StartedApp } from "../../apps/api/test/app.js";
 import {
   adminToolNames,
+  dashboardToolNames,
   readToolNames,
 } from "../../apps/api/src/services/mcp.js";
 import type { startMailpit } from "../../apps/api/test/mailpit.js";
@@ -90,9 +91,10 @@ export async function measureCatalog(userClient: Client, adminClient: Client) {
     admin_budget_bytes: 25 * 1024,
   };
   const readTools = [...readToolNames];
+  // The canary's read key also grants the dashboards tool group (live-canary.ts).
   assert.deepEqual(
     (await userClient.listTools()).tools.map((tool) => tool.name),
-    readTools,
+    [...readTools, ...dashboardToolNames],
   );
   assert.deepEqual(
     (await adminClient.listTools()).tools.map((tool) => tool.name),

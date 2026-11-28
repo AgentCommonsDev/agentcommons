@@ -3,6 +3,7 @@ import { z } from "zod";
 import { nativeToolPrompt, requiredNativeTools } from "../live-harnesses.js";
 import type { CapturedHarness } from "./capture.js";
 import {
+  agentcommonsCalls,
   nativeSessions,
   plain,
   resultOf,
@@ -84,15 +85,15 @@ export async function nativeToolStage(
       );
       const candidate = candidates[0];
       latest = candidate;
-      const completed = (name: string) =>
-        candidate?.messages.some(
-          (use) =>
-            use.kind === "TOOL_USE" &&
-            use.tool_name === name &&
-            resultOf(candidate, use) !== undefined,
-        ) ?? false;
+      const calls = candidate ? agentcommonsCalls(candidate, definition) : [];
+      const completed = (tool: string) =>
+        candidate !== undefined &&
+        calls.some(
+          (call) =>
+            call.tool === tool && resultOf(candidate, call.use) !== undefined,
+        );
       return candidate?.status === "ENDED" &&
-        requiredNativeTools.every((tool) => completed(names[tool])) &&
+        requiredNativeTools.every((tool) => completed(tool)) &&
         candidate.messages.some(
           (message) => message.role === "ASSISTANT" && message.kind === "TEXT",
         )
@@ -119,18 +120,15 @@ export async function nativeToolStage(
     },
   );
   const uses = toolUses(toolSession);
-  const mcpUses = uses.filter((use) =>
-    use.tool_name?.startsWith(definition.mcpTool("")),
-  );
+  const calls = agentcommonsCalls(toolSession, definition);
+  const mcpUses = [...new Set(calls.map((call) => call.use))];
   // The catalog must load eagerly: the first AgentCommons call is direct, not behind
   // the harness's deferred-tool loader (Claude Code ToolSearch, R-MCP-09).
   const deferredAt =
     definition.deferralTool === null
       ? -1
       : uses.findIndex((use) => use.tool_name === definition.deferralTool);
-  const firstMcpAt = uses.findIndex((use) =>
-    use.tool_name?.startsWith(definition.mcpTool("")),
-  );
+  const firstMcpAt = uses.findIndex((use) => mcpUses.includes(use));
   const deferred = deferredAt !== -1 && deferredAt < firstMcpAt;
   const toolErrors = mcpUses.flatMap((use) => {
     const result = resultOf(toolSession, use);
@@ -149,17 +147,11 @@ export async function nativeToolStage(
   });
   const required = Object.fromEntries(
     requiredNativeTools.map((tool) => {
-      const use = uses.find((message) => message.tool_name === names[tool]);
-      assert.ok(use, `${definition.cli} never called ${names[tool]}.`);
-      const result = resultOf(toolSession, use);
+      const call = calls.find((item) => item.tool === tool);
+      assert.ok(call, `${definition.cli} never called ${names[tool]}.`);
+      const result = resultOf(toolSession, call.use);
       assert.ok(result, `${definition.cli} has no result for ${names[tool]}.`);
-      return [
-        tool,
-        {
-          input: z.record(z.string(), z.unknown()).parse(use.tool_input),
-          content: result.content,
-        },
-      ];
+      return [tool, { input: call.input, content: result.content }];
     }),
   ) as Record<
     RequiredTool,
@@ -189,12 +181,19 @@ export async function nativeToolStage(
     required.sql.content.includes(definition.harness),
     `${definition.cli} sql result lacks its own harness row.`,
   );
-  // dashboard_render returned rendered tiles without a tile error.
+  // dashboard_render returned rendered tiles without a tile error. A harness records either
+  // the structured result (JSON) or the formatter's text (packages/core/format/dashboards.ts).
   const rendered = plain(required.dashboard_render.content);
-  assert.ok(
+  const structured =
     rendered.includes('"rendered_at"') &&
-      rendered.includes('"tiles"') &&
-      !/"error"\s*:\s*\{/.test(rendered),
+    rendered.includes('"tiles"') &&
+    !/"error"\s*:\s*\{/.test(rendered);
+  const formatted =
+    /\brendered_at: /.test(rendered) &&
+    /^tile [\w-]+: /m.test(rendered) &&
+    !/^tile [\w-]+: error /m.test(rendered);
+  assert.ok(
+    structured || formatted,
     `${definition.cli} dashboard_render returned no clean tile rows.`,
   );
   const auditRows = await database.prisma.auditEvent.findMany({
@@ -245,10 +244,22 @@ export async function nativeToolStage(
       ),
       `${definition.cli}: the audit log has no successful ${auditActions[tool]} row over MCP.`,
     );
-  assert.ok(
+  const listed =
     auditCalls.some(
       (row) => row.action === "mcp.tools.list" && row.status_code < 400,
-    ),
+    ) ||
+    (definition.cachesCatalog &&
+      (await database.prisma.auditEvent.count({
+        where: {
+          organizationId,
+          apiKeyId: z.string().parse(context.member.context.caller?.apiKeyId),
+          transport: "mcp",
+          action: "mcp.tools.list",
+          statusCode: { lt: 400 },
+        },
+      })) > 0);
+  assert.ok(
+    listed,
     `${definition.cli} never listed the MCP catalog through the installed registration.`,
   );
   context.report.native_tools.push({
