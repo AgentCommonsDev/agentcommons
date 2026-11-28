@@ -8,3 +8,7 @@ delete process.env.GIT_COMMON_DIR;
 delete process.env.GIT_OBJECT_DIRECTORY;
 delete process.env.GIT_PREFIX;
 delete process.env.GIT_NAMESPACE;
+// The installer exports the developer's own server and key, and the shim's config reads
+// them over its file, so a test's hook.js would reach that server. Tests set their own.
+delete process.env.AGENTCOMMONS_SERVER;
+delete process.env.AGENTCOMMONS_API_KEY;
