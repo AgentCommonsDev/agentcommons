@@ -1,0 +1,7 @@
+/* A mask covers its element's box, which would otherwise take the width of the Last seen
+   text it hides. Filling the fixed-width cell on one line keeps the box constant. */
+[data-testid="admin-users-table"] time {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+}
