@@ -1,10 +1,17 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type * as childProcess from "node:child_process";
 import { expect, it, vi } from "vitest";
 import { nativeHookSchema } from "../src/harnesses.js";
 import { recordHook } from "../src/hook.js";
-import { intents, loadState, statePath } from "../src/state.js";
+import { acquireLock } from "../src/lock.js";
+import { intents, loadState, ownerPath, statePath } from "../src/state.js";
 import { SETTLE_QUIET_POLLS, upload } from "../src/upload.js";
 import { fixture, SHIM } from "./fixture.js";
 
@@ -310,4 +317,34 @@ it("settles once for a corrected child path even while an earlier end is retaine
   f.sleep.mockClear();
   await f.run(parent);
   expect(f.sleep).not.toHaveBeenCalled();
+});
+
+// @req R-CAP-09
+it("starts the next uploader when a child it skipped as busy still has work", async () => {
+  const f = childFixture();
+  writeFileSync(f.transcript, record);
+  const parent = f.hook(f.event);
+  await f.run(parent);
+  expect(intents(f.childPath, loadState(f.childPath))).toEqual([]);
+  // Another uploader holds the child while the child's next event is published.
+  const busy = await acquireLock(ownerPath(f.childPath));
+  if (!busy) throw new Error("The child lock was not free.");
+  writeFileSync(f.transcript, `${record}{"uuid":"later-child-record"}\n`);
+  appendFileSync(f.event.transcript_path, '{"uuid":"later-parent-record"}\n');
+  f.hook({ ...f.event, timestamp: "2026-09-30T12:00:05.000Z" });
+  // That uploader finishes while this one settles the parent.
+  f.sleep.mockImplementation(() => {
+    busy.release();
+    return Promise.resolve();
+  });
+  processes.spawn.mockClear();
+  await f.run(parent);
+  expect(intents(f.childPath, loadState(f.childPath)).length).toBeGreaterThan(
+    0,
+  );
+  expect(processes.spawn).toHaveBeenCalledWith(
+    f.config.node,
+    [SHIM, "upload", parent],
+    expect.anything(),
+  );
 });
