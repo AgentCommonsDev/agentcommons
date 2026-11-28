@@ -200,22 +200,52 @@ export function sendEvent(
   }
 }
 
+type Sessions = Map<string, { parent: string | null; active: number }>;
+const sessionsKey = Symbol.for("agentcommons.opencode.sessions.v1");
+/**
+ * The sessions this process recorded, shared by every copy of the plugin it loads: opencode
+ * 2.x reloads a plugin whose file changes (the installer rewrites it after a self-update),
+ * and the new copy must carry on without restarting the sessions the old one recorded.
+ */
+function processSessions(): Sessions {
+  const shared = globalThis as typeof globalThis & {
+    [key: symbol]: Sessions | undefined;
+  };
+  return (shared[sessionsKey] ??= new Map() as Sessions);
+}
+const exitKey = Symbol.for("agentcommons.opencode.exit.v1");
+/**
+ * Ends the recorded sessions when the process exits, through the latest copy of the plugin.
+ * Plugin cleanup cannot do it: opencode 2.x also runs it when it reloads the plugin.
+ */
+function endOnExit(recorder: Recorder): Recorder {
+  const shared = globalThis as typeof globalThis & {
+    [key: symbol]: { recorder: Recorder } | undefined;
+  };
+  const current = shared[exitKey];
+  if (current) current.recorder = recorder;
+  else {
+    const registration = { recorder };
+    shared[exitKey] = registration;
+    process.once("exit", () => {
+      registration.recorder.close();
+    });
+  }
+  return recorder;
+}
 /**
  * Records the sessions one opencode process runs. Each session's events are handled in
  * order; a failed read or write drops that event, never the agent's work.
  */
 export class Recorder {
-  /** Recorded sessions: their parent and when their last event was handled. */
-  private readonly seen = new Map<
-    string,
-    { parent: string | null; active: number }
-  >();
   private readonly queues = new Map<string, Promise<void>>();
   constructor(
     private readonly read: (sessionId: string) => Promise<SessionRead | null>,
     private readonly directory: () => string = installationDirectory,
     private readonly deliver: typeof sendEvent = sendEvent,
     private readonly now: () => number = Date.now,
+    /** Recorded sessions: their parent and when their last event was handled. */
+    private readonly seen: Sessions = processSessions(),
   ) {}
   record(sessionId: string, lifecycle: Lifecycle): Promise<void> {
     const next = (this.queues.get(sessionId) ?? Promise.resolve())
@@ -483,10 +513,8 @@ export function v1Hooks(
       output.system.push(agentInstructions);
       return Promise.resolve();
     },
-    dispose: async (): Promise<void> => {
-      await recorder.flush();
-      recorder.close();
-    },
+    // The process exit ends the sessions (`endOnExit`); this writes what is queued.
+    dispose: (): Promise<void> => recorder.flush(),
   };
 }
 
@@ -494,7 +522,9 @@ export function v1Hooks(
 export interface V2Context {
   app: { version: string };
   event: {
-    subscribe(): AsyncIterable<{ type: string; data?: unknown }>;
+    subscribe(options: {
+      signal: AbortSignal;
+    }): AsyncIterable<{ type: string; data?: unknown }>;
   };
   session: {
     get(input: { sessionID: string }): Promise<unknown>;
@@ -563,8 +593,11 @@ export async function v2Setup(
   context: V2Context,
   recorder = new Recorder(readV2(context)),
 ): Promise<() => Promise<void>> {
+  const stop = new AbortController();
   void (async () => {
-    for await (const event of context.event.subscribe()) {
+    for await (const event of context.event.subscribe({
+      signal: stop.signal,
+    })) {
       const data = isRecord(event.data) ? event.data : {};
       const sessionId = text(data.sessionID);
       if (!sessionId) continue;
@@ -590,21 +623,11 @@ export async function v2Setup(
   await context.tool.hook("execute.after", (input) => {
     void recorder.record(input.sessionID, "tool");
   });
+  // Runs at shutdown and when opencode reloads the plugin; the process exit ends sessions.
   return async () => {
+    stop.abort();
     await recorder.flush();
-    recorder.close();
   };
-}
-
-/**
- * Ends the recorded sessions when the process exits without disposing the plugin; ending
- * twice sends one end.
- */
-function endOnExit(recorder: Recorder): Recorder {
-  process.once("exit", () => {
-    recorder.close();
-  });
-  return recorder;
 }
 export default {
   id: "agentcommons",

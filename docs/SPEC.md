@@ -810,7 +810,10 @@ with `type` ∈ `user`, `assistant` (`content[]`: `text`, `reasoning`, `tool { i
 state: { status, input, content | error } }`, `model.id`, `tokens`), `synthetic` (harness
 input such as a subagent's report) → `SYSTEM TEXT`, `compaction` (`summary`) → `SYSTEM
 TEXT`, `agent-/model-/location-switched` → `META`; `idle`, `system`, `skill`, `shell` are
-raw-only. Usage counts cached tokens as input and reasoning tokens as output. Other
+raw-only. In 2.x code mode the model's script calls other tools, AgentCommons' MCP tools
+among them, through one `execute` call whose `state.metadata.toolCalls` lists each inner
+call (`tool`, `status`, `input`); they are added to that `TOOL_USE`'s input as `toolCalls`
+beside the code. Usage counts cached tokens as input and reasoning tokens as output. Other
 records are raw-only.
 
 ### 5.5 Links
@@ -1014,7 +1017,10 @@ SubagentStop confirms the child through agent_transcript_path.
    context changes ship an empty `records` array, so the `end` batch never queues behind
    empty syncs and each such intent costs no server round trip. Repeat for each
    registered child source. Continue while intent changed during the loop or the source
-   grew again; then clear intent, release the lock, exit.
+   grew again; then clear intent, release the lock, exit. Only the parent's uploader drains
+   children, and it skips a child another uploader holds; so an uploader that exits while a
+   free child still has unprocessed intents starts the next one, or a child event published
+   while the child was busy would wait for a later hook that may never come.
 3. Failures: `429/5xx/network` → backoff (1 s, 5 s, 30 s) up to three tries, then leave
    `pending` in place and exit (the next hook or sweep resumes). `401/403` → a rejection
    only when confirmed: the body carries the server's error `code` and a second request,
@@ -1235,8 +1241,11 @@ its `server()` hooks, opencode 2.x its `setup()`. The installer writes its own d
 into the plugin, because the desktop app's service starts without `AGENTCOMMONS_DIR`, and
 the plugin passes it to `hook.js`. The plugin writes each session's document (§5.4) and
 runs `hook.js opencode` with the event on stdin, detached and not awaited during a
-session; at shutdown it waits, and ends only sessions with an event in the last 30
-minutes. A child session's events reach the shim on its parent and name the child
+session. It ends sessions only when the opencode process exits (its exit handler waits
+for `hook.js`), and only those with an event in the last 30 minutes. opencode 2.x reloads a
+plugin whose file changes and runs the old copy's cleanup; the recorded sessions are
+therefore kept per process, so the new copy carries on without a second start or an
+early end, and the installer leaves an unchanged plugin file untouched. A child session's events reach the shim on its parent and name the child
 (`agent_id`, `agent_transcript_path`), so it is registered as a child source. `<config>`
 is `$XDG_CONFIG_HOME`, else `~/.config`, as opencode resolves it; `--config-home` replaces
 the home and ignores `XDG_CONFIG_HOME`. The installer counts opencode as present when
@@ -3804,7 +3813,11 @@ long-lived service (or a `--standalone` private server) and rejects 1.x plugins:
 messages after the last compaction only (verified by forcing a compaction), hence the
 merge. A thrown `execute.before` error became the call's `error` in both generations.
 Child sessions carry `parentID`; the parent's `task`/`subagent` result metadata names
-the child.
+the child. Rewriting the plugin file during a 2.x session runs the old copy's cleanup and
+loads a new copy in the same process (observed with a probe plugin). 2.x usually runs MCP
+tools in code mode (`execute`); 1.19.6 keeps the MCP catalog it listed in an earlier process
+and calls tools without listing it again. Live canary runs (`CANARY_HARNESSES=opencode,opencode-cli`)
+passed capture, the separate agent's MCP check, native MCP tools and organic recall on both.
 
 **Gemini Code Assist and env placeholders, 2026-09-11 (production).** The VS Code Gemini
 Code Assist extension reads `~/.gemini/settings.json` `mcpServers` in the extension host,

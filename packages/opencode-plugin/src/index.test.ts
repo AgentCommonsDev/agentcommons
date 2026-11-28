@@ -43,12 +43,19 @@ function session(
   };
 }
 type Sent = { payload: Record<string, unknown>; wait: boolean };
-function recorder(directory: string, reads: Record<string, SessionRead>) {
+/** A recorder with its own session memory, as a separate opencode process has. */
+function recorder(
+  directory: string,
+  reads: Record<string, SessionRead>,
+  sessions = new Map<string, { parent: string | null; active: number }>(),
+) {
   const sent: Sent[] = [];
   const instance = new Recorder(
     (id) => Promise.resolve(reads[id] ?? null),
     () => directory,
     (_directory, payload, wait) => sent.push({ payload, wait }),
+    Date.now,
+    sessions,
   );
   return { instance, sent };
 }
@@ -176,6 +183,8 @@ describe("opencode plugin", () => {
       () => {
         throw new Error("no send expected");
       },
+      Date.now,
+      new Map(),
     );
     await expect(failing.record("s1", "idle")).resolves.toBeUndefined();
   });
@@ -298,7 +307,16 @@ describe("opencode plugin", () => {
         },
       },
     };
-    await v2Setup(context, new Recorder(() => Promise.resolve(null)));
+    await v2Setup(
+      context,
+      new Recorder(
+        () => Promise.resolve(null),
+        () => "/nonexistent",
+        sendEvent,
+        Date.now,
+        new Map(),
+      ),
+    );
     expect([...registered.keys()].sort()).toEqual([
       "session.context",
       "session.prompt",
@@ -342,6 +360,7 @@ describe("opencode plugin", () => {
       () => directory,
       (_directory, payload, wait) => sent.push({ payload, wait }),
       () => now,
+      new Map(),
     );
     await instance.record("old", "idle");
     now = 31 * 60 * 1000;
@@ -384,5 +403,27 @@ describe("opencode plugin", () => {
       argv: ["opencode"],
       input: JSON.stringify({ hook_event_name: "session.end" }),
     });
+  });
+
+  // @req R-HRN-09
+  it("carries on across a plugin reload in the same process: no second start", async () => {
+    const directory = installation();
+    const reads = {
+      s1: session("s1", [{ id: "m1", type: "user", text: "hi" }]),
+    };
+    const sessions = new Map<
+      string,
+      { parent: string | null; active: number }
+    >();
+    const before = recorder(directory, reads, sessions);
+    await before.instance.record("s1", "idle");
+    // opencode 2.x reloaded the plugin: a new copy, the same process.
+    const after = recorder(directory, reads, sessions);
+    await after.instance.record("s1", "tool");
+    expect(after.sent.map(({ payload }) => payload.hook_event_name)).toEqual([
+      "tool.after",
+    ]);
+    after.instance.close();
+    expect(after.sent.at(-1)?.payload.hook_event_name).toBe("session.end");
   });
 });

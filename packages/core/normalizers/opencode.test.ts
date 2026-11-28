@@ -207,4 +207,63 @@ describe("opencode normalization", () => {
       );
     }
   });
+
+  // @req R-HRN-10
+  it("keeps the tool calls a code-mode execute call made, with their inputs", () => {
+    const record: SourceRecord = {
+      id: "raw-code-mode",
+      pos: 0n,
+      sourceVersion: 0,
+      key: null,
+      receivedAt: new Date("2026-11-27T23:10:00Z"),
+      payload: {
+        id: "msg_code_mode",
+        type: "assistant",
+        model: { id: "anthropic/claude-sonnet-5-5" },
+        content: [
+          {
+            type: "tool",
+            id: "call_execute",
+            name: "execute",
+            state: {
+              status: "completed",
+              input: {
+                code: 'return await tools.agentcommons.search({query: "x"});',
+              },
+              content: [{ type: "text", text: '{"blocks":[]}' }],
+              metadata: {
+                toolCalls: [
+                  {
+                    tool: "agentcommons.search",
+                    status: "completed",
+                    input: { query: "x" },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    };
+    const [use, result] = opencode.toMessages([record]);
+    expect(use).toMatchObject({
+      kind: "TOOL_USE",
+      toolName: "execute",
+      toolInput: {
+        code: 'return await tools.agentcommons.search({query: "x"});',
+        toolCalls: [
+          {
+            tool: "agentcommons.search",
+            status: "completed",
+            input: { query: "x" },
+          },
+        ],
+      },
+    });
+    expect(result).toMatchObject({
+      kind: "TOOL_RESULT",
+      toolUseId: "call_execute",
+      content: '{"blocks":[]}',
+    });
+  });
 });

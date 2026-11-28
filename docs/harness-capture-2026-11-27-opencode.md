@@ -70,6 +70,25 @@ integration, plugin, reference, skill`; with no `event`, `session` or `tool` dom
 - **Working directory.** opencode takes its directory from `PWD` when set, not from the
   process's working directory; the capture script sets both.
 
+## Live canary findings
+
+Running `scripts/live-canary.ts` with both opencode entries surfaced three behaviours the
+captures above did not:
+
+- **Plugin reload.** opencode 2.x reloads a plugin whose file changes, mid-session: it runs
+  the old copy's cleanup and calls `setup()` on a new copy in the same process. The
+  canary's self-update re-runs the installer, which rewrote the plugin. The plugin now keeps
+  its recorded sessions per process and sends ends only from the process exit handler, and
+  the installer leaves an unchanged plugin file alone.
+- **Code mode.** For MCP tools, 2.x usually has the model write a script run by one
+  `execute` call; the stored call lists the inner calls in `state.metadata.toolCalls`. The
+  normalizer keeps them in the `TOOL_USE` input.
+- **Cached catalog.** 1.19.6 lists the MCP catalog in its first process and later
+  processes call tools without listing it again.
+
+The canary also exposed a shim race independent of opencode: a child's intents published
+while another uploader held the child were left unprocessed after the session ended (§6.2).
+
 ## Fixture sanitization
 
 Capture paths were replaced with `/tmp/agentcommons-live-capture/opencode-<version>`.

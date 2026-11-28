@@ -87,7 +87,7 @@ function toolMessages(
   },
   defaults: Partial<NormalizedMessage>,
 ): NormalizedMessage[] {
-  const toolInput: JsonValue = json(call.state.input);
+  const toolInput = callInput(call.state);
   const use = message(record, blockIndex, {
     ...defaults,
     role: "ASSISTANT",
@@ -111,6 +111,23 @@ function toolMessages(
       timestamp: call.finishedAt ?? defaults.timestamp ?? null,
     }),
   ];
+}
+/**
+ * The call's input. In opencode 2.x code mode the model's script calls other tools (MCP tools
+ * among them) through one `execute` call, whose `metadata.toolCalls` names each inner call;
+ * they ride with the code so the inner tools and their inputs stay visible.
+ */
+function callInput(state: Record<string, unknown>): JsonValue {
+  const input = json(state.input);
+  const inner = array(object(state.metadata).toolCalls).map((value) => {
+    const call = object(value);
+    return {
+      tool: string(call.tool),
+      status: string(call.status),
+      input: json(call.input),
+    };
+  });
+  return inner.length ? { ...object(input), toolCalls: inner } : input;
 }
 /** The result text of a finished call, or null while it is pending or running. */
 function resultText(state: Record<string, unknown>): string | null {

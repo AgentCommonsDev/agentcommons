@@ -462,7 +462,11 @@ function wireHarness(
         recursive: true,
         force: true,
       });
-    } else writeUserFile(plugin, definition.plugin.source(directory));
+    } else {
+      // An unchanged file stays untouched: opencode 2.x reloads a plugin whose file changes.
+      const source = definition.plugin.source(directory);
+      if (readText(plugin) !== source) writeUserFile(plugin, source);
+    }
   }
   if (definition.instructionsPath)
     replaceMarkedBlock(
