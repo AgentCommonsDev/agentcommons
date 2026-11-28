@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { expect, type Locator } from "@playwright/test";
 import { z } from "zod";
 import { builtinDashboardId } from "@agentcommons/core/schemas/dashboards";
@@ -61,6 +62,7 @@ for (const theme of ["dark", "light"] as const)
       path: string;
       ready: () => Promise<void>;
       mask: () => Locator[];
+      stylePath: string[];
     }[] = [
       {
         name: "home",
@@ -71,6 +73,7 @@ for (const theme of ["dark", "light"] as const)
             .locator("p")
             .filter({ hasText: copy.dashboards.status.rendered }),
         ],
+        stylePath: [],
       },
       {
         name: "dashboard",
@@ -81,6 +84,7 @@ for (const theme of ["dark", "light"] as const)
             .locator("p")
             .filter({ hasText: copy.dashboards.status.rendered }),
         ],
+        stylePath: [],
       },
       {
         name: "users",
@@ -94,6 +98,9 @@ for (const theme of ["dark", "light"] as const)
         // Last seen is this run's own dashboard requests, made on the real weekday, so its
         // distance from the fixed Sunday clock changes with the day the suite runs.
         mask: () => [page.getByTestId("admin-users-table").locator("time")],
+        stylePath: [
+          fileURLToPath(new URL("./visual-last-seen.css", import.meta.url)),
+        ],
       },
       {
         name: "settings",
@@ -118,12 +125,14 @@ for (const theme of ["dark", "light"] as const)
             .getByText(copy.settings.general.id, { exact: true })
             .locator("xpath=following-sibling::dd"),
         ],
+        stylePath: [],
       },
       {
         name: "login",
         path: paths.login,
         ready: () => expect(heading).toHaveText(copy.auth.nativeTitle),
         mask: () => [],
+        stylePath: [],
       },
     ];
     for (const screen of screens) {
@@ -141,6 +150,7 @@ for (const theme of ["dark", "light"] as const)
       await expect.soft(page).toHaveScreenshot(`${screen.name}-${theme}.png`, {
         fullPage: true,
         mask: screen.mask(),
+        stylePath: screen.stylePath,
       });
     }
     expect(errors).toEqual([]);
